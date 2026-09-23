@@ -48,6 +48,10 @@ function cfg() {
 /* 極簡速率限制。**注意**：Vercel serverless 每個 instance 各自計數，
    所以呢個只係擋「同一個 instance 上面嘅連環爆」，唔係真正嘅全局限流。 */
 const hits = new Map();
+const failures = new Map();
+const ACCOUNT_FAIL_LIMIT = 5;
+const ACCOUNT_LOCK_MS = 15 * 60 * 1000;
+
 function rateLimited(key, max = 8, windowMs = 5 * 60 * 1000) {
   const now = Date.now();
   const arr = (hits.get(key) || []).filter(t => now - t < windowMs);
@@ -56,6 +60,27 @@ function rateLimited(key, max = 8, windowMs = 5 * 60 * 1000) {
   if (hits.size > 5000) hits.clear();
   return false;
 }
+
+function accountLockState(user) {
+  const now = Date.now();
+  const state = failures.get(user);
+  if (!state) return { failed: 0, lockedUntil: 0 };
+  if (state.lockedUntil && state.lockedUntil <= now) {
+    failures.delete(user);
+    return { failed: 0, lockedUntil: 0 };
+  }
+  return state;
+}
+
+function registerFailure(user) {
+  const state = accountLockState(user);
+  state.failed += 1;
+  if (state.failed >= ACCOUNT_FAIL_LIMIT) state.lockedUntil = Date.now() + ACCOUNT_LOCK_MS;
+  failures.set(user, state);
+  return state;
+}
+
+function clearFailures(user) { failures.delete(user); }
 
 function send(res, status, obj) {
   res.setHeader('Cache-Control', 'no-store');
@@ -93,19 +118,29 @@ export default async function handler(req, res) {
   if (typeof body === 'string') { try { body = JSON.parse(body); } catch { body = null; } }
   if (!body || typeof body !== 'object') return send(res, 400, { ok: false, error: '請求格式錯誤' });
 
-  if (rateLimited('super')) {
+  const requestIp = String(req.headers?.['x-forwarded-for'] || req.headers?.['x-real-ip'] || 'unknown')
+    .split(',')[0].trim().slice(0, 80);
+  const rateKey = `super:${requestIp}:${String(body.user || '').trim().toLowerCase().slice(0, 120)}`;
+  if (rateLimited(rateKey)) {
     return send(res, 429, { ok: false, error: '試太多次，請 5 分鐘後再試' });
   }
 
   const user = String(body.user || '').trim().toLowerCase();
   const password = String(body.password || '');
+  const lock = accountLockState(user);
+  if (lock.lockedUntil > Date.now()) {
+    return send(res, 423, { ok: false, error: '帳號暫時鎖定，請 15 分鐘後再試' });
+  }
 
   /* username 錯同密碼錯要回**同一句**訊息，
      否則人可以用嚟確認邊個 username 存在。 */
   if (!safeEqual(user, wantUser) || !safeEqual(password, key)) {
+    const next = registerFailure(user);
+    try { console.log(JSON.stringify({ svc: 'ecportal-auth', result: 'failed', user, failed: next.failed })); } catch { /* ignore */ }
     return send(res, 401, { ok: false, error: '帳號或密碼不正確' });
   }
 
+  clearFailures(user);
   /* ⚠️ 只 log metadata。密碼一律唔入 log。 */
   try { console.log(JSON.stringify({ svc: 'ecportal-auth', result: 'ok', user })); } catch { /* ignore */ }
   /* 只回「啱」。密碼唔會回。 */

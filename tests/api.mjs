@@ -278,6 +278,11 @@ console.log('\n▌超管核對（api/auth.js：SUPER_KEY、fail closed）');
   ok('用戶名錯 → 401（同一句訊息，唔會確認邊個 username 存在）',
     wrongUser.statusCode === 401 && String(wrongUser.body?.error) === String(bad.body?.error));
 
+  /* BUILD §2：同一帳號連續 5 次失敗後鎖 15 分鐘；鎖定訊息唔暴露帳號是否存在。 */
+  for (let i = 0; i < 5; i++) await call({ user: 'attacker', password: 'wrong-password' });
+  const locked = await call({ user: 'attacker', password: 'wrong-password' });
+  ok('連續 5 次失敗後帳號鎖定', locked.statusCode === 423 && /15 分鐘/.test(locked.body?.error || ''), JSON.stringify(locked.body));
+
   /* 改密碼 = 改個環境變數值，即刻生效 */
   process.env.SUPER_KEY = 'a-brand-new-password';
   ok('★ 改咗 SUPER_KEY → 舊密碼即刻入唔到',

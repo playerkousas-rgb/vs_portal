@@ -125,7 +125,7 @@ export function gasTemplate() {
  */
 
 /** 呢份 Script 會用到嘅分頁名稱（同步／查詢時用） */
-var SHEET_TABS = ['資料庫', '帳目', '物資', '團員', '收支申報', '通告', '通告全文', '報名', '物資借用', '會議', '設定', '同步紀錄',
+var SHEET_TABS = ['資料庫', '帳目', '物資', '團員', '收支申報', '通告', '通告全文', '報名', '物資借用', '會議', '設定', '同步紀錄', '審計紀錄',
   '進度追蹤', '其他獎章', '待批完成', '活動履歷', '待批履歷', '成員名單'];
 
 /** 每個旅團分開一個 Sheet（工作表）定用同一個 Sheet 加「旅團」欄？ */
@@ -226,6 +226,7 @@ function initializeSheets() {
     { name: '報名', headers: ['旅團', '通告編號', '通告標題', '報名時間', '姓名', '聯絡', '出席與否', '全部欄位(JSON)'] },
     { name: '會議', headers: ['旅團', 'id', '日期', '標題', '地點', '狀態', '備註', '同步時間'] },
     { name: '同步紀錄', headers: ['時間', '旅團', '旅團名稱', '統計內容'] },
+    { name: '審計紀錄', headers: ['時間', '旅團', 'action', '結果', '途徑', '操作者'] },
     /* ↓↓↓ 同「進度前端」共用嘅分頁（一個後端、兩個前端）：欄位順序唔可以改 ↓↓↓ */
     { name: '進度追蹤', headers: ['YMIS', '項目 ID', '完成日期', '更新時間', '確認者', '備註'] },
     { name: '其他獎章', headers: ['YMIS', '獎章 ID', '獎章名稱', '完成日期', '證書編號', '備註', '更新時間'] },
@@ -294,10 +295,29 @@ function requireAuth(expectedKey, suppliedKey) {
   return { ok: true };
 }
 
+/**
+ * Server-side access audit：只記 metadata，絕不記 API Key、密碼或整份 payload。
+ * Sheet 未初始化時靜默略過，唔可以因為審計本身令登入／同步失敗。
+ */
+function auditAccess(body, result) {
+  try {
+    var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('審計紀錄');
+    if (!sh) return;
+    var row = [new Date(), textOf(body && (body.unit || body.troopId)),
+      textOf(body && body.action).substring(0, 40), textOf(result).substring(0, 40),
+      textOf(body && (body.via || 'api')).substring(0, 30),
+      textOf(body && (body.actor || body.username || body.ymis)).substring(0, 120)];
+    sh.appendRow(row);
+    var last = sh.getLastRow();
+    if (last > 5001) sh.deleteRows(2, last - 5001);
+  } catch (ignore) { /* audit fail 不可阻斷主流程 */ }
+}
+
 /** 收到 POST 時處理 */
 function doPost(e) {
   try {
     var body = JSON.parse((e && e.postData && e.postData.contents) || '{}');
+    auditAccess(body, 'received');
     var expectedKey = PropertiesService.getScriptProperties().getProperty('API_KEY');
     // 兩個前端都會用同一條 key（大寫 apiKey / 細寫 apikey 都收）
     var key = body.apiKey || body.apikey || '';

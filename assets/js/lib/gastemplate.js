@@ -450,6 +450,9 @@ function doPost(e) {
     }
     return json({ ok: false, error: '未知 action：' + body.action, got: Object.keys(body || {}), hint: '支援 action: ' + SUPPORTED_ACTIONS.join(' / ') });
   } catch (err) {
+    if (err && err.code === 'LOCK_BUSY') {
+      return json({ ok: false, success: false, error: '系統繁忙，請稍後重試', code: 'LOCK_BUSY' });
+    }
     return json({ ok: false, error: String(err) });
   }
 }
@@ -1304,18 +1307,24 @@ function loadProgressData() {
 }
 
 /**
- * 同時多人寫入就排隊（LockService）
- * 一個帳號同時最多 30 個執行；同一張 Sheet 嘅「讀→改→寫」要鎖住先唔會撞
- * （例：通告一出，全團同一秒撳報名）。等唔到鎖都照做，唔好卡死用戶。
+ * 同時多人寫入就排隊（LockService）。
+ * BUILD 要求「等唔到鎖就拒絕」，唔可以未攞到鎖仍然讀→改→寫，否則
+ * 兩個請求會同時覆蓋資料。等候失敗會拋出可識別錯誤，由 doPost 統一回傳
+ * 429；所有呼叫者都必須先攞到鎖，並由 finally 釋放。
  */
 function withLock(fn) {
   var lock = LockService.getScriptLock();
-  var got = false;
-  try { got = lock.tryLock(20000); } catch (e) { got = false; }
+  try {
+    lock.waitLock(20000);
+  } catch (e) {
+    var busy = new Error('LOCK_BUSY');
+    busy.code = 'LOCK_BUSY';
+    throw busy;
+  }
   try {
     return fn();
   } finally {
-    if (got) { try { lock.releaseLock(); } catch (e2) {} }
+    try { lock.releaseLock(); } catch (e2) {}
   }
 }
 

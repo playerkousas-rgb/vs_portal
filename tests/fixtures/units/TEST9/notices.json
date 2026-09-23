@@ -1,0 +1,106 @@
+{
+  "schema": 2,
+  "unitCode": "TEST9",
+  "_comment": "虛構測試資料。0082 真實通告已移除（搬去後端），呢度只為測試公開頁渲染。",
+  "notices": [
+    {
+      "id": "nt-2026-annfee",
+      "type": "notice",
+      "status": "published",
+      "publishAt": "2026-09-14",
+      "createdAt": "2026-09-14T10:00:00.000Z",
+      "createdByName": "團領袖",
+      "title": {
+        "zh": "2026–27 年度團費及活動安排通告",
+        "en": "2026-27 Annual Fee and Programme Notice"
+      },
+      "eventDate": "",
+      "deadline": "2026-09-30",
+      "venue": "",
+      "fee": "$360 / 年",
+      "quota": 0,
+      "needSignup": false,
+      "fields": [],
+      "attachments": [],
+      "signups": [],
+      "body": {
+        "zh": "各位團員及家長：\n\n本年度（2026–27）團費為每年 $360，請於 2026 年 9 月 30 日前繳交。\n\n如有查詢，請聯絡團領袖或司庫。",
+        "en": "Dear members and parents,\n\nThe 2026-27 annual membership fee is HK$360, due before 30 September 2026."
+      }
+    },
+    {
+      "id": "nt-2026-pioneer",
+      "type": "event",
+      "status": "published",
+      "publishAt": "2026-09-14",
+      "createdAt": "2026-09-14T10:30:00.000Z",
+      "createdByName": "團領袖",
+      "title": {
+        "zh": "先鋒工程訓練日 — 報名",
+        "en": "Pioneering Training Day — Sign-up"
+      },
+      "body": {
+        "zh": "日期：2026-10-11（星期日）\n時間：上午 9:00 – 下午 5:00\n地點：測試郊野公園\n費用：$120\n名額：24 人\n\n內容：繩結、旗杆紮作、營地工程\n帶備：水（1.5L）、午餐",
+        "en": "Date: 2026-10-11 (Sun)\nTime: 9:00am - 5:00pm\nVenue: Test Country Park\nFee: $120\nQuota: 24"
+      },
+      "eventDate": "2026-10-11",
+      "deadline": "2026-09-28",
+      "venue": "測試郊野公園",
+      "fee": "$120",
+      "quota": 24,
+      "needSignup": true,
+      "fields": [
+        {
+          "key": "name",
+          "label": "姓名",
+          "type": "text",
+          "required": true
+        },
+        {
+          "key": "contact",
+          "label": "聯絡電話",
+          "type": "tel",
+          "required": true
+        },
+        {
+          "key": "member",
+          "label": "本人係",
+          "type": "select",
+          "required": true,
+          "options": [
+            "現役團員",
+            "家長",
+            "導師 / 領袖",
+            "其他"
+          ]
+        },
+        {
+          "key": "diet",
+          "label": "飲食禁忌",
+          "type": "check",
+          "required": false,
+          "options": [
+            "無",
+            "不吃牛",
+            "不吃豬",
+            "素食",
+            "食物敏感"
+          ]
+        },
+        {
+          "key": "remark",
+          "label": "備註（例如：需早退、藥物）",
+          "type": "textarea",
+          "required": false
+        }
+      ],
+      "attachments": [],
+      "signups": [],
+      "assembly": "0830 測試郊野公園入口集合",
+      "dismissal": "1630 測試郊野公園入口解散",
+      "programme": "先鋒工程繩結、紮作、團隊遊戲",
+      "dress": "戶外制服",
+      "enquiry": "1234 5678 測試負責人"
+    }
+  ]
+}

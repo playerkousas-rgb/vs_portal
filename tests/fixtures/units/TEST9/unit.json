@@ -1,0 +1,18 @@
+{
+  "code": "TEST9",
+  "name": "測試旅深資童軍團",
+  "nameEn": "Test Group Venture Scout Unit",
+  "short": "test9",
+  "section": "深資童軍",
+  "region": "測試地域",
+  "sponsor": "測試主辦機構",
+  "address": "測試地址 123 號",
+  "settings": {
+    "publicEntry": {
+      "submitUrl": ""
+    },
+    "notice": {
+      "submitUrl": ""
+    }
+  }
+}

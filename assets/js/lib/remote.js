@@ -1,0 +1,1060 @@
+/* ============================================================
+   remote.js — 後端儲存（資料真正寫入旅團自己嘅 Google Sheet）
+   ------------------------------------------------------------
+   2026-09-20 團長定案：**只有一個方式**。
+
+     ① 登入／開機      loadFromBackend()  由後端攞成份資料 → 本機工作副本 ＋ 基準快照
+     ② 之後改乜        淨係寫本機（瀏覽器），後端一個字都唔會郁
+     ③ 撳「儲存到後端」 saveToBackend()    先問後端版本：
+          · 冇人喺我登入後儲存過          → 直接寫
+          · 有人儲存過                    → 三方比對（lib/merge3.js）：
+               佢改嘅同我改嘅一樣          → 冇問題
+               改唔同嘅格                  → 一齊寫
+               同一格唔同值（早走 vs 遲到）→ 嗰格**唔寫**，彈出嚟畀用家再確認；
+                                             確認咗先至蓋過去
+        寫入成功 → 本機 ＝ 後端 ＝ 新基準
+
+   以前嘅自動儲存、開機自動合併、切視窗自動拉、60 秒 poll、撞版自動合併重存、
+   「立即同步全部」順便寫 db、「測試連線」順便寫 db …… 全部剷走。
+   冇第二條路，就唔會有兩條路互相蓋。
+
+   路線（優先次序；兩條都要行得通，見 lib/gateway.js）：
+     ① 同源 /api/proxy  —— 冇 CORS、API Key 由伺服器端補上（最穩陣）
+     ② 直接 POST 去 /exec —— 平台未登記旅團（或者純靜態部署）時嘅自助路線
+
+   注意：示範（MOCK）模式永遠唔會送出任何嘢。
+   ============================================================ */
+
+import {
+  load, tryLoad, commitMeta, isMock, currentUnit, getBase, adoptRemote, setLocalMerged,
+  commitSaved, applyChangesLocal, markBackendEmpty, normalizeRemote, stripForBase, exportForBackend,
+  hasLocalContent, localChanges
+} from './store.js';
+import { unitEntry } from './units.js';
+import { postBackend, isExecUrl, shortExec } from './gateway.js';
+import { threeWay, overridesFor, describeConflict, diffDb, applyChanges } from './merge3.js';
+
+/* ---------------- 狀態 ---------------- */
+let inFlight = false;
+let lastState = { state: 'idle', msg: '' };
+let lastLoadAt = 0;                          // 上次成功由後端載入（ms）
+/*
+ * 這個係「實際連線結果」，同 remoteCfg() 嘅「有冇一條路可以試」分開。
+ * Vercel 代理係同源嘅，瀏覽器唔應該要求用家再貼一次 /exec／API Key；
+ * 登入／載入成功後，總表同步頁要沿用呢個事實，而唔係只睇本機 sync.url。
+ */
+let lastBackend = {
+  verified: false, unit: '', route: '', version: '', at: 0, error: ''
+};
+
+/** 目前同步狀態（畀介面畫個提示） */
+export function syncState() { return { ...lastState }; }
+
+/**
+ * 後端接線狀態：
+ *   configured ＝ 有一條可能行得通嘅路（未必已試過）
+ *   verified   ＝ 今次頁面生命週期內，真正收到過後端有效回覆
+ *   route      ＝ proxy／direct
+ */
+export function backendStatus() {
+  const cfg = remoteCfg();
+  return {
+    configured: !!cfg.ok,
+    verified: !!(lastBackend.verified && lastBackend.unit === cfg.unit),
+    route: lastBackend.route || (cfg.serverManaged ? 'proxy' : (cfg.url ? 'direct' : (cfg.viaProxy ? 'proxy' : ''))),
+    unit: cfg.unit || lastBackend.unit || '',
+    version: lastBackend.version || '',
+    at: lastBackend.at || 0,
+    error: lastBackend.error || ''
+  };
+}
+
+function noteBackend(r, { version = '', error = '' } = {}) {
+  if (r?.via === 'proxy' || r?.via === 'direct') {
+    lastBackend = {
+      verified: !!r.ok,
+      unit: remoteCfg().unit,
+      route: r.via,
+      version: String(version || r.json?.backendVersion || ''),
+      at: Date.now(),
+      error: r.ok ? '' : String(error || r.error || '')
+    };
+  }
+}
+
+function setState(state, msg = '') {
+  lastState = { state, msg, at: Date.now() };
+  try {
+    window.dispatchEvent(new CustomEvent('v82:sync', { detail: lastState }));
+  } catch { /* 非瀏覽器環境（測試）→ 冇所謂 */ }
+}
+
+/** 由 store.persist() 掛住：本機有改動 → 淨係更新狀態（頂部出「儲存到後端（N）」）。
+    唔會排任何 timer、唔會寫後端。 */
+export function scheduleSave() {
+  if (isMock()) return;
+  if (!remoteCfg().ok) return;
+  if (hasPending()) setState('pending', '未儲存 —— 撳「儲存到後端」先寫入');
+}
+
+/** 有冇改動仲未寫入後端 */
+export function hasPending() {
+  const db = tryLoad();
+  return !!(db?.sync?.pending);
+}
+
+/* ---------------- 設定 ---------------- */
+export function remoteCfg() {
+  const db = tryLoad();
+  if (!db) return { url: '', apiKey: '', unit: '', auto: true, ok: false, viaProxy: false };
+  const s = db.sync || {};
+  const url = s.url || db.backend?.gasUrl || '';
+  const unit = s.unit || db.unitCode || currentUnit() || '';
+  /* 部署喺 Vercel（有 /api/proxy）嗰陣，後端網址同 API Key 都係伺服器端
+     由 TROOP_<編號>_BACKEND / TROOP_<編號>_APIKEY 解析 —— 前端唔應該、
+     亦都唔需要知道。所以只要有旅團編號就當接得通，唔好再要求用家填 /exec。 */
+  const viaProxy = canUseProxy();
+  /* /api/units 只回公開欄位，但會帶 backendReady。呢個標記代表：
+     選旅團本身已經同 Vercel Registry 接好，唔係要求用家再填一次 /exec。
+     上次已經成功行過 proxy 都算 verified（即使部署名單 API 當刻讀唔到）。 */
+  const entry = unit ? (unitEntry(unit) || {}) : {};
+  const serverManaged = !!(
+    entry.backendReady ||
+    (lastBackend.verified && lastBackend.unit === unit && lastBackend.route === 'proxy')
+  );
+  const directReady = isExecUrl(url);
+  return {
+    url,
+    apiKey: s.apiKey !== undefined ? s.apiKey : (db.backend?.apiKey || ''),
+    unit,
+    /* 有字串唔等於係有效後端：舊 cache 留低咗 /dev／錯網址時，唔可以畫綠燈。 */
+    ok: (directReady || (viaProxy && !!unit)) && !isMock(),
+    viaProxy,
+    directReady,
+    serverManaged
+  };
+}
+
+/** 後端有冇設定好（可以寫入） */
+export function remoteConfigured() { return remoteCfg().ok; }
+
+function notConfiguredMessage(cfg = remoteCfg()) {
+  if (cfg.unit && cfg.viaProxy) {
+    return '已選定旅團，但同源 Vercel 代理未能建立；唔需要再填第二個後端。請撳「同步診斷」檢查部署／Registry。';
+  }
+  return '未設定後端網址（去「總表同步」填 /exec）';
+}
+
+/* ---------------- 呼叫後端 ---------------- */
+function canUseProxy() {
+  try {
+    return typeof location !== 'undefined' && /^https?:$/.test(location.protocol);
+  } catch { return false; }
+}
+
+/**
+ * 送一個 action 去旅團後端。
+ *
+ * 兩條路（完整解釋見 lib/gateway.js 頂部）：
+ *   ① 同源 /api/proxy —— 平台伺服器端登記咗旅團（TROOP_<編號>_BACKEND/_APIKEY），
+ *      API Key 留喺伺服器，瀏覽器唔會見到。
+ *   ② 直接打領袖自己貼嘅 /exec —— 平台未登記嗰陣唯一嘅自助路線。
+ *
+ * 2026-09-19 修正（團長回報「填咗 /exec 都係同步唔到」）：
+ * 以前 proxy 對未登記旅團回 HTTP 404 ＋ JSON，而舊 code 只在「回應唔係 JSON」
+ * 嗰陣先肯跌落 ② —— 所以 ② 永遠行唔到，領袖自己貼嘅 /exec 形同虛設。
+ * 而家統一由 gateway.postBackend() 路由：proxy 話「未登記」就跌落 ②。
+ */
+async function callBackend(payload, { timeoutMs = 60000 } = {}) {
+  const cfg = remoteCfg();
+  if (!cfg.unit) return { ok: false, reason: 'not_configured', error: '未知旅團編號' };
+  if (!cfg.url && !cfg.viaProxy) {
+    return { ok: false, reason: 'not_configured', error: notConfiguredMessage(cfg) };
+  }
+
+  const r = await postBackend(payload, {
+    unit: cfg.unit, execUrl: cfg.url, apiKey: cfg.apiKey, timeoutMs
+  });
+
+  /* 兩條路都冇得行：講清楚係「平台未登記」定「自己都未填」。
+     兩種都要有 hint —— 以前 not_configured 呢種回空 hint，
+     用家淨係見到「未設定後端網址」五個字，完全唔知下一步做乜。 */
+  if (r.via === 'none') {
+    return {
+      ok: false, reason: r.reason, error: r.error,
+      hint: r.reason === 'not_registered' ? SELF_SERVE_HINT : NO_ROUTE_HINT
+    };
+  }
+  if (!r.json) {
+    noteBackend(r, { error: r.error || '連唔到旅團後端' });
+    return { ok: false, reason: r.reason || 'network', error: r.error || '連唔到旅團後端', hint: r.reason === 'bad_url' ? URL_HINT : '', via: r.via };
+  }
+  const out = normalize(r.json);
+  out.via = r.via;                       // 界面／診斷用：今次行咗邊條路
+  if (!out.ok) out.hint = hintOf(out.error, r.via);
+  noteBackend(out, { version: out.backendVersion, error: out.error });
+  return out;
+}
+
+/* 「平台未登記」嗰陣嘅自助方法 —— 呢句一定要出到嚟，
+   否則用家只見到「找不到此旅團」，完全唔知自己其實即刻救得返。 */
+const SELF_SERVE_HINT =
+  '平台伺服器端未登記你旅團嘅後端（TROOP_<旅團編號>_BACKEND / _APIKEY 未設定，或者變數名打錯）。'
+  + '兩個選擇：① 叫平台管理員喺 Vercel 加返嗰兩個環境變數再 Redeploy；'
+  + '② 自己即刻救返 —— 去「帳號與系統 → 資料管理 → 總表同步 → 同步設定」，'
+  + '貼你嘅 Apps Script /exec 網址＋API Key（喺 Apps Script 執行 showApiKey() 攞），撳「儲存設定」，'
+  + '然後撳「同步診斷」確認。';
+
+/* 兩條路都行唔到：呢個部署根本冇 /api/proxy（純靜態），而用家又未貼 /exec。
+   呢種情況以前只回「未設定後端網址」五個字、冇 hint —— 用家完全唔知下一步。 */
+const NO_ROUTE_HINT =
+  '呢個部署讀唔到同源代理（/api/proxy），而你自己都未貼 /exec，所以兩條路都行唔到。'
+  + '兩個選擇：① 用正式部署（有 /api 嗰個），並確認平台管理員喺 Vercel 設咗 '
+  + 'TROOP_<旅團編號>_BACKEND / _APIKEY；② 即刻自救 —— 去「帳號與系統 → 資料管理 → '
+  + '總表同步 → 同步設定」，貼你嘅 Apps Script /exec 網址＋API Key'
+  + '（喺 Apps Script 執行 showApiKey() 攞），撳「儲存設定」。';
+
+const URL_HINT =
+  '後端網址一定要係 Apps Script「部署為網頁應用程式」之後嘅正式網址：'
+  + 'https://script.google.com/macros/s/…/exec（唔接受 /dev，唔接受其他網域）。';
+
+function normalize(j) {
+  const ok = j.ok === true || j.success === true;
+  const raw = j.error || (ok ? '' : (j.msg || '後端拒絕咗呢個請求'));
+  return { ...j, ok, error: raw, reason: ok ? '' : reasonOf(raw), hint: ok ? '' : hintOf(raw, '') };
+}
+
+/* 後端回嘅錯誤字眼 → 分類，等介面可以講返「去邊度撳邊粒掣」 */
+function reasonOf(err) {
+  const s = String(err || '');
+  if (/API ?Key|未授權|unauthor/i.test(s)) return 'bad_key';
+  if (/未知 action|unknown action/i.test(s)) return 'old_deploy';
+  return 'backend';
+}
+
+/* 呢兩個係最常見、又最難自己估到嘅死因，所以直接寫清楚點解決。
+   `via` ＝ 今次行緊邊條路（'proxy' = 平台代理／'direct' = 自己貼嘅 /exec）——
+   同一個「API Key 唔啱」，兩條路嘅救法完全唔同，提示一定要分開。
+   （export 出嚟畀 tests/remote.mjs 做**行為**斷言，唔使再 grep 原始碼。） */
+export function hintOf(err, via = '') {
+  const r = reasonOf(err);
+  if (r === 'bad_key') {
+    /* 行緊自助路線（直接打 /exec）＝ 條 key 由瀏覽器帶，提示就唔應該
+       淨係叫「搵平台管理員」—— 用家自己貼返條 key 就即刻得。 */
+    if (via === 'direct') {
+      return '你而家行緊「自己貼 /exec」路線，條 API Key 要跟住一齊貼。'
+        + '喺 Apps Script 執行 showApiKey() 攞到嗰條（v82_…），貼入「總表同步 → 同步設定 → API Key」再儲存。'
+        + '（正路仍然係交畀平台管理員入 Vercel 環境變數 TROOP_<旅團編號>_APIKEY，咁條 key 就唔會落瀏覽器。）';
+    }
+    /* 平台代理路線：條 key 應該留喺伺服器端 —— 呢度**唔會**叫用家自己打 key
+       （2026-09-17 嘅決定，仍然有效）。自助路線嘅提示係另一條 branch。 */
+    return '後端有設 API Key，但伺服器端未有。'
+      + '請平台管理員喺 Vercel 加環境變數 TROOP_<旅團編號>_APIKEY（值＝喺 Apps Script 執行 showApiKey() 攞到嗰條），'
+      + '同埋確認 TROOP_<旅團編號>_BACKEND 係你個 /exec 網址，然後重新部署。'
+      + '咁條 key 就淨係留喺伺服器端，瀏覽器完全唔會見到。';
+  }
+  if (r === 'old_deploy') {
+    return '你個 /exec 仲行緊舊版程式碼。喺 Apps Script 撳「部署 → 管理部署作業 → 編輯（鉛筆）→ 版本揀「新版本」→ 部署」，個 /exec 網址唔會變。';
+  }
+  return '';
+}
+
+/* ============================================================
+   分段讀取（v2.6.0）—— 大資料庫讀得返
+   ------------------------------------------------------------
+   Vercel 代理單一回應有 4.5MB 硬上限。資料庫一大過呢個數，
+   `loadDb` 一次過回成份 JSON 就會令 Vercel 回 500
+   FUNCTION_RESPONSE_PAYLOAD_TOO_LARGE（純文字，唔係 JSON）。
+   舊 code 見到「唔係 JSON」就當「呢個部署冇 /api」→ 跌落自助路線 →
+   對用家講「未設定後端網址」，明明後端登記得好哋。
+   每部機於是讀唔到後端、各自儲存自己嗰份 —— 就係「無痕同普通視窗
+   永遠對唔到料」。
+
+   做法：後端 `loadDbPart` 每次只回一段純文字（約 1MB），呢度逐段拼返。
+   每段都帶 version —— 讀緊嗰陣有人儲存咗（version 變咗）就由頭再讀，
+   唔會拼出半新半舊嘅 JSON。
+   ============================================================ */
+
+/* Vercel 代理單一回應嘅硬上限 —— 爆咗佢唔會回 JSON，而係回純文字 500 */
+export const VERCEL_RESPONSE_BYTES = 4.5 * 1024 * 1024;
+/* 經同源代理時，資料庫大過呢個數就直接分段讀（留水位畀 4.5MB 硬上限） */
+export const SEGMENT_ABOVE_BYTES = 3_000_000;
+/* 後端要更新先有分段讀取 —— 呢段提示唔可以再講「未設定後端網址」（後端明明登記好） */
+const UPDATE_GS_HINT =
+  '後端仲行緊 v2.5.0 之前嘅版本，未支援分段讀取（loadDbPart）。'
+  + '去「帳號與系統 → 資料管理 → 總表同步 → 後端 Apps Script 範本」撳「下載 Code.gs」'
+  + ' → 貼入 Apps Script（全部取代）→ 儲存 →「部署 → 管理部署作業 → 編輯（鉛筆）'
+  + ' → 版本：新版本 → 部署」。/exec 網址唔會變，前端設定唔使改。';
+/* 分段讀嘅安全閘：段數上限（防後端回錯 parts 令前端無限讀落去） */
+const SEGMENT_MAX_PARTS = 400;
+/* 讀緊嗰陣撞正有人儲存 → 由頭再讀，最多幾多次 */
+const SEGMENT_MAX_RETRIES = 3;
+
+/** 逐段讀返成份資料庫（v2.6.0；後端要係 v2.6.0 先有 loadDbPart） */
+export async function pullDbSegmented({ onProgress } = {}) {
+  for (let attempt = 1; attempt <= SEGMENT_MAX_RETRIES; attempt++) {
+    const chunks = [];
+    let version = '', at = '', total = 0, count = 0;
+    let stale = false;
+
+    for (let idx = 0; idx < SEGMENT_MAX_PARTS; idx++) {
+      const r = await callBackend({ action: 'loadDbPart', partIdx: idx });
+      /* 舊版後端（v2.5.0 之前）唔識 loadDbPart → 回「未知 action」。
+         呢個一定要如實講：唔好扮「未設定後端網址」，亦唔好扮讀到。 */
+      if (!r.ok) {
+        return {
+          ok: false, reason: r.reason || 'backend', error: r.error || '分段讀取失敗',
+          hint: r.reason === 'old_deploy' || /未知 action|unknown action/i.test(String(r.error || ''))
+            ? '後端仲行緊 v2.5.0 之前嘅版本，未支援分段讀取。去「總表同步 → 後端 Apps Script 範本」'
+              + '撳「下載 Code.gs」→ 貼入 Apps Script → 部署（版本揀「新版本」，/exec 網址唔會變）。'
+            : (r.hint || ''),
+          segmented: true
+        };
+      }
+      if (!r.found) {
+        return { ok: true, found: false, db: null, bytes: 0, at: r.at || '', version: r.version || '', segmented: true };
+      }
+      if (idx === 0) {
+        version = String(r.version || ''); at = String(r.at || '');
+        total = Number(r.bytes) || 0; count = Number(r.parts) || 1;
+        if (count > SEGMENT_MAX_PARTS) {
+          return { ok: false, reason: 'too_large', segmented: true,
+            error: `資料庫太大（${count} 段）—— 請先喺「總表同步 → 體積檢查」做「相片瘦身」` };
+        }
+      } else if (String(r.version || '') !== version) {
+        /* 讀緊嗰陣有人儲存咗 —— 手上嗰幾段已經過時，由頭再讀 */
+        stale = true; break;
+      }
+      chunks.push(String(r.part || ''));
+      if (typeof onProgress === 'function') onProgress(idx + 1, count, total);
+      if (chunks.length >= count) break;
+    }
+    if (stale) continue;
+
+    const text = chunks.join('');
+    try {
+      return { ok: true, found: true, db: JSON.parse(text), bytes: text.length, at, version, segmented: true };
+    } catch {
+      return { ok: false, reason: 'corrupt', segmented: true,
+        error: '分段讀返嘅內容砌唔成完整 JSON（讀緊嗰陣資料庫變咗）—— 請再試一次' };
+    }
+  }
+  return { ok: false, reason: 'busy', segmented: true,
+    error: `讀緊嗰陣不斷有人儲存（試咗 ${SEGMENT_MAX_RETRIES} 次）—— 請稍後再試` };
+}
+
+/** 由後端讀返成個資料庫（唔會自動覆蓋本機 —— 交返畀呼叫者決定）
+ *  @param {object} [opts]
+ *    - bytes  已經知道嘅資料庫體積（例如啱啱 dbInfo 攞到）：
+ *             大過 SEGMENT_ABOVE_BYTES 就唔使白撞一次 4.5MB 上限，直接分段讀。
+ *             冇提供就先試單一讀，失敗先退去分段（慳一次 GAS 配額）。 */
+export async function pullDb({ bytes: knownBytes } = {}) {
+  if (isMock()) return { ok: false, reason: 'mock', error: '示範模式唔會讀後端' };
+  const cfg = remoteCfg();
+  if (!cfg.ok) return { ok: false, reason: 'not_configured', error: notConfiguredMessage(cfg) };
+  setState('loading', '讀取緊後端資料…');
+
+  const mb = (n) => `${(Number(n) / 1048576).toFixed(1)} MB`;
+
+  /* 已經知道太大 → 直接分段（唔好白撞一次 4.5MB 上限） */
+  if (Number(knownBytes) > SEGMENT_ABOVE_BYTES) {
+    setState('loading', `資料庫 ${mb(knownBytes)} —— 分段讀取緊…`);
+    const seg = await pullDbSegmented({ onProgress: (i, n) => setState('loading', `分段讀取 ${i}/${n}…`) });
+    if (seg.ok) setState('idle'); else setState('error', seg.error || '讀取失敗');
+    return seg;
+  }
+
+  const r = await callBackend({ action: 'loadDb' });
+  if (r.ok) { setState('idle'); return r; }
+
+  /* 單一讀失敗 —— 好可能就係「回應過大」（代理回 500 純文字）。
+     退去分段讀再試一次：寧願慢，都好過靜靜地讀唔到、
+     然後兩部機各睇自己嗰份（2026-09-20 事故）。 */
+  setState('loading', '改用分段讀取…');
+  const seg = await pullDbSegmented({ onProgress: (i, n) => setState('loading', `分段讀取 ${i}/${n}…`) });
+  if (seg.ok) { setState('idle'); return seg; }
+
+  /* 兩條路都唔得 —— 如實報單一讀嗰個錯（佢先係主因），
+     但**唔可以**講「未設定後端網址」：後端明明答咗話，只係答唔晒。 */
+  setState('error', r.error || seg.error || '讀取失敗');
+  return { ...r, hint: r.hint || seg.hint || '', fallback: { error: seg.error || '', reason: seg.reason || '' } };
+}
+
+/** 只問後端有冇資料、幾時更新（開機比對用，唔會傳成份資料落嚟） */
+export async function remoteInfo() {
+  if (isMock()) return { ok: false, reason: 'mock' };
+  const cfg = remoteCfg();
+  if (!cfg.ok) return { ok: false, reason: 'not_configured' };
+  const r = await callBackend({ action: 'dbInfo' }, { timeoutMs: 20000 });
+  /* 問唔到後端一定要出到嚟 —— 以前呢度靜靜雞回，右上角照樣顯示「已連後端」，
+     用家完全唔知其實一直冇同步（2026-09-19 團長回報）。 */
+  if (!r.ok) setState('unreachable', r.error || '連唔到後端');
+  return r;
+}
+
+/** 測試連線（同 remoteConfigured 一樣：有同源代理＋旅團編號就算接得通，
+    唔會強制要前端填 /exec —— 純環境變數開團嘅旅團根本唔會填呢格） */
+export async function testConnection() {
+  const cfg = remoteCfg();
+  if (!cfg.url && !cfg.viaProxy) return { ok: false, error: '未填 Apps Script 網址' };
+  const r = await callBackend({ action: 'status' }, { timeoutMs: 20000 });
+  return r;
+}
+
+/* ============================================================
+   同步診斷（2026-09-19 團長回報「唔知點解唔得，懷疑有嘢被封死」）
+   ------------------------------------------------------------
+   成條鏈任何一環斷咗，用家見到嘅都只係「同步失敗」四個字。
+   呢度把成條鏈逐格驗一次，如實話你知**邊一格斷、要邊個做咩**。
+   只讀，唔會寫任何嘢入後端。
+   ============================================================ */
+const FIX_ENV = (u) =>
+  `交畀平台管理員：Vercel → Settings → Environment Variables 加 `
+  + `TROOP_${u}_BACKEND（你嘅 /exec 網址）同 TROOP_${u}_APIKEY`
+  + `（Apps Script 執行 showApiKey() 攞），然後 Deployments → Redeploy。`;
+
+/**
+ * 逐格驗成條同步鏈。
+ * @returns {Promise<{ok:boolean, unit:string, route:string, backendVersion:string,
+ *                    stages:Array<{id,label,state,detail,fix}>, blockers:Array}>}
+ *   state: 'ok' | 'warn' | 'bad'
+ */
+export async function remoteDiagnose() {
+  const cfg = remoteCfg();
+  const live = backendStatus();
+  /* 選旅團＋Vercel 代理係一條完整接線；冇填本機 /exec 唔應該被診斷成錯誤。
+     live.verified 係登入／載入實際成功過嘅證據，serverManaged 係 Registry 公開嘅接線標記。 */
+  const proxyReady = !!(cfg.serverManaged || (live.verified && live.route === 'proxy'));
+  const out = { ok: false, unit: cfg.unit || '', route: '', backendVersion: '', stages: [], blockers: [] };
+  const add = (id, label, state, detail, fix = '') => {
+    out.stages.push({ id, label, state, detail: String(detail || ''), fix: String(fix || '') });
+    if (state === 'bad') out.blockers.push({ id, label, detail: String(detail || ''), fix: String(fix || '') });
+  };
+
+  if (isMock()) { add('mock', '示範模式', 'warn', '示範（MOCK）模式永遠唔會寫後端', '喺旅團選擇閘揀返你嘅真實旅團'); return out; }
+
+  /* ① 旅團編號 */
+  if (!cfg.unit) {
+    add('unit', '旅團編號', 'bad', '未知旅團編號', '喺旅團選擇閘揀返你嘅旅團（或者網址加 ?u=<編號>）');
+    return out;
+  }
+  add('unit', '旅團編號', 'ok', cfg.unit);
+
+  /* ② 平台伺服器端登記（Registry）—— 只回變數名，永遠唔會回 Key／完整網址
+     嚴重程度睇「有冇自助路線頂住」：用家自己貼咗合格嘅 /exec 就只係 warn
+     （同步照行得通，只係平台未接線）；兩邊都冇先至算 bad（真係同步唔到）。 */
+  const selfOk = isExecUrl(cfg.url);
+  const regBad = selfOk || proxyReady ? 'warn' : 'bad';
+  let reg = null;
+  try {
+    const r = await fetch('api/units?diag=1&_=' + Date.now(), { cache: 'no-store' });
+    if (r.ok) reg = await r.json();
+  } catch (e) { /* 純靜態部署冇 /api */ }
+  const diag = (reg && reg.diag) || null;
+  if (!reg) {
+    add('registry', '平台登記（伺服器端）', proxyReady ? 'ok' : 'warn',
+      proxyReady
+        ? '已經由 Vercel 代理成功接通；唔需要喺瀏覽器再填 /exec／API Key。'
+        : '讀唔到 /api/units —— 呢個部署好似冇伺服器端 API（純靜態網站）',
+      proxyReady ? '' : '用自助路線：喺「同步設定」貼 /exec ＋ API Key（下面第 ③ 格會驗）');
+  } else {
+    const ids = (diag?.ids || []).map(String);
+    const trusted = (diag?.trusted || []).map(String);
+    const withKey = (diag?.withKey || []).map(String);
+    const u = cfg.unit;
+    const viaSelf = selfOk ? '　你而家行緊自己貼嘅 /exec，所以同步照樣行得通。' : '　等唔切就自己貼 /exec ＋ API Key（自助路線）。';
+    if (!ids.includes(u)) {
+      add('registry', '平台登記（伺服器端）', regBad,
+        `伺服器端 Registry 完全冇 ${u}（而家認到嘅旅團：${ids.join(', ') || '一個都冇'}）`,
+        FIX_ENV(u) + viaSelf);
+    } else if (!trusted.includes(u)) {
+      add('registry', '平台登記（伺服器端）', regBad,
+        `有 ${u}，但 TROOP_${u}_BACKEND 未設定（或者唔係正式 /exec 網址）`,
+        FIX_ENV(u) + viaSelf);
+    } else if (!withKey.includes(u)) {
+      add('registry', '平台登記（伺服器端）', 'warn',
+        `TROOP_${u}_BACKEND 有，但 TROOP_${u}_APIKEY 未有 —— 經平台代理嘅讀寫會被後端拒絕（未授權）`,
+        FIX_ENV(u) + viaSelf);
+    } else {
+      add('registry', '平台登記（伺服器端）', 'ok',
+        `TROOP_${u}_BACKEND ＋ TROOP_${u}_APIKEY 都已登記${diag?.vercelEnv ? `（環境：${diag.vercelEnv}）` : ''}`);
+    }
+    if (diag?.suspicious?.length) {
+      add('envname', '環境變數名', 'warn',
+        '疑似打錯名嘅變數：' + diag.suspicious.join(', '),
+        `正確寫法：TROOP_${u}_BACKEND ／ TROOP_${u}_APIKEY（全大寫、底線分隔）`);
+    }
+  }
+
+  /* ③ 用家自己貼嘅 /exec（自助路線） */
+  if (proxyReady) {
+    add('selfurl', '自己貼嘅 /exec', 'ok',
+      cfg.url
+        ? `${shortExec(cfg.url)}（備用；目前用 Vercel 代理）`
+        : 'Vercel 已經代為接線，呢格留空係正確，唔需要再填 /exec／API Key');
+  } else if (cfg.url) {
+    add('selfurl', '自己貼嘅 /exec', isExecUrl(cfg.url) ? 'ok' : 'bad',
+      isExecUrl(cfg.url) ? `${shortExec(cfg.url)}${cfg.apiKey ? '（已附 API Key）' : '（未附 API Key）'}`
+        : `格式唔啱：${String(cfg.url).slice(0, 60)}`,
+      isExecUrl(cfg.url) ? '' : URL_HINT);
+  } else {
+    add('selfurl', '自己貼嘅 /exec', 'warn', '未填（平台登記正常就唔使填）',
+      '平台未登記時嘅自救方法：呢格貼 /exec，旁邊 API Key 貼 showApiKey() 攞到嗰條');
+  }
+
+  /* ④ 後端回應＋版本 */
+  const st = await callBackend({ action: 'status' }, { timeoutMs: 20000 });
+  out.route = st.via || '';
+  if (!st.ok) {
+    add('status', '後端回應', 'bad', st.error || '連唔到後端', st.hint || '');
+    out.summary = firstBlocker(out);
+    return out;
+  }
+  const ver = String(st.backendVersion || '');
+  out.backendVersion = ver;
+  if (!ver) {
+    add('status', '後端回應', 'bad', '連到，但後端回報唔到版本號 —— 仲行緊 v2.2.0 之前嘅舊 Code.gs',
+      '去下面「後端 Apps Script 範本」撳「下載 Code.gs」→ 貼入 Apps Script → 部署 →「管理部署作業 → 編輯 → 版本：新版本 → 部署」（網址唔會變）。舊版後端症狀正正係：兩邊視窗對唔到料、無痕視窗讀唔到、團章公開頁睇唔到。');
+  } else {
+    /* ★ 顯示後端自報嘅 Spreadsheet 名 —— 團長問「如果真係寫入咗，寫咗去邊？」
+       呢個名先至答得到：平台登記咗嘅 TROOP_<編號>_BACKEND 有可能指去
+       另一張 Sheet（例如舊嘅測試表），咁樣 app 讀寫都正常，
+       但團長開自己嗰張就係一片空白 —— 一睇個名即刻知道。 */
+    const sheetName = String(st.spreadsheet || '').trim();
+    add('status', '後端回應', 'ok',
+      `已連接（後端 ${ver}，經${st.via === 'direct' ? '你自己貼嘅 /exec' : '平台代理'}）`
+      + (sheetName ? `　·　寫入緊嘅試算表：「${sheetName}」` : '')
+      + (sheetName ? '（如果你開緊嘅 Google Sheet 唔係呢個名，即係平台登記咗另一張表 —— 搵平台管理員改 TROOP_<編號>_BACKEND）' : ''));
+  }
+
+  /* ⑤ 讀寫權（dbInfo 同 saveDb 一樣要 API Key —— 過到就代表寫得入） */
+  const info = await callBackend({ action: 'dbInfo' }, { timeoutMs: 20000 });
+  if (!info.ok) {
+    add('write', '讀寫權（API Key）', 'bad', info.error || '後端拒絕', info.hint || '');
+  } else {
+    const c = info.counts || {};
+    add('write', '讀寫權（API Key）', 'ok',
+      info.found
+        ? `後端有資料庫：團員 ${c.members ?? '?'} · 帳目 ${c.transactions ?? '?'} · 通告 ${c.notices ?? '?'}（版本 ${String(info.version || info.at || '').slice(0, 19).replace('T', ' ')}）`
+        : '後端仲未有資料庫 —— 撳「儲存到後端」推第一筆上去');
+
+    /* ⑤a 後端有冇「舊版留低嘅分件暫存垃圾行」（v2.6.2 起 dbInfo 會報）。
+       呢個先係「一開始得、後来越来越唔得」嗰種死因：
+       v2.6.1 之前嘅 Code.gs 清暫存行嗰陣一梳連續行只刪到一行，
+       所以每次分件儲存（資料庫大過 2.8MB）都會留低成份資料庫嘅複製品
+       喺「資料庫」分頁 —— 分頁越嚟越大、每次 getValues() 越來越慢，
+       最後 saveDb／loadDb 撞 GAS 執行時間／記憶體上限，
+       而 status／ping 照樣話「正常」（所以「測試連線」會呃人）。 */
+    const junk = Number(info.stagingRows || 0);
+    if (junk > 0) {
+      add('junk', '後端暫存垃圾行', 'warn',
+        `「資料庫」分頁有 ${junk} 行舊版分件暫存行（約 ${(Number(info.stagingBytes || 0) / 1048576).toFixed(1)} MB）`
+        + ' —— v2.6.1 之前嘅 Code.gs 漏刪留低嘅。佢哋會令每次讀寫越嚟越慢，最後「儲存唔到去後端／後端讀取唔到」。',
+        '去「總表同步 → 後端 Apps Script 範本」撳「下載 Code.gs」→ 貼入 Apps Script（全部取代）→ 儲存 → '
+        + '「部署 → 管理部署作業 → 編輯（鉛筆）→ 版本：新版本 → 部署」，'
+        + '然後喺 Apps Script 執行一次 cleanStaleStaging() 即刻清走佢哋（正式資料唔會甩）。');
+    }
+  }
+
+  /* ⑤b 整份資料庫讀取 —— 呢格先係「兩邊視窗對唔到料」嘅真正死因。
+     上面幾格全部 ok（登記好、連到、讀寫權正常）都一樣可以讀唔返成份資料：
+     Vercel 代理單一回應上限 4.5MB，資料庫大過呢個數，loadDb 就會回 500 純文字。
+     所以呢度真係讀一次，如實話你知讀唔讀得返、幾大、有冇行分段。 */
+  if (info.ok && info.found) {
+    const bytes = Number(info.bytes) || 0;
+    const mb = (bytes / 1048576).toFixed(2);
+    const overProxy = bytes > VERCEL_RESPONSE_BYTES;
+    const read = overProxy ? await pullDbSegmented() : await pullDb({ bytes });
+    if (!read.ok) {
+      add('dbread', '整份資料庫讀取', 'bad',
+        `${mb} MB —— 讀唔返：${read.error || '未知原因'}`,
+        read.hint || (overProxy ? UPDATE_GS_HINT : ''));
+    } else {
+      add('dbread', '整份資料庫讀取', overProxy ? 'warn' : 'ok',
+        `${mb} MB · 讀到 ${Object.keys(read.db || {}).length} 個分頁`
+        + (overProxy
+          ? `　⚠ 大過 Vercel 4.5MB 回應上限，已改用分段讀取（${read.segmented ? '成功' : '未分段'}）`
+          : ''),
+        overProxy
+          ? '後端要 v2.6.0 先支援分段讀取（loadDbPart）。另外建議做一次「體積檢查 → 相片瘦身」'
+            + '把舊單據相嘅 dataURL 清走 —— 相片應該喺 Drive，唔應該喺資料庫 JSON 入面。'
+          : '');
+    }
+  }
+
+  /* ⑥ 本機狀態 */
+  const db = tryLoad();
+  const base = getBase();
+  add('local', '本機狀態', 'ok',
+    `團員 ${(db?.members || []).length} · 帳目 ${(db?.transactions || []).length}`
+    + ` · 未儲存改動 ${Number(db?.sync?.pending || 0)} 項`
+    + ` · 登入基準 ${base ? String(base.at || '').slice(0, 19).replace('T', ' ') + '（後端版本 ' + (String(base.version || '').slice(0, 19).replace('T', ' ') || '空') + '）' : '（未由後端載入過）'}`);
+
+  out.ok = !out.blockers.length && out.stages.every(s => s.state !== 'bad');
+  out.summary = out.ok
+    ? `成條鏈正常（後端 ${ver || '已連接'}，經${out.route === 'direct' ? '你自己貼嘅 /exec' : '平台代理'}）`
+    : firstBlocker(out);
+  return out;
+}
+
+function firstBlocker(out) {
+  const b = out.blockers[0] || out.stages.find(s => s.state !== 'ok');
+  return b ? `${b.label}：${b.detail}` : '';
+}
+
+/* ============================================================
+   分件儲存（v2.4.0 長壽命架構）
+   資料庫大過單一請求上限（proxy/Vercel ~4MB）都存得到：
+   把 db 頂層 key 貪心分組成 N 件（每件 JSON < maxBytes）；
+   大過 maxBytes 嘅陣列（例如十年帳目）會自己再切件。
+   後端 saveDbCommit 拼合：同 key 全部係陣列 → 接駁；否則後件覆蓋。
+   ============================================================ */
+export const PART_MAX_BYTES = 2_800_000;   // 每件安全上限（< proxy 4MB / Vercel 4.5MB）
+export const CHUNKED_ABOVE = 2_800_000;    // db JSON 大過呢個數就自動行分件
+
+/** 純函數：把 db 拆成部分 db 陣列（每件 < maxBytes）。第一件一定有 meta／schema／unitCode。 */
+export function splitDbIntoParts(db, maxBytes = PART_MAX_BYTES) {
+  const must = ['schema', 'kind', 'unitCode'];
+  const keys = Object.keys(db || {}).filter(k => !must.includes(k));
+  const parts = [];
+  let cur = {};
+  const sizeOf = v => { try { return JSON.stringify(v ?? null).length; } catch { return 0; } };
+  const curSize = () => Object.keys(cur).reduce((a, k) => a + sizeOf(cur[k]) + k.length + 4, 2);
+
+  /* 細 key 先裝入第一件 */
+  keys.forEach(k => {
+    const sz = sizeOf(db[k]);
+    if (sz > maxBytes * 0.8) return;               // 大件遲啲處理
+    if (curSize() + sz > maxBytes && Object.keys(cur).length) { parts.push(cur); cur = {}; }
+    cur[k] = db[k];
+  });
+  if (Object.keys(cur).length) { parts.push(cur); cur = {}; }
+
+  /* 大 key：陣列可以切片；物件就要成件（理論上唔會超，超就照送） */
+  keys.forEach(k => {
+    const v = db[k];
+    const sz = sizeOf(v);
+    if (sz <= maxBytes * 0.8) return;
+    if (Array.isArray(v)) {
+      const per = Math.max(1, Math.ceil(v.length / Math.ceil(sz / (maxBytes * 0.8))));
+      for (let i = 0; i < v.length; i += per) parts.push({ [k]: v.slice(i, i + per) });
+    } else {
+      parts.push({ [k]: v });
+    }
+  });
+
+  /* 第一件注入必要欄位 */
+  const head = {};
+  must.forEach(k => { if (db?.[k] !== undefined) head[k] = db[k]; });
+  if (!parts.length) parts.push({});
+  parts[0] = { ...head, ...parts[0] };
+  return parts;
+}
+
+/**
+ * 相片上 Drive（v2.3.0 體積治理）：
+ * APP 內申報嘅單據相直接經後端存入 Drive，db 入面只留連結 ——
+ * 以前 dataURL 會將整個資料庫 JSON 撐到爆（saveDb 9MB 上限，
+ * 一到就成個同步寫唔入）。
+ */
+export async function uploadPhotos(photos = [], { id = '' } = {}) {
+  if (isMock()) return { ok: false, reason: 'mock', links: [] };
+  const cfg = remoteCfg();
+  if (!cfg.ok) return { ok: false, reason: 'not_configured', error: notConfiguredMessage(cfg), links: [] };
+  /* 單據 Drive 資料夾：旅團設定（財務 → 設定／帳號與系統 都改到同一個欄） */
+  const receiptDrive = String(tryLoad()?.settings?.receiptDrive || '').trim();
+  const r = await callBackend({ action: 'uploadPhotos', payload: { id, photos }, folderId: receiptDrive }, { timeoutMs: 90000 });
+  if (r?.ok && Array.isArray(r.links)) return { ok: true, links: r.links };
+  return { ok: false, error: r?.error || '上載唔到', links: [] };
+}
+
+/* ============================================================
+   ① 登入／開機：由後端攞資料（＝基準）
+   ============================================================ */
+
+/**
+ * 由後端攞成份資料，做呢部機嘅工作副本＋基準。
+ *
+ * 本機有未儲存改動（上次未撳儲存就閂咗）→ 唔會丟：三方比對之後
+ *   · 唔撞嘅改動保留喺本機（等你撳儲存）
+ *   · 撞嘅格暫時用後端，衝突名單回傳畀介面問用家（policy:'ask'），
+ *     或者直接用我嘅（policy:'mine'，團員入口交嘢用）
+ *
+ * @returns {Promise<{ok:boolean, found?:boolean, fresh?:boolean, merged?:boolean,
+ *   mine?:number, theirs?:number, same?:number, conflicts?:Array, ctx?:object,
+ *   version?:string, at?:string, error?:string, reason?:string, hint?:string}>}
+ */
+export async function loadFromBackend({ policy = 'ask' } = {}) {
+  if (isMock()) return { ok: false, reason: 'mock', error: '示範模式唔會讀後端' };
+  if (!remoteConfigured()) return { ok: false, reason: 'not_configured', error: notConfiguredMessage() };
+  const got = await pullDb();
+  if (!got.ok) {
+    setState('unreachable', got.error || '連唔到後端');
+    return { ok: false, error: got.error || '讀唔到後端', reason: got.reason || 'network', hint: got.hint || '' };
+  }
+  const version = String(got.version || '');
+  const at = String(got.at || '');
+  if (!got.found) {
+    /* 新旅團：後端仲係空。本機（種子／未存嘅嘢）保留，基準＝空 → 之後儲存全部當我加嘅 */
+    markBackendEmpty();
+    lastLoadAt = Date.now();
+    setState(hasPending() ? 'pending' : 'idle', hasPending() ? '後端仲係空 —— 撳「儲存到後端」建立第一份' : '後端仲未有資料');
+    return { ok: true, found: false, version: '', at: '' };
+  }
+  if (!version) {
+    /* 舊版 Code.gs（冇版本號）：版本對唔到，樂觀鎖亦冇用 —— 照載入，但要話人知 */
+    setState('error', '後端係舊版 Code.gs（冇版本號）—— 請更新 Apps Script');
+  }
+  const local = tryLoad();
+  const pending = Number(local?.sync?.pending || 0);
+  const base = getBase();
+  /* 「有冇未儲存改動」以 diff(基準, 本機) 為準（pending 只係次數提示）；
+     冇基準嘅舊裝置先至睇 pending */
+  const dirty = base?.db ? localChanges().length > 0 : (pending > 0 && hasLocalContent());
+
+  if (!dirty) {
+    adoptRemote(got.db, { version });
+    lastLoadAt = Date.now();
+    setState('idle', '已由後端載入');
+    return { ok: true, found: true, fresh: true, version, at };
+  }
+
+  const remoteN = normalizeRemote(got.db);
+  if (!base || !base.db) {
+    /* 升級前留低嘅裝置：有未存改動但冇基準快照，分唔到「我改咗乜」。
+       最穩陣：以後端為準，只把本機**多出嚟**嘅紀錄補入（唔刪、唔蓋任何格）。 */
+    const merged = unionAdditions(remoteN, local);
+    setLocalMerged(merged, remoteN, { version, pending });
+    lastLoadAt = Date.now();
+    setState(hasPending() ? 'pending' : 'idle');
+    return { ok: true, found: true, merged: true, legacy: true, version, at };
+  }
+
+  const tw = threeWay(base.db, stripForBase(local), remoteN);
+  let merged = tw.merged;
+  let conflicts = tw.conflicts;
+  if (policy === 'mine' && conflicts.length) {
+    merged = JSON.parse(JSON.stringify(merged));
+    applyChanges(merged, overridesFor(conflicts, true));
+    conflicts = [];
+  }
+  setLocalMerged(merged, remoteN, { version, pending });
+  lastLoadAt = Date.now();
+  setState(hasPending() ? 'pending' : 'idle');
+  return {
+    ok: true, found: true, merged: true, version, at,
+    mine: tw.mine.length, theirs: tw.theirs.length, same: tw.same.length,
+    conflicts, ctx: { local: stripForBase(local), remote: remoteN }
+  };
+}
+
+/** 冇基準嘅舊裝置專用：後端為準 ＋ 本機多出嚟嘅紀錄（有 id）補入。唔刪、唔蓋。 */
+function unionAdditions(remote, local) {
+  const out = JSON.parse(JSON.stringify(remote));
+  Object.keys(local || {}).forEach(k => {
+    if (['sync', 'meta', 'backend', 'unitCode', 'schema', 'kind'].includes(k)) return;
+    const lv = local[k], rv = out[k];
+    if (!Array.isArray(lv)) { if (rv === undefined && lv !== undefined) out[k] = lv; return; }
+    if (rv === undefined) { out[k] = lv; return; }
+    if (!Array.isArray(rv)) return;
+    const ids = new Set(rv.map(x => (x && typeof x === 'object') ? String(x.id) : ''));
+    lv.forEach(x => { if (x && typeof x === 'object' && x.id !== undefined && !ids.has(String(x.id))) rv.push(x); });
+  });
+  return out;
+}
+
+/** 上次成功由後端載入係幾耐之前（ms）；未載入過 ＝ Infinity */
+export function loadedAgo() { return lastLoadAt ? Date.now() - lastLoadAt : Infinity; }
+
+/**
+ * 登入嗰一刻要係「後端嗰一刻」：登入頁擺咗好耐先撳登入 → 再攞一次。
+ * 有未儲存改動就唔郁（唔會丟人哋嘢），交返畀之後嘅儲存流程核對。
+ */
+export async function ensureFresh({ maxAgeMs = 60000 } = {}) {
+  if (isMock() || !remoteConfigured()) return { ok: false, reason: 'not_configured' };
+  if (loadedAgo() <= maxAgeMs) return { ok: true, fresh: false };
+  if (hasPending()) return { ok: true, fresh: false, skipped: 'pending' };
+  const info = await callBackend({ action: 'dbInfo' }, { timeoutMs: 20000 });
+  if (!info.ok) return { ok: false, error: info.error || '問唔到後端', reason: info.reason || 'network' };
+  const base = getBase();
+  if (info.found && base && String(info.version || '') === String(base.version || '')) {
+    lastLoadAt = Date.now();
+    return { ok: true, fresh: false, upToDate: true };
+  }
+  return loadFromBackend();
+}
+
+/* ============================================================
+   ★ 登入硬閘（2026-09-20 團長定案）
+   ------------------------------------------------------------
+   團長原話：「由首頁登入旅團嗰頁，入到係正常嘅，因為喺 Vercel 登記咗；
+   但能登入旅團內嘅主控頁就唔應該，因為嗰個係應該要帳戶同密碼同後端
+   對上先至能進。既然都同後端對咗帳戶密碼，點可能入去之後話冇連上後端？」
+
+   佢講得啱。以前 `login()` 係**純本機運算**（auth.js 成個函數零網絡請求）：
+   佢只喺 localStorage 嘅 accounts[] 搵個 username，再比對一個隨 JS 一齊
+   公開咗嘅 hash。而 accounts[] 就算後端一個字都讀唔返都會有 ——
+   store.js 開機時 accounts 一空就塞 SEED_ACCOUNTS（leader／exco，defaultPw）。
+   所以「登入成功」從來只代表「呢部機有一份帳戶名單」，同後端零關係。
+
+   而家：後端答唔到 → 一律唔准入主控頁。
+   ============================================================ */
+
+/**
+ * 登入前嘅硬核對。**一定要真係聯絡到後端**先至回 ok:true。
+ *
+ * ⚠️ 呢度刻意**唔用** `ensureFresh()`：佢喺「本機有未存改動」嗰陣會
+ *    `return { ok:true, skipped:'pending' }` —— 完全冇聯絡後端。
+ *    攞佢做登入閘等於冇核對過（2026-09-20 事故嘅其中一個隱藏版）。
+ *
+ * @returns {Promise<{ok:boolean, mock?:boolean, version?:string, at?:string,
+ *                    empty?:boolean, accounts?:number, error?:string,
+ *                    reason?:string, hint?:string}>}
+ */
+export async function requireBackendForLogin() {
+  if (isMock()) return { ok: true, mock: true };
+  const cfg = remoteCfg();
+  if (!cfg.ok) {
+    return {
+      ok: false, reason: 'not_configured',
+      error: '未有後端設定 —— 帳戶冇辦法同後端核對，所以唔可以入主控頁',
+      hint: cfg.viaProxy
+        ? `平台伺服器端未登記呢個旅團（TROOP_${cfg.unit || '<編號>'}_BACKEND / _APIKEY）。`
+          + '交畀平台管理員喺 Vercel 加返再 Redeploy；或者你自己去「總表同步 → 同步設定」貼 /exec ＋ API Key。'
+        : '去「總表同步 → 同步設定」貼你嘅 Apps Script /exec 網址（＋ API Key）。'
+    };
+  }
+  setState('loading', '登入前同後端核對帳戶…');
+  const r = await loadFromBackend();
+  if (!r.ok) {
+    setState('unreachable', r.error || '連唔到後端');
+    return {
+      ok: false, reason: r.reason || 'network',
+      error: r.error || '連唔到旅團後端 —— 帳戶無法核對，登入已封鎖',
+      hint: r.hint || ''
+    };
+  }
+  const acc = (tryLoad()?.accounts || []).filter(a => a?.active !== false);
+  return {
+    ok: true,
+    version: String(r.version || ''),
+    at: String(r.at || ''),
+    /* found:false ＝ 後端真係仲未有資料庫（新旅團第一次設定）——
+       呢種情況先至允許用本機種子帳戶，而且界面要講清楚。 */
+    empty: r.found === false,
+    accounts: acc.length
+  };
+}
+
+/** 「由後端重新載入」：**丟棄**本機未儲存改動，成份用返後端（介面要先確認） */
+export async function discardAndReload() {
+  if (isMock()) return { ok: false, reason: 'mock', error: '示範模式唔會讀後端' };
+  const got = await pullDb();
+  if (!got.ok) return { ok: false, error: got.error || '讀唔到後端', reason: got.reason, hint: got.hint };
+  if (!got.found) return { ok: false, reason: 'empty', error: '後端仲未有資料庫' };
+  adoptRemote(got.db, { version: String(got.version || '') });
+  lastLoadAt = Date.now();
+  setState('idle', '已由後端重新載入');
+  return { ok: true, version: String(got.version || '') };
+}
+
+/* ============================================================
+   ③ 儲存到後端（唯一寫入路）
+   ============================================================ */
+
+/**
+ * 儲存到後端。
+ *
+ * @param policy   'ask'  → 撞嘅格暫時用後端、先寫其餘，然後交 resolver（介面）問用家
+ *                 'mine' → 撞嘅格用我嘅（團員入口交自己嘅 RSVP 用）
+ *                 'theirs' → 撞嘅格用後端，唔問
+ * @param resolver async ({ conflicts, ctx, remoteAt, savedCount }) → { useMine: string[] } | null
+ * @returns {Promise<{ok:boolean, pushed?:boolean, version?:string, remoteChanged?:boolean,
+ *   mine?:number, theirs?:number, same?:number, applied?:number,
+ *   conflicts?:Array, resolved?:number, kept?:number,
+ *   error?:string, reason?:string, hint?:string, bytes?:number, parts?:number}>}
+ */
+export async function saveToBackend({ policy = 'ask', resolver = null, silent = true, _attempt = 0 } = {}) {
+  if (isMock()) return { ok: false, reason: 'mock', error: '示範模式唔會寫入後端' };
+  const cfg = remoteCfg();
+  if (!cfg.ok) return { ok: false, reason: 'not_configured', error: notConfiguredMessage(cfg) };
+  const local = tryLoad();
+  if (!local) return { ok: false, reason: 'no_db', error: '資料庫未載入' };
+  if (inFlight) return { ok: false, reason: 'busy', error: '上一次儲存仲未完成' };
+
+  inFlight = true;
+  setState('saving', silent ? '' : '核對緊後端版本…');
+  try {
+    /* ① 問後端而家係咩版本（平，唔使成份拉） */
+    const info = await callBackend({ action: 'dbInfo' }, { timeoutMs: 20000 });
+    if (!info.ok) {
+      setState('unreachable', info.error || '連唔到後端');
+      logLocal(`✗ 未讀到後端版本，唔會寫（${info.error || '未知'}）`);
+      return {
+        ok: false, reason: info.reason || 'network', bytes: 0,
+        error: `未讀到後端版本，唔會盲寫：${info.error || '連唔到後端'}`,
+        hint: (info.hint ? info.hint + ' ' : '') + '你嘅改動冇蝕到，仲喺呢部機 —— 連返後端再撳「儲存到後端」。'
+      };
+    }
+    const base = getBase();
+    const baseVersion = String(base?.version || '');
+    const remoteVersion = String(info.version || '');
+    const remoteChanged = !!info.found && remoteVersion !== baseVersion;
+    const localStripped = stripForBase(local);
+
+    /* 未由後端載入過就撳儲存（例如開機時後端斷咗）：後端有嘢就一定要先載入，唔可以盲寫 */
+    if (info.found && !base) {
+      setState('pending', '未由後端載入過 —— 請先重新載入');
+      return { ok: false, reason: 'no_base',
+        error: '呢部機仲未由後端載入過資料（開機嗰陣連唔到後端）—— 唔會盲寫。請先撳「重新載入」。' };
+    }
+
+    /* ② 三方比對（只有「有人喺我登入後儲存過」先要拉成份） */
+    let finalDb = localStripped;
+    let mineN = 0, theirsN = 0, sameN = 0, appliedN = 0;
+    let conflicts = [];
+    let ctx = null;
+    let remoteAt = String(info.at || '');
+    if (remoteChanged) {
+      const got = await pullDb();
+      if (!got.ok || !got.found || !got.db) {
+        setState('error', got.error || '拉唔到後端資料');
+        return { ok: false, reason: got.reason || 'network', error: got.error || '後端有新版本但拉唔到 —— 改動仲喺呢部機' };
+      }
+      const remoteN = normalizeRemote(got.db);
+      const tw = threeWay(base?.db || {}, localStripped, remoteN);
+      mineN = tw.mine.length; theirsN = tw.theirs.length; sameN = tw.same.length; appliedN = tw.applied.length;
+      conflicts = tw.conflicts;
+      finalDb = tw.merged;
+      ctx = { local: localStripped, remote: remoteN };
+      remoteAt = String(got.at || remoteAt);
+      if (conflicts.length && policy === 'mine') {
+        applyChanges(finalDb, overridesFor(conflicts, true));
+        conflicts = [];
+      }
+      /* 版本要用**啱啱拉嗰份**嘅（dbInfo 同 loadDb 之間都可能有人寫入） */
+      if (got.version) info.version = got.version;
+    } else {
+      mineN = base?.db ? diffDb(base.db, localStripped).length : 0;
+      appliedN = mineN;
+    }
+
+    /* ③ 寫入（樂觀鎖 baseVersion ＝ 我啱啱見到嘅後端版本） */
+    const payload = exportForBackend({ ...local, ...finalDb });
+    const r = await pushPayload(payload, { baseVersion: String(info.version || ''), unit: cfg.unit, silent });
+    if (r.conflict) {
+      /* dbInfo → 寫入之間又有人寫咗（幾秒內撞正）→ 由頭核對多一次（唔會自動蓋） */
+      if (_attempt < 2) {
+        inFlight = false;
+        logLocal('⚠ 寫入嗰一刻後端又有新版本 —— 重新核對');
+        return saveToBackend({ policy, resolver, silent, _attempt: _attempt + 1 });
+      }
+      setState('conflict', '後端不停有人寫入 —— 請等一陣再儲存');
+      return { ok: false, reason: 'conflict', error: '後端連續有人寫入，核對咗三次都撞版 —— 請等一陣再撳「儲存到後端」' };
+    }
+    if (!r.ok) {
+      setState('error', r.error || '儲存失敗');
+      logLocal(`✗ 儲存失敗：${r.error || '未知錯誤'}`);
+      return { ok: false, reason: r.reason || 'backend', error: r.error || '儲存失敗', hint: r.hint || '' };
+    }
+
+    /* ④ 成功：本機 ＝ 後端 ＝ 新基準 */
+    commitSaved({ ...local, ...finalDb }, { version: String(r.version || ''), bytes: r.bytes || 0, parts: r.parts || 0 });
+    lastLoadAt = Date.now();
+    if (remoteChanged) {
+      logLocal(`ℹ 後端喺你登入後有人儲存過（${remoteAt.slice(0, 19).replace('T', ' ')}）：對方 ${theirsN} 項、你 ${mineN} 項、相同 ${sameN} 項、衝突 ${conflicts.length} 項`);
+    }
+    const out = {
+      ok: true, pushed: true, version: String(r.version || ''), bytes: r.bytes || 0, parts: r.parts || 0,
+      remoteChanged, remoteAt, mine: mineN, theirs: theirsN, same: sameN, applied: appliedN,
+      conflicts, ctx, resolved: 0, kept: conflicts.length,
+      /* ★ v2.6.3 Code.gs 會喺寫完「資料庫」分頁之後**顺手刷新晒報表分頁**，
+         並把結果放喺 reports。有呢個就不用再發第二個請求（慳一半 GAS 配額）；
+         舊版 Code.gs 冇呢個欄位 → 前端會自己補撳「更新報表分頁」。 */
+      reports: (r.reports && typeof r.reports === 'object') ? r.reports : null
+    };
+    inFlight = false;
+
+    /* ⑤ 有衝突 → 問用家（呢啲格已經用咗後端版本，未寫入我嘅）；佢確認咗先至再寫一次 */
+    if (conflicts.length && policy === 'ask' && typeof resolver === 'function') {
+      setState('conflict', `${conflicts.length} 項同後端唔同，未寫入 —— 等你確認`);
+      let choice = null;
+      try { choice = await resolver({ conflicts, ctx, remoteAt, savedCount: appliedN, mode: 'save' }); } catch { choice = null; }
+      const keys = choice?.useMine === true ? true : (Array.isArray(choice?.useMine) ? choice.useMine : []);
+      const ov = overridesFor(conflicts, keys);
+      if (ov.length) {
+        applyChangesLocal(ov);
+        const again = await saveToBackend({ policy: 'ask', resolver: null, silent, _attempt: 0 });
+        out.resolved = again.ok ? ov.length : 0;
+        out.kept = conflicts.length - out.resolved;
+        out.overrideOk = !!again.ok;
+        if (!again.ok) out.overrideError = again.error || '';
+        if (again.ok) { out.version = again.version; logLocal(`✓ 已按你確認蓋過 ${ov.length} 項`); }
+      }
+    }
+    setState(hasPending() ? 'pending' : 'saved', hasPending() ? '仲有改動未儲存' : '已儲存到後端');
+    return out;
+  } finally {
+    inFlight = false;
+  }
+}
+
+/** 實際送出（單件 saveDb／大過閾值自動分件）—— 回 { ok, conflict, version, bytes, parts, error } */
+async function pushPayload(payload, { baseVersion, unit, silent }) {
+  let text = '';
+  try { text = JSON.stringify(payload); } catch { /* ignore */ }
+  const bytes = text.length;
+  if (bytes > 40000000) {
+    return { ok: false, reason: 'too_big', error: `資料庫太大（${fmtBytes(bytes)}）`, hint: '去「帳號與系統 → 資料管理 → 總表同步 → 體積檢查」睇下邊個分頁食緊位。' };
+  }
+  if (!silent) setState('saving', '寫入緊後端…');
+  if (bytes <= CHUNKED_ABOVE) {
+    const r = await callBackend({ action: 'saveDb', db: payload, baseVersion });
+    return { ...r, bytes: r.bytes || bytes, parts: 0 };
+  }
+  /* v2.4.0 分件：拆件 → 逐件送（任何一件撞版即停）→ commit 拼合 */
+  const parts = splitDbIntoParts(payload, PART_MAX_BYTES);
+  const saveId = `${unit}-stg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+  for (let i = 0; i < parts.length; i++) {
+    setState('saving', `分件儲存中…（${i + 1}/${parts.length}）`);
+    const pr = await callBackend({ action: 'saveDbPart', unit, data: parts[i], partIdx: i, parts: parts.length, saveId, baseVersion });
+    if (!pr.ok && /未知 action/.test(String(pr.error || ''))) {
+      /* 舊後端（未部署 v2.4.0）→ 退返單件 */
+      logLocal('⚠ 後端仲係舊版（未部署分件儲存）—— 改用單一件儲存');
+      const r = await callBackend({ action: 'saveDb', db: payload, baseVersion });
+      return { ...r, bytes: r.bytes || bytes, parts: 0 };
+    }
+    if (!pr.ok) return { ...pr, bytes: 0, parts: parts.length };
+  }
+  setState('saving', `分件完成，拼合中…（${parts.length} 件）`);
+  const r = await callBackend({ action: 'saveDbCommit', unit, saveId, parts: parts.length, baseVersion });
+  return { ...r, bytes: r.bytes || bytes, parts: parts.length };
+}
+
+/** 衝突講成人話（畀介面／測試） */
+export function describeConflicts(conflicts, ctx) {
+  return (conflicts || []).map(c => ({ key: c.key, ...describeConflict(c, ctx || {}) }));
+}
+
+function logLocal(msg) {
+  const db = tryLoad();
+  if (!db) return;
+  pushLog(db, msg);
+  commitMeta();
+}
+
+/* ---------------- 小工具 ---------------- */
+function pushLog(db, msg) {
+  db.sync = db.sync || {};
+  const at = new Date().toISOString().slice(0, 19).replace('T', ' ');
+  db.sync.log = [...(db.sync.log || []), { at, msg }].slice(-40);
+}
+
+function fmtBytes(n) {
+  const v = Number(n) || 0;
+  if (v < 1024) return v + ' B';
+  if (v < 1024 * 1024) return (v / 1024).toFixed(0) + ' KB';
+  return (v / 1024 / 1024).toFixed(2) + ' MB';
+}
+
+export { fmtBytes };

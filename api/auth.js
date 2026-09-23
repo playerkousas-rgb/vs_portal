@@ -36,13 +36,16 @@ import crypto from 'node:crypto';
 
 export const config = { maxDuration: 15 };
 
+/* Scout System 品牌級隱藏超管：固定身份，唯一密碼由 Vercel SUPER_KEY 提供。 */
+export const SUPER_ADMIN = 'sheep';
+
 /* 環境變數要喺**請求嗰陣**先讀，唔好喺 module 頂層讀死：
    頂層讀嘅話，Vercel 上面如果變數係部署之後先加，舊 instance 會一路用舊值。 */
 function cfg() {
   return {
     /* SUPER_KEY 係平台唯一嘅 SUPER 備援登入密碼；唔拆成多個環境變數。 */
     key: String(process.env.SUPER_KEY || ''),
-    user: 'sheep'
+    user: SUPER_ADMIN
   };
 }
 

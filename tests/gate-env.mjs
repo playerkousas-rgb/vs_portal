@@ -322,6 +322,18 @@ section('Vercel 環境變數登記（彈性寫法）');
   /* 前導零：TROOP_82_* 同 TROOP_0082_* 要互通 */
   ok('TROOP_82_URL 亦可以當 0082 用', !!reg['0082'] || !!reg['82']);
 
+  /* 同一旅多個獨立團：只有 Vercel 變數 ID 加數字後綴，唔改 GAS URL／Key 配對。 */
+  process.env.TROOP_0082_1_BACKEND = GAS_82;
+  process.env.TROOP_0082_1_APIKEY = 'troop_82_1_secret_should_never_reach_browser';
+  process.env.TROOP_0082_1_NAME = '第八十二旅第一團';
+  const suffixed = getRegistry();
+  ok('TROOP_0082_1_* 可作獨立 Registry ID', suffixed['0082_1']?.backend?.gasUrl === GAS_82);
+  ok('後綴 Registry 仍讀到自己的 API Key', suffixed['0082_1']?.backend?.apiKey === 'troop_82_1_secret_should_never_reach_browser');
+  ok('後綴 Registry 對外仍只公開 NAME',
+    listPublicUnits()['0082_1']?.name === '第八十二旅第一團' &&
+    listPublicUnits()['0082_1']?.apiKey === undefined &&
+    listPublicUnits()['0082_1']?.gasUrl === undefined);
+
   const d = registryDiagnostics();
   ok('診斷列出認到嘅旅團', d.ids.includes('0081') && d.count >= 1, JSON.stringify(d.ids));
   ok('★ 診斷會指出打錯名嘅變數（可能就係旅團唔出現嘅原因）',
@@ -364,7 +376,8 @@ section('Vercel 環境變數登記（彈性寫法）');
   delete process.env.TROOPS_JSON;
 
   for (const k of ['TROOP_82_URL', 'TROOP_0099_BACKEND_URL', 'TROOP_0100_GASURL', 'TROOP_0101_KEY',
-    'TROOP0082_BACKEND', 'TROOP_82_BACKENDXD', 'TROOP_0097_BACKEND', 'TROOP_0095', 'TROOP_0094']) delete process.env[k];
+    'TROOP0082_BACKEND', 'TROOP_82_BACKENDXD', 'TROOP_0097_BACKEND', 'TROOP_0095', 'TROOP_0094',
+    'TROOP_0082_1_BACKEND', 'TROOP_0082_1_APIKEY', 'TROOP_0082_1_NAME']) delete process.env[k];
 }
 
 /* ============================================================

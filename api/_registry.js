@@ -81,9 +81,32 @@ const FIELD_ALIASES = {
 };
 const KNOWN_FIELDS = new Set(Object.values(FIELD_ALIASES).flat());
 /* 全部要認嘅 key（用嚟掃 process.env 搵出所有已登記旅團） */
+/*
+ * 一般情況用 TROOP_0082_* 已經足夠。
+ * 如果同一旅有多個獨立團、而管理員需要在 Vercel 分開登記，
+ * 可以用 TROOP_0082_1_*、TROOP_0082_2_*；後綴係 Registry ID 的一部分，
+ * 不會改 Apps Script，也不會改用戶看到的 NAME。
+ *
+ * 解析時由尾部辨認欄位，避免把 `_1` 誤當成欄位的一部分。
+ */
 const TROOP_KEY_RE = new RegExp(
-  '^TROOP_([0-9A-Za-z]+)_(' + [...KNOWN_FIELDS].join('|') + ')(_[0-9]+)?$', 'i'
+  '^TROOP_[0-9A-Za-z]+(?:_[0-9]+)?_(?:' + [...KNOWN_FIELDS].join('|') + ')$', 'i'
 );
+const ENV_FIELD_NAMES = [...KNOWN_FIELDS].sort((a, b) => b.length - a.length);
+const ENV_ID_RE = /^[0-9A-Za-z]+(?:_[0-9]+)?$/;
+
+function parseTroopEnvKey(key) {
+  const raw = String(key || '');
+  if (!/^TROOP_/i.test(raw)) return null;
+  const tail = raw.slice(6);
+  for (const field of ENV_FIELD_NAMES) {
+    const marker = '_' + field;
+    if (!tail.toUpperCase().endsWith(marker.toUpperCase())) continue;
+    const id = tail.slice(0, -marker.length);
+    if (ENV_ID_RE.test(id)) return { id, field };
+  }
+  return null;
+}
 
 /* ============================================================
    旅團編號寫法統一（2026-09-21，團長回報「佢話佢無後端，但無後端係完全唔合理」）
@@ -176,8 +199,9 @@ export function getRegistry() {
   const envUnits = readJsonUnits();
   const idsFromEnv = new Set();
   for (const k of Object.keys(process.env)) {
-    const m = k.match(TROOP_KEY_RE) || k.match(/^TROOP_([0-9A-Za-z]+)$/i);
-    if (m) idsFromEnv.add(m[1]);
+    const parsed = parseTroopEnvKey(k);
+    const m = parsed || k.match(/^TROOP_([0-9A-Za-z]+(?:_[0-9]+)?)$/i);
+    if (m) idsFromEnv.add(parsed ? parsed.id : m[1]);
   }
 
   const allIds = new Set([...Object.keys(fileUnits), ...idsFromEnv, ...Object.keys(envUnits)]);

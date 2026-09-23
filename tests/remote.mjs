@@ -135,7 +135,7 @@ section('Apps Script 範本（Code.gs）');
     /for \(var i = runs\.length - 1; i >= 0; i--\) sh\.deleteRows\(runs\[i\]\[0\], runs\[i\]\[1\]\);/.test(code));
   {
     const { makeGas } = await import('./_gasvm.mjs');
-    const g = makeGas();
+    const g = makeGas({ apiKey: 'test_key' });
     /* 第一份夠大要分 5 段（每段 45000 字）；第二份細到只有一段 ——
        如果刪舊段嗰度漏刪，第二次之後就會見到「5 段舊 ＋ 1 段新」撈埋。 */
     const mk = (n, pad = 0) => ({

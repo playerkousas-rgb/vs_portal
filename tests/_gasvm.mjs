@@ -107,7 +107,11 @@ function makeGas({ apiKey = null } = {}) {
   vm.runInContext(fs.readFileSync(path.join(ROOT, 'apps-script/Code.gs'), 'utf8'), sandbox, { filename: 'Code.gs' });
 
   const post = (body) => {
-    const out = sandbox.doPost({ postData: { contents: JSON.stringify(body) } });
+    const payload = { ...body };
+    if (props.has('API_KEY') && !Object.prototype.hasOwnProperty.call(payload, 'apiKey') && !Object.prototype.hasOwnProperty.call(payload, 'apikey')) {
+      payload.apiKey = props.get('API_KEY');
+    }
+    const out = sandbox.doPost({ postData: { contents: JSON.stringify(payload) } });
     try { return JSON.parse(out.getContent()); } catch { return { _raw: out.getContent() }; }
   };
   /* GET（doGet：?action=load 讀進度 —— 進度前端／團員入口用） */

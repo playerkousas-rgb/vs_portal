@@ -282,6 +282,18 @@ var SUPPORTED_ACTIONS = ['ping', 'test', 'status', 'sync', 'claim', 'noticeSignu
   'uploadPhotos', 'constitution', 'notices',
   'save', 'saveOtherBadge', 'reviewRequest', 'reviewLogRequest', 'addRequest', 'myRequests'];
 
+/**
+ * BUILD §1／§2：敏感 action 必須由 server-side API_KEY 明確授權。
+ * 未初始化 API_KEY 時 fail closed；公開讀取／匿名申請另行處理。
+ */
+function requireAuth(expectedKey, suppliedKey) {
+  if (!expectedKey) return { ok: false, success: false, error: '未授權：後端尚未設定 API Key', code: 'AUTH_NOT_CONFIGURED' };
+  if (!suppliedKey || suppliedKey !== expectedKey) {
+    return { ok: false, success: false, error: '未授權：API Key 唔正確', code: 'AUTH_REQUIRED' };
+  }
+  return { ok: true };
+}
+
 /** 收到 POST 時處理 */
 function doPost(e) {
   try {
@@ -296,12 +308,11 @@ function doPost(e) {
       return json({ ok: false, success: false, error: 'API key 唔正確' });
     }
 
-    /* ---- 整份資料庫讀／寫（app 嘅真正儲存；要 API Key）---- */
+    /* ---- 整份資料庫讀／寫（app 嘅真正儲存；一定要 API Key）---- */
     if (body.action === 'saveDb' || body.action === 'loadDb' || body.action === 'loadDbPart'
       || body.action === 'dbInfo' || body.action === 'saveDbPart' || body.action === 'saveDbCommit') {
-      if (expectedKey && key !== expectedKey) {
-        return json({ ok: false, success: false, error: '未授權：API Key 唔正確' });
-      }
+      var dbAuth = requireAuth(expectedKey, key);
+      if (!dbAuth.ok) return json(dbAuth);
       if (body.action === 'saveDb') {
         var sv = withLock(function () { return saveDb(body); });
         return json({ ok: sv.success === true, success: sv.success === true, conflict: sv.conflict === true,
@@ -343,9 +354,8 @@ function doPost(e) {
 
     /* ---- 進度追蹤（同進度前端共用同一個後端；API Key＝執委身份）---- */
     if (body.action === 'save' || body.action === 'saveOtherBadge') {
-      if (!expectedKey || key !== expectedKey) {
-        return json({ ok: false, success: false, error: '未授權：API Key 唔正確' });
-      }
+      var progressAuth = requireAuth(expectedKey, key);
+      if (!progressAuth.ok) return json(progressAuth);
       if (body.action === 'save') {
         var pr = withLock(function () { return saveProgress(body.changes || [], body.confirmer || ''); });
         return json({ ok: pr.success === true, success: pr.success === true, processed: pr.processed || 0, error: pr.error || '' });
@@ -356,9 +366,8 @@ function doPost(e) {
 
     /* ---- 審批中心（執委系統內直接批；同一個 API Key＝執委身份）---- */
     if (body.action === 'reviewRequest' || body.action === 'reviewLogRequest') {
-      if (!expectedKey || key !== expectedKey) {
-        return json({ ok: false, success: false, error: '未授權：API Key 唔正確' });
-      }
+      var reviewAuth = requireAuth(expectedKey, key);
+      if (!reviewAuth.ok) return json(reviewAuth);
       if (body.action === 'reviewRequest') {
         var rq = withLock(function () {
           return reviewProgressRequest(body.request_id, body.decision, body.review_note,
@@ -418,13 +427,14 @@ function doPost(e) {
       return json({ ok: true, msg: '已記錄借用申請，等批核', photos: 0 });
     }
     if (body.action === 'sync') {
+      var syncAuth = requireAuth(expectedKey, key);
+      if (!syncAuth.ok) return json(syncAuth);
       var counts = withLock(function () { return syncAll(body); });
       /* 有帶整份資料庫就順便存埋（一次過搞掂「睇得到嘅報表」＋「讀得返嘅資料庫」） */
       var dbSaved = null;
       if (body.db && typeof body.db === 'object') {
-        if (expectedKey && key !== expectedKey) {
-          return json({ ok: false, success: false, error: '未授權：API Key 唔正確（寫入資料庫需要 API Key）' });
-        }
+        var syncDbAuth = requireAuth(expectedKey, key);
+        if (!syncDbAuth.ok) return json(syncDbAuth);
         dbSaved = withLock(function () { return saveDb(body); });
       }
       return json({ ok: true, msg: '已寫入總表', counts: counts, unit: body.unit, at: body.at,

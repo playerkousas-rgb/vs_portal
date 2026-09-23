@@ -64,17 +64,16 @@ section('Code.gs 載入 / 基本契約');
 /* ============================================================
    ② 後端未設 API Key（Script Properties 空）→ 應該寫得入
    ============================================================ */
-section('後端冇設 API Key：空 key 應該寫得入');
+section('後端冇設 API Key：敏感 action 必須 fail closed');
 {
   const g = makeGas();
   const db = sampleDb();
   const save = g.post({ action: 'saveDb', unit: '0082', apiKey: '', apikey: '', db });
-  ok('saveDb 成功', save.ok === true, JSON.stringify(save).slice(0, 140));
+  ok('saveDb fail closed', save.ok === false && save.code === 'AUTH_NOT_CONFIGURED', JSON.stringify(save).slice(0, 140));
   const back = g.post({ action: 'loadDb', unit: '0082', apiKey: '', apikey: '' });
-  ok('loadDb 攞得返', back.ok === true && back.found === true);
-  ok('財政資料完整（2 筆帳）', (back.db?.transactions || []).length === 2);
-  ok('生日資料完整（2 個團員、有生日）',
-    (back.db?.members || []).length === 2 && back.db.members[0].birthday === '2008-03-14');
+  ok('loadDb fail closed', back.ok === false && back.code === 'AUTH_NOT_CONFIGURED');
+  ok('未設定 API Key 不會回傳財政資料', back.db === undefined);
+  ok('未設定 API Key 不會回傳團員資料', back.db === undefined);
 }
 
 /* ============================================================
@@ -113,7 +112,7 @@ section('★ 真實故障：後端有 key、app 條 key 空');
    ============================================================ */
 section('v2.6.1 團長回報：同步生分身分頁＋成員進度重複');
 {
-  const g = makeGas();
+  const g = makeGas({ apiKey: 'test_key' });
 
   /* 先照 initializeSheets 咁建「無後綴」分頁 */
   g.sandbox.initializeSheets();
@@ -168,7 +167,7 @@ section('v2.6.1 團長回報：同步生分身分頁＋成員進度重複');
      用**另一個 sandbox** —— 呢度寫入嘅團員會入「團員」分頁，
      留喺同一個 sandbox 會污染後面「成員無重複（2 人）」嗰個斷言。 */
   {
-    const g2 = makeGas();
+    const g2 = makeGas({ apiKey: 'test_key' });
     g2.sandbox.initializeSheets();
     const ss2 = g2.sandbox.SpreadsheetApp.getActiveSpreadsheet();
     const miss2 = () => ['進度追蹤', '待批完成', '成員名單', '同步紀錄', '活動履歷', '待批履歷', '通告全文']
@@ -202,7 +201,7 @@ section('v2.6.1 團長回報：同步生分身分頁＋成員進度重複');
    ============================================================ */
 section('round-trip：資料唔可以走樣');
 {
-  const g = makeGas();
+  const g = makeGas({ apiKey: 'test_key' });
   const db = sampleDb();
   db.notices = [{ id: 'n1', title: { zh: '週年大會', en: 'AGM' }, status: 'published', signups: [{ name: '陳大文' }] }];
   db.settings = { currency: 'HK$', nested: { deep: { value: 42 } } };
@@ -219,7 +218,7 @@ section('round-trip：資料唔可以走樣');
    ============================================================ */
 section('大資料分段');
 {
-  const g = makeGas();
+  const g = makeGas({ apiKey: 'test_key' });
   const db = sampleDb();
   db.blob = 'x'.repeat(120000);
   const save = g.post({ action: 'saveDb', unit: '0082', db });
@@ -241,7 +240,7 @@ section('大資料分段');
    ============================================================ */
 section('v2.6.0 分段讀取：loadDbPart（大過 4.5MB 都讀得返）');
 {
-  const g = makeGas();
+  const g = makeGas({ apiKey: 'test_key' });
   /* 砌一個 5MB 嘅資料庫（大過 Vercel 4.5MB 回應上限） */
   const db = sampleDb();
   db.blob = 'y'.repeat(5_000_000);
@@ -293,13 +292,13 @@ section('v2.6.0 分段讀取：loadDbPart（大過 4.5MB 都讀得返）');
   ok('負數 partIdx 當 0 處理（唔會擲錯）', neg.ok === true && neg.partIdx === 0);
 
   /* 空後端 */
-  const g2 = makeGas();
+  const g2 = makeGas({ apiKey: 'test_key' });
   const empty = g2.post({ action: 'loadDbPart', unit: '0082', partIdx: 0 });
   ok('空後端 loadDbPart 回 found:false（唔係報錯）', empty.ok === true && empty.found === false,
     JSON.stringify(empty).slice(0, 120));
 
   /* 旅團隔離：唔可以分段讀到人哋嘅 */
-  const g3 = makeGas();
+  const g3 = makeGas({ apiKey: 'test_key' });
   const a = sampleDb(); a.unitCode = '0082'; a.members = [{ id: 'a', name: '0082 團員' }];
   const b = sampleDb(); b.unitCode = '0099'; b.members = [{ id: 'b', name: '0099 團員' }];
   g3.post({ action: 'saveDb', unit: '0082', db: a });
@@ -309,7 +308,7 @@ section('v2.6.0 分段讀取：loadDbPart（大過 4.5MB 都讀得返）');
     /0082 團員/.test(String(pa.part)) && !/0099 團員/.test(String(pa.part)));
 
   /* 授權：同 loadDb 一樣要 API Key */
-  const g4 = makeGas();
+  const g4 = makeGas({ apiKey: 'test_key' });
   g4.sandbox.initializeSheets();          // 會自動生成 API Key（同真實部署一樣）
   const noKey = g4.post({ action: 'loadDbPart', unit: '0082', partIdx: 0, apiKey: '', apikey: '' });
   ok('loadDbPart 冇 key → 未授權（同 loadDb 一樣嚴）', noKey.ok === false && /API ?Key|未授權/.test(String(noKey.error || '')),
@@ -328,7 +327,7 @@ section('v2.6.0 分段讀取：loadDbPart（大過 4.5MB 都讀得返）');
    ============================================================ */
 section('旅團隔離');
 {
-  const g = makeGas();
+  const g = makeGas({ apiKey: 'test_key' });
   const a = sampleDb(); a.unitCode = '0082'; a.members = [{ id: 'a', name: '0082 團員' }];
   const b = sampleDb(); b.unitCode = '0099'; b.members = [{ id: 'b', name: '0099 團員' }];
   g.post({ action: 'saveDb', unit: '0082', db: a });
@@ -350,7 +349,7 @@ section('旅團隔離');
    ============================================================ */
 section('覆寫要乾淨');
 {
-  const g = makeGas();
+  const g = makeGas({ apiKey: 'test_key' });
   const big = sampleDb(); big.blob = 'y'.repeat(100000);
   g.post({ action: 'saveDb', unit: '0082', db: big });
   const small = sampleDb();
@@ -382,7 +381,7 @@ section('gastemplate 同 apps-script/Code.gs 一致');
    ============================================================ */
 section('樂觀鎖：saveDb baseVersion（過時裝置唔可以盲蓋後端）');
 {
-  const g = makeGas();
+  const g = makeGas({ apiKey: 'test_key' });
   /* 後端仲係空 → 第一次存唔使 baseVersion 都得（新旅團開張） */
   const first = g.post({ action: 'saveDb', unit: '0110', db: sampleDb() });
   ok('後端空：第一次存成功（唔使 baseVersion）', first.ok === true, JSON.stringify(first).slice(0, 120));
@@ -420,7 +419,7 @@ section('樂觀鎖：saveDb baseVersion（過時裝置唔可以盲蓋後端）')
    ============================================================ */
 section('團員自助申報：addRequest / myRequests');
 {
-  const g = makeGas();
+  const g = makeGas({ apiKey: 'test_key' });
   g.sandbox.initializeSheets();
   const ar = g.post({ action: 'addRequest', unit: '0082', ymis: '2026000001', name: '陳大文', item_id: 'VS-C1', item_name: '技能科 第 1 項', requested_date: '2026-09-18', evidence: '夏季營完成' });
   ok('addRequest 免 key 都寫得到（寫入待批完成）', ar.ok === true && !!ar.request_id, JSON.stringify(ar).slice(0, 160));
@@ -444,7 +443,7 @@ section('團員自助申報：addRequest / myRequests');
    ============================================================ */
 section('體積治理：uploadPhotos 上 Drive／dbInfo 回體積');
 {
-  const g = makeGas();
+  const g = makeGas({ apiKey: 'test_key' });
   /* 唔叫 initializeSheets（唔想生成 API Key 擋住 saveDb；呢個 section 只測體積契約） */
   /* savePhotos 冇 DRIVE_FOLDER_ID 嗰陣會回空陣列 —— 契約唔可以爆 */
   const up = g.post({ action: 'uploadPhotos', unit: '0082',
@@ -476,7 +475,7 @@ section('體積治理：uploadPhotos 上 Drive／dbInfo 回體積');
    ------------------------------------------------------------ */
 section('分件儲存：saveDbPart／saveDbCommit（長壽命架構）');
 {
-  const g = makeGas();
+  const g = makeGas({ apiKey: 'test_key' });
   const mk = (tag) => ({
     schema: 2, kind: 'ecportal', unitCode: '0082',
     members: [{ id: 'm' + tag, name: '團員' + tag }],
@@ -536,7 +535,7 @@ section('分件儲存：saveDbPart／saveDbCommit（長壽命架構）');
    ============================================================ */
 section('v2.5.0：公開團章／通告讀正本、公開頁送出寫入資料庫');
 {
-  const g = makeGas();
+  const g = makeGas({ apiKey: 'test_key' });
   /* 種一份有已發布團章＋通告嘅資料庫 */
   const db = sampleDb();
   db.profile = { name: '第八十二旅深資童軍團' };

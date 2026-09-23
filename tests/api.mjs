@@ -3,7 +3,6 @@
    驗證 Registry、Units 清單、Proxy 轉發與安全規則。
    ============================================================ */
 
-import crypto from 'node:crypto';
 import { getRegistry, getTrustedUnit, listPublicUnits, isTrustedExecUrl } from '../api/_registry.js';
 import unitsHandler from '../api/units.js';
 import proxyHandler from '../api/proxy.js';
@@ -271,18 +270,6 @@ console.log('\n▌超管核對（api/auth.js：SUPER_KEY、fail closed）');
   ok('★ SUPER_KEY = 密碼，密碼啱 → 200', good.statusCode === 200 && good.body?.ok === true,
     JSON.stringify(good.body));
   ok('★ 回應唔會洩漏密碼', !JSON.stringify(good.body).includes(PW), JSON.stringify(good.body));
-
-  /* 新部署模式：只存 PBKDF2-SHA256 hash，明文 SUPER_KEY 可以移除。 */
-  const hashSalt = 'test-super-salt-v1';
-  process.env.SUPER_KEY_HASH = crypto.pbkdf2Sync(PW, hashSalt, 120000, 32, 'sha256').toString('hex');
-  process.env.SUPER_KEY_SALT = hashSalt;
-  delete process.env.SUPER_KEY;
-  const hashedGood = await call({ user: 'sheep', password: PW });
-  ok('★ SUPER_KEY_HASH（PBKDF2-SHA256）可以登入', hashedGood.statusCode === 200 && hashedGood.body?.ok === true, JSON.stringify(hashedGood.body));
-  ok('PBKDF2 模式回應唔洩漏 hash', !JSON.stringify(hashedGood.body).includes(process.env.SUPER_KEY_HASH));
-  delete process.env.SUPER_KEY_HASH;
-  delete process.env.SUPER_KEY_SALT;
-  process.env.SUPER_KEY = PW;
 
   const bad = await call({ user: 'sheep', password: 'wrong-password' });
   ok('密碼錯 → 401', bad.statusCode === 401 && bad.body?.ok === false, JSON.stringify(bad.body));

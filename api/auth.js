@@ -39,13 +39,9 @@ export const config = { maxDuration: 15 };
 /* 環境變數要喺**請求嗰陣**先讀，唔好喺 module 頂層讀死：
    頂層讀嘅話，Vercel 上面如果變數係部署之後先加，舊 instance 會一路用舊值。 */
 function cfg() {
-  const iterations = Number(process.env.SUPER_KEY_ITERATIONS || 120000);
   return {
-    /* 新部署優先使用 SUPER_KEY_HASH；SUPER_KEY 只保留向後兼容，方便逐步 rotate。 */
+    /* SUPER_KEY 係平台唯一嘅 SUPER 備援登入密碼；唔拆成多個環境變數。 */
     key: String(process.env.SUPER_KEY || ''),
-    hash: String(process.env.SUPER_KEY_HASH || '').trim().toLowerCase(),
-    salt: String(process.env.SUPER_KEY_SALT || ''),
-    iterations: Number.isFinite(iterations) ? Math.max(100000, Math.min(iterations, 1000000)) : 120000,
     user: (process.env.SUPER_USER || 'sheep').trim().toLowerCase()
   };
 }
@@ -87,20 +83,6 @@ function registerFailure(user) {
 
 function clearFailures(user) { failures.delete(user); }
 
-function verifyConfiguredPassword(password, settings) {
-  if (settings.hash && settings.salt) {
-    const derived = crypto.pbkdf2Sync(
-      Buffer.from(String(password), 'utf8'),
-      Buffer.from(settings.salt, 'utf8'),
-      settings.iterations,
-      32,
-      'sha256'
-    ).toString('hex');
-    return safeEqual(derived, settings.hash);
-  }
-  return !!settings.key && safeEqual(password, settings.key);
-}
-
 function send(res, status, obj) {
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -124,9 +106,8 @@ export default async function handler(req, res) {
   const settings = cfg();
   const { key, user: wantUser } = settings;
 
-  /* fail closed：明文 SUPER_KEY 或完整 SUPER_KEY_HASH/SALT 冇設 → 關閉。
-     寧願你自己一時入唔到，都好過留一條任何人都入到嘅門。 */
-  if (!key && !(cfg().hash && cfg().salt)) {
+  /* fail closed：SUPER_KEY 冇設 → 超管登入成條路關閉。 */
+  if (!key) {
     return send(res, 503, {
       ok: false, disabled: true,
       error: '超級管理員登入未啟用（伺服器未設 SUPER_KEY）',
@@ -154,7 +135,7 @@ export default async function handler(req, res) {
 
   /* username 錯同密碼錯要回**同一句**訊息，
      否則人可以用嚟確認邊個 username 存在。 */
-  if (!safeEqual(user, wantUser) || !verifyConfiguredPassword(password, settings)) {
+  if (!safeEqual(user, wantUser) || !safeEqual(password, key)) {
     const next = registerFailure(user);
     try { console.log(JSON.stringify({ svc: 'ecportal-auth', result: 'failed', user, failed: next.failed })); } catch { /* ignore */ }
     return send(res, 401, { ok: false, error: '帳號或密碼不正確' });

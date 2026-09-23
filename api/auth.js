@@ -5,8 +5,8 @@
 // ------------------------------------------------------------
 //      SUPER_KEY = 你嘅密碼
 //
-//  一個變數，填明文密碼，搞掂。改密碼 = 改個值 → Redeploy。
-//  （選填：SUPER_USER，預設 'sheep'。）
+//  一個變數，填平台品牌通行密碼，搞掂。改密碼 = 改個值 → Redeploy。
+//  隱藏超管帳戶固定叫 sheep；SUPER_USER 不是可配置的普通帳戶。
 //
 // ============================================================
 //  點解要伺服器端核對
@@ -42,7 +42,7 @@ function cfg() {
   return {
     /* SUPER_KEY 係平台唯一嘅 SUPER 備援登入密碼；唔拆成多個環境變數。 */
     key: String(process.env.SUPER_KEY || ''),
-    user: (process.env.SUPER_USER || 'sheep').trim().toLowerCase()
+    user: 'sheep'
   };
 }
 

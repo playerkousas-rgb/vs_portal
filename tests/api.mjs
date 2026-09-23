@@ -290,11 +290,11 @@ console.log('\n▌超管核對（api/auth.js：SUPER_KEY、fail closed）');
   ok('★ 改咗 SUPER_KEY → 新密碼即刻入到',
     (await call({ user: 'sheep', password: 'a-brand-new-password' })).statusCode === 200);
 
-  /* SUPER_USER 可以改（選填） */
+  /* sheep 係品牌固定隱藏超管，不接受 SUPER_USER 改名或另造入口。 */
   process.env.SUPER_USER = 'myboss';
-  ok('SUPER_USER 可以改超管帳號名',
-    (await call({ user: 'myboss', password: 'a-brand-new-password' })).statusCode === 200
-    && (await call({ user: 'sheep', password: 'a-brand-new-password' })).statusCode === 401);
+  ok('隱藏超管帳戶固定係 sheep',
+    (await call({ user: 'myboss', password: 'a-brand-new-password' })).statusCode === 401
+    && (await call({ user: 'sheep', password: 'a-brand-new-password' })).statusCode === 200);
   delete process.env.SUPER_USER;
 
   ok('GET 唔接受（只接受 POST）', (await call({}, 'GET')).statusCode === 405);

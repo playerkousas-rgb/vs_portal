@@ -1,0 +1,85 @@
+{
+  "schema": 2,
+  "code": "MOCK",
+  "name": "示範旅團（MOCK）",
+  "nameEn": "Demonstration Unit (MOCK)",
+  "short": "DEMO",
+  "region": "示範地域",
+  "sponsor": "示範主辦機構",
+  "_comment": "⚠️ 全部係假資料，只作示範／教學用途。示範模式嘅資料只會寫入獨立嘅 localStorage 命名空間（venture82.mock.*），永遠唔會接觸真實旅團資料。",
+  "logoText": "DEMO",
+  "theme": {
+    "brand700": "#7B2233",
+    "brand800": "#5E1826",
+    "brand900": "#4A111C",
+    "brand600": "#93293D",
+    "brand500": "#A83A4E",
+    "brand100": "#F2DCE1",
+    "brand50": "#FBF1F3",
+    "accent": "#B8892B"
+  },
+  "settings": {
+    "currency": "HK$",
+    "feePerYear": 360,
+    "feePeriodLabel": "2026–27 年度團費（示範）",
+    "subsidyPercent": 30,
+    "subsidyCap": 70,
+    "openingBalance": 3000,
+    "openingBalanceDate": "2026-04-01",
+    "scoutFYStartMonth": 4,
+    "scoutFYStartDay": 1,
+    "agmRule": "lastSaturdayOfAugust",
+    "agmDates": [
+      {
+        "year": 2025,
+        "date": "2025-08-30",
+        "note": "示範資料"
+      },
+      {
+        "year": 2026,
+        "date": "2026-08-29",
+        "note": "示範資料"
+      }
+    ],
+    "publicBaseUrl": "",
+    "scarf": "紫色底，配紅、綠色底邊（示範）",
+    "activityUniform": "紫色白領 Polo Tee（示範）",
+    "publicEntry": {
+      "title": "手機記一筆 · 影相＋揀欄目",
+      "note": "（示範）成員用手機影相＋揀欄目就交得。",
+      "submitUrl": "",
+      "_howto": "填 Apps Script /exec 網址之後，成員喺 entry.html 送出嘅紀錄會直接寫入總表；留空就只存喺該部手機。"
+    }
+  },
+  "progress": {
+    "name": "進度紀錄（示範 · 同一個後端）",
+    "backend": {
+      "backend": "",
+      "apiKey": "",
+      "catalogUrl": ""
+    }
+  },
+  "birthday": {
+    "remindDaysBefore": 7,
+    "showMonthBanner": true,
+    "autoAnnounceInMeeting": true
+  },
+  "inventory": {
+    "categories": [
+      "露營裝備",
+      "煮食器材",
+      "繩索與先鋒工程",
+      "急救用品",
+      "文書及文具",
+      "制服及布章",
+      "電子器材",
+      "其他"
+    ],
+    "loanDays": 14,
+    "approverRoles": [
+      "super",
+      "leader",
+      "exco"
+    ]
+  }
+}

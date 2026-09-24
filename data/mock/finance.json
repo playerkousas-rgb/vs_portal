@@ -1,0 +1,52 @@
+{
+  "schema": 2,
+  "unitCode": "MOCK",
+  "_comment": "示範帳目：橫跨兩個財政年度（旅年度 = AGM 至 AGM；童軍年度 = 4 月 1 日至 3 月 31 日），方便試「輸出兩條數」。",
+  "categories": {
+    "income": ["團費", "活動費", "資助", "捐款", "售賣物品", "利息", "其他收入"],
+    "expense": ["場地", "活動", "物資", "文書", "交通", "膳食", "訓練", "服務", "雜項"]
+  },
+  "methods": ["現金", "轉數快 FPS", "銀行轉賬", "自動扣賬", "支票", "PayMe", "其他"],
+  "transactions": [
+    { "id": "dt01", "date": "2025-09-05", "type": "income", "category": "團費", "item": "團費（12 人）", "amount": 4320, "method": "轉數快 FPS", "byName": "黃美儀", "note": "示範" },
+    { "id": "dt02", "date": "2025-10-18", "type": "expense", "category": "活動", "item": "秋季露營營費", "amount": 2400, "method": "銀行轉賬", "byName": "張家俊", "note": "示範" },
+    { "id": "dt03", "date": "2025-12-07", "type": "income", "category": "活動費", "item": "Party Room 活動收費", "amount": 190, "method": "現金", "byName": "黃美儀", "note": "示範" },
+    { "id": "dt04", "date": "2025-12-07", "type": "expense", "category": "場地", "item": "Party Room 租金", "amount": 57, "method": "現金", "byName": "黃美儀", "note": "示範" },
+    { "id": "dt05", "date": "2026-01-20", "type": "income", "category": "資助", "item": "地域活動資助", "amount": 500, "method": "銀行轉賬", "byName": "黃美儀", "note": "示範" },
+    { "id": "dt06", "date": "2026-02-14", "type": "expense", "category": "訓練", "item": "先鋒工程工作坊導師費", "amount": 800, "method": "轉數快 FPS", "byName": "黃美儀", "note": "示範" },
+    { "id": "dt07", "date": "2026-03-28", "type": "expense", "category": "文書", "item": "布章及證書印刷", "amount": 320, "method": "現金", "byName": "何嘉欣", "note": "示範：趕喺 31/3 童軍年度前入帳" },
+    { "id": "dt08", "date": "2026-05-10", "type": "income", "category": "活動費", "item": "夏季水上活動收費", "amount": 1440, "method": "轉數快 FPS", "byName": "黃美儀", "note": "示範" },
+    { "id": "dt09", "date": "2026-06-21", "type": "expense", "category": "活動", "item": "獨木舟租用", "amount": 1200, "method": "銀行轉賬", "byName": "張家俊", "note": "示範" },
+    { "id": "dt10", "date": "2026-08-29", "type": "expense", "category": "膳食", "item": "AGM 茶點", "amount": 260, "method": "現金", "byName": "黃美儀", "note": "示範：AGM 當日" },
+    { "id": "dt11", "date": "2026-09-06", "type": "income", "category": "團費", "item": "團費（8 人）", "amount": 2880, "method": "PayMe", "byName": "黃美儀", "note": "示範：新年度團費" },
+    { "id": "dt12", "date": "2026-09-12", "type": "expense", "category": "物資", "item": "天幕修理", "amount": 180, "method": "現金", "byName": "林志強", "note": "示範" }
+  ],
+  "claims": [
+    { "id": "dc01", "date": "2026-09-11", "type": "expense", "category": "交通", "item": "團購物資運輸費", "amount": 150, "byName": "陳大文", "memberId": "dm01", "method": "現金（已墊支）", "receipt": true, "status": "pending", "note": "示範：待司庫批核", "requestedAt": "2026-09-11 21:30" },
+    { "id": "dc02", "date": "2026-09-08", "type": "income", "category": "售賣物品", "item": "賣出二手營燈 2 個", "amount": 120, "byName": "何嘉欣", "memberId": "dm05", "method": "現金", "receipt": false, "status": "approved", "reviewedBy": "exco", "reviewedAt": "2026-09-09 10:00", "note": "示範：已批核並自動入帳" }
+  ],
+  "fees": [
+    { "id": "df01", "memberId": "dm01", "period": "2026-27", "label": "2026–27 年度團費", "amount": 360, "due": "2026-09-30", "paid": true, "paidDate": "2026-09-02", "method": "PayMe" },
+    { "id": "df02", "memberId": "dm02", "period": "2026-27", "label": "2026–27 年度團費", "amount": 360, "due": "2026-09-30", "paid": true, "paidDate": "2026-09-03", "method": "轉數快 FPS" },
+    { "id": "df03", "memberId": "dm03", "period": "2026-27", "label": "2026–27 年度團費", "amount": 360, "due": "2026-09-30", "paid": true, "paidDate": "2026-09-03", "method": "轉數快 FPS" },
+    { "id": "df04", "memberId": "dm04", "period": "2026-27", "label": "2026–27 年度團費", "amount": 360, "due": "2026-09-30", "paid": false },
+    { "id": "df05", "memberId": "dm05", "period": "2026-27", "label": "2026–27 年度團費", "amount": 360, "due": "2026-09-30", "paid": false },
+    { "id": "df06", "memberId": "dm06", "period": "2026-27", "label": "2026–27 年度團費", "amount": 360, "due": "2026-08-31", "paid": false },
+    { "id": "df07", "memberId": "dm07", "period": "2026-27", "label": "2026–27 年度團費", "amount": 360, "due": "2026-09-30", "paid": true, "paidDate": "2026-09-06", "method": "現金" },
+    { "id": "df08", "memberId": "dm08", "period": "2026-27", "label": "2026–27 年度團費", "amount": 360, "due": "2026-09-30", "paid": false },
+    { "id": "df09", "memberId": "dm09", "period": "2026-27", "label": "2026–27 年度團費（按月計）", "amount": 30, "due": "2026-09-30", "paid": false, "note": "新團員首年按月計算" },
+    { "id": "df10", "memberId": "dm10", "period": "2026-27", "label": "2026–27 年度團費", "amount": 360, "due": "2026-09-30", "paid": false, "note": "休假中" }
+  ],
+  "budgets": [
+    { "id": "db01", "activity": "秋季露營 2026", "date": "2026-10-24", "items": [
+      { "name": "營地費用", "planned": 1800, "actual": 1800 },
+      { "name": "交通", "planned": 600, "actual": 520 },
+      { "name": "膳食", "planned": 1500, "actual": 0 },
+      { "name": "雜項", "planned": 300, "actual": 0 }
+    ], "incomePlanned": 3600, "note": "示範" },
+    { "id": "db02", "activity": "旅慶 2026", "date": "2026-08-29", "items": [
+      { "name": "場地佈置", "planned": 300, "actual": 260 },
+      { "name": "紀念品", "planned": 800, "actual": 750 }
+    ], "incomePlanned": 0, "note": "示範" }
+  ]
+}

@@ -473,7 +473,7 @@ function doPost(e) {
           if (m && m.status !== 'alumni' && (textOf(m.ymis).toLowerCase() === loginName2 || textOf(m.email).toLowerCase() === loginName2)) { rec2 = m; return true; }
           return false;
         });
-        if (!rec2 || changeSession.id !== textOf(rec2.id)) return { success: false, error: '登入帳戶與操作帳戶不一致' };
+        if (!rec2 || (!changeSession.portal && changeSession.id !== textOf(rec2.id))) return { success: false, error: '登入帳戶與操作帳戶不一致' };
         var oldRecord = rec2 && (rec2.pw || rec2.hubPw);
         var oldOk = false;
         if (rec2 && oldRecord && oldRecord.algo === 'pbkdf2-sha256') oldOk = verifyPasswordRecord(oldRecord, textOf(body.oldPassword));

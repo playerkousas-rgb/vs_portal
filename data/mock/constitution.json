@@ -1,0 +1,53 @@
+{
+  "schema": 2,
+  "unitCode": "MOCK",
+  "version": "1.0-demo",
+  "status": "published",
+  "updated": "2026-09-01",
+  "translated": "2026-09-01",
+  "_comment": "示範團章（節錄 3 章），只作教學用途；真實團章請用自己旅團嘅 data/units/<編號>/constitution.json",
+  "title": { "zh": "團章（示範）", "en": "Constitution (Demo)" },
+  "header": {
+    "zh": ["香港童軍總會", "示範地域", "示範旅團深資童軍團", "示範主辦機構"],
+    "en": ["Scout Association of Hong Kong", "Demo Region", "Demo Venture Scout Unit", "Demo Sponsoring Body"]
+  },
+  "preamble": {
+    "zh": "呢份係示範團章，用嚟試編輯、發布版本、輸出 Word / PDF 同 QR Code。真實使用時請以自己旅團嘅團章為準。",
+    "en": "This is a demo constitution for testing editing, publishing, Word/PDF export and QR codes."
+  },
+  "chapters": [
+    {
+      "id": "mc1",
+      "heading": { "zh": "1. 名稱（示範）", "en": "1. Name (Demo)" },
+      "articles": [
+        { "id": "ma1", "zh": "本團定名為「示範旅團深資童軍團」。", "en": "The Unit shall be titled the “Demo Venture Scout Unit”." }
+      ]
+    },
+    {
+      "id": "mc2",
+      "heading": { "zh": "2. 團員大會（示範）", "en": "2. General Meeting (Demo)" },
+      "articles": [
+        { "id": "ma2", "zh": "團員大會每年召開一次，定於每年 7 至 8 月舉行。", "en": "The General Meeting shall be held once a year, between July and August.",
+          "items": [
+            { "zh": "（甲）通過工作報告；", "en": "Approve the work report;" },
+            { "zh": "（乙）通過財務年結。", "en": "Approve the annual financial report." }
+          ] }
+      ]
+    },
+    {
+      "id": "mc3",
+      "heading": { "zh": "3. 財務管理（示範）", "en": "3. Financial Management (Demo)" },
+      "articles": [
+        { "id": "ma3", "zh": "司庫須保存所有收支紀錄及單據，並於每次執委會會議提交月結。", "en": "The Treasurer shall keep records of all income and expenditure and present a monthly report at each Executive Committee meeting." }
+      ]
+    }
+  ],
+  "appendices": [
+    { "id": "mapx", "heading": { "zh": "附件 A（示範）", "en": "Appendix A (Demo)" },
+      "blocks": [ { "type": "p", "zh": "制服規定詳見旅團通告。", "en": "Uniform requirements are as announced by the Unit." } ] }
+  ],
+  "footer": { "zh": "示範旅團團章（示範資料）", "en": "Demo Unit Constitution (Demo data)" },
+  "history": [
+    { "version": "1.0-demo", "date": "2026-09-01", "by": "system", "note": "示範版本" }
+  ]
+}

@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-Hant-HK">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#5E1826">
+<title>手機記一筆 · 執委管理系統</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%237B2233'/%3E%3Ctext x='32' y='43' font-family='Helvetica,Arial,sans-serif' font-size='30' font-weight='bold' fill='white' text-anchor='middle'%3E82%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="./assets/css/main.css">
+<style>
+  body{ background:#F7F3F4; padding-bottom:40px }
+  .pe-top{ background:var(--brand-800); color:#fff; padding:14px 16px; border-radius:0 0 18px 18px }
+  .pe-top .logo{ width:38px;height:38px;border-radius:10px;background:var(--brand-600); display:grid;place-items:center; font-weight:800 }
+  .pe-wrap{ max-width:640px; margin:0 auto; padding:0 14px }
+  .pe-card{ background:#fff; border-radius:16px; box-shadow:0 4px 18px rgba(94,24,38,.10); padding:16px; margin-top:14px }
+  .seg-big{ display:grid; grid-template-columns:1fr 1fr; gap:8px }
+  .seg-big button{ padding:13px; border-radius:12px; border:1.5px solid var(--line); background:#fff; font-weight:700; font-size:15px; color:var(--ink-2) }
+  .seg-big button[aria-pressed="true"]{ border-color:var(--brand-700); background:var(--brand-50); color:var(--brand-800) }
+  .pe-field{ margin-bottom:13px }
+  .pe-field > label{ display:block; font-size:13px; font-weight:700; margin-bottom:5px; color:var(--ink-2) }
+  .pe-err{ color:var(--danger); font-size:12.5px; margin-top:5px; display:none }
+  .pe-big-btn{ width:100%; padding:15px; border-radius:14px; font-size:16.5px; font-weight:800 }
+  .pe-done{ text-align:center; padding:26px 18px }
+  .pe-done .tick{ width:64px;height:64px;border-radius:50%;background:var(--ok-bg); color:var(--ok); display:grid;place-items:center; margin:0 auto 12px }
+  .pe-actions{ display:grid; gap:8px; margin-top:14px }
+  @media print{ .no-print{ display:none } }
+</style>
+</head>
+<body>
+<div id="app"><div style="padding:48px;text-align:center;color:#9A868C">載入中…</div></div>
+<script type="module" src="./assets/js/public-entry.js"></script>
+</body>
+</html>

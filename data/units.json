@@ -1,0 +1,25 @@
+{
+  "schema": 2,
+  "updated": "2026-09-18",
+  "_comment": "旅團 Registry —— 多旅團平台嘅註冊處。旅團名單就喺呢個檔登記（code／name／nameEn／short／section 等公開資料），瀏覽器直接讀靜態檔，唔使靠後端 API 都睇到；各旅團嘅後端 /exec 同 API Key 就放 Vercel 環境變數 TROOP_<編號>_BACKEND／TROOP_<編號>_APIKEY（唔可以 commit 落 Git），由伺服器端轉發。加完 JSON＋變數之後 Redeploy 即生效。呢個檔唔可以放：後端網址、API Key、團員名冊、帳目等真實資料。",
+  "defaultUnit": "",
+  "units": {
+    "0082": {
+      "code": "0082",
+      "name": "第八十二旅深資童軍團",
+      "nameEn": "",
+      "short": "0082venture",
+      "section": "深資童軍",
+      "region": "",
+      "sponsor": "",
+      "address": ""
+    }
+  },
+  "admin": {
+    "name": "平台管理員收件匣（Apps Script Web App）",
+    "submitUrl": "https://script.google.com/macros/s/AKfycbxj5BDDGgjs559smkK4Z5aYImWYeXbN5af8U1ObON0z9WnsN6QJW4I1XWolhs5kQ_H-UQ/exec",
+    "_howto": "新旅團喺旅團選擇畫面撳「新旅團申請接入」，資料會經同源 /api/proxy（action=submitRegistration）由伺服器端 POST 去呢度（同 VSBADGE 一條路，目的地固定）。管理員收到之後：① 喺呢個檔 units 加新旅團 entry（code／name／section 等公開資料；唔使起 data/units/<編號>/ 資料夾 —— 新旅團由空白資料庫開始，資料全部住喺自己嘅 Google Sheet）；② 喺 Vercel 加 TROOP_<編號>_BACKEND／TROOP_<編號>_APIKEY；③ 撳 Redeploy。一個後端、兩個前端：該 /exec 同時係進度資料所在，旅團登入之後喺「進度」直接讀寫。",
+    "_payload": "{ troopId, troopName, scriptUrl, apiKey, appType:'82venture', appName:'執委管理系統', mainSystemUrl, contact, note, at }",
+    "_note": "呢個 URL 係共用嘅中央管理員收件匣（api/proxy.js 嘅 SCOUT_ADMIN_API）。收件匣唔會回執：POST 過得去就當送到；只有連線／逾時或者明確回 success:false 先當失敗。如果你嘅 admin GAS 有按 appType 過濾，記得加 '82venture'。"
+  }
+}

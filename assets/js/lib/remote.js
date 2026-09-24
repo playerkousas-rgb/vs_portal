@@ -863,6 +863,15 @@ export async function backendHealth() {
     out.steps.push('如果其他裝置睇唔到，十成係嗰部機有舊 cache：撳「重新連線」或者重新整理一次就會拉到後端最新版本。');
     return out;
   }
+  if (ld.ok && ld.found && out.canRepair) {
+    /* 讀得到，但分頁累積咗舊版本段／垃圾行 —— 而家仲頂得住（新版按版本分組讀），
+       但分頁會越嚟越大、最後讀寫一齊死。所以係「提醒」而唔係「讀唔到」。 */
+    out.level = 'warn';
+    out.title = '後端讀得到，但分頁有舊版本段／暫存垃圾（唔清遲早會讀唔到）';
+    out.steps.push('撳「🛠 修復後端」清走舊版本段同暫存垃圾行（安全，最新一套完整資料一行都唔會掂）。');
+    out.steps.push('修完其他人／無痕登入應該即刻見到同一份資料。');
+    return out;
+  }
   if (ld.ok && !ld.found) {
     out.level = 'warn';
     out.title = '後端連得上，但入面**完全冇資料**（保存過嘅嘢從未上到後端）';

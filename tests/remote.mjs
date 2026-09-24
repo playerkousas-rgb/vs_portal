@@ -1758,6 +1758,28 @@ section('★ 搶救三寶（前端契約：後端讀唔到 → 檢查 → 修復
   ok('★ 回報覆蓋咗邊個舊版本（有事都追得返）',
     forced.overwroteVersion === 'V1' && forced.version === 'V-NEW', JSON.stringify(forced).slice(0, 160));
 
+  /* ---- ③b 「讀得到但分頁有垃圾」→ 唔可以嚇人話「讀唔到」（要如實講「仲頂得住」） ---- */
+  hits = []; mode3 = 'broken-junkonly';
+  {
+    /* 頭先修復完已經清乾淨，所以呢度砌返「讀得到 ＋ 有舊段」嘅實況 */
+    const memF = globalThis.fetch;
+    globalThis.fetch = async (url, init = {}) => {
+      const clean = String(url).split('?')[0].replace(/^\.?\//, '');
+      if (clean !== 'api/proxy') return { ok: false, status: 404, text: async () => '404' };
+      const body = JSON.parse(init.body || '{}');
+      hits.push(body.action);
+      if (body.action === 'status') return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, msg: '深資童軍管理系統 後端正常', backendVersion: 'v2.7.2', spreadsheet: 'VS 第八十二旅 資料庫' }) };
+      if (body.action === 'dbInfo') return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, found: true, bytes: 4096, version: 'V1', counts: { members: 2 }, versions: 2, staleRows: 1, stagingRows: 0 }) };
+      return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, found: true, version: 'V1', bytes: 2048, db: { schema: 2, unitCode: '0082', members: [{ id: 'm1', name: '陳大文' }] } }) };
+    };
+    const hJunk = await remote3.backendHealth();
+    globalThis.fetch = memF;
+    ok('★ 讀得到但分頁有舊段／垃圾 → 判 warn（唔會嚇人話「讀唔到」）',
+      hJunk.level === 'warn' && /讀得到/.test(hJunk.title) && !/讀唔到|讀唔到（/.test(hJunk.title.replace('唔清遲早會讀唔到', '')),
+      JSON.stringify({ level: hJunk.level, title: hJunk.title }));
+    ok('★ 提醒仍然叫人修復（趁未壞）', hJunk.canRepair === true && hJunk.steps.some(x => /修復後端/.test(x)), JSON.stringify(hJunk.steps));
+  }
+
   /* ---- ④ 後端健康 → 唔應該叫人多此一舉 ---- */
   hits = []; mode3 = 'healthy';
   const hOk = await remote3.backendHealth();

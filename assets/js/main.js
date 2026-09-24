@@ -57,7 +57,7 @@ const NAV = [
   { id: 'inventory', label: '物資', icon: 'grid', badge: () => pendingLoans().length },
   { id: 'progress', label: '進度', icon: 'chart' },
   { id: 'notices', label: '通告', icon: 'megaphone', badge: () => (load()?.notices || []).filter(n => n.status === 'published').length },
-  { id: 'links', label: '成員連結', icon: 'share' },
+  { id: 'links', label: '公開資料', icon: 'share' },   /* ★ 2026-09-25 團長：「成員連結」改名「公開資料」 */
   { id: 'constitution', label: '團章', icon: 'book' },
   { id: 'docs', label: '教學', icon: 'note' },
   { id: 'admin', label: '身份與系統', icon: 'shield' }
@@ -89,7 +89,35 @@ async function boot() {
     bootError = e;
     return renderFatal(e);
   }
-  window.addEventListener('hashchange', render);
+  /* ★ 2026-09-25 團長：「每個分頁有他的儲存按鈕，如果離開分頁前有未儲的東西…
+     會提示用戶有未暫存遊覽器的改動」。
+     · 未撳分頁「儲存」嘅表單改動 ＝ 草稿（guard.js）→ 離開前問，揀「放棄」就清走
+     · 已經撳咗「儲存」（寫入瀏覽器 db）嘅改動 ＝ 保留，等頂部「儲存到後端」寫入 */
+  let guardHash = location.hash;
+  let guardBypass = false;
+  window.addEventListener('hashchange', async () => {
+    if (guardBypass) { guardBypass = false; guardHash = location.hash; render(); return; }
+    const { activeDrafts, discardActiveDrafts } = await import('./lib/guard.js');
+    const drafts = activeDrafts();
+    if (!drafts.length || guardHash === location.hash) { guardHash = location.hash; render(); return; }
+    const pendAcc = remoteApi?.pendingAccounts?.() || 0;
+    const r = await modal({
+      title: '呢個分頁有未儲存嘅改動',
+      body: `<div class="note-box warn">${icon('alert', 15)}<div>
+          你喺呢個分頁改咗嘢但<b>未撳「儲存」</b>（${drafts.length} 份草稿）。
+          <div class="xs mt-4">已經撳咗「儲存」嘅改動<b>唔受影響</b> —— 佢哋已寫入呢部機，等頂部「儲存到後端」寫入後端。</div>
+          ${pendAcc ? `<div class="xs mt-4" style="color:var(--danger)">⚠ 另外有 <b>${pendAcc}</b> 個帳戶改動未寫入後端 —— 未寫入，佢哋喺其他裝置登唔到。</div>` : ''}
+        </div></div>`,
+      actions: [
+        { label: '留低繼續改', class: 'btn-primary', value: 'stay' },
+        { label: '離開（放棄未儲存改動）', class: 'btn-accent', value: 'drop' }
+      ]
+    });
+    if (r === 'stay') { guardBypass = true; location.hash = guardHash; return; }
+    discardActiveDrafts();
+    guardHash = location.hash;
+    render();
+  });
   window.addEventListener('v82:refresh', render);
   window.addEventListener('v82:sync', paintSyncChip);
 
@@ -145,14 +173,9 @@ async function syncBoot() {
     return { ok: false, error: '同步模組載入失敗 —— 請重新整理頁面再試' };
   }
   const store = await import('./lib/store.js');
-  /* 本機一有改動 → 自動排一次寫入後端（帳戶級改動＝即刻）。
-     remote.scheduleSave() 收到 { critical } 就知道要唔要等 debounce。 */
+  /* 本機一有改動 → 淨係更新頂部狀態（「儲存到後端（N）」）。
+     ★ 2026-09-25 團長定案：頂部一粒掣係**唯一**寫入路，其他一律暫存瀏覽器。 */
   store.setSaveHook((info) => remoteApi.scheduleSave(info));
-  /* 自動儲存撞格嗰陣嘅確認框（同一個對話框，唔好搞出第二套） */
-  remoteApi.setAutoConflictResolver(async (args) => {
-    const { resolveConflictsDialog } = await import('./views/syncdialog.js');
-    return resolveConflictsDialog(args);
-  });
   /* 同一個瀏覽器另一個分頁改咗嘢 → 併入本機 ＋ 重畫（唔使重新整理） */
   store.bindCrossTabSync((info) => {
     paintSyncChip();
@@ -171,7 +194,6 @@ async function syncBoot() {
        呢個 net 只係擋「改完 1 秒內就閂」嗰種情況。 */
     window.addEventListener('beforeunload', (e) => {
       if (remoteApi?.hasPending?.()) {
-        try { remoteApi.flushAutoSave?.(); } catch { /* ignore */ }
         e.preventDefault();
         e.returnValue = '仲有改動未儲存到後端，真係要離開？';
         return e.returnValue;
@@ -257,7 +279,12 @@ function loginSyncBanner() {
 
   const s = remoteApi.syncState();
   if (s.state === 'pending' && remoteApi.hasPending()) {
-    return `<div class="note-box warn mb-12">${icon('clock', 15)}<div>呢部機有改動仲未寫入後端 —— 登入後系統會自動寫；想即刻寫就撳右上角「即刻儲存」。</div>${prov}</div>`;
+    const acc = remoteApi.pendingAccounts?.() || 0;
+    return `<div class="note-box ${acc ? 'err' : 'warn'} mb-12">${icon('clock', 15)}<div>`
+      + (acc
+        ? `呢部機有 <b>${acc}</b> 個<b>帳戶改動</b>未寫入後端 —— <b>佢哋喺其他裝置登唔到</b>。登入後撳右上角「儲存到後端」。`
+        : '呢部機有改動仲未寫入後端 —— 登入後撳右上角「儲存到後端」。')
+      + `</div>${prov}</div>`;
   }
   return `<div class="mb-12">${prov}</div>`;
 }
@@ -279,6 +306,9 @@ function paintSyncChip() {
 
   const s = remoteApi.syncState();
   const pending = Number(tryLoad()?.sync?.pending || 0);
+  /* ★ 2026-09-25：帳戶級改動（開人／設密碼／改身份）未寫入後端之前，
+     其他裝置用嗰個 email／YMIS **登唔到**。呢個數要独立顯示，唔好溝埋入「N 項」入面。 */
+  const pendAcc = remoteApi.pendingAccounts?.() || 0;
   const map = {
     saving:  ['b-warn', 'cloud', '儲存緊…'],
     saved:   ['b-ok', 'check', '已存到後端'],
@@ -291,14 +321,17 @@ function paintSyncChip() {
   };
   let state = s.state;
   if (pending > 0 && (state === 'idle' || state === 'saved')) state = 'pending';
-  const [cls, ic, label] = map[state] || map.idle;
+  let [cls, ic, label] = map[state] || map.idle;
+  /* 有帳戶改動未寫入 → 紅色，因為後果係「有人登唔到」，唔係「遲啲先同步到」 */
+  if (pendAcc > 0) { cls = 'b-danger'; ic = 'alert'; label = `${pendAcc} 個帳戶未寫入後端`; }
   const needSave = pending > 0;
   const unreachable = state === 'unreachable';
-  /* ★ 2026-09-24：自動儲存已經會自己寫。呢粒掣而家係「唔想等，即刻寫」，
-     唔再係**唯一**嘅寫入路 —— 用字要講清楚，唔好令人以為唔撳就冇寫入。 */
-  const actLabel = needSave ? `即刻儲存${pending > 1 ? `（${pending}）` : ''}` : unreachable ? '重試' : '重新載入';
+  /* ★ 2026-09-25 團長定案：呢粒係**全系統唯一**寫入後端嘅掣。其他一切都係暫存瀏覽器。 */
+  const actLabel = needSave ? `儲存到後端${pending > 1 ? `（${pending}）` : ''}` : unreachable ? '重試' : '重新載入';
   const actTitle = needSave
-    ? `改動會自動寫入後端；呢粒掣係「唔想等，即刻寫」。寫入前先核對後端版本，撞嘅格會問你。`
+    ? (pendAcc
+      ? `寫入後端（唯一寫入路）。⚠ 當中 ${pendAcc} 個係帳戶改動 —— 未寫入，佢哋喺其他裝置登唔到。`
+      : '寫入後端（唯一寫入路）。寫入前先核對後端版本，撞嘅格會問你。')
     : '由後端攞返最新資料（冇未儲存改動，唔會丟嘢）';
   el.innerHTML = `<span class="badge ${cls}" title="${esc(s.msg || label)}">${icon(ic, 12)} ${esc(label)}</span>
     <button class="btn btn-xs ${needSave ? 'btn-primary' : ''}" id="syncActBtn" title="${esc(actTitle)}" ${s.state === 'saving' ? 'disabled' : ''}>
@@ -1477,14 +1510,6 @@ function render() {
         </div>
       </div>
 
-      <div style="padding:10px 10px 0">
-        <button type="button" id="unitSwitch" class="unit-chip" style="width:100%;justify-content:space-between"
-          title="切換旅團（示範模式下揀真實旅團＝離開示範）">
-          <span>${icon('flag', 13)} ${esc(currentUnit())}</span>
-          <span class="faint xs">${icon('chevronR', 13)}</span>
-        </button>
-      </div>
-
       <div class="sb-nav">
         ${NAV.map(n => sidebarItem(n, r.section)).join('')}
       </div>
@@ -1684,9 +1709,6 @@ document.addEventListener('click', async e => {
   if (!(t instanceof HTMLElement)) return;
   if (t.id === 'mockExit') { exitMock(); return; }
   if (t.id === 'mockBackReal') { exitMockToUnit(); return; }
-  /* 側邊欄旅團徽章＝切換旅團入口（unitPicker 會列晒登記咗嘅旅團，
-     示範模式揀真實旅團會即時離開示範 —— 逃生門之一） */
-  if (t.closest('#unitSwitch')) { unitPicker(); return; }
   if (t.id === 'mockReset') {
     if (await confirmDlg({ title: '重設示範資料', okText: '確定重設', message: '會把示範資料還原成 <code>data/mock/</code> 嘅初始內容。' })) {
       clearMockData();

@@ -9,7 +9,7 @@
 
 import { load, commit, collection, add, update, remove, exportAll, importAll, resetToSeed, wipe, clearMockData, audit, isMock, currentUnit, enterMock, exitMock, switchUnit, setUnitCode } from '../lib/store.js';
 import {
-  ROLES, PERMS, PERM_GROUPS, accounts, accountById, can, canChangePasswordOf, canManageRole,
+  ROLES, accounts, accountById, can, canChangePasswordOf, canManageRole,
   createAccount, createAccountServer, changePassword, changeUsername, changeOwnPassword, setAccountActive, deleteAccount, deleteAccountServer, resetAccountPasswordServer, restoreAccountServer,
   current, currentRole, isSuper, isMe, displayName, RESERVED_USERNAMES, TEMP_PASSWORD,
   setMemberIdentity, setMemberHubPassword, canClaimChief, claimChief, openMemberAccount
@@ -37,7 +37,8 @@ const PASSWORD_RULES = [
 ];
 
 export function render(params) {
-  if (['accounts', 'perms', 'data', 'unit', 'audit', 'mock'].includes(params.id)) tab = params.id;
+  /* ★ 2026-09-25 團長：「權限總表由身份與帳號 移去 用戶與身份」→ 呢度唔再有 perms 分頁 */
+  if (['accounts', 'data', 'unit', 'audit', 'mock'].includes(params.id)) tab = params.id;
   if (tab === 'mock' && !isSuper()) tab = 'accounts';
   return `
   ${pageHead({
@@ -47,14 +48,12 @@ export function render(params) {
   })}
   ${tabs([
     ['accounts', '身份與帳號', activeMembers().length],
-    ['perms', '權限總表'],
     ['unit', '旅團設定'],
     ['data', '資料管理'],
     ['audit', '操作紀錄'],
     ...(isSuper() ? [['mock', '示範資料（MOCK）']] : [])
   ], tab)}
-  ${tab === 'perms' ? permsView()
-    : tab === 'unit' ? unitView()
+  ${tab === 'unit' ? unitView()
     : tab === 'data' ? dataView()
     : tab === 'audit' ? auditView()
     : tab === 'mock' ? mockView()
@@ -172,39 +171,6 @@ function accountRow(a) {
 }
 
 /* ============================================================
-   權限總表
-   ============================================================ */
-function permsView() {
-  const cols = isSuper() ? ['super', 'chief', 'leader', 'exco'] : (currentRole() === 'chief' ? ['chief', 'leader', 'exco', 'member'] : ['leader', 'exco']);
-  return `
-  <div class="card">
-    <div class="card-head"><div><div class="card-title">權限總表</div>
-      <div class="card-sub">✓ 可以　<span class="faint">自</span> 只限自己　— 唔可以${isSuper() ? '' : '（只顯示你可見嘅身份）'}</div></div></div>
-    <div class="scroll-x">
-      <table class="table table-compact">
-        <thead><tr><th style="min-width:200px">功能</th>
-          ${cols.map(c => `<th class="center" style="width:120px">${ROLES[c].name}</th>`).join('')}</tr></thead>
-        <tbody>
-          ${PERM_GROUPS.map(g => `
-            <tr><td colspan="${cols.length + 1}" style="background:#FBF6F7;font-weight:700;font-size:12px;letter-spacing:.04em;color:var(--faint);padding:8px 14px">${esc(g.title)}</td></tr>
-            ${g.items.map(([k, label]) => `<tr>
-              <td>${esc(label)}<div class="xs faint mono">${k}</div></td>
-              ${cols.map(role => {
-                const v = (PERMS[k] || {})[role];
-                return `<td class="perm-cell">${v === 1
-                  ? `<span class="perm-yes">${icon('check', 17)}</span>`
-                  : v === 'self' ? '<span class="badge b-info">自己</span>'
-                  : v === 'own' ? '<span class="badge b-info">自己建立</span>'
-                  : '<span class="perm-no">—</span>'}</td>`;
-              }).join('')}
-            </tr>`).join('')}`).join('')}
-        </tbody>
-      </table>
-    </div>
-  </div>`;
-}
-
-/* ============================================================
    旅團設定
    ============================================================ */
 function unitView() {
@@ -310,100 +276,86 @@ function unitView() {
 /* ============================================================
    資料管理
    ============================================================ */
+/* ★ 2026-09-25 團長：「資料管理 只須要三樣嘢」
+   ① 插入自己嘅 Sheet　② 總表同步　③ 儲存與備份
+   其餘嘅嘢（重設、統計、改密碼、備份提醒）已經收埋或者搬走 ——
+   呢一頁唔應該再係一個百寶袋。 */
 function dataView() {
   const db = load();
+  const s = db.sync || {};
+  const pendAcc = s.pendingAccounts || 0;
+  const wired = !!db.backend?.url;
+  const n = (a) => (Array.isArray(a) ? a.length : 0);
   return `
-  <div class="grid g-2-1">
-    <div class="col gap-16">
-      <div class="card">
-        <div class="card-head"><div><div class="card-title">備份與還原</div>
-          <div class="card-sub">資料存喺呢個瀏覽器；換機或換瀏覽器前記得匯出</div></div></div>
-        <div style="padding:16px 18px">
-          <div class="row gap-8 wrap">
-            <button class="btn" data-act="export-json">${icon('download', 16)} 匯出全部資料（JSON）</button>
-            <button class="btn" data-act="import-json">${icon('upload', 16)} 匯入備份</button>
-            <button class="btn" data-act="export-csv">${icon('download', 16)} 匯出帳目 CSV</button>
-            <button class="btn" data-act="export-members">${icon('download', 16)} 匯出團員 CSV</button>
-          </div>
-          <div class="hint mt-12">匯入時會檢查備份係「真實」定「示範」——示範備份唔可以匯入真實資料庫，防止污染。</div>
-        </div>
-      </div>
+  <div class="note-box mb-16">${icon('cloud', 15)}<div>
+    <b>呢一頁淨係三樣嘢。</b>設定一次之後，全團用同一套 —— 唔使每人自己set。
+    <div class="xs mt-4">① <b>插入自己嘅 Sheet</b>＝把舊 Google Sheet 嘅資料搬入嚟　
+      ② <b>總表同步</b>＝接駁後端（Apps Script）　
+      ③ <b>儲存與備份</b>＝匯出／匯入 JSON</div>
+    ${wired ? '' : '<div class="xs mt-4" style="color:var(--warn)">⚠ 未接駁後端 —— 資料而家只存喺呢部機嘅瀏覽器。</div>'}
+  </div></div>
 
-      <div class="card">
-        <div class="card-head"><div><div class="card-title">表格與同步（進階）</div>
-          <div class="card-sub">欄位已經搬去各自嘅分頁；呢度淨係放「插入自己嘅 Sheet」同「總表同步」</div></div></div>
-        <div style="padding:16px 18px">
-          <div class="col gap-8">
-            <button class="btn btn-block" data-go="#/tables/source">${icon('link', 16)} 插入旅團自己嘅 Google Sheet（匯入舊資料）</button>
-            <button class="btn btn-block" data-go="#/tables/sync">${icon('cloud', 16)} 總表同步（Apps Script / Code.gs）</button>
-            <button class="btn btn-block" data-go="#/tables/data">${icon('table', 16)} 儲存用量與逐表匯出</button>
-          </div>
-          <div class="hint mt-12">
-            想改某個表嘅欄位？去返嗰個分頁按「<b>欄位</b>」掣就得：
-            財務（帳目）、用戶、物資、通告、會議 每一頁都有。
-          </div>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-head"><div><div class="card-title">重設</div></div></div>
-        <div style="padding:16px 18px">
-          <div class="row gap-8 wrap">
-            <button class="btn" data-act="reset-seed">${icon('refresh', 16)} 還原做 data/ 檔案嘅初始資料</button>
-            <button class="btn btn-danger" data-act="wipe">${icon('trash', 16)} 清空本旅團所有資料</button>
-          </div>
-          <div class="hint mt-12">「還原」會用 <code>${esc(db.meta?.seedSource || 'data/units/…/')}</code> 重新種入（本機改動會消失）；「清空」會留低空嘅資料庫。</div>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-head"><div><div class="card-title">資料統計</div></div></div>
-        <div style="padding:16px 18px">
-          <div class="grid g-3" style="gap:10px">
-            <div><div class="xs faint">團員</div><div class="semibold">${db.members.length}</div></div>
-            <div><div class="xs faint">會議</div><div class="semibold">${db.meetings.length}</div></div>
-            <div><div class="xs faint">帳目</div><div class="semibold">${db.transactions.length}</div></div>
-            <div><div class="xs faint">收費項目</div><div class="semibold">${db.fees.length}</div></div>
-            <div><div class="xs faint">申報</div><div class="semibold">${db.claims.length}</div></div>
-            <div><div class="xs faint">物資</div><div class="semibold">${db.invItems.length}</div></div>
-            <div><div class="xs faint">借用紀錄</div><div class="semibold">${db.invLoans.length}</div></div>
-            <div><div class="xs faint">團章章節</div><div class="semibold">${(db.constitution.chapters || []).length}</div></div>
-            <div><div class="xs faint">帳戶</div><div class="semibold">${db.accounts.length}</div></div>
-          </div>
-        </div>
+  <div class="grid g-3">
+    <div class="card">
+      <div class="card-head"><div><div class="card-title">① 插入自己嘅 Sheet</div>
+        <div class="card-sub">把旅團現有嘅 Google Sheet 搬入嚟</div></div></div>
+      <div style="padding:16px 18px" class="col gap-10">
+        <p class="sm muted">貼上你嘅 Sheet 連結，揀邊個工作表對邊個表（團員／帳目／物資…），
+          系統會自動對應欄位。對應唔到嘅欄位會留空，唔會亂填。</p>
+        <button class="btn btn-block btn-primary" data-go="#/tables/source">${icon('link', 16)} 打開「插入自己嘅 Sheet」</button>
+        <div class="hint">只做一次。之後改欄位去各自分頁撳「<b>欄位</b>」掣。</div>
       </div>
     </div>
 
-    <div class="col gap-16">
-      <div class="card">
-        <div class="card-head"><div class="card-title">自己改密碼</div></div>
-        <div style="padding:16px 18px">
-          ${currentRole() === 'super'
-            ? noteBox('超管帳戶嘅密碼係固定嘅，冇人可以更改（包括超管自己）。', 'warn')
-            : `<button class="btn btn-block btn-primary" data-act="own-pw">${icon('key', 15)} 更改我嘅密碼</button>`}
-        </div>
+    <div class="card">
+      <div class="card-head"><div><div class="card-title">② 總表同步</div>
+        <div class="card-sub">接駁 Google Sheet 後端（Apps Script）</div></div></div>
+      <div style="padding:16px 18px" class="col gap-10">
+        <p class="sm muted">資料真正嘅家。<b>寫入後端只有一條路</b>：頂部嗰粒「<b>儲存到後端</b>」。
+          其他任何時候，改動都只係暫存喺呢部機。</p>
+        <div class="kv-row sm"><span>後端</span><span>${wired ? `<span class="badge b-ok">已接駁</span>` : `<span class="badge b-warn">未接駁</span>`}</span></div>
+        <div class="kv-row sm"><span>未寫入後端</span><span>${s.pending ? `<b style="color:${pendAcc ? 'var(--danger)' : 'var(--warn)'}">${s.pending} 項</b>${pendAcc ? `（包括 <b>${pendAcc}</b> 個帳戶）` : ''}` : '<span class="badge b-ok">全部已儲存</span>'}</span></div>
+        <button class="btn btn-block btn-primary" data-go="#/tables/sync">${icon('cloud', 16)} 打開「總表同步」</button>
       </div>
-      <div class="card">
-        <div class="card-head"><div class="card-title">備份提醒</div></div>
-        <div style="padding:16px 18px">
-          <p class="sm muted">本系統係純前端（無伺服器），資料只存喺你嘅瀏覽器。建議：</p>
-          <ul class="sm muted" style="padding-left:18px;line-height:1.9">
-            <li>每次開完會 → 匯出一次 JSON 備份</li>
-            <li>備份放落旅團共用雲端硬碟</li>
-            <li>換手機／換電腦記得先匯入備份</li>
-          </ul>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div><div class="card-title">③ 儲存與備份</div>
+        <div class="card-sub">匯出／匯入 JSON、逐表 CSV</div></div></div>
+      <div style="padding:16px 18px" class="col gap-10">
+        <p class="sm muted">後端係資料嘅家；JSON 備份係<b>你自己嘅保險</b>。
+          換機、換瀏覽器、或者後端出問題嗰陣用得著。</p>
+        <div class="row gap-8 wrap">
+          <button class="btn" data-act="export-json">${icon('download', 15)} 匯出全部（JSON）</button>
+          <button class="btn" data-act="import-json">${icon('upload', 15)} 匯入備份</button>
         </div>
+        <div class="row gap-8 wrap">
+          <button class="btn btn-sm" data-act="export-csv">${icon('download', 14)} 帳目 CSV</button>
+          <button class="btn btn-sm" data-act="export-members">${icon('download', 14)} 團員 CSV</button>
+          <button class="btn btn-sm" data-go="#/tables/data">${icon('table', 14)} 逐表匯出</button>
+        </div>
+        <div class="xs faint">現有資料：團員 ${n(db.members)} · 帳目 ${n(db.transactions)} · 物資 ${n(db.invItems)} · 通告 ${n(db.notices)} · 會議 ${n(db.meetings)} · 帳戶 ${n(db.accounts)}</div>
+        <details class="mt-8"><summary class="btn btn-xs">危險動作（重設／清空）</summary>
+          <div class="row gap-8 wrap mt-8">
+            <button class="btn btn-sm" data-act="reset-seed">${icon('refresh', 15)} 還原初始資料</button>
+            <button class="btn btn-sm btn-danger" data-act="wipe">${icon('trash', 15)} 清空本旅團所有資料</button>
+          </div>
+          <div class="hint mt-8">「還原」會用 <code>${esc(db.meta?.seedSource || 'data/units/…/')}</code> 重新種入（本機改動會消失）；「清空」會留低空嘅資料庫。</div>
+        </details>
       </div>
     </div>
   </div>`;
 }
-
 function auditView() {
-  const logs = (load().auditLog || []);
+  /* ★ 2026-09-25 團長：「操作紀錄不顯示超級管理員的紀錄」。
+     超管係平台層（品牌通行帳號），唔屬於旅團團務 —— 佢嘅操作唔應該出現喺旅團嘅紀錄入面。
+     舊紀錄冇 role 欄，就用操作者名兜底（超管帳號固定叫 sheep）。 */
+  const logs = (load().auditLog || []).filter(l => l?.role !== 'super' && String(l?.by || '').toLowerCase() !== 'sheep');
+  const hidden = (load().auditLog || []).length - logs.length;
   return `
   <div class="card">
     <div class="card-head"><div><div class="card-title">操作紀錄</div>
-      <div class="card-sub">登入、改密碼、發布團章等都會記錄（最多 400 條）</div></div></div>
+      <div class="card-sub">登入、改密碼、發布團章等都會記錄（最多 400 條）${hidden ? ` · 已隱去 ${hidden} 條平台管理員紀錄` : ''}</div></div></div>
     ${logs.length ? `<div class="scroll-x"><table class="table table-compact">
       <thead><tr><th style="width:150px">時間</th><th>動作</th><th>詳情</th><th>操作者</th></tr></thead>
       <tbody>${logs.map(l => `<tr>

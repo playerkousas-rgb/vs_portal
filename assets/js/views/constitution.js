@@ -76,7 +76,7 @@ export function render(params) {
           <div class="field">
             <label class="label">公開網址</label>
             <input class="input" id="pubUrl" value="${esc(pubUrl)}">
-            ${isLegacyUrl(pubUrl) ? `<div class="xs mt-4" style="color:var(--danger)">⚠ 呢個網址指去舊系統（82venture.vercel.app）——去「<b>成員連結</b>」可以一鍵搬晒所有舊連結去而家呢個站，之後記得重新下載 QR。</div>` : ''}
+            ${isLegacyUrl(pubUrl) ? `<div class="xs mt-4" style="color:var(--danger)">⚠ 呢個網址指去舊系統（82venture.vercel.app）——去「<b>公開資料</b>」可以一鍵搬晒所有舊連結去而家呢個站，之後記得重新下載 QR。</div>` : ''}
             <div class="hint mt-4">預設用本網站嘅 <code>constitution.html?u=${esc(load().unitCode)}</code>。如你放喺其他位置，可以改成自己嘅網址。</div>
           </div>
           <button class="btn btn-sm btn-block mt-12" data-act="save-url" ${can('constitution.publish') ? '' : 'disabled'}>${icon('save', 15)} 儲存網址</button>

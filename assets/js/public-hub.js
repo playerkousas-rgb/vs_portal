@@ -81,12 +81,9 @@ async function syncBoot() {
     hubRemote = remoteApi;      // 畀 pushSubmit()（團員交嘢即刻寫後端）用
     const store = await import('./lib/store.js');
     if (!remoteApi.remoteConfigured?.()) {
-      syncError = '呢個網址冇帶旅團編號，或者未接後端 —— 請用系統「成員連結」頁生成嘅連結。';
+      syncError = '呢個網址冇帶旅團編號，或者未接後端 —— 請用系統「公開資料」頁生成嘅連結。';
       syncReady = true; paint(); return;
     }
-    /* 團員入口唔會自動成份 db 寫入後端 —— 團員交嘢（RSVP／交卷／申報進度）
-       行自己嗰條 pushSubmit()（policy:'mine'），權限清晰啲。 */
-    remoteApi.suppressAutoSave?.(true);
     store.setSaveHook((info) => remoteApi.scheduleSave(info));
     /* 2026-09-20：同 main.js 一樣行 loadFromBackend() —— 開機由後端攞成份資料做基準。
        上次交咗但送唔出嘅嘢（pending）會三方比對保留（撞正就以團員自己嘅為準）。

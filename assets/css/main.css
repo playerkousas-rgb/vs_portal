@@ -431,9 +431,15 @@ svg{ display:block; }
 .doc li{ margin-bottom:9px; }
 .doc .art-no{ font-weight:800; color:var(--brand-700); margin-right:6px; }
 
-.perm-cell{ text-align:center; }
+.perm-cell{ text-align:center; position:relative; }
 .perm-yes{ color:var(--ok); font-weight:800; }
-.perm-no{ color:#D3DDD7; }
+.perm-no{ color:#D3DDD7; font-weight:800; }
+/* ★ 2026-09-25 團長：「權限總表要能編輯…多點一下就變X」→ 每格都係掣 */
+.perm-cell.perm-editable{ cursor:pointer; border-radius:8px; transition:background .12s, box-shadow .12s; }
+.perm-cell.perm-editable:hover{ background:rgba(138,14,39,.07); box-shadow:inset 0 0 0 1px rgba(138,14,39,.22); }
+.perm-cell.perm-editable:active{ transform:scale(.94); }
+.perm-dot{ position:absolute; top:2px; right:4px; font-size:8px; color:var(--accent); line-height:1; }
+.perm-cell .badge{ font-size:11px; }
 
 .list-item{
   display:flex; align-items:center; gap:12px; padding:12px 14px; border-bottom:1px solid var(--line-2);

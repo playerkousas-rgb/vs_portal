@@ -108,10 +108,12 @@ async function clickTab(tabId) {
    ① 每個有分頁列嘅 section，逐粒掣真係撳落去
    ============================================================ */
 const SUITES = [
-  /* 「mock」分頁係 super 限定（下面特登驗：leader 見唔到、super 見到） */
-  { name: '帳號與系統', home: '#/admin', tabs: ['perms', 'unit', 'data', 'audit'] },
+  /* 「mock」分頁係 super 限定（下面特登驗：leader 見唔到、super 見到）
+     ★ 2026-09-25 團長：「權限總表由身份與帳號 移去 用戶與身份」→ perms 唔再喺 #/admin */
+  { name: '帳號與系統', home: '#/admin', tabs: ['unit', 'data', 'audit'] },
   { name: '通告', home: '#/notices', tabs: ['signups', 'settings'] },
-  { name: '表格與同步', home: '#/tables', tabs: ['sync', 'source', 'data'] },
+  { name: '資料管理（原表格與同步）', home: '#/tables', tabs: ['source', 'sync', 'data'] },
+  { name: '公開資料（原成員連結）', home: '#/links', tabs: ['social', 'album', 'link'] },
   { name: '財政', home: '#/finance', tabs: ['reports', 'fees', 'claims', 'budgets', 'import'] },
   { name: '物資', home: '#/inventory', tabs: ['loans', 'audits'] }
 ];
@@ -132,10 +134,11 @@ for (const s of SUITES) {
    ============================================================ */
 section('撳完分頁，畫面真係換咗');
 const RENDER = [
-  ['#/admin', 'perms', '權限'],
   ['#/admin', 'unit', '旅團'],
   ['#/admin', 'data', '備份'],
   ['#/tables', 'sync', '總表同步'],
+  ['#/links', 'social', '社交媒體'],
+  ['#/links', 'album', '相簿'],
   ['#/notices', 'signups', '報名']
 ];
 for (const [home, tab, needle] of RENDER) {

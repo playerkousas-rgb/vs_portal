@@ -276,7 +276,10 @@ section('示範模式裡面嘅逃生門');
   ok('★ 黃色橫額有「離開示範」', !!doc.getElementById('mockExit'));
   ok('★ 橫額仲有「返 0082（真實）」', !!doc.getElementById('mockBackReal'));
   ok('★ 頂部 bar 亦有「離開示範」（唔使搵橫額都撳到）', !!doc.getElementById('topMockExit'));
-  ok('側邊欄有「切換旅團」入口', !!doc.getElementById('unitSwitch'));
+  /* ★ 2026-09-25 團長：「進入旅團後,旁邊選單第二行"選擇旅團"沒有用，都進入了還選什麼？
+     只須要下方登出」。→ 側邊欄唔應該再有旅團切換掣，但底部登出必須仲喺度。 */
+  ok('★ 側邊欄已經冇「選擇旅團」掣', !doc.getElementById('unitSwitch'));
+  ok('★ 底部「登出」仍然喺度', !!doc.getElementById('btnLogout'));
 
   /* 手機「更多」選單：示範模式應該係「離開示範」，唔係淨係「登出」 */
   doc.querySelector('[data-nav="more"]')?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));

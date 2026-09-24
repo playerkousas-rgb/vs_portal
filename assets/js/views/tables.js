@@ -294,39 +294,30 @@ export function openFieldDesigner(key, { onSaved = null } = {}) {
   });
 }
 
-export function render(params) {
-  const keys = Object.keys(tableDefs());
-  if (params.id && keys.includes(params.id)) tab = params.id;
-  else if (params.id === 'design' || params.id === 'source' || params.id === 'sync' || params.id === 'data') tab = params.id;
-  else if (params.query?.tab) tab = params.query.tab;
-  else if (!keys.includes(tab)) tab = keys[0];
+/* ★ 2026-09-25 團長：「總表同步／表格與同步 太複雜」「我設定好他們就用，統一化前端會更好」
+   → 呢一頁而家淨係三樣嘢（同「帳號與系統 → 資料管理」一樣）：
+        ① 插入自己嘅 Sheet　② 總表同步　③ 儲存與備份
+   逐個表嘅欄位設計已經搬去各自嘅分頁（財務／用戶／物資／通告／會議 都有「欄位」掣），
+   呢度唔再重複列一次 —— 少咗十幾個分頁，就少咗十幾個撳錯嘅機會。 */
+const DATA_TABS = [['source', '插入自己嘅 Sheet'], ['sync', '總表同步'], ['data', '儲存與備份']];
 
-  const defs = tableDefs();
-  const isTable = keys.includes(tab);
+export function render(params) {
+  if (params.id && DATA_TABS.some(([k]) => k === params.id)) tab = params.id;
+  else if (!DATA_TABS.some(([k]) => k === tab)) tab = 'source';
 
   return `
   ${pageHead({
-    title: '表格與同步（進階）',
-    sub: '欄位設計已經搬去各自嘅分頁（財務／用戶／物資／通告／會議 都有「欄位」掣）；呢度放「插入自己嘅 Sheet」同「總表同步」',
-    actions: `
-      <button class="btn btn-sm" data-go="#/admin/data">${icon('chevronL', 15)} 返回帳號與系統</button>
-      <button class="btn btn-sm" data-act="export-all-csv">${icon('download', 15)} 全部表格 CSV</button>
-      ${can('table.sync') ? `<button class="btn btn-sm" data-go="#/tables/sync">${icon('cloud', 15)} 總表同步</button>` : ''}`
+    title: '資料管理',
+    sub: '三樣嘢：插入自己嘅 Sheet、總表同步、儲存與備份',
+    actions: `<button class="btn btn-sm" data-go="#/admin/data">${icon('chevronL', 15)} 返回帳號與系統</button>`
   })}
 
-  ${tabs([
-    ...keys.map(k => [k, defs[k].label, (load()[defs[k].collection] || []).length]),
-    ['source', '插入自己嘅 Sheet'],
-    ['sync', '總表同步'],
-    ['data', '儲存與備份']
-  ], tab)}
+  ${tabs(DATA_TABS, tab)}
 
-  ${isTable ? designView(tab, defs[tab])
-    : tab === 'source' ? sourceView()
+  ${tab === 'source' ? sourceView()
     : tab === 'sync' ? syncView()
     : dataView()}`;
 }
-
 /* ============================================================
    1. 表格設計
    ============================================================ */
@@ -545,21 +536,20 @@ function syncView() {
   const lastPush = s.lastPushAt ? String(s.lastPushAt).slice(0, 19).replace('T', ' ') : '';
   const lastPull = s.lastPullAt ? String(s.lastPullAt).slice(0, 19).replace('T', ' ') : '';
   const base = getBase();
-  /* 自動寫入開唔開（2026-09-24；預設開，跟旅團資料存） */
-  const autoOn = s.autoSave !== false;
+  const pendAcc = (s.pendingAccounts || 0);
   const baseAt = base?.at ? String(base.at).slice(0, 19).replace('T', ' ') : '';
   const baseVer = base ? (base.empty ? '（後端仲係空）' : String(base.version || '').slice(0, 19).replace('T', ' ')) : '';
   return `
   <div class="note-box mb-16">${icon('cloud', 15)}<div>
-    <b>資料真正嘅家係你自己嘅 Google Sheet。寫入只有一條路，由系統自己行：</b>
+    <b>資料真正嘅家係你自己嘅 Google Sheet。寫入後端只有一條路：頂部嗰粒「儲存到後端」。</b>
     ① 登入嗰陣由後端攞成份資料（＝登入嗰一刻嘅後端，做基準）→
-    ② 之後改乜都先寫呢部機，<b>然後自動寫入後端</b>（一般 1 秒幾；
-    <b>開人／設密碼／改身份＝即刻寫</b>，所以另一部機先用嗰個 email 登到）→
-    ③ 寫入前一定先核對後端版本，有人喺你登入後儲存過就<b>逐格</b>比對 ——
-    改同一格同一個值＝冇問題；改唔同嘅格＝一齊儲存；同一格唔同值（例如一個登記早走、一個登記遲到）
-    ＝嗰格<b>唔會</b>寫入，會列出嚟等你再確認，確認咗先蓋過去。<br>
-    <span class="xs">頂部嗰粒掣<b>唔係唯一寫入路</b>：「<b>即刻儲存</b>」＝唔想等自動儲存；
-    「<b>重新載入</b>」＝由後端拉最新嗰份。另一個視窗改咗嘢會自動併入呢邊，唔使重新整理。<br>
+    ② 之後<b>任何改動都只係寫入呢部機</b>（頂部會顯示「N 項未寫入」）→
+    ③ 撳頂部「<b>儲存到後端</b>」先至真正送出。送出前一定先核對後端版本，
+    有人喺你登入後儲存過就<b>逐格</b>比對 —— 改同一格同一個值＝冇問題；改唔同嘅格＝一齊儲存；
+    同一格唔同值（例如一個登記早走、一個登記遲到）＝嗰格<b>唔會</b>寫入，
+    會列出嚟等你再確認，確認咗先蓋過去。<br>
+    <span class="xs">「<b>重新載入</b>」＝由後端拉最新嗰份。另一個視窗改咗嘢會自動併入呢邊，唔使重新整理。<br>
+    ${pendAcc ? `<b style="color:var(--danger)">⚠ 有 ${pendAcc} 個帳戶改動未寫入後端 —— 未撳頂部掣之前，佢哋喺其他裝置登唔到。</b><br>` : ''}
     其他分頁（帳目／團員／物資…）係攤平出嚟畀你自己睇同用公式嘅「報表」。
     同一個後端仲會處理 <b>成員手機記帳</b>（entry.html）同 <b>通告報名</b>（notice.html）。</span>
   </div></div>
@@ -567,7 +557,7 @@ function syncView() {
   ${wired ? `<div class="card mb-16"><div class="card-head">
     <div><div class="card-title">${icon('shield', 15)} 儲存狀態</div>
       <div class="card-sub">資料有冇真係入咗後端</div></div>
-    ${pending ? `<span class="badge b-warn"><span class="dot"></span>${pending} 項改動${autoOn ? '等緊自動寫入' : '未儲存'}</span>`
+    ${pending ? `<span class="badge ${pendAcc ? 'b-danger' : 'b-warn'}"><span class="dot"></span>${pending} 項改動未寫入後端${pendAcc ? `（包括 ${pendAcc} 個帳戶）` : ''}</span>`
       : `<span class="badge b-ok"><span class="dot"></span>全部已儲存</span>`}
   </div>
   <div style="padding:12px 16px" class="sm muted">
@@ -585,15 +575,12 @@ function syncView() {
       <code>TROOP_${esc(load().unitCode || '編號')}_BACKEND</code> 係你個 <code>/exec</code>）→ 重新部署。
       咁條 key 淨係留喺伺服器端，瀏覽器完全唔會見到。
     </div></div>` : ''}
-    <div class="row gap-8 mt-12 wrap align-center">
-      <label class="row gap-8 align-center" style="cursor:pointer" title="開（預設）：改完自動寫入後端。關：改動留喺呢部機，要自己撳「即刻儲存」。">
-        <input type="checkbox" data-act="toggle-autosave" ${autoOn ? 'checked' : ''}>
-        <span class="sm"><b>自動寫入後端</b>（建議開）</span>
-      </label>
-      <span class="xs faint">${autoOn ? '改完約 1 秒後自動寫；帳戶改動即刻寫' : '已關 —— 所有改動都要自己撳「即刻儲存」'}</span>
-    </div>
+    <div class="note-box mt-12">${icon('alert', 15)}<div class="sm">
+      <b>冇自動寫入。</b>改動一律先留喺呢部機，要撳<b>頂部「儲存到後端」</b>先至送出 ——
+      全系統得呢一條寫入路，唔會有第二個地方偷偷地寫。
+    </div></div>
     <div class="row gap-8 mt-12 wrap">
-      <button class="btn btn-primary btn-sm" data-act="push-db">${icon('cloud', 15)} 即刻儲存${pending ? `（${pending}）` : ''}</button>
+      <button class="btn btn-primary btn-sm" data-act="push-db">${icon('cloud', 15)} 儲存到後端${pending ? `（${pending}）` : ''}</button>
       <button class="btn btn-sm" data-act="pull-db">${icon('download', 15)} 由後端重新載入${pending ? '（會丟棄未儲存改動）' : ''}</button>
     </div>
     <div class="row gap-8 mt-12 wrap">
@@ -1475,21 +1462,6 @@ export function mount(root, params) {
           await modal({ title: '診斷結果', body: `<pre class="sm" style="white-space:pre-wrap">${esc(txt)}</pre>`,
             actions: [{ label: '知道喇', class: 'btn-primary', value: true }] });
         }
-      }
-
-      /* ---- 自動寫入開關（2026-09-24）---- */
-      const autoBox = root.querySelector('[data-act="toggle-autosave"]');
-      if (autoBox && !autoBox.dataset.bound) {
-        autoBox.dataset.bound = '1';
-        autoBox.addEventListener('change', async () => {
-          const remote = await import('../lib/remote.js');
-          const on = remote.setAutoSave(autoBox.checked);
-          toast(on
-            ? '已開啟自動寫入 —— 改完約 1 秒後自動寫入後端（帳戶改動即刻寫）'
-            : '已關閉自動寫入 —— 所有改動都要自己撳「即刻儲存」先至到後端', on ? 'ok' : 'warn');
-          if (on) await remote.flushAutoSave?.();
-          refresh();
-        });
       }
 
       /* ---- 整個資料庫：即刻寫入／還原／檢視（真正嘅後端儲存） ---- */

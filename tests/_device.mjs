@@ -118,12 +118,13 @@ try {
       store.commit();
       out.steps.push({ op: 'setConstitution', version: step.obj?.version || '' });
     }
-    /* 開／關自動儲存（2026-09-24：預設開；要測「暫存 → 人手撳儲存」先至關） */
+    /* ★ 2026-09-25 團長：「我只想要頂部1個儲到後端的制,其他任何時候都是暫儲在遊覽器」
+       → 自動儲存成條路都拆咗，setAutoSave 呢個 op 亦都冇嘢可以調（remote.setAutoSave 已刪）。
+       保留 op 名稱只係為咗舊 plan 唔會爆 —— 佢而家乜都唔做，只係報告而家嘅狀態。 */
     if (step.op === 'setAutoSave') {
-      const on = remote.setAutoSave(!!step.on);
-      out.steps.push({ op: 'setAutoSave', on, state: remote.syncState().state });
+      out.steps.push({ op: 'setAutoSave', removed: true, on: false, state: remote.syncState().state });
     }
-    /* 等自動儲存排程跑完（critical＝0ms，一般改動＝1.2 秒） */
+    /* 等一排（而家冇自動儲存，純粹俾時間過） */
     if (step.op === 'wait') {
       await new Promise(r => setTimeout(r, Number(step.ms || 2500)));
       out.steps.push({ op: 'wait', ms: Number(step.ms || 2500), pending: pendingN(), syncState: remote.syncState().state });
@@ -135,14 +136,14 @@ try {
         name: step.name, email: step.email || '', ymis: step.ymis || '',
         identity: step.identity || 'leader', status: 'active'
       });
-      out.steps.push({ op: 'addStaff', id: rec.id, pending: pendingN() });
+      out.steps.push({ op: 'addStaff', id: rec.id, pending: pendingN(), pendingAccounts: remote.pendingAccounts?.() ?? 0 });
     }
     /* 「用戶與身份」幫佢設登入密碼（＝名冊 hubPw）。id 可以用 '@last' ＝ 頭先開嗰個 */
     if (step.op === 'setHubPw') {
       const ms = store.load().members;
       const id = step.id === '@last' ? (ms[ms.length - 1]?.id || '') : step.id;
       const r = await auth.setMemberHubPassword(id, step.pw);
-      out.steps.push({ op: 'setHubPw', ok: !!r.ok, msg: r.msg || '', pending: pendingN() });
+      out.steps.push({ op: 'setHubPw', ok: !!r.ok, msg: r.msg || '', pending: pendingN(), pendingAccounts: remote.pendingAccounts?.() ?? 0, state: remote.syncState().state, statusMsg: remote.syncState().msg || '' });
     }
     /* 直接問後端：呢個 login 代號喺後端嗰份名冊存唔存在 */
     if (step.op === 'backendHasLogin') {
@@ -339,7 +340,7 @@ try {
         members: Number(j.counts?.members || 0), version: String(j.version || '')
       });
     }
-    /* 「成員連結」頁會派出去嘅公開連結（驗 ?be= 自助後端附埋入 link） */
+    /* 「公開資料」頁會派出去嘅公開連結（驗 ?be= 自助後端附埋入 link） */
     if (step.op === 'links') {
       const model = await import('../assets/js/lib/model.js');
       const route = model.publicLinkRoute();

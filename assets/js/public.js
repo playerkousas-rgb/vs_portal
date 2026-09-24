@@ -30,7 +30,7 @@ let backendNote = '';      /* 讀唔到嘅真正原因（顯示用，唔好淨�
 async function fetchBackendConstitution() {
   try {
     /* 兩條路：① 同源 /api/proxy（平台登記咗旅團）② 連結帶埋嘅 ?be=<旅團自己嘅 /exec>
-       —— 平台未登記嗰陣，「成員連結」生成嘅連結會附 ?be，公開頁先至真係「公開」。 */
+       —— 平台未登記嗰陣，「公開資料」生成嘅連結會附 ?be，公開頁先至真係「公開」。 */
     const r = await postBackend({ action: 'constitution' }, { unit: unitCode, execUrl: beFromQuery() });
     if (r.json?.ok && r.json.found && r.json.constitution) return r.json;
     if (r.json?.ok && !r.json.found) backendNote = '後端未有已發布嘅團章';
@@ -83,7 +83,7 @@ async function boot() {
       <p class="sm muted mt-12">管理人請檢查：① 喺系統「團章 → 發布新版本」；
         ② 右上角同步狀態係咪「已存到後端」（資料要同步咗上去，公開頁先讀到）；
         ③ 後端 Apps Script 要係 v2.5.0 或之後（帶「constitution」公開讀取）；
-        ④ 呢條網址要由系統「成員連結」頁生成 —— 平台未登記旅團嗰陣，
+        ④ 呢條網址要由系統「公開資料」頁生成 —— 平台未登記旅團嗰陣，
         連結要帶 <code>?be=</code>（你自己嘅 /exec）先讀到後端${beFromQuery() ? `（而家帶住：<code>${esc(shortExec(beFromQuery()))}</code>）` : ''}。
         舊式做法（上載 <code>data/units/${esc(unitCode)}/constitution.json</code>）照樣支援。</p>
       <a class="btn btn-sm mt-16" href="./">返回系統</a>

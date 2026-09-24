@@ -469,7 +469,7 @@ function settingsView() {
       <div style="padding:16px 18px">
         <div class="field"><label class="label">公開頁基礎網址</label>
           <input class="input" id="n-base" value="${esc(s.publicBaseUrl || '')}" placeholder="例：https://你的網址/notice.html">
-          ${isLegacyUrl(s.publicBaseUrl || '') ? `<div class="xs mt-4" style="color:var(--danger)">⚠ 呢個網址指去舊系統（82venture.vercel.app）——去「<b>成員連結</b>」可以一鍵搬晒所有舊連結去而家呢個站。</div>` : ''}
+          ${isLegacyUrl(s.publicBaseUrl || '') ? `<div class="xs mt-4" style="color:var(--danger)">⚠ 呢個網址指去舊系統（82venture.vercel.app）——去「<b>公開資料</b>」可以一鍵搬晒所有舊連結去而家呢個站。</div>` : ''}
           <div class="hint">留空就用 <code>notice.html?u=${esc(load().unitCode)}&n=&lt;通告編號&gt;</code>（同團章公開頁一樣，可上載去任何靜態主機）。</div></div>
         <div class="field mt-12"><label class="label">預設報名表</label>
           <div class="sm muted">新通告預設會用：${DEFAULT_FIELDS.map(f => esc(f.label)).join('、')}</div></div>
@@ -1022,7 +1022,7 @@ async function shareDialog(n) {
             <input class="input" id="sh-url" value="${esc(url)}" readonly></div>
           ${isLegacyUrl(url) ? `<div class="note-box danger">${icon('alert', 15)}<div>
             <b>⚠ 呢條連結指去舊系統（82venture.vercel.app）！</b>舊站退役之後團員掃唔到嘢——
-            唔好派住，先去「<b>成員連結</b>」撳「一鍵轉去而家呢個網址」，再返嚟分享。
+            唔好派住，先去「<b>公開資料</b>」撳「一鍵轉去而家呢個網址」，再返嚟分享。
           </div></div>` : ''}
           <button class="btn btn-primary btn-block" data-sh="wa-open">${icon('send', 15)} 用 WhatsApp 分享</button>
           <button class="btn btn-block" data-sh="copy">${icon('copy', 15)} 複製連結</button>

@@ -325,10 +325,14 @@ section('端到端：換機／清 cache 都唔會冇咗資料（真 HTTP）');
     ok('裝置 C 登入之後只有後端嗰 1 個團員（種子資料唔會撈返轉頭）',
       snapC?.members === 1, JSON.stringify(snapC?.names));
     const auto = (C.steps || []).find(s => s.op === 'autosave');
-    ok('★ 改完嘢會**自動**寫入後端（唔使人記得撳掣 —— 4 秒之內已經寫完）',
-      auto?.pending === 0 && auto?.state === 'saved', JSON.stringify(auto));
+    /* ★ 2026-09-25 團長：「我只想要頂部1個儲到後端的制,其他任何時候都是暫儲在遊覽器」。
+       所以呢度釘死嘅係**相反**嘅保證：等足 4 秒都唔會自動寫 —— 改動一定仲係 pending。 */
+    ok('★ 改完嘢等足 4 秒都**唔會**自動寫入後端（淨係暫存喺瀏覽器）',
+      auto?.pending === 1 && auto?.state === 'pending', JSON.stringify(auto));
+    ok('★ 未寫入嘅帳戶改動會另外計數（頂部要鬧醒用家）',
+      /包括 1 個帳戶/.test(auto?.msg || ''), auto?.msg);
     const peekC = (C.steps || []).find(s => s.op === 'backendPeek');
-    ok('★ 一個掣都未撳，後端已經收到新團員（2 個）', peekC?.members === 2, JSON.stringify(peekC));
+    ok('★ 一個掣都未撳 → 後端仲係舊嗰份（1 個團員，冇偷偷地寫）', peekC?.members === 1, JSON.stringify(peekC));
     const nowC = (C.steps || []).find(s => s.op === 'syncNow');
     ok('★ 頂部「即刻儲存」掣照樣行得通（同一條 saveToBackend 路）',
       nowC?.ok === true && nowC?.pushed === true, JSON.stringify(nowC));
@@ -478,13 +482,10 @@ section('衝突復原：兩部機都改過，同步要合併唔可以盲蓋（�
       (stepOf(D2, 'pull')?.adopted?.members || 0) >= 3, JSON.stringify(stepOf(D2, 'pull')?.adopted));
 
     /* ---- 開機時本機有未存改動，隊友已儲存 → 開機三方比對保留兩邊 ----
-       ★ 呢個劇本要**關咗自動儲存**先至測到「有未存改動」呢個情況：
-         2026-09-24 起自動儲存預設開，改完 1.2 秒就寫咗入後端，
-         根本唔會有「未存改動」留低。三方比對呢條路依然要有測試覆蓋
-         （用家自己關咗自動儲存、或者自動寫入失敗嗰陣就會行到）。 */
+       ★ 2026-09-25 起根本唔使關自動儲存 —— 自動寫入成條路都拆咗，
+       「有未存改動」而家係預設狀態（改完就 pending，要撳頂部掣先寫）。 */
     const E1 = await runDevice({ steps: [
       { op: 'load' },                                   // E 登入（三個人）
-      { op: 'setAutoSave', on: false },
       { op: 'addMember', name: '李七', ymis: '2026000107' },   // E 改咗嘢未存（pending）
       { op: 'teammatePush', name: '李八', ymis: '2026000108' },// 同時隊友儲存咗李八上後端
       { op: 'load' },                                   // E 閂咗再開（開機再由後端攞）
@@ -577,37 +578,55 @@ section('只有一個儲存方式（原始碼守門：冇自動寫、冇 poll、
     /action: 'dbInfo'/.test(remoteSrc) && /threeWay\(/.test(remoteSrc) && /remoteChanged/.test(remoteSrc));
   ok('saveToBackend：撞嘅格交 resolver 問用家，確認咗先再寫一次',
     /resolver\(/.test(remoteSrc) && /applyChangesLocal\(ov\)/.test(remoteSrc));
-  /* ★ 2026-09-24 改：以前呢度釘死「remote.js 冇自動寫入」。團長回報
-     「1 邊能用 email 登入、1 邊不能，那＝用戶根本沒寫入後端」之後，
-     自動寫入放返嚟 —— 但**寫入依然只有一條路**（saveToBackendInner），
-     所以釘死嘅係：自動儲存只可以經 saveToBackend，唔可以有第二條寫入路，
-     亦都唔可以有 poll／setInterval（背景定時打後端）。 */
-  ok('remote.js 有自動寫入，但佢淨係叫 saveToBackend（冇第二條寫入路）',
-    /async function autoSave\(\)/.test(remoteSrc)
-    && /await saveToBackend\(\{ policy:/.test(remoteSrc)
-    && !/startPolling|startVisibilityWatch|checkRemote|function reconcile|recoverFromConflict|setInterval/.test(remoteSrc));
-  ok('自動寫入有 debounce（唔會逐個字打一轉）＋帳戶級即刻寫',
-    /AUTO_SAVE_DELAY_MS = \d+/.test(remoteSrc) && /critical \? 0 : AUTO_SAVE_DELAY_MS/.test(remoteSrc));
-  ok('自動寫入可以關（跟旅團資料存；關咗之後淨係人手撳「即刻儲存」）',
-    /export function setAutoSave/.test(remoteSrc) && /sync\?\.autoSave !== false/.test(remoteSrc));
-  ok('所有儲存排成一條隊（撳「即刻儲存」撞正自動儲存唔會回 busy）',
+  /* ★ 2026-09-25 團長第五輪：「我只想要頂部1個儲到後端的制,其他任何時候都是暫儲在遊覽器」。
+     2026-09-24 曾經加過自動寫入（為咗救「帳戶寫唔入後端」），但團長明確唔要 ——
+     自動儲存成條路已經拆走。而家釘死嘅係：
+       ① remote.js 完全冇自動寫入（冇 autoSave／冇 debounce timer／冇 setAutoSave）
+       ② 寫入依然只有一條路（saveToBackendInner），冇第二條
+       ③ 冇 poll／setInterval／online／beforeunload 之類嘅背景寫入 */
+  ok('★ remote.js 已經冇自動寫入（autoSave／debounce／setAutoSave 全部拆走）',
+    !/async function autoSave/.test(remoteSrc)
+    && !/AUTO_SAVE_DELAY_MS/.test(remoteSrc)
+    && !/export function setAutoSave/.test(remoteSrc)
+    && !/flushAutoSave/.test(remoteSrc));
+  {
+    /* 抽返 scheduleSave() 個函數體出嚟驗：淨係得 setState('pending', …)，一個寫入呼叫都冇 */
+    const bare = stripComments(remoteSrc);
+    const i = bare.indexOf('export function scheduleSave(');
+    const body = i < 0 ? '' : bare.slice(i, bare.indexOf('\n}', i) + 2);
+    ok('★ scheduleSave 淨係改狀態（pending），一行寫入都冇',
+      body.length > 0 && /setState\('pending'/.test(body) && !/saveToBackend|fetch\(/.test(body),
+      body.slice(0, 200));
+  }
+  ok('★ 寫入依然只有一條路（saveToBackendInner）＋冇第二條寫入路',
+    /async function saveToBackendInner\(/.test(remoteSrc)
+    && !/startPolling|startVisibilityWatch|checkRemote|function reconcile|recoverFromConflict|setInterval/.test(stripComments(remoteSrc)));
+  ok('★ 所有儲存排成一條隊（連撳兩下唔會回 busy）',
     /let saveChain = Promise\.resolve\(\)/.test(remoteSrc));
-  ok('remote.js 冇 online／beforeunload 自動寫', !/addEventListener\('online'/.test(remoteSrc) && !/beforeunload/.test(remoteSrc));
+  /* 註解入面提過 beforeunload（講 main.js 嗰邊嘅閘），所以要剝走註解先至算 */
+  ok('remote.js 冇 online／beforeunload 自動寫',
+    !/addEventListener\('online'/.test(stripComments(remoteSrc)) && !/beforeunload/.test(stripComments(remoteSrc)));
+  ok('★ 帳戶改動另外計數（pendingAccounts）—— 頂部要用嚟鬧醒用家',
+    /export function pendingAccounts\(\)/.test(remoteSrc) && /pendingAccounts/.test(storeSrc));
   ok('store.js 冇咗舊嘅自動合併（mergeDbs／objHash／markBaseAligned）', !/mergeDbs|objHash|markBaseAligned|snapshotObjHashes/.test(storeSrc));
   ok('store.js 有基準快照（getBase／setBase）＋ adoptRemote／setLocalMerged／commitSaved',
     /export function getBase/.test(storeSrc) && /export function setBase/.test(storeSrc) && /export function adoptRemote/.test(storeSrc)
     && /export function setLocalMerged/.test(storeSrc) && /export function commitSaved/.test(storeSrc));
-  ok('main.js 右上角：有未存嘢 → 「即刻儲存（N）」；否則「重新載入」',
-    /即刻儲存/.test(mainSrc) && /重新載入/.test(mainSrc) && /syncActBtn/.test(mainSrc));
-  ok('main.js 掛咗跨分頁同步 ＋ 自動儲存衝突框 ＋ 切返分頁刷新',
-    /bindCrossTabSync/.test(mainSrc) && /setAutoConflictResolver/.test(mainSrc) && /refreshIfClean/.test(mainSrc));
+  ok('main.js 右上角：有未存嘢 → 「儲存到後端（N）」；否則「重新載入」',
+    /儲存到後端/.test(mainSrc) && /重新載入/.test(mainSrc) && /syncActBtn/.test(mainSrc));
+  ok('★ main.js 有未寫入帳戶會轉紅鬧醒（b-danger ＋「N 個帳戶未寫入後端」）',
+    /pendingAccounts/.test(mainSrc) && /個帳戶未寫入後端/.test(mainSrc) && /b-danger/.test(mainSrc));
+  ok('main.js 掛咗跨分頁同步 ＋ 切返分頁刷新（自動儲存衝突框已隨自動儲存一齊拆走）',
+    /bindCrossTabSync/.test(mainSrc) && /refreshIfClean/.test(mainSrc) && !/setAutoConflictResolver/.test(mainSrc));
+  ok('★ main.js 有離開分頁閘（未撳「儲存」嘅表單改動會彈提示）',
+    /activeDrafts/.test(mainSrc) && /discardActiveDrafts/.test(mainSrc) && /呢個分頁有未儲存嘅改動/.test(mainSrc));
   ok('store.js 有跨分頁併入（storage event ＋ 三方比對）',
     /export function mergeFromOtherTab/.test(storeSrc) && /addEventListener\('storage'/.test(storeSrc));
   ok('store.js 帳戶級寫入即刻通知後端（members／accounts／accountApps）',
     /export function commitCritical/.test(storeSrc) && /IDENTITY_COLLECTIONS/.test(storeSrc));
-  ok('團員入口唔會自動成份 db 寫後端（交嘢行 pushSubmit）', /suppressAutoSave/.test(hubSrc));
-  ok('總表同步頁有「自動寫入」開關 ＋「即刻儲存」',
-    /toggle-autosave/.test(tablesSrc) && /即刻儲存/.test(tablesSrc));
+  ok('團員入口交嘢行 pushSubmit（唔會成份 db 寫後端）', /pushSubmit/.test(hubSrc));
+  ok('★ 總表同步頁已經冇「自動寫入」開關 —— 淨低「儲存到後端」',
+    !/toggle-autosave/.test(tablesSrc) && /儲存到後端/.test(tablesSrc) && /冇自動寫入/.test(tablesSrc));
   ok('main.js 開機**等**後端載入完先出登入頁（await syncBoot）', /await syncBoot\(\)/.test(mainSrc));
   ok('開機後端失敗會停喺連線閘（唔會落入登入頁）',
     /const bootSync = await syncBoot\(\)/.test(mainSrc)
@@ -1130,12 +1149,12 @@ section('舊系統遷移（一鍵搬公開網址）');
     store.load().settings.publicBaseUrl === 'http://localhost:8080/constitution.html?u={u}',
     store.load().settings.publicBaseUrl);
 
-  /* 成員連結頁會出 banner（播返個舊嘅先） */
+  /* 公開資料頁會出 banner（播返個舊嘅先） */
   store.load().settings.publicLinks['borrow.html'] = 'https://82venture.vercel.app/borrow.html';
   store.commit();
   const links = await import('../assets/js/views/links.js');
   const html = links.render();
-  ok('★ 成員連結頁有舊站警告＋一鍵搬掣', /舊系統/.test(html) && /data-act="migrate-urls"/.test(html));
+  ok('★ 公開資料頁有舊站警告＋一鍵搬掣', /舊系統/.test(html) && /data-act="migrate-urls"/.test(html));
   ok('受影響嘅連結卡有警告', /退役之後會死/.test(html));
 
   /* 通告分享連結都係同一個來源（搬完就啱） */
@@ -1259,7 +1278,7 @@ section('分件儲存：真 HTTP（谷大 db → 自動分件 → 另一部機�
       { op: 'syncNow' }
     ] });
     const autoC = (C.steps || []).find(s2 => s2.op === 'autosave');
-    ok('分件之後改嘢都會自動寫（分件儲存照行得通）', autoC?.pending === 0 && autoC?.state === 'saved', JSON.stringify(autoC));
+    ok('分件之後改嘢都係淨係暫存（唔會自動寫）', autoC?.pending === 1 && autoC?.state === 'pending', JSON.stringify(autoC));
     const nowC = (C.steps || []).find(s2 => s2.op === 'syncNow');
     ok('分件儲存之後撳「儲存到後端」照樣存到（唔會鎖死）',
       nowC?.ok === true && nowC?.pushed === true, JSON.stringify(nowC));
@@ -1683,9 +1702,14 @@ section('★ 登入硬閘：後端答唔到就唔准入主控頁');
     /登入已封鎖/.test(mainSrc));
   ok('登入頁會顯示帳戶來源（答團長「咁啱先係登入咗乜」）',
     /帳戶來源/.test(mainSrc));
-  ok('硬閘唔會用 ensureFresh（佢喺有 pending 嗰陣會唔使問後端就回 ok）',
-    !/ensureFresh/.test(fs.readFileSync(path.join(ROOT, 'assets/js/lib/remote.js'), 'utf8')
-      .slice(fs.readFileSync(path.join(ROOT, 'assets/js/lib/remote.js'), 'utf8').indexOf('requireBackendForLogin'))));
+  {
+    /* 要由**函數定義**嗰行開始切 —— 檔頭註解早過 ensureFresh 就提過
+       requireBackendForLogin，用 indexOf 會切錯位（連 ensureFresh 個定義一齊包埋）。 */
+    const rSrc = stripComments(fs.readFileSync(path.join(ROOT, 'assets/js/lib/remote.js'), 'utf8'));
+    const from = rSrc.indexOf('export async function requireBackendForLogin(');
+    ok('硬閘唔會用 ensureFresh（佢喺有 pending 嗰陣會唔使問後端就回 ok）',
+      from > 0 && !/ensureFresh\(/.test(rSrc.slice(from)), 'from=' + from);
+  }
 }
 
 section('★ 搶救三寶（前端契約：後端讀唔到 → 檢查 → 修復 → 用呢部機上載）');

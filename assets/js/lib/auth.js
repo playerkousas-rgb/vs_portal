@@ -19,7 +19,7 @@
    ============================================================ */
 
 import {
-  load, commitCritical, collection, find, add, remove, getSession, setSession, audit, isMock, currentUnit
+  load, tryLoad, commitCritical, collection, find, add, remove, getSession, setSession, audit, isMock, currentUnit
 } from './store.js';
 import { chief as chiefRecord, hasChief } from './model.js';
 
@@ -634,12 +634,72 @@ export function displaySub() {
   return s.role === 'super' ? role : `${role} · ${s.username}`;
 }
 
+/* ============================================================
+   權限總表（可編輯）—— 2026-09-25 團長：「權限總表要能編輯」
+   ------------------------------------------------------------
+   PERMS 係**出廠預設**（寫死喺呢個檔，跟版本走）。
+   旅團自己改過嘅放喺 db.permOverrides —— 跟資料庫一齊同步、跟 JSON 備份走。
+   讀嘅時候 override 優先；冇 override 就用預設。
+   ============================================================ */
+function permOverrides() {
+  try { return tryLoad()?.permOverrides || {}; } catch { return {}; }
+}
+/** 某個功能對某個身份嘅**實際**值（override 優先，其次出廠預設） */
+export function permValue(perm, role) {
+  const ov = permOverrides()[perm];
+  if (ov && Object.prototype.hasOwnProperty.call(ov, role)) return ov[role];
+  return (PERMS[perm] || {})[role];
+}
+/** 呢格係咪被旅團改過（介面顯示「已改」用） */
+export function permIsCustom(perm, role) {
+  const ov = permOverrides()[perm];
+  return !!(ov && Object.prototype.hasOwnProperty.call(ov, role));
+}
+/** 呢個功能嘅可循環值（出廠用咗『自己』／『自己建立』先至會出現在循環入面） */
+export function permCycle(perm) {
+  const base = PERMS[perm] || {};
+  const vals = Object.values(base);
+  const cycle = [1, 0];
+  if (vals.includes('own')) cycle.splice(1, 0, 'own');
+  if (vals.includes('self')) cycle.splice(1, 0, 'self');
+  return cycle;
+}
+/** 改一格權限（跟旅團資料庫存；只有團長／超管可以改） */
+export function setPerm(perm, role, value) {
+  if (!canEditPerms()) return { ok: false, msg: '只有團長可以改權限總表' };
+  if (!PERMS[perm]) return { ok: false, msg: '冇呢個功能' };
+  const db = load();
+  db.permOverrides = { ...(db.permOverrides || {}) };
+  const cur = { ...(db.permOverrides[perm] || {}) };
+  const base = (PERMS[perm] || {})[role];
+  if (value === base || value === undefined) delete cur[role];   // 改返預設＝刪走 override
+  else cur[role] = value;
+  if (Object.keys(cur).length) db.permOverrides[perm] = cur; else delete db.permOverrides[perm];
+  commitCritical('perm');
+  audit('更改權限', `${perm} · ${ROLES[role]?.name || role} → ${value === 1 ? '可以' : value === 0 ? '不可以' : value}`);
+  return { ok: true };
+}
+/** 還原成出廠預設（清走晒 override） */
+export function resetPerms() {
+  if (!canEditPerms()) return { ok: false, msg: '只有團長可以改權限總表' };
+  const db = load();
+  const n = Object.keys(db.permOverrides || {}).length;
+  delete db.permOverrides;
+  commitCritical('perm');
+  audit('還原權限總表', `清走 ${n} 項自訂`);
+  return { ok: true, cleared: n };
+}
+/** 邊個改到權限總表：團長（每團一位，最高權限）同超管 */
+export function canEditPerms() {
+  const r = currentRole();
+  return r === 'chief' || r === 'super';
+}
+
 export function can(perm, ctx) {
   const s = getSession();
   if (!s) return false;
-  const rule = PERMS[perm];
-  if (!rule) return false;
-  const v = rule[s.role];
+  if (!PERMS[perm]) return false;
+  const v = permValue(perm, s.role);
   if (v === 1) return true;
   if (v === 0 || v == null) return false;
   if (v === 'self') {

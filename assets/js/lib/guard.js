@@ -49,6 +49,7 @@ export function clearDraft(section, id) {
   const map = readAll();
   delete map[keyOf(section, id)];
   writeAll(map);
+  activeKeys.delete(keyOf(section, id));
 }
 
 /** 所有暫存（用嚟喺「帳號與系統 → 資料管理」睇／清） */
@@ -106,6 +107,7 @@ export function bindDraftAutosave(root, section, id, opts = {}) {
 
   const flush = () => {
     const okSaved = saveDraft(section, id, collect());
+    if (okSaved) activeKeys.add(keyOf(section, id));
     const stamp = root.querySelector('[data-draft-stamp]');
     if (stamp) {
       stamp.textContent = okSaved
@@ -121,6 +123,28 @@ export function bindDraftAutosave(root, section, id, opts = {}) {
     el.addEventListener('change', schedule);
   });
   return () => clearTimeout(timer);
+}
+
+/* ---------- 而家呢個分頁有邊啲未儲存草稿（離開分頁閘用） ----------
+   ★ 2026-09-25 團長：「每個分頁有他的儲存按鈕，如果離開分頁前有未儲的東西…
+      會提示用戶有未暫存遊覽器的改動」。
+   bindDraftAutosave() 每次真係寫咗草稿就登記一個 key；
+   main.js 轉分頁之前問 activeDrafts()，有嘢就彈提示。 */
+const activeKeys = new Set();
+export function activeDrafts() {
+  const all = readAll();
+  return [...activeKeys].filter(k => all[k]).map(k => {
+    const [section, id] = k.split('::');
+    return { key: k, section, id, at: all[k].at };
+  });
+}
+export function clearActiveDrafts() { activeKeys.clear(); }
+/** 放棄呢個分頁所有未儲存草稿（用家揀咗「離開並放棄」） */
+export function discardActiveDrafts() {
+  const map = readAll();
+  activeKeys.forEach(k => { delete map[k]; });
+  writeAll(map);
+  activeKeys.clear();
 }
 
 /** 還原草稿欄位值（喺 render 之後 call） */

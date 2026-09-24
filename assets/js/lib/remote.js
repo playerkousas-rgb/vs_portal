@@ -42,13 +42,6 @@ import { threeWay, overridesFor, describeConflict, diffDb, applyChanges } from '
 let inFlight = false;
 let lastState = { state: 'idle', msg: '' };
 let lastLoadAt = 0;                          // 上次成功由後端載入（ms）
-/* ★ 2026-09-24 自動儲存：改動之後等咁耐先寫（帳戶級改動＝0，即刻寫）。
-   唔好設 0：用家喺一格度打字，每按一下就寫一次後端會撞死 Apps Script 配額。 */
-export const AUTO_SAVE_DELAY_MS = 1200;
-let autoTimer = null;
-/* 上一次自動寫入俾 saveToBackend 以 no_base 擋咗（呢部機未由後端載入過）→
-   暫停自動寫入，直到 loadFromBackend() 成功。改動一個都唔會蝕，仲喺本機。 */
-let autoSaveHalted = false;
 /*
  * 這個係「實際連線結果」，同 remoteCfg() 嘅「有冇一條路可以試」分開。
  * Vercel 代理係同源嘅，瀏覽器唔應該要求用家再貼一次 /exec／API Key；
@@ -100,97 +93,44 @@ function setState(state, msg = '') {
   } catch { /* 非瀏覽器環境（測試）→ 冇所謂 */ }
 }
 
-/** 由 store.persist() 掛住：本機有改動 → 排一次自動寫入後端。
- *
- *  ★ 2026-09-24 團長回報：「用戶根本沒寫入後端」——
- *     以前呢度淨係畫個「儲存到後端（N）」嘅字，用家唔撳就永遠唔會寫。
- *     帳戶級改動（開人／設密碼／改身份）更加係另一部機即刻要用。
- *
- *  而家：
- *     · critical（帳戶級）  → 即刻寫（0ms）
- *     · 其他改動            → debounce AUTO_SAVE_DELAY_MS 先寫（避免逐個字都打一轉）
- *  寫入依然係**同一條路**（saveToBackend：核對版本 → 三方比對 → 寫），
- *  所以唔會出現「兩條路互相蓋」—— 只係唔使再靠人記得撳掣。
- *
- * @param {{critical?:boolean, reason?:string}} [info]
- */
+/* ============================================================
+   寫入模型（2026-09-25 團長定案 · 第五輪）
+   ------------------------------------------------------------
+   團長原話：「我只想要頂部 1 個儲到後端的制，其他任何時候都是暫儲在遊覽器」。
+
+   所以：
+     · **頂部「儲存到後端」＝唯一寫入路**（saveToBackend）
+     · 其他一切改動 ＝ 淨係寫瀏覽器 localStorage（pending +1）
+     · 每個分頁自己嘅「儲存」掣 ＝ 寫瀏覽器（唔掂後端）
+
+   ⚠️ 但帳戶級改動（開人／設密碼／改身份）**未寫入後端之前，另一部機登唔到**
+      —— 因為登入核對讀嘅係後端嗰份名冊（requireBackendForLogin）。
+      技術上遲寫完全冇問題，只要喺對方登入之前寫到就得；
+      以前壞係因為**根本冇人寫**。所以呢度唔自動寫，改為：
+        ① pendingAccounts 計數 → 頂部明確講「N 項未寫入（包括 X 個帳戶）」
+        ② 登出／閂頁／切旅團 一律擋住問（見 main.js confirmLogout / beforeunload）
+   ============================================================ */
+
+/** 由 store.persist() 掛住：本機有改動 → 更新頂部狀態（唔會寫後端） */
 export function scheduleSave(info = {}) {
   if (isMock()) return;
   if (!remoteCfg().ok) return;
   if (!hasPending()) return;
-  const critical = !!info?.critical;
-  if (autoSuppressed) {
-    setState('pending', `未儲存 —— ${pendingCount()} 項改動（呢個頁面唔會自動寫入）`);
-    return;
-  }
-  if (!autoSaveOn()) {
-    setState('pending', `未儲存 —— ${pendingCount()} 項改動（自動儲存已關閉，撳「儲存到後端」先寫入）`);
-    return;
-  }
-  /* 上一次自動寫入因為「未由後端載入過」而俾 saveToBackend 擋咗（no_base）→
-     唔好每次改動都撞多轉；要等 loadFromBackend() 成功（佢會清返呢個旗）。 */
-  if (autoSaveHalted) {
-    setState('pending', `未儲存 —— 未由後端載入過，請先撳「重新載入」（${pendingCount()} 項改動喺本機）`);
-    return;
-  }
-  setState('pending', critical
-    ? `帳戶改動 —— 即刻寫入後端…（${pendingCount()} 項）`
-    : `自動儲存中…（${pendingCount()} 項）`);
-  if (autoTimer) clearTimeout(autoTimer);
-  const delay = critical ? 0 : AUTO_SAVE_DELAY_MS;
-  autoTimer = setTimeout(() => { autoTimer = null; void autoSave(); }, delay);
+  const acc = pendingAccounts();
+  setState('pending', acc
+    ? `未寫入後端：${pendingCount()} 項（包括 ${acc} 個帳戶改動 —— 未寫入，佢哋喺其他裝置登唔到）`
+    : `未寫入後端：${pendingCount()} 項改動暫存喺呢部機`);
 }
 
 function pendingCount() {
   return Number(tryLoad()?.sync?.pending || 0);
 }
 
-/** 自動寫入（背景；撞格先至問用家，其餘一律靜默） */
-async function autoSave() {
-  if (isMock() || inFlight) return;
-  if (!remoteCfg().ok || !hasPending()) return;
-  const r = await saveToBackend({ policy: autoResolver ? 'ask' : 'theirs', resolver: autoResolver, silent: true });
-  if (r?.ok) {
-    autoSaveHalted = false;
-    setState(hasPending() ? 'pending' : 'saved', hasPending() ? '仲有改動未儲存' : '已自動儲存到後端');
-  } else if (r?.reason === 'no_base' || r?.reason === 'not_configured') {
-    /* 呢部機未由後端載入過 → 自動寫入暂停，等 loadFromBackend() 成功先再試 */
-    autoSaveHalted = true;
-  }
-  return r;
+/** 未寫入後端嘅**帳戶級**改動數（開人／設密碼／改身份）。
+ *  呢個數 > 0 ＝ 有其他裝置用嗰啲 email／YMIS 登唔到。 */
+export function pendingAccounts() {
+  return Number(tryLoad()?.sync?.pendingAccounts || 0);
 }
-
-/** 有排緊嘅自動儲存就即刻寫（例：撳「即刻儲存」、離開頁面前） */
-export function flushAutoSave() {
-  if (autoTimer) { clearTimeout(autoTimer); autoTimer = null; }
-  return autoSave();
-}
-
-/** 自動儲存開唔開（跟旅團資料存；預設開） */
-export function autoSaveOn() {
-  const db = tryLoad();
-  if (!db) return true;
-  return db.sync?.autoSave !== false;
-}
-/** 開／關自動儲存（介面用；關咗之後所有改動都要自己撳「儲存到後端」） */
-export function setAutoSave(on) {
-  const db = tryLoad();
-  if (!db) return false;
-  db.sync = { ...(db.sync || {}), autoSave: !!on };
-  commitMeta();
-  if (!on && autoTimer) { clearTimeout(autoTimer); autoTimer = null; }
-  setState(hasPending() ? 'pending' : 'idle', on ? '自動儲存已開啟' : '自動儲存已關閉 —— 改動要自己撳「儲存到後端」');
-  return !!on;
-}
-/** 自動儲存撞格嗰陣嘅對話框（由 main.js 掛；lib 唔應該 import views） */
-let autoResolver = null;
-export function setAutoConflictResolver(fn) { autoResolver = typeof fn === 'function' ? fn : null; }
-
-/* 團員入口（members.html）用：團員交嘢行自己嗰條 pushSubmit()（policy:'mine'），
-   唔應該由佢部手機自動成份 db 寫入後端。呢個開關淨係影響呢個頁面，唔寫入資料。 */
-let autoSuppressed = false;
-export function suppressAutoSave(on = true) { autoSuppressed = !!on; }
-
 /** 有冇改動仲未寫入後端 */
 export function hasPending() {
   const db = tryLoad();
@@ -800,8 +740,6 @@ export async function loadFromBackend({ policy = 'ask' } = {}) {
     setState('unreachable', got.error || '連唔到後端');
     return { ok: false, error: got.error || '讀唔到後端', reason: got.reason || 'network', hint: got.hint || '' };
   }
-  /* 呢部機而家真係由後端載入過（或者後端係空、基準＝空）→ 自動寫入可以重新行 */
-  autoSaveHalted = false;
   const version = String(got.version || '');
   const at = String(got.at || '');
   if (!got.found) {
@@ -1146,7 +1084,7 @@ export async function requireBackendForLogin() {
 export async function refreshIfClean({ maxAgeMs = 20000 } = {}) {
   if (isMock()) return { ok: false, reason: 'mock' };
   if (!remoteCfg().ok) return { ok: false, reason: 'not_configured' };
-  if (inFlight || autoTimer) return { ok: false, reason: 'busy' };
+  if (inFlight) return { ok: false, reason: 'busy' };
   if (loadedAgo() < maxAgeMs) return { ok: false, reason: 'fresh' };
   const base = getBase();
   const dirty = base?.db ? localChanges().length > 0 : Number(tryLoad()?.sync?.pending || 0) > 0;

@@ -497,6 +497,9 @@ function persist({ remote = true, critical = false, reason = '' } = {}) {
   if (bump) {
     state.db.sync = state.db.sync || {};
     state.db.sync.pending = Number(state.db.sync.pending || 0) + 1;
+    /* ★ 帳戶級改動另外計數：呢啲未寫入後端之前，另一部機用嗰個 email／YMIS 登唔到
+       （登入核對讀嘅係後端嗰份名冊）。頂部會明確講出嚟，登出／閂頁會擋住問。 */
+    if (critical) state.db.sync.pendingAccounts = Number(state.db.sync.pendingAccounts || 0) + 1;
   }
   lsSet(dbKey(state.mode, state.unitCode), JSON.stringify(state.db));
   /* 本機寫完 → 通知介面／後端儲存排程 */
@@ -590,7 +593,14 @@ export function setUnitProfile(patch) {
 export function audit(action, detail = '', who = null) {
   const db = load();
   db.auditLog = db.auditLog || [];
-  db.auditLog.unshift({ id: 'log_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6), at: nowStamp(), action, detail, by: who || '' });
+  /* ★ 2026-09-25 團長：「操作紀錄不顯示超級管理員的紀錄」。
+     要濾得到就要記低操作者身份 —— 由 session 攞（audit() 唔可以 import auth.js，會循環）。 */
+  const sess = getSession();
+  db.auditLog.unshift({
+    id: 'log_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+    at: nowStamp(), action, detail, by: who || '',
+    role: sess?.role || ''
+  });
   if (db.auditLog.length > 400) db.auditLog.length = 400;
   /* 操作紀錄係簿記：只寫本機、唔計入「未儲存改動」（否則一登入就話有嘢未存）。
      佢會跟下一次真正嘅儲存一齊上後端（三方合併：紀錄係併集，永遠唔會撞）。 */
@@ -782,7 +792,7 @@ export function commitSaved(finalDb, { version = '', bytes = 0, parts = 0 } = {}
   const local = state.db;
   const next = keepLocalWiring(normalizeRemote(finalDb), local);
   state.db = next;
-  state.db.sync = { ...(state.db.sync || {}), pending: 0, lastPushAt: nowStamp(), lastError: '' };
+  state.db.sync = { ...(state.db.sync || {}), pending: 0, pendingAccounts: 0, lastPushAt: nowStamp(), lastError: '' };
   setBase(state.db, version);
   syncLog(state.db, `✓ 已儲存到後端${bytes ? `（${(bytes / 1024).toFixed(0)} KB${parts ? `，分 ${parts} 件` : ''}）` : ''}`);
   state.db.meta = { ...(state.db.meta || {}), seedSource: '（後端：旅團自己嘅 Google Sheet）' };

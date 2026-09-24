@@ -5,10 +5,16 @@
      「不同視窗開的又不同步，最簡單就是 1 邊能用 email 登入、1 邊不能，
        那＝用戶根本沒寫入後端，唯一能登入的是我的超管，因為不經後端。」
 
-   呢個測試唔講道理，直接開機行真實 HTTP（每個 process ＝ 一部全新嘅機）：
-     機 A（團長）：喺「用戶與身份」開一個領袖 ＋ 設密碼
-                   → **唔撳**「儲存到後端」（因為用戶根本唔知道要撳）
-                   → 即刻直接問後端：嗰個人存唔存在？有冇密碼？
+   ★ 2026-09-25 團長第五輪定案（呢個測試跟住改）：
+     「我只想要頂部1個儲到後端的制,其他任何時候都是暫儲在遊覽器」
+     → 2026-09-24 為咗救呢個問題加過自動寫入，團長明確否決，自動寫入已經拆走。
+     所以而家釘死嘅係**兩件事一齊成立**：
+       ① 未撳頂部掣 ＝ 後端一個字都冇（改動只喺瀏覽器），而且頂部要**鬧醒**用家
+          有幾多個帳戶未寫入（pendingAccounts）—— 唔可以再靜靜地漏
+       ② 撳咗頂部「儲存到後端」＝ 帳戶一定到到後端，另一部機即刻用嗰個 email 登到
+   每個 process ＝ 一部全新嘅機，行真實 HTTP：
+     機 A（團長）：開一個領袖 ＋ 設密碼 → 驗證未撳掣之前後端冇嘢 ＋ 有鬧醒
+                   → 撳頂部「儲存到後端」→ 再問後端
      機 B（全新）：用嗰個 email 登入 —— 應該入到
      機 A        ：另一個分頁（同機同瀏覽器）開咗個人 —— 呢邊應該即刻見到
    環境：假 GAS（tests/_fakegas.mjs）＋ dev-server（/api/proxy）
@@ -92,30 +98,50 @@ try {
   });
   ok('測試用假後端＋dev-server 已啟動', (await waitPort(GAS_PORT)) && (await waitPort(WEB_PORT)));
 
-  /* ============ 機 A：同一部機上「開人 → 設密碼」，全程冇撳「儲存到後端」 ============ */
-  section('機 A（團長）：開領袖＋設密碼，全程冇撳「儲存到後端」');
+  /* ============ 機 A：開人 → 設密碼 →（未撳掣）→ 撳頂部「儲存到後端」 ============ */
+  section('機 A（團長）：開領袖＋設密碼 → 未撳掣之前後端冇嘢 → 撳頂部掣');
   const A = await runDevice({ steps: [
     { op: 'wipe' },
+    { op: 'load' },                                        // 真 app 開機一定先由後端載入（＝基準）
     { op: 'addStaff', name: '新領袖', email: EMAIL, ymis: YMIS, identity: 'leader' },
     { op: 'setHubPw', id: '@last', pw: PW },
-    { op: 'wait', ms: 3000 },
-    { op: 'backendHasLogin', login: EMAIL },
-    { op: 'otherTabWrite', name: '另一分頁開嘅人' }
+    { op: 'wait', ms: 3000 },                              // 等足 3 秒：證明冇自動寫入
+    { op: 'backendHasLogin', login: EMAIL },               // ← 未撳掣
+    { op: 'otherTabWrite', name: '另一分頁開嘅人' },
+    { op: 'syncNow' },                                     // ← 撳頂部「儲存到後端」（唯一寫入路）
+    { op: 'backendHasLogin', login: EMAIL }                // ← 撳完
   ] });
   ok('機 A 全程冇爆', A.ok === true, A.error || '');
   const pwStep = stepOf(A, 'setHubPw');
   console.log('  · 設密碼：' + JSON.stringify(pwStep));
   ok('設密碼成功', pwStep.ok === true, JSON.stringify(pwStep));
 
-  const be = stepOf(A, 'backendHasLogin');
-  console.log('  · 開完人之後直接問後端：' + JSON.stringify(be));
-  ok('★ 開完人＋設完密碼，後端嗰份名冊已經有呢個人（唔使撳任何掣）',
-    be.found === true && be.withPw === true, JSON.stringify(be));
+  /* ---- ① 未撳掣：改動一定仲喺瀏覽器，而且頂部要鬧醒 ---- */
+  ok('★ 帳戶改動計入「未寫入」（pending ≥ 1）', Number(pwStep.pending || 0) >= 1, JSON.stringify(pwStep));
+  ok('★ 帳戶改動另外計數（pendingAccounts ≥ 1）—— 頂部用嚟轉紅鬧醒',
+    Number(pwStep.pendingAccounts || 0) >= 1, JSON.stringify(pwStep));
+  ok('★ 狀態文字講明「未寫入」同埋有幾個帳戶（唔會靜靜地漏）',
+    pwStep.state === 'pending' && /包括 \d+ 個帳戶/.test(pwStep.statusMsg || ''), pwStep.statusMsg);
+
+  const bes = (A.steps || []).filter(x => x.op === 'backendHasLogin');
+  const [be0, be1] = [bes[0] || {}, bes[1] || {}];
+  console.log('  · 未撳掣之前問後端：' + JSON.stringify(be0));
+  ok('★ 未撳頂部掣 → 後端仲未有呢個人（改動只喺瀏覽器，冇偷偷地寫）',
+    be0.found === false, JSON.stringify(be0));
 
   const otherTab = stepOf(A, 'otherTabWrite');
   console.log('  · 另一分頁寫入：' + JSON.stringify(otherTab));
   ok('★ 同一個瀏覽器另一個分頁開咗人，呢邊即刻見到（唔使重新整理）',
     otherTab.seesName === true, JSON.stringify(otherTab));
+
+  /* ---- ② 撳咗頂部掣：帳戶一定到到後端 ---- */
+  const sn = stepOf(A, 'syncNow');
+  console.log('  · 撳「儲存到後端」：' + JSON.stringify(sn));
+  ok('★ 撳頂部「儲存到後端」成功', sn.ok === true && sn.pushed === true, JSON.stringify(sn));
+  ok('★ 寫完 pending 清零', Number(sn.pending || 0) === 0, JSON.stringify(sn));
+  console.log('  · 撳完之後問後端：' + JSON.stringify(be1));
+  ok('★ 後端嗰份名冊已經有呢個人＋有密碼',
+    be1.found === true && be1.withPw === true, JSON.stringify(be1));
 
   /* ============ 機 B（全新）：用嗰個 email 登入 ============ */
   section('機 B（全新裝置）：用啱啱開嘅 email 登入');
@@ -130,14 +156,14 @@ try {
   const P = await runDevice({ steps: [
     { op: 'load' },      // 真 app 開機一定先由後端載入（＝基準）；唔係就唔准盲寫
     { op: 'addStaff', name: '進度團員', email: 'youth@example.com', ymis: '2026000888', identity: 'member' },
-    { op: 'wait', ms: 3000 },
+    { op: 'syncNow' },   // ← 「成員名單」分頁係喺寫入後端嗰陣先至更新，所以要撳頂部掣
     { op: 'progressLoad' },
     { op: 'progressTick', ymis: '2026000888', itemId: 'vs_a1' },
     { op: 'progressLoad' }
   ] });
   const pls = (P.steps || []).filter(x => x.op === 'progressLoad');
-  console.log('  · 開完人之後問進度後端：' + JSON.stringify(pls[0]));
-  ok('★ 開完人之後，後端「成員名單」已經有呢個 YMIS（進度頁先至有人揀）',
+  console.log('  · 撳完「儲存到後端」之後問進度後端：' + JSON.stringify(pls[0]));
+  ok('★ 撳完頂部掣之後，後端「成員名單」已經有呢個 YMIS（進度頁先至有人揀）',
     (pls[0]?.memberList || 0) >= 1 && (pls[0]?.ymis || []).includes('2026000888'), JSON.stringify(pls[0]));
   const tick = (P.steps || []).find(x => x.op === 'progressTick');
   ok('勾一項進度寫得入後端', tick?.ok === true, JSON.stringify(tick));

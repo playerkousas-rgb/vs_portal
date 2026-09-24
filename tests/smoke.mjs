@@ -309,11 +309,16 @@ if (!store.load().members.length) {
 const pages = ['#/dashboard', '#/meetings', '#/finance', '#/finance/reports', '#/finance/fees', '#/finance/claims',
   '#/finance/budgets', '#/finance/import', '#/members', '#/members/birthdays', '#/inventory', '#/inventory/loans',
   '#/inventory/audits', '#/progress', '#/constitution', '#/docs',
-  '#/notices', '#/notices/new', '#/tables', '#/tables/transactions', '#/tables/invItems',
-  '#/tables/notices', '#/tables/source', '#/tables/sync', '#/tables/data',
-  '#/admin', '#/admin/perms', '#/admin/unit',
+  '#/notices', '#/notices/new',
+  /* ★ 2026-09-25：「表格與同步」簡化成三樣嘢，逐個表嘅欄位設計改由 openFieldDesigner modal 負責，
+     所以 #/tables/<table> 呢啲路已經唔存在（會 fallback 去 source）。 */
+  '#/tables', '#/tables/source', '#/tables/sync', '#/tables/data',
+  /* ★ 權限總表由「帳號與系統」搬去「用戶與身份」（#/members/perms） */
+  '#/admin', '#/admin/unit',
   '#/admin/data', '#/admin/audit', '#/admin/mock',
-  '#/links', '#/finance/settings', '#/members/new', '#/members/edit/' + store.load().members[0].id];
+  '#/members/perms',
+  '#/links', '#/links/social', '#/links/album', '#/links/link',
+  '#/finance/settings', '#/members/new', '#/members/edit/' + store.load().members[0].id];
 for (const p of pages) {
   const before = errors.length;
   try {
@@ -941,18 +946,22 @@ section('通告詳情頁（同步到公開頁 ＝ 行同一條「儲存到後端
   }
 }
 
-/* ---------- v3：表格設計（改名／加欄位） ---------- */
-section('表格設計（欄位改名・加欄位・還原）');
+/* ---------- v3：表格設計（改名／加欄位） ----------
+   ★ 2026-09-25 團長：「總表同步／表格與同步 太複雜」→ 逐個表嘅欄位設計已經唔再係
+   「表格與同步」嘅分頁（嗰頁而家淨係三樣嘢），改為由各分頁嘅「欄位」掣開同一個
+   欄位設計器 modal（openFieldDesigner）。呢段測試跟住改行 modal 嗰條路。 */
+section('欄位設計器（欄位改名・加欄位・還原）');
 {
   const tablesMod = await import('../assets/js/views/tables.js');
-  window.location.hash = '#/tables/transactions';
-  window.dispatchEvent(new window.HashChangeEvent('hashchange'));
-  await new Promise(r => setTimeout(r, 40));
-  const rows = doc.querySelectorAll('#field-list .schema-row');
-  ok('表格頁列出欄位（帳目）', rows.length >= 8, String(rows.length));
-  ok('有「加欄位」掣', !!doc.querySelector('[data-act="add-field"]'));
+  /* 唔好 await —— openFieldDesigner 返嘅 promise 要等 modal 關閉先 settle，
+     await 住就永遠行唔落去（top-level await 會掛死）。開咗就算，之後直接操作 DOM。 */
+  const fdDone = tablesMod.openFieldDesigner('transactions');
+  await new Promise(r => setTimeout(r, 60));
+  const rows = doc.querySelectorAll('#fd-list .schema-row');
+  ok('欄位設計器列出欄位（帳目）', rows.length >= 8, String(rows.length));
+  ok('有「加欄位」掣', !!doc.querySelector('[data-fd="add"]'));
 
-  const inp = doc.querySelector('#field-list [data-field="0"] [data-k="label"]');
+  const inp = doc.querySelector('#fd-list [data-field="0"] [data-k="label"]');
   ok('第一個欄位係「日期」', inp?.value === '日期', inp?.value);
   inp.value = '交易日期';
   inp.dispatchEvent(new window.Event('change', { bubbles: true }));
@@ -964,13 +973,18 @@ section('表格設計（欄位改名・加欄位・還原）');
     tablesMod.tableDefs().transactions.fields[0].label === '交易日期');
 
   // 還原預設
-  doc.querySelector('[data-act="reset-fields"]').click();
+  doc.querySelector('[data-fd="reset"]').click();
   await new Promise(r => setTimeout(r, 40));
   doc.querySelector('.overlay [data-act="1"]')?.click();
   await new Promise(r => setTimeout(r, 80));
   ok('還原預設欄位（唔會再見到改咗嘅名）',
     tablesMod.tableDefs().transactions.fields[0].label === '日期',
     tablesMod.tableDefs().transactions.fields[0].label);
+
+  // 關走 modal（「完成」＝唯一一粒掣 → data-act="0"），唔好影響後面嘅 section
+  doc.querySelector('.overlay [data-act="0"]').click();
+  await fdDone;
+  await new Promise(r => setTimeout(r, 60));
 }
 
 /* ---------- v3：插入自己嘅 Sheet（gviz 解析・自動對應） ---------- */
@@ -1533,8 +1547,9 @@ section('旅團選擇閘（先揀旅團再登入）');
   ok('登入頁有「更換旅團」掣', /btnGate/.test(mainSrc));
 }
 
-/* ---------- 6. 成員連結（申報 / 物資 / 通告報名） ---------- */
-section('成員連結（免登入公開頁）');
+/* ---------- 6. 公開資料（申報 / 物資 / 通告報名 / 社交媒體 / 相簿） ----------
+   ★ 2026-09-25 團長：「『成員連結』改名為『公開資料』」 */
+section('公開資料（免登入公開頁）');
 {
   const links = model.memberLinks();
   const ids = links.map(l => l.id);
@@ -1549,10 +1564,10 @@ section('成員連結（免登入公開頁）');
   window.dispatchEvent(new window.HashChangeEvent('hashchange'));
   await new Promise(r => setTimeout(r, 60));
   const v3 = doc.getElementById('view');
-  ok('「成員連結」頁可以渲染', (v3.innerHTML || '').length > 400, String((v3.innerHTML || '').length));
+  ok('「公開資料」頁可以渲染', (v3.innerHTML || '').length > 400, String((v3.innerHTML || '').length));
   ok('頁上有 QR 掣', v3.querySelectorAll('[data-qr]').length >= 3, String(v3.querySelectorAll('[data-qr]').length));
   ok('頁上有列印海報掣', v3.querySelectorAll('[data-poster]').length >= 3);
-  ok('側邊欄有「成員連結」', /成員連結/.test(doc.querySelector('.sidebar')?.textContent || ''));
+  ok('側邊欄有「公開資料」（已由「成員連結」改名）', /公開資料/.test(doc.querySelector('.sidebar')?.textContent || ''));
   if (MODE === 'real') {
     ok('物資借用送出網址已設定（borrow.html → 總表）',
       /\/exec$/.test(store.load().settings?.publicBorrow?.submitUrl || ''),

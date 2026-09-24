@@ -13,6 +13,7 @@
    ============================================================ */
 
 import fs from 'fs';
+import crypto from 'node:crypto';
 import path from 'path';
 import vm from 'vm';
 import { fileURLToPath } from 'url';
@@ -89,8 +90,10 @@ function makeGas({ apiKey = null } = {}) {
     Utilities: {
       getUuid: () => 'aaaabbbb-cccc-dddd-eeee-ffff00001111',
       formatDate: (d) => new Date(d).toISOString(), sleep: () => {},
-      base64Decode: () => [], newBlob: () => ({ setName: () => ({}) })
-    },
+      base64Decode: () => [],
+      newBlob: (value) => ({ getBytes: () => [...Buffer.from(String(value), 'utf8')], setName: () => ({}) }),
+      computeHmacSha256Signature: (value, key) => [...crypto.createHmac('sha256', Buffer.from(key)).update(Buffer.from(value)).digest()],
+    }, 
     LockService: { getScriptLock: () => ({ tryLock: () => true, waitLock: () => true, releaseLock: () => {} }) },
     Logger: { log: () => {} },
     DriveApp: { getFolderById: () => ({ createFile: () => ({ getUrl: () => 'https://drive/x', setSharing: () => {} }) }) },

@@ -163,6 +163,24 @@ function sha256HexGs(s) {
   return raw.map(function (b) { return ('0' + (b & 255).toString(16)).slice(-2); }).join('');
 }
 
+/* PBKDF2-HMAC-SHA256：支部帳戶密碼用；hash／salt 只會留喺後端資料。
+   GAS 沒有原生 PBKDF2，所以按 RFC 8018 實作，最低 100,000 iterations。 */
+function pbkdf2Sha256Hex(password, salt, iterations) {
+  var count = Number(iterations || 120000);
+  if (!isFinite(count) || count < 100000) count = 120000;
+  if (count > 1000000) count = 1000000;
+  var pass = Utilities.newBlob(String(password || '')).getBytes();
+  var saltBytes = Utilities.newBlob(String(salt || '')).getBytes();
+  var block = saltBytes.concat([0, 0, 0, 1]);
+  var u = Utilities.computeHmacSha256Signature(block, pass);
+  var out = u.slice();
+  for (var i = 1; i < count; i++) {
+    u = Utilities.computeHmacSha256Signature(u, pass);
+    for (var j = 0; j < out.length; j++) out[j] = (out[j] ^ u[j]);
+  }
+  return out.map(function (b) { return ('0' + (b & 255).toString(16)).slice(-2); }).join('');
+}
+
 /**
  * 開團登入 KEY：喺 Apps Script 編輯器執行呢個函數。
  * 每次產生新 KEY，有效 72 小時；過期再執行一次。唔會寫入工作表、唔會喺 App 顯示超管。

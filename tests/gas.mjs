@@ -74,6 +74,15 @@ section('Server-side access audit');
   ok('審計紀錄不包含 API Key／密碼／payload', !line.includes('audit-test-key') && !line.includes('never-log-this'));
 }
 
+section('支部帳戶 PBKDF2 密碼基礎');
+{
+  const g = makeGas();
+  const expected = '0394a2ede332c9a13eb82e9b24631604c31df978b4e2f0fbd2c549944f9d79a5';
+  ok('後端提供 PBKDF2-HMAC-SHA256', typeof g.sandbox.pbkdf2Sha256Hex === 'function');
+  ok('PBKDF2 使用最低 100,000 iterations 的標準結果',
+    g.sandbox.pbkdf2Sha256Hex('password', 'salt', 100000) === expected);
+}
+
 /* ============================================================
    ② 後端未設 API Key（Script Properties 空）→ 應該寫得入
    ============================================================ */

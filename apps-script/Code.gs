@@ -314,7 +314,7 @@ function initializeSheets() {
      scripts/lint.mjs 會逐個比對，漏咗／多咗都會紅燈。
      （2026-09-20 之前呢句係手寫死嘅字串，一直漏咗 constitution，
        加咗 loadDbPart 之後更加唔可以再靠人手記得改。） */
-var SUPPORTED_ACTIONS = ['ping', 'test', 'status', 'sync', 'claim', 'noticeSignup', 'noticeSubscribe', 'noticeSubscriptions', 'loan', 'loanDecision',
+var SUPPORTED_ACTIONS = ['ping', 'test', 'status', 'sync', 'claim', 'claimDecision', 'noticeSignup', 'noticeSubscribe', 'noticeSubscriptions', 'loan', 'loanDecision',
   'authLogin', 'authChangePassword', 'authResetPassword', 'authDeleteAccount', 'authRestoreAccount', 'authCreateAccount', 'authForgotPassword', 'authResetByToken', 'saveDb', 'loadDb', 'loadDbPart', 'dbInfo', 'saveDbPart', 'saveDbCommit', 'verifySetupKey',
   'uploadPhotos', 'constitution', 'notices',
   'save', 'saveOtherBadge', 'reviewRequest', 'reviewLogRequest', 'addRequest', 'myRequests'];
@@ -871,6 +871,26 @@ function doPost(e) {
       return json({ ok: sgn.success !== false, success: sgn.success !== false,
         msg: sgn.duplicate ? '已經記錄過呢份報名' : '已記錄報名', duplicate: !!sgn.duplicate });
     }
+    if (body.action === 'claimDecision') {
+      var claimAuth = requireAuth(expectedKey, key); if (!claimAuth.ok) return json(claimAuth);
+      var claimSession = requireAuthSession(body); if (!claimSession.ok) return json({ ok:false, success:false, error:claimSession.error, code:'SESSION_REQUIRED' });
+      var claimResult = withLock(function () {
+        var claimDb = loadDb(textOf(body.unit));
+        var actor = (claimDb.db.accounts || []).filter(function(a){ return a && a.active !== false && textOf(a.id) === textOf(claimSession.id); })[0];
+        var role = claimSession.portal ? textOf(claimSession.role).toLowerCase() : textOf(actor && (actor.role || actor.identity)).toLowerCase();
+        if (!claimSession.portal && !actor) return { success:false, error:'管理員帳戶不存在' };
+        if (['leader','admin','exco'].indexOf(role) < 0) return { success:false, error:'你沒有權限批核財務申報' };
+        var claim = (claimDb.db.claims || []).filter(function(c){ return c && textOf(c.id) === textOf(body.claimId); })[0];
+        if (!claim) return { success:false, error:'搵唔到財務申報' };
+        var decision = textOf(body.decision).toLowerCase();
+        if (['approved','rejected','cancelled'].indexOf(decision) < 0) return { success:false, error:'批核狀態無效' };
+        claim.status = decision; claim.decidedBy = textOf(claimSession.id || body.actorUsername); claim.decidedAt = nowStampGs();
+        var savedClaim = saveDb({ unit:textOf(body.unit), db:claimDb.db, baseVersion:claimDb.version, refreshReports:false });
+        return savedClaim.success === true ? { success:true, version:savedClaim.version || '', status:decision } : savedClaim;
+      });
+      return json({ ok:claimResult.success === true, success:claimResult.success === true, status:claimResult.status || '', version:claimResult.version || '', error:claimResult.error || '' });
+    }
+
     if (body.action === 'claim') {
       var saved = withLock(function () { return appendClaim(body); });
       return json({ ok: true, msg: '已記錄，等批核', photos: saved.photos || 0 });
@@ -988,7 +1008,7 @@ function doGet(e) {
     msg: '執委管理系統 後端已啟動',
     spreadsheet: (function () { try { return SpreadsheetApp.getActiveSpreadsheet().getName(); } catch (err) { return '(未綁定試算表)'; } })(),
     tabs: SHEET_TABS,
-    api: ['ping', 'status', 'sync', 'saveDb', 'loadDb', 'dbInfo', 'claim', 'noticeSignup', 'noticeSubscribe', 'noticeSubscriptions', 'loan', 'loanDecision', 'load', 'save', 'saveOtherBadge'],
+    api: ['ping', 'status', 'sync', 'saveDb', 'loadDb', 'dbInfo', 'claim', 'claimDecision', 'noticeSignup', 'noticeSubscribe', 'noticeSubscriptions', 'loan', 'loanDecision', 'load', 'save', 'saveOtherBadge'],
     usage: 'APP 內「帳號與系統 → 資料管理 → 總表同步」填呢個 /exec 網址即可'
   });
 }

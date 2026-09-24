@@ -1,10 +1,14 @@
 /* ============================================================
-   docs.js — 使用教學（內建）＋ 多旅團 / MOCK 製作指南
+   docs.js — 使用教學（內建）＋ 多旅團部署指南
+   ------------------------------------------------------------
+   ★ 2026-09-25 團長：「刪除示範資料 (MOCK) 我都在用要MOCK 幹什麼」
+     → 示範資料（data/mock/）同成個示範模式拆走，教學入面嗰個
+       「示範資料（MOCK）」章節一齊刪。
    ============================================================ */
 
 import { profile } from '../lib/model.js';
 import { accounts, currentRole, displayName, isSuper, ROLES } from '../lib/auth.js';
-import { load, currentUnit, isMock } from '../lib/store.js';
+import { load, currentUnit } from '../lib/store.js';
 import { backendOf } from '../lib/units.js';
 import { envUnitTemplate, envUnitSteps } from '../lib/onboard.js';
 import { esc, icon, copyText, toast } from '../lib/util.js';
@@ -26,7 +30,6 @@ const NAV = [
   ['inventory', '物資與借用'],
   ['birthday', '生日提示'],
   ['progress', '進度紀錄（同一個後端）'],
-  ['mock', '示範資料（MOCK）'],
   ['multiunit', '多旅團部署'],
   ['newunit', '開新旅團（唔使改 Git）'],
   ['tablesync', '插入自己嘅 Sheet 與總表同步'],
@@ -34,7 +37,7 @@ const NAV = [
 ];
 
 export function render(params) {
-  /* 用戶只需日常教學；MOCK／多旅團／開新旅團／總表同步只限超管 */
+  /* 用戶只需日常教學；多旅團／開新旅團／總表同步只限超管 */
   const userOk = new Set(['start', 'accounts', 'constitution', 'finance', 'daily', 'mobile', 'inventory', 'birthday', 'progress', 'backup']);
   const nav = NAV.filter(([k]) => isSuper() ? (k !== 'newunit' || isSuper()) : userOk.has(k));
   if (params.id === 'newunit' && !isSuper()) section = 'newunit';          // 直接打網址入嚟 → 下面會顯示「只限超管」
@@ -56,7 +59,7 @@ export function render(params) {
       </div>
       <div style="padding:14px 16px;border-top:1px solid var(--line-2)">
         ${noteBox(`目前旅團：<b>${esc(profile().name || '')}</b><br>身份：${esc(displayName())}（${ROLES[currentRole()]?.name || ''}）
-          ${isMock() ? '<br><b>示範模式</b>：你而家改嘅係示範資料，唔會影響真實資料。' : ''}`)}
+          `)}
       </div>
     </div>
     <div class="card"><div style="padding:22px 24px" class="guide">${body()}</div></div>
@@ -74,7 +77,6 @@ function body() {
     case 'inventory': return inventoryDoc();
     case 'birthday': return birthdayDoc();
     case 'progress': return progressDoc();
-    case 'mock': return mockDoc();
     case 'multiunit': return multiUnitDoc();
     case 'newunit': return isSuper() ? newUnitDoc() : superOnlyDoc();
     case 'backup': return backupDoc();
@@ -109,7 +111,7 @@ function startDoc() {
       <tr><td>團章 / 進度 / 帳號與系統</td><td>團章編輯輸出、讀寫進度紀錄、帳戶及資料管理</td></tr>
     </tbody>
   </table>
-  ${isSuper() ? `${H('3. 想試下先？')}${P('超管可喺登入前揀「試用示範（MOCK）」。')}` : ''}`;
+`;
 }
 
 function accountsDoc() {
@@ -477,37 +479,6 @@ function maskExec(u) {
   return String(u || '').replace(/\/macros\/s\/[^/]+/, '/macros/s/…');
 }
 
-function mockDoc() {
-  return `
-  ${H('MOCK 完全同真資料分離')}
-  ${P('系統用三個獨立命名空間，唔會互相污染：')}
-  <pre><code>真實資料   venture82.unit.&lt;旅團編號&gt;.db.v2
-示範資料   venture82.mock.db.v2
-登入狀態   venture82.session.v2</code></pre>
-  <ul>
-    <li>示範資料由 <code>data/mock/*.json</code> 載入，唔會讀真實檔案</li>
-    <li>喺示範模式入面所有新增／修改只寫入 mock 空間</li>
-    <li>示範備份（JSON）唔可以匯入真實資料庫（系統會阻止）</li>
-    <li>「清除示範資料」唔會影響真實資料</li>
-  </ul>
-  ${H('點進入示範模式')}
-  <ul>
-    <li>旅團選擇閘 → 「試用示範（MOCK）」—— 未加入嘅旅團都可以入嚟睇齊最新流程</li>
-    <li>入去會以示範領袖身份睇管理系統。想試兩個入口：撳登出</li>
-    <li>團員／執委示範：YMIS <code>1000000001</code>（執委）或 <code>1000000006</code>（團員），密碼 <code>1234</code></li>
-    <li>如果示範資料好舊：橫額「重設示範」會重新載入 <code>data/mock/</code></li>
-  </ul>
-  ${H('點做自己旅團嘅示範資料')}
-  ${P('複製 <code>data/mock/</code> 資料夾，照以下格式改內容（用假名！）：')}
-  <pre><code>{
-  "members": [
-    { "id": "dm01", "name": "陳大文", "birthday": "2008-09-16",
-      "role": "主席", "status": "active", "tags": ["執委會"] }
-  ]
-}</code></pre>
-  ${P('其他檔案：<code>unit.json</code>（設定／主色／AGM 日期）、<code>constitution.json</code>（團章）、<code>finance.json</code>（帳目／團費／申報／預算）、<code>inventory.json</code>（物資／借用）、<code>meetings.json</code>（會議）。欄位可參考現有檔案。')}`;
-}
-
 /* 管理員專用（方法 A：Git Registry）—— 普通用戶冇 Git／Vercel 權限，唔需要見到 */
 function adminGitSteps() {
   return `
@@ -557,8 +528,7 @@ function multiUnitDoc() {
     members.json             ← 團員（含生日）
     finance.json             ← 帳目 / 團費 / 申報 / 預算
     inventory.json           ← 物資 / 借用
-    meetings.json            ← 會議（可選）
-  mock/                      ← 示範資料（同真資料分離）</code></pre>
+    meetings.json            ← 會議（可選）</code></pre>
   ${isSuper() ? multiUnitOnboardSteps() : multiUnitOnboardNote()}
   ${isSuper() ? adminGitSteps() : ''}
   ${H('資料隔離')}

@@ -1,13 +1,13 @@
 /* ============================================================
    tests/audit-buttons.mjs — 全 APP 按鈕審計（driver）
    -----------------------------------------------------------
-   走遍 模式(mock/real) × 角色(leader/exco/super) × 11 個分頁，
+   走遍 角色(leader/exco/chief/super) × 11 個分頁，
    真撳每個 button / 表單 / 連結 / onclick 元素，偵測：
      exception（撳完出錯＝壞）／dead（撳完完全冇反應＝壞）／
      modal、toast、dom、state、navigate、download、print、clipboard（有反應＝正常）
    用法：
-     node tests/audit-buttons.mjs            # 全部 66 個組合
-     FILTER=mock/leader/dashboard node tests/audit-buttons.mjs   # 只跑部分
+     node tests/audit-buttons.mjs            # 全部 44 個組合
+     FILTER=real/leader/dashboard node tests/audit-buttons.mjs   # 只跑部分
    ============================================================ */
 
 import { spawn } from 'node:child_process';
@@ -16,7 +16,8 @@ import { fileURLToPath } from 'url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const WORKER = path.join(ROOT, 'tests', '_audit-run.mjs');
-const MODES = ['mock', 'real'];
+/* ★ 2026-09-25：示範（MOCK）模式已經拆走 → 審計只跑真實模式（44 個組合） */
+const MODES = ['real'];
 /* ★ 2026-09-24：加埋團長（最高權限，每個旅團一位）一齊審 */
 const ROLES = ['leader', 'exco', 'chief', 'super'];
 const SECTIONS = ['dashboard', 'meetings', 'finance', 'members', 'inventory',

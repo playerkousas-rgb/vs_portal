@@ -26,11 +26,10 @@
      ① 同源 /api/proxy  —— 冇 CORS、API Key 由伺服器端補上（最穩陣）
      ② 直接 POST 去 /exec —— 平台未登記旅團（或者純靜態部署）時嘅自助路線
 
-   注意：示範（MOCK）模式永遠唔會送出任何嘢。
    ============================================================ */
 
 import {
-  load, tryLoad, commitMeta, isMock, currentUnit, getBase, adoptRemote, setLocalMerged,
+  load, tryLoad, commitMeta, currentUnit, getBase, adoptRemote, setLocalMerged,
   commitSaved, applyChangesLocal, markBackendEmpty, normalizeRemote, stripForBase, exportForBackend,
   hasLocalContent, localChanges
 } from './store.js';
@@ -113,7 +112,6 @@ function setState(state, msg = '') {
 
 /** 由 store.persist() 掛住：本機有改動 → 更新頂部狀態（唔會寫後端） */
 export function scheduleSave(info = {}) {
-  if (isMock()) return;
   if (!remoteCfg().ok) return;
   if (!hasPending()) return;
   const acc = pendingAccounts();
@@ -162,7 +160,7 @@ export function remoteCfg() {
     apiKey: s.apiKey !== undefined ? s.apiKey : (db.backend?.apiKey || ''),
     unit,
     /* 有字串唔等於係有效後端：舊 cache 留低咗 /dev／錯網址時，唔可以畫綠燈。 */
-    ok: (directReady || (viaProxy && !!unit)) && !isMock(),
+    ok: directReady || (viaProxy && !!unit),
     viaProxy,
     directReady,
     serverManaged
@@ -383,7 +381,6 @@ export async function pullDbSegmented({ onProgress } = {}) {
  *             大過 SEGMENT_ABOVE_BYTES 就唔使白撞一次 4.5MB 上限，直接分段讀。
  *             冇提供就先試單一讀，失敗先退去分段（慳一次 GAS 配額）。 */
 export async function pullDb({ bytes: knownBytes } = {}) {
-  if (isMock()) return { ok: false, reason: 'mock', error: '示範模式唔會讀後端' };
   const cfg = remoteCfg();
   if (!cfg.ok) return { ok: false, reason: 'not_configured', error: notConfiguredMessage(cfg) };
   setState('loading', '讀取緊後端資料…');
@@ -416,7 +413,6 @@ export async function pullDb({ bytes: knownBytes } = {}) {
 
 /** 只問後端有冇資料、幾時更新（開機比對用，唔會傳成份資料落嚟） */
 export async function remoteInfo() {
-  if (isMock()) return { ok: false, reason: 'mock' };
   const cfg = remoteCfg();
   if (!cfg.ok) return { ok: false, reason: 'not_configured' };
   const r = await callBackend({ action: 'dbInfo' }, { timeoutMs: 20000 });
@@ -465,7 +461,6 @@ export async function remoteDiagnose() {
     if (state === 'bad') out.blockers.push({ id, label, detail: String(detail || ''), fix: String(fix || '') });
   };
 
-  if (isMock()) { add('mock', '示範模式', 'warn', '示範（MOCK）模式永遠唔會寫後端', '喺旅團選擇閘揀返你嘅真實旅團'); return out; }
 
   /* ① 旅團編號 */
   if (!cfg.unit) {
@@ -706,7 +701,6 @@ export function splitDbIntoParts(db, maxBytes = PART_MAX_BYTES) {
  * 一到就成個同步寫唔入）。
  */
 export async function uploadPhotos(photos = [], { id = '' } = {}) {
-  if (isMock()) return { ok: false, reason: 'mock', links: [] };
   const cfg = remoteCfg();
   if (!cfg.ok) return { ok: false, reason: 'not_configured', error: notConfiguredMessage(cfg), links: [] };
   /* 單據 Drive 資料夾：旅團設定（財務 → 設定／帳號與系統 都改到同一個欄） */
@@ -733,7 +727,6 @@ export async function uploadPhotos(photos = [], { id = '' } = {}) {
  *   version?:string, at?:string, error?:string, reason?:string, hint?:string}>}
  */
 export async function loadFromBackend({ policy = 'ask' } = {}) {
-  if (isMock()) return { ok: false, reason: 'mock', error: '示範模式唔會讀後端' };
   if (!remoteConfigured()) return { ok: false, reason: 'not_configured', error: notConfiguredMessage() };
   const got = await pullDb();
   if (!got.ok) {
@@ -1001,7 +994,7 @@ export function loadedAgo() { return lastLoadAt ? Date.now() - lastLoadAt : Infi
  * 有未儲存改動就唔郁（唔會丟人哋嘢），交返畀之後嘅儲存流程核對。
  */
 export async function ensureFresh({ maxAgeMs = 60000 } = {}) {
-  if (isMock() || !remoteConfigured()) return { ok: false, reason: 'not_configured' };
+  if (!remoteConfigured()) return { ok: false, reason: 'not_configured' };
   if (loadedAgo() <= maxAgeMs) return { ok: true, fresh: false };
   if (hasPending()) return { ok: true, fresh: false, skipped: 'pending' };
   const info = await callBackend({ action: 'dbInfo' }, { timeoutMs: 20000 });
@@ -1037,12 +1030,11 @@ export async function ensureFresh({ maxAgeMs = 60000 } = {}) {
  *    `return { ok:true, skipped:'pending' }` —— 完全冇聯絡後端。
  *    攞佢做登入閘等於冇核對過（2026-09-20 事故嘅其中一個隱藏版）。
  *
- * @returns {Promise<{ok:boolean, mock?:boolean, version?:string, at?:string,
+ * @returns {Promise<{ok:boolean, version?:string, at?:string,
  *                    empty?:boolean, accounts?:number, error?:string,
  *                    reason?:string, hint?:string}>}
  */
 export async function requireBackendForLogin() {
-  if (isMock()) return { ok: true, mock: true };
   const cfg = remoteCfg();
   if (!cfg.ok) {
     return {
@@ -1082,7 +1074,6 @@ export async function requireBackendForLogin() {
  * 呢個係「另一個視窗儲存咗 → 呢邊返嚟即刻見到」嗰條路。
  */
 export async function refreshIfClean({ maxAgeMs = 20000 } = {}) {
-  if (isMock()) return { ok: false, reason: 'mock' };
   if (!remoteCfg().ok) return { ok: false, reason: 'not_configured' };
   if (inFlight) return { ok: false, reason: 'busy' };
   if (loadedAgo() < maxAgeMs) return { ok: false, reason: 'fresh' };
@@ -1104,7 +1095,6 @@ export async function refreshIfClean({ maxAgeMs = 20000 } = {}) {
 
 /** 「由後端重新載入」：**丟棄**本機未儲存改動，成份用返後端（介面要先確認） */
 export async function discardAndReload() {
-  if (isMock()) return { ok: false, reason: 'mock', error: '示範模式唔會讀後端' };
   const got = await pullDb();
   if (!got.ok) return { ok: false, error: got.error || '讀唔到後端', reason: got.reason, hint: got.hint };
   if (!got.found) return { ok: false, reason: 'empty', error: '後端仲未有資料庫' };
@@ -1142,7 +1132,6 @@ export function saveToBackend(opts = {}) {
 }
 
 async function saveToBackendInner({ policy = 'ask', resolver = null, silent = true, _attempt = 0 } = {}) {
-  if (isMock()) return { ok: false, reason: 'mock', error: '示範模式唔會寫入後端' };
   const cfg = remoteCfg();
   if (!cfg.ok) return { ok: false, reason: 'not_configured', error: notConfiguredMessage(cfg) };
   const local = tryLoad();

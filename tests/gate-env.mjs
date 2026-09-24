@@ -1,20 +1,16 @@
 /* ============================================================
-   tests/gate-env.mjs — 多旅團「Vercel 環境變數登記」＋ 示範模式逃生門
+   tests/gate-env.mjs — 多旅團「Vercel 環境變數登記」＋ 旅團閘逃生門
    ------------------------------------------------------------
    呢個檔係為咗兩個 2026-09-17 團長回報嘅真實問題寫嘅：
 
    ① 「旅團後端／API Key 全用 Vercel 環境變數登記，但首頁揀唔到自己旅團」
       - 旅團清單真係有出現（regression：/api/units → 閘）
-      - 去過 MOCK 之後再揀真旅團，一定要真係入真實模式
-        （以前 localStorage 嘅 mode=mock 會蓋過 URL 嘅 ?u=0082
-          → 資料庫 key 變咗示範空間、又唔會同步後端）
       - 清單讀唔到時要有得「直接輸入編號」入去 + 診斷
 
-   ② 「入咗 MOCK 之後好難離開」
-      - 示範唔會再自動記住（下次由普通網址開一定返旅團選擇閘）
-      - ?u=MOCK（冇 mock=1）唔會變咗一個「真旅團 MOCK」空殼
-      - 離開示範清晒 mode／unit／已揀記錄／session
-      - 有「返 <真實旅團>」一撳返自己團
+   ② 「入咗一個旅團之後好難離開／轉旅團」
+      - 網址嘅 ?u= 一定要贏過 localStorage 記住咗嘅旅團（唔會「揀極都入唔到」）
+      - 記住咗一個已經唔存在嘅旅團 → 要返旅團選擇閘，唔可以靜靜雞入空殼
+      - 登出／「返回旅團選擇」清晒 旅團記錄／已揀記錄／session
 
    用法：node tests/gate-env.mjs
    ============================================================ */
@@ -146,155 +142,103 @@ section('首頁旅團閘（Vercel 環境變數登記）');
   await wait(50);
   ok('★ 直接輸入編號一樣入得去（?u=0082 冇 mock=1）',
     /[?&]u=0082/.test(nav.href) && !/mock=1/.test(nav.href), nav.href || '（冇捕捉到轉頁）');
-  ok('入真實旅團時一齊清走 mock 記錄',
-    window.localStorage.getItem('venture82.mode.v2') === 'real',
+  /* ★ 2026-09-25：venture82.mode.v2（真實／示範）已經隨示範模式一齊拆走，
+     呢度改為守住「入旅團嗰陣冇留低任何舊模式記錄」——
+     殘留嘅舊 key 會令老用家由舊版本升上嚟嗰陣行為怪怪地。 */
+  ok('入旅團唔會再寫任何「模式」記錄（舊 mode key 已廢）',
+    window.localStorage.getItem('venture82.mode.v2') === null,
     String(window.localStorage.getItem('venture82.mode.v2')));
 }
 
 /* ============================================================
-   ② 示範模式唔會自動記住（唔會困死）
+   ② 網址永遠最權威：?u= 一定要贏過 localStorage
+   ------------------------------------------------------------
+   ★ 2026-09-25：呢度以前係「示範模式唔會自動記住」。示範（MOCK）拆走咗，
+     但**同一個 regression** 仲係要守住：localStorage 記住咗嘅嘢
+     唔可以蓋過網址嘅 ?u=，否則用家「揀極都入唔到」。
    ============================================================ */
-section('示範模式唔會自動記住（重新開網站一定見到旅團閘）');
+section('網址嘅 ?u= 永遠贏過 localStorage 記錄');
 {
-  const { window } = makeBrowser('http://localhost:8080/', {
-    'venture82.unitChosen.v2': 'MOCK',
-    'venture82.mode.v2': 'mock',
-    'venture82.currentUnit.v2': 'MOCK'
+  const { window } = makeBrowser('http://localhost:8080/?u=0081', {
+    'venture82.currentUnit.v2': '0099'      // localStorage 記住咗另一個旅團
   });
-  await import('../assets/js/main.js?gateenv2=1');
-  await wait(600);
-  const doc = window.document;
-  const text = () => (doc.getElementById('app')?.textContent || '').replace(/\s+/g, ' ');
-  ok('★ 之前撳過 MOCK，今次開首頁都要回到旅團選擇閘', /揀你嘅旅團/.test(text()), text().slice(0, 80));
-  ok('唔會自動入返示範', !/示範模式（MOCK）中/.test(text()));
-  ok('MOCK 選項仍然喺度（想再試就撳）', !!doc.querySelector('[data-pick="MOCK"]'));
-}
-
-/* ============================================================
-   ③ 由 MOCK 揀返真旅團 → 真實模式（核心 regression）
-   ============================================================ */
-section('去過 MOCK 之後，揀返 Vercel 登記嘅旅團');
-{
-  const { window } = makeBrowser('http://localhost:8080/?mock=1&u=MOCK');
-  const store = await import('../assets/js/lib/store.js');
-  const units = await import('../assets/js/lib/units.js');
+  const store = await import('../assets/js/lib/store.js?ge2=1');
+  const units = await import('../assets/js/lib/units.js?ge2=1');
   await units.loadRegistry(true);
 
   await store.init();
-  ok('第一步：真係入咗示範模式', store.isMock() === true && store.currentUnit() === 'MOCK',
-    `${store.currentMode()}/${store.currentUnit()}`);
+  ok('★ 網址嘅 ?u= 贏（唔會被 localStorage 記住嘅旅團蓋住）',
+    String(store.currentUnit()) === '0081', String(store.currentUnit()));
+  ok('★ 記低最後用過嘅旅團（之後開首頁可以直接入）', store.lastRealUnit() === '0081', store.lastRealUnit());
 
-  /* 用家返旅團閘，揀 0081（＝URL ?u=0081、冇 mock=1） */
-  window.history.replaceState({}, '', '/?u=0081');
-  window.localStorage.setItem('venture82.unitChosen.v2', '0081');
-  await store.init();
-  ok('★ 揀真旅團之後 ＝ 真實模式（唔再被 localStorage 嘅 mode=mock 蓋住）',
-    store.isMock() === false, `實際：${store.currentMode()}`);
-  ok('★ 旅團編號正確', String(store.currentUnit()) === '0081', String(store.currentUnit()));
-  ok('真實模式記錄寫返正確', window.localStorage.getItem('venture82.mode.v2') === 'real',
-    String(window.localStorage.getItem('venture82.mode.v2')));
-  ok('記住咗最後一個真實旅團（離開示範時用）', store.lastRealUnit() === '0081', store.lastRealUnit());
-
-  /* 之後開普通網址（冇 u=）都應該仍然係真實 0081，唔會彈返示範 */
+  /* 之後開冇 ?u= 嘅網址 → 用返 localStorage 記住嗰個 */
   window.history.replaceState({}, '', '/');
   await store.init();
-  ok('之後開首頁仍然係真實 0081', store.isMock() === false && String(store.currentUnit()) === '0081',
-    `${store.currentMode()}/${store.currentUnit()}`);
+  ok('之後開首頁用返記住咗嘅旅團', String(store.currentUnit()) === '0081', String(store.currentUnit()));
 }
 
 /* ============================================================
-   ④ ?u=MOCK／?mock=1 嘅寫法都唔會整出「空殼旅團」
+   ③ 記住咗一個 Registry 已經冇嘅旅團 → 要返旅團選擇閘（唔好入空殼）
    ============================================================ */
-section('示範模式網址嘅各種寫法');
+section('記住咗一個已經唔存在嘅旅團 → 返旅團選擇閘');
 {
-  const { window } = makeBrowser('http://localhost:8080/?u=MOCK');
-  const store = await import('../assets/js/lib/store.js');
-
-  await store.init();
-  ok('★ ?u=MOCK（冇 mock=1）＝ 示範模式（唔會變成「真旅團 MOCK」空殼）',
-    store.isMock() === true, `${store.currentMode()}/${store.currentUnit()}`);
-  ok('唔會報「讀唔到資料檔」', store.seedInfo().failed === false, JSON.stringify(store.seedInfo()));
-
-  window.history.replaceState({}, '', '/?mock=1&u=0081');
-  await store.init();
-  ok('?mock=1 就算夾住 ?u=0081 都係入示範（唔會攪亂真旅團資料）',
-    store.isMock() === true && String(store.currentUnit()) === 'MOCK',
-    `${store.currentMode()}/${store.currentUnit()}`);
+  const { window } = makeBrowser('http://localhost:8080/', {
+    'venture82.unitChosen.v2': '9999',       // 一個從來冇登記過嘅編號
+    'venture82.currentUnit.v2': '9999'
+  });
+  await import('../assets/js/main.js?ge3=1');
+  await wait(600);
+  const doc = window.document;
+  const text = () => (doc.getElementById('app')?.textContent || '').replace(/\s+/g, ' ');
+  ok('★ 記住咗冇登記嘅旅團 → 開首頁要見到旅團選擇閘',
+    /揀你嘅旅團/.test(text()), text().slice(0, 80));
+  ok('★ 唔會靜靜雞入一個空殼旅團', !/登入/.test(text().slice(0, 60)), text().slice(0, 60));
 }
 
 /* ============================================================
-   ⑤ 離開示範：清得乾淨 ＋ 一撳返真實旅團
+   ④ 登出／「返回旅團選擇」要清晒痕跡（resetToGate）
+   ------------------------------------------------------------
+   ★ 以前呢度測 exitMock()。示範拆走咗，但「清晒痕跡」呢個行為
+     對登出一樣重要 —— 唔可以登出咗仲留低「已揀旅團」，
+     否則下次開網站又會自動入返同一個旅團。
    ============================================================ */
-section('離開示範唔可以困死用家');
+section('resetToGate 清晒痕跡（登出之後唔會自動入返同一個旅團）');
 {
-  const { window, nav } = makeBrowser('http://localhost:8080/?mock=1&u=MOCK');
-  const store = await import('../assets/js/lib/store.js');
-  const auth = await import('../assets/js/lib/auth.js');
+  const { window, nav } = makeBrowser('http://localhost:8080/?u=0081', {
+    'venture82.unitChosen.v2': '0081'
+  });
+  const store = await import('../assets/js/lib/store.js?ge4=1');
+  const auth = await import('../assets/js/lib/auth.js?ge4=1');
+  const units = await import('../assets/js/lib/units.js?ge4=1');
+  await units.loadRegistry(true);
   await store.init();
-  auth.loginAsMock('leader');
-  window.localStorage.setItem('venture82.unitChosen.v2', 'MOCK');
-  window.history.replaceState({}, '', '/?u=0081');
-  await store.init();                       /* 建立 lastReal=0081 之後再返示範 */
-  window.history.replaceState({}, '', '/?mock=1&u=MOCK');
-  await store.init();
+  store.setSession({ role: 'leader', accountId: 'x', name: '測試', at: Date.now() });
 
-  ok('離開之前：示範 session', auth.current()?.mock === true);
-  store.exitMock();
-  ok('★ 清走 mode 記錄', window.localStorage.getItem('venture82.mode.v2') === null);
+  ok('離開之前：有登入 session', auth.current() !== null);
+  store.resetToGate();
   ok('★ 清走旅團記錄', window.localStorage.getItem('venture82.currentUnit.v2') === null);
   ok('★ 清走「已揀旅團」記錄', window.localStorage.getItem('venture82.unitChosen.v2') === null);
-  ok('★ 清走示範 session（唔會用示範身份碰真資料）', auth.current() === null);
-  ok('重載網址冇 mock=1 亦冇 u=', !/mock=1/.test(nav.href) && !/[?&]u=/.test(nav.href), nav.href);
-
-  /* 「返真實旅團」 */
-  const b2 = makeBrowser('http://localhost:8080/?mock=1&u=MOCK', {
-    'venture82.lastRealUnit.v2': '0081'
-  });
-  const store2 = await import('../assets/js/lib/store.js');
-  await store2.init();
-  ok('示範模式記得住最後一個真實旅團', store2.lastRealUnit() === '0081', store2.lastRealUnit());
-  store2.exitMockToUnit();
-  ok('★「返真實旅團」會帶 ?u=0081 而冇 mock=1',
-    /[?&]u=0081/.test(b2.nav.href) && !/mock=1/.test(b2.nav.href), b2.nav.href);
-  ok('示範痕跡一樣清晒', b2.window.localStorage.getItem('venture82.mode.v2') === null
-    && b2.window.localStorage.getItem('venture82.unitChosen.v2') === null);
+  ok('★ 清走 session（唔會用舊身份自動入返）', auth.current() === null);
+  ok('★ 重載網址冇 u=（返旅團選擇閘）', !/[?&]u=/.test(nav.href), nav.href);
 }
 
 /* ============================================================
-   ⑥ 示範模式裡面：離開示範嘅掣要周圍都有（唔會搵唔到）
+   ⑤ 入咗旅團之後：側邊欄唔需要再「選擇旅團」
+   ------------------------------------------------------------
+   ★ 2026-09-25 團長：「進入旅團後,旁邊選單第二行『選擇旅團』沒有用，
+     都進入了還選什麼？只須要下方登出」
+   呢度做**源碼級**檢查（呢個 suite 冇真後端，開機會停喺連線閘，
+   畫唔到側邊欄）；DOM 嗰份喺 tests/smoke.mjs 入面驗（嗰度 boots 到完整殼）。
    ============================================================ */
-section('示範模式裡面嘅逃生門');
+section('入咗旅團：冇「選擇旅團」掣，但登出喺度');
 {
-  const { window, nav } = makeBrowser('http://localhost:8080/?mock=1&u=MOCK', {
-    'venture82.lastRealUnit.v2': '0082'
-  });
-  await import('../assets/js/main.js?gateenv3=1');
-  await wait(700);
-  const doc = window.document;
-  const store = await import('../assets/js/lib/store.js');
-  ok('示範模式已經啟動', store.isMock() === true);
-  ok('★ 黃色橫額有「離開示範」', !!doc.getElementById('mockExit'));
-  ok('★ 橫額仲有「返 0082（真實）」', !!doc.getElementById('mockBackReal'));
-  ok('★ 頂部 bar 亦有「離開示範」（唔使搵橫額都撳到）', !!doc.getElementById('topMockExit'));
-  /* ★ 2026-09-25 團長：「進入旅團後,旁邊選單第二行"選擇旅團"沒有用，都進入了還選什麼？
-     只須要下方登出」。→ 側邊欄唔應該再有旅團切換掣，但底部登出必須仲喺度。 */
-  ok('★ 側邊欄已經冇「選擇旅團」掣', !doc.getElementById('unitSwitch'));
-  ok('★ 底部「登出」仍然喺度', !!doc.getElementById('btnLogout'));
-
-  /* 手機「更多」選單：示範模式應該係「離開示範」，唔係淨係「登出」 */
-  doc.querySelector('[data-nav="more"]')?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
-  await wait(150);
-  const moreText = [...doc.querySelectorAll('[data-more]')].map(b => b.textContent.trim()).join('|');
-  ok('★ 「更多」選單寫住「離開示範」（唔係登出之後困喺登入畫面）',
-    /離開示範/.test(moreText), moreText || '（搵唔到選單）');
-
-  /* 撳頂部嗰粒：一定要清晒示範痕跡再轉頁 */
-  doc.getElementById('topMockExit')?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
-  await wait(80);
-  ok('★ 撳頂部「離開示範」即刻清走示範記錄',
-    window.localStorage.getItem('venture82.mode.v2') === null
-    && window.localStorage.getItem('venture82.unitChosen.v2') === null);
-  ok('轉頁之後唔會再帶 mock=1／u=', !/mock=1/.test(nav.href) && !/[?&]u=/.test(nav.href), nav.href);
+  const mainSrc = fs.readFileSync(path.join(ROOT, 'assets/js/main.js'), 'utf8');
+  ok('★ main.js 已經冇畫「選擇旅團」掣（unitSwitch）', !/unitSwitch/.test(mainSrc));
+  ok('★ main.js 仍然有底部登出掣（btnLogout）', /btnLogout/.test(mainSrc));
+  ok('★ 登出掣喺側邊欄底部（sb-foot）入面',
+    /sb-foot[\s\S]{0,900}btnLogout/.test(mainSrc));
+  ok('★ 「選擇旅團」函數（unitPicker）都一齊拆走（冇人再用）',
+    !/function unitPicker/.test(mainSrc));
 }
 
 /* ============================================================

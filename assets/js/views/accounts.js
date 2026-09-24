@@ -7,7 +7,7 @@
    超管帳戶：唔會出現在任何名單，任何人都唔可以改佢密碼。
    ============================================================ */
 
-import { load, commit, collection, add, update, remove, exportAll, importAll, resetToSeed, wipe, clearMockData, audit, isMock, currentUnit, enterMock, exitMock, switchUnit, setUnitCode } from '../lib/store.js';
+import { load, commit, collection, add, update, remove, exportAll, importAll, resetToSeed, wipe, audit, currentUnit, switchUnit, setUnitCode } from '../lib/store.js';
 import {
   ROLES, accounts, accountById, can, canChangePasswordOf, canManageRole,
   createAccount, createAccountServer, changePassword, changeUsername, changeOwnPassword, setAccountActive, deleteAccount, deleteAccountServer, resetAccountPasswordServer, restoreAccountServer,
@@ -38,8 +38,7 @@ const PASSWORD_RULES = [
 
 export function render(params) {
   /* ★ 2026-09-25 團長：「權限總表由身份與帳號 移去 用戶與身份」→ 呢度唔再有 perms 分頁 */
-  if (['accounts', 'data', 'unit', 'audit', 'mock'].includes(params.id)) tab = params.id;
-  if (tab === 'mock' && !isSuper()) tab = 'accounts';
+  if (['accounts', 'data', 'unit', 'audit'].includes(params.id)) tab = params.id;
   return `
   ${pageHead({
     title: '帳號與系統',
@@ -50,13 +49,11 @@ export function render(params) {
     ['accounts', '身份與帳號', activeMembers().length],
     ['unit', '旅團設定'],
     ['data', '資料管理'],
-    ['audit', '操作紀錄'],
-    ...(isSuper() ? [['mock', '示範資料（MOCK）']] : [])
+    ['audit', '操作紀錄']
   ], tab)}
   ${tab === 'unit' ? unitView()
     : tab === 'data' ? dataView()
     : tab === 'audit' ? auditView()
-    : tab === 'mock' ? mockView()
     : accountsView()}`;
 }
 
@@ -253,20 +250,10 @@ function unitView() {
         <div style="padding:16px 18px">
           ${kv([
             ['目前旅團', esc(currentUnit())],
-            ['目前模式', isMock() ? '<span class="badge b-warn">示範（MOCK）</span>' : '<span class="badge b-ok">真實資料</span>'],
             ['資料檔', `<span class="mono xs">${esc(load().meta?.seedSource || '')}</span>`],
             ['儲存位置', `<span class="mono xs">venture82.unit.${esc(currentUnit())}.db.v2</span>`],
             ['更新時間', esc(load().meta?.updatedAt || '')]
           ])}
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-head"><div class="card-title">示範模式</div></div>
-        <div style="padding:16px 18px">
-          <p class="sm muted mb-12">示範資料完全獨立，唔會混入真實資料。</p>
-          ${isMock() ? `<button class="btn btn-block" data-act="exit-mock">${icon('logout', 15)} 離開示範模式</button>`
-            : `<button class="btn btn-block" data-act="enter-mock">${icon('eye', 15)} 進入示範模式（MOCK）</button>`}
-          <button class="btn btn-block mt-8" data-go="#/admin/mock">${icon('grid', 15)} 示範資料管理</button>
         </div>
       </div>
     </div>
@@ -362,73 +349,6 @@ function auditView() {
         <td class="mono sm">${esc(l.at)}</td><td class="sm semibold">${esc(l.action)}</td>
         <td class="sm muted">${esc(l.detail || '')}</td><td class="sm mono">${esc(l.by || '')}</td></tr>`).join('')}</tbody>
     </table></div>` : empty('history', '未有紀錄')}
-  </div>`;
-}
-
-/* ============================================================
-   示範資料（MOCK）
-   ============================================================ */
-function mockView() {
-  return `
-  <div class="grid g-2-1">
-    <div class="col gap-16">
-      <div class="card">
-        <div class="card-head"><div><div class="card-title">示範模式（MOCK）</div>
-          <div class="card-sub">用嚟試功能、做教學 —— 同真實資料完全隔離</div></div></div>
-        <div style="padding:18px">
-          ${noteBox(`<b>完全隔離設計：</b>
-            <ul style="margin:8px 0 0;padding-left:18px;line-height:1.9">
-              <li>真實資料：<code>venture82.unit.&lt;旅團編號&gt;.db.v2</code></li>
-              <li>示範資料：<code>venture82.mock.db.v2</code>（另一個命名空間）</li>
-              <li>示範資料來源：<code>data/mock/*.json</code>（唔會讀真實檔案）</li>
-              <li>示範備份唔可以匯入真實資料庫</li>
-            </ul>`, 'brand')}
-          <div class="row gap-8 wrap mt-16">
-            ${isMock()
-              ? `<button class="btn btn-primary" data-act="exit-mock">${icon('logout', 16)} 離開示範模式</button>`
-              : `<button class="btn btn-primary" data-act="enter-mock">${icon('eye', 16)} 進入示範模式</button>`}
-            <button class="btn" data-act="reset-mock">${icon('refresh', 16)} 重設示範資料</button>
-            <button class="btn btn-danger" data-act="clear-mock">${icon('trash', 16)} 清除示範資料</button>
-            <button class="btn" data-act="export-mock">${icon('download', 16)} 匯出示範資料（JSON）</button>
-          </div>
-        </div>
-      </div>
-
-      <div class="card">
-        <div class="card-head"><div><div class="card-title">點樣為新旅團做示範資料？</div></div></div>
-        <div style="padding:18px" class="guide">
-          <p class="sm muted">複製 <code>data/mock/</code> 資料夾嘅結構，改成本身旅團嘅示範數據就得：</p>
-          <pre><code>data/mock/
-  unit.json          ← 旅團資料 + 設定（團費、AGM 日期、主色）
-  constitution.json  ← 團章（中英）
-  members.json       ← 團員（記得用假名）
-  finance.json       ← 帳目 / 團費 / 申報 / 預算
-  inventory.json     ← 物資 + 借用紀錄
-  meetings.json      ← 會議</code></pre>
-          <p class="sm muted">想教人用？開「示範模式」後所有操作都寫入 mock 空間，關掉就完全唔見，唔怕搞亂真資料。</p>
-          <button class="btn btn-sm mt-8" data-go="#/docs">${icon('note', 15)} 睇教學</button>
-        </div>
-      </div>
-    </div>
-
-    <div class="col gap-16">
-      <div class="card">
-        <div class="card-head"><div class="card-title">目前狀態</div></div>
-        <div style="padding:16px 18px">
-          ${kv([
-            ['模式', isMock() ? '<span class="badge b-warn">示範（MOCK）</span>' : '<span class="badge b-ok">真實資料</span>'],
-            ['旅行團', esc(currentUnit())],
-            ['示範資料筆數', `${load().members.length} 團員 · ${load().transactions.length} 帳目 · ${load().invItems.length} 物資`]
-          ])}
-        </div>
-      </div>
-      <div class="card">
-        <div class="card-head"><div class="card-title">示範登入</div></div>
-        <div style="padding:16px 18px">
-          <p class="sm muted">示範模式唔需要密碼：由登入頁按「試用示範」或者喺呢度進入，會以「示範領袖 / 示範執委 / 超管」身份預覽，全部功能都試得。</p>
-        </div>
-      </div>
-    </div>
   </div>`;
 }
 
@@ -586,7 +506,7 @@ export function mount(root) {
 
     /* --- 資料 --- */
     if (act === 'export-json') {
-      dlFile(`ecportal_${currentUnit()}_${isMock() ? 'MOCK_' : ''}備份_${stamp()}.json`, exportAll(), 'application/json');
+      dlFile(`ecportal_${currentUnit()}_備份_${stamp()}.json`, exportAll(), 'application/json');
       toast('已匯出備份', 'ok'); audit('匯出備份'); return;
     }
     if (act === 'import-json') {
@@ -595,7 +515,7 @@ export function mount(root) {
         body: `<div class="field"><label class="label">貼上備份 JSON</label>
             <textarea class="textarea" id="q-json" style="min-height:180px;font-family:var(--mono);font-size:12px" placeholder='{"schema":2,…}'></textarea></div>
           <div id="q-err" class="err mt-8"></div>
-          <div class="hint mt-8">提示：示範（MOCK）備份唔可以匯入真實資料庫。</div>`,
+        `,
         actions: [{ label: '取消', class: 'btn', value: null },
           { label: '匯入', class: 'btn-primary', onClick: el => el.querySelector('#q-json').value }]
       });
@@ -639,7 +559,7 @@ export function mount(root) {
     if (act === 'wipe') {
       if (await confirmDlg({
         title: '清空本旅團資料', danger: true, okText: '確定清空',
-        message: '所有團員、帳目、物資、團章改動會<b>全部清空</b>（帳戶會保留示範預設）。'
+        message: '所有團員、帳目、物資、團章改動會<b>全部清空</b>。'
       })) {
         wipe(); toast('已清空', 'ok');
         setTimeout(() => location.reload(), 600);
@@ -648,27 +568,6 @@ export function mount(root) {
     }
     if (act === 'own-pw') return ownPasswordForm();
 
-    /* --- 示範模式 --- */
-    if (act === 'enter-mock') { enterMock(); return; }
-    if (act === 'exit-mock') { exitMock(); return; }
-    if (act === 'reset-mock') {
-      const { init } = await import('../lib/store.js');
-      clearMockData();
-      await init({ mode: 'mock', unit: 'MOCK' });
-      toast('示範資料已重設', 'ok');
-      setTimeout(() => location.reload(), 500); return;
-    }
-    if (act === 'clear-mock') {
-      if (await confirmDlg({ title: '清除示範資料', okText: '確定清除', message: '會刪除示範模式嘅所有資料（唔影響真實資料）。' })) {
-        clearMockData(); toast('已清除示範資料', 'ok');
-        setTimeout(() => location.reload(), 500);
-      }
-      return;
-    }
-    if (act === 'export-mock') {
-      dlFile(`ecportal_MOCK_示範資料_${stamp()}.json`, exportAll({ includeMock: true }), 'application/json');
-      toast('已匯出示範資料', 'ok'); return;
-    }
   }));
 
   /* --- 帳戶逐個 --- */
@@ -689,7 +588,7 @@ export function mount(root) {
       title: '刪除帳戶', danger: true, okText: '確定刪除',
       message: `確定刪除 <b>${esc(acc?.name || '')}</b>（${esc(acc?.username || '')}）？佢將唔可以再登入。`
     })) {
-      if (!isMock()) {
+      {
         const serverResult = await deleteAccountServer(acc);
         if (!serverResult.ok) return toast(serverResult.msg, 'err');
       }
@@ -700,7 +599,6 @@ export function mount(root) {
   }));
 
   root.querySelectorAll('[data-restore]').forEach(b => b.addEventListener('click', async () => {
-    if (isMock()) return;
     const r2 = await restoreAccountServer({ email: b.dataset.restore }, '1234');
     if (!r2.ok) return toast(r2.msg, 'err');
     toast('帳戶已復原，預設密碼 1234，首次登入要改密碼', 'ok'); refresh();
@@ -744,7 +642,7 @@ async function addAccountForm(role) {
       } }]
   });
   if (!r) return;
-  const res = !isMock() ? await createAccountServer({ role, ...r }) : await createAccount({ role, ...r });
+  const res = await createAccountServer({ role, ...r });
   if (!res.ok) return (await modal({ title: '新增失敗', body: `<p class="sm">${esc(res.msg)}</p>`, actions: [{ label: '關閉', class: 'btn-primary', value: null }] }));
   toast('已新增帳戶', 'ok');
   refresh();
@@ -773,7 +671,7 @@ async function passwordForm(id) {
       } }]
   });
   if (!r) return;
-  if (!me && !isMock()) {
+  if (!me) {
     const serverRes = await resetAccountPasswordServer(acc, r);
     if (!serverRes.ok) return toast(serverRes.msg, 'err');
     toast('密碼已重設，對方下次登入要改密碼', 'ok'); refresh(); return;

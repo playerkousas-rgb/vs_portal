@@ -14,7 +14,9 @@ import { fileURLToPath } from 'url';
 import vm from 'vm';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const MODE = process.argv[2] === 'mock' ? 'mock' : 'real';
+/* ★ 2026-09-25 團長：「刪除示範資料 (MOCK) 我都在用要MOCK 幹什麼」
+   → 示範模式拆走，smoke 只淨低「真實」一個模式（以前跑 real ＋ mock 兩轉）。 */
+const MODE = 'real';
 const t0 = Date.now();
 
 /* ---------- 錯誤收集 ---------- */
@@ -39,7 +41,7 @@ const { installSuperAuth, TEST_SUPER_PASSWORD } = await import('./_authstub.mjs'
 installSuperAuth();
 
 /* ---------- DOM ---------- */
-const url = MODE === 'mock' ? 'http://localhost:8080/?mock=1&u=MOCK' : 'http://localhost:8080/?u=0082';
+const url = 'http://localhost:8080/?u=0082';
 const dom = new JSDOM('<!doctype html><html><body class="login-body"><div id="app"></div></body></html>', {
   url, pretendToBeVisual: true, runScripts: 'dangerously'
 });
@@ -79,8 +81,7 @@ const body = () => doc.body.textContent || '';
 section(`啟動（${MODE}）`);
 ok('App 有渲染（有 #app 內容）', (doc.getElementById('app').innerHTML || '').length > 200);
 ok('初始化完成', store.ready() === true);
-ok('模式正確', MODE === 'mock' ? store.isMock() === true : store.isMock() === false);
-ok('旅團編號', String(store.currentUnit()) === (MODE === 'mock' ? 'MOCK' : '0082'), String(store.currentUnit()));
+ok('旅團編號', String(store.currentUnit()) === '0082', String(store.currentUnit()));
 
 const db = store.load();
 /* ★ 2026-09-24 團長定案：唔再種「領袖共用帳戶／執行委員會帳號」。
@@ -90,88 +91,72 @@ ok('冇「共用帳戶」種子（領袖／執委都唔會自動開）',
   JSON.stringify(db.accounts.map(a => a.username)));
 ok('帳戶名單永遠唔會有超管', !db.accounts.some(a => ['sheep', 'super'].includes(String(a.username).toLowerCase())));
 
-if (MODE === 'real') {
-  /* 0082 嘅真實資料已經搬晒入後端，Git 唔再有 data/units/0082/。
-     所以「真實模式」而家代表嘅係：一個**全新旅團**由空白開始。
-     呢度唔可以再驗真實團員姓名／人數呢啲私隱資料 ——
-     改為驗「乾淨開局」同「唔會撈到人哋旅團嘅嘢」。 */
-  section('新旅團：由空白資料庫開始');
-  ok('團員空白（唔會預載任何旅團嘅名冊）', db.members.length === 0, String(db.members.length));
-  ok('帳目空白', db.transactions.length === 0, String(db.transactions.length));
-  ok('物資空白', db.invItems.length === 0, String(db.invItems.length));
-  ok('會議空白', (db.meetings || []).length === 0, String((db.meetings || []).length));
-  ok('通告空白', (db.notices || []).length === 0, String((db.notices || []).length));
-  ok('團費空白', (db.fees || []).length === 0, String((db.fees || []).length));
 
-  section('私隱：唔會再見到第八十二旅嘅嘢');
-  const blob = JSON.stringify(db);
-  /* 0082 而家係註冊旅團（名單喺 data/units.json），db.unit 係自己個名好正常；
-     私隱要驗嘅係：冇 82 旅嘅團員／帳目／地址等真實資料。 */
-  const { unit: _ownUnit, ...restDb } = db;
-  ok('資料庫（自己個名除外）冇「第八十二旅」字樣', !/第八十二旅/.test(JSON.stringify(restDb)));
-  ok('db.unit 係返自己（註冊名由名單讀到）', db.unit?.code === '0082' && db.unit?.name === '第八十二旅深資童軍團',
-    JSON.stringify(db.unit));
-  ok('資料庫冇 82 旅團址（康山）', !/康山/.test(blob));
-  ok('資料庫冇 YMIS 編號', !/\b20\d{8}\b/.test(blob), (blob.match(/\b20\d{8}\b/) || [''])[0]);
-  ok('資料庫冇電話號碼樣式嘅嘢', !/9123 4567/.test(blob));
-  ok('冇殘留 0082 靜態資料夾', !fs.existsSync(path.join(ROOT, 'data', 'units', '0082')));
+/* 0082 嘅真實資料已經搬晒入後端，Git 唔再有 data/units/0082/。
+   所以「真實模式」而家代表嘅係：一個**全新旅團**由空白開始。
+   呢度唔可以再驗真實團員姓名／人數呢啲私隱資料 ——
+   改為驗「乾淨開局」同「唔會撈到人哋旅團嘅嘢」。 */
+section('新旅團：由空白資料庫開始');
+ok('團員空白（唔會預載任何旅團嘅名冊）', db.members.length === 0, String(db.members.length));
+ok('帳目空白', db.transactions.length === 0, String(db.transactions.length));
+ok('物資空白', db.invItems.length === 0, String(db.invItems.length));
+ok('會議空白', (db.meetings || []).length === 0, String((db.meetings || []).length));
+ok('通告空白', (db.notices || []).length === 0, String((db.notices || []).length));
+ok('團費空白', (db.fees || []).length === 0, String((db.fees || []).length));
 
-  section('名單：返嚟 Git JSON（靜態，唔依賴 API）');
-  const fileReg = JSON.parse(fs.readFileSync(path.join(ROOT, 'data/units.json'), 'utf8'));
-  ok('名單檔有 0082（code＋中文名）',
-    fileReg.units?.['0082']?.code === '0082' && fileReg.units?.['0082']?.name === '第八十二旅深資童軍團');
-  ok('★ 名單檔唔會逼大家用某個旅團（defaultUnit 係空）', fileReg.defaultUnit === '');
-  ok('★ 名單檔冇後端冇 Key（密鑰唔落 Git）',
-    fileReg.units?.['0082']?.backend === undefined && fileReg.units?.['0082']?.apiKey === undefined
-    && !/script\.google/.test(JSON.stringify(fileReg.units)));
-  ok('閘面讀到檔案嘅 0082', unitsLib.unitList().some(u => String(u.code) === '0082'),
-    unitsLib.unitList().map(u => u.code).join(','));
-  ok('有登記就係預設（唔係空殼幽靈）', unitsLib.defaultUnitCode() === '0082', unitsLib.defaultUnitCode());
-  ok('未配後端 ＝ 冇後端（唔會借用人哋張 Sheet）', unitsLib.backendOf('0082') === null);
+section('私隱：唔會再見到第八十二旅嘅嘢');
+const blob = JSON.stringify(db);
+/* 0082 而家係註冊旅團（名單喺 data/units.json），db.unit 係自己個名好正常；
+   私隱要驗嘅係：冇 82 旅嘅團員／帳目／地址等真實資料。 */
+const { unit: _ownUnit, ...restDb } = db;
+ok('資料庫（自己個名除外）冇「第八十二旅」字樣', !/第八十二旅/.test(JSON.stringify(restDb)));
+ok('db.unit 係返自己（註冊名由名單讀到）', db.unit?.code === '0082' && db.unit?.name === '第八十二旅深資童軍團',
+  JSON.stringify(db.unit));
+ok('資料庫冇 82 旅團址（康山）', !/康山/.test(blob));
+ok('資料庫冇 YMIS 編號', !/\b20\d{8}\b/.test(blob), (blob.match(/\b20\d{8}\b/) || [''])[0]);
+ok('資料庫冇電話號碼樣式嘅嘢', !/9123 4567/.test(blob));
+ok('冇殘留 0082 靜態資料夾', !fs.existsSync(path.join(ROOT, 'data', 'units', '0082')));
 
-  /* 下面一大堆測試係驗「後端接通之後」嘅行為（總表同步、手機記帳、
-     通告報名、借用送出、進度…）。檔案名單得個名（冇後端），
-     所以喺度自己裝一個**測試用**後端 —— 驗功能，唔借任何真實 /exec 做 fixture。 */
-  const TEST_EXEC = 'https://script.google.com/macros/s/AKfycbTESTonlyTESTonlyTESTonlyTEST/exec';
-  const tdb = store.load();
-  tdb.backend = { gasUrl: TEST_EXEC, apiKey: '', name: '測試後端', shared: false, noticeSubmitUrl: TEST_EXEC };
-  tdb.sync = { ...(tdb.sync || {}), url: TEST_EXEC, unit: tdb.unitCode, apiKey: '', log: tdb.sync?.log || [] };
-  tdb.settings = tdb.settings || {};
-  tdb.settings.publicEntry = { ...(tdb.settings.publicEntry || {}), submitUrl: TEST_EXEC };
-  tdb.settings.notice = { ...(tdb.settings.notice || {}), submitUrl: TEST_EXEC };
-  tdb.settings.publicBorrow = { ...(tdb.settings.publicBorrow || {}), submitUrl: TEST_EXEC };
-  store.commit();
-}
+section('名單：返嚟 Git JSON（靜態，唔依賴 API）');
+const fileReg = JSON.parse(fs.readFileSync(path.join(ROOT, 'data/units.json'), 'utf8'));
+ok('名單檔有 0082（code＋中文名）',
+  fileReg.units?.['0082']?.code === '0082' && fileReg.units?.['0082']?.name === '第八十二旅深資童軍團');
+ok('★ 名單檔唔會逼大家用某個旅團（defaultUnit 係空）', fileReg.defaultUnit === '');
+ok('★ 名單檔冇後端冇 Key（密鑰唔落 Git）',
+  fileReg.units?.['0082']?.backend === undefined && fileReg.units?.['0082']?.apiKey === undefined
+  && !/script\.google/.test(JSON.stringify(fileReg.units)));
+ok('閘面讀到檔案嘅 0082', unitsLib.unitList().some(u => String(u.code) === '0082'),
+  unitsLib.unitList().map(u => u.code).join(','));
+ok('有登記就係預設（唔係空殼幽靈）', unitsLib.defaultUnitCode() === '0082', unitsLib.defaultUnitCode());
+ok('未配後端 ＝ 冇後端（唔會借用人哋張 Sheet）', unitsLib.backendOf('0082') === null);
 
-if (MODE === 'mock') {
-  section('示範資料');
-  ok('示範團員 12 人（全部假名；11 現役＋1 舊團員）',
-    db.members.length === 12 && db.members.filter(m => m.status !== 'alumni').length === 11,
-    `${db.members.length}（現役 ${db.members.filter(m => m.status !== 'alumni').length}）`);
-  ok('示範帳目 12 筆', db.transactions.length === 12, String(db.transactions.length));
-  ok('示範物資 10 件', db.invItems.length === 10, String(db.invItems.length));
-  ok('示範借用 3 宗', db.invLoans.length === 3);
-  const t = model.itemTotals('gi04');
-  ok('庫存自動 −1（借出 1 個氣爐）', t.available === 3, JSON.stringify(t));
-  const g3 = model.itemTotals('gi03');
-  ok('盤點調整生效（營燈 4 −1 = 3）', g3.adjusted === 3 && g3.available === 3, JSON.stringify(g3));
-  ok('示範模式冇後端（示範資料唔會送出街）', !db.backend && !(db.sync?.url || ''), JSON.stringify(db.backend));
-}
+/* 下面一大堆測試係驗「後端接通之後」嘅行為（總表同步、手機記帳、
+   通告報名、借用送出、進度…）。檔案名單得個名（冇後端），
+   所以喺度自己裝一個**測試用**後端 —— 驗功能，唔借任何真實 /exec 做 fixture。 */
+const TEST_EXEC = 'https://script.google.com/macros/s/AKfycbTESTonlyTESTonlyTESTonlyTEST/exec';
+const tdb = store.load();
+tdb.backend = { gasUrl: TEST_EXEC, apiKey: '', name: '測試後端', shared: false, noticeSubmitUrl: TEST_EXEC };
+tdb.sync = { ...(tdb.sync || {}), url: TEST_EXEC, unit: tdb.unitCode, apiKey: '', log: tdb.sync?.log || [] };
+tdb.settings = tdb.settings || {};
+tdb.settings.publicEntry = { ...(tdb.settings.publicEntry || {}), submitUrl: TEST_EXEC };
+tdb.settings.notice = { ...(tdb.settings.notice || {}), submitUrl: TEST_EXEC };
+tdb.settings.publicBorrow = { ...(tdb.settings.publicBorrow || {}), submitUrl: TEST_EXEC };
+store.commit();
 
-/* ---------- 資料隔離 ---------- */
-section('示範／真實資料隔離');
-const realKey = `venture82.unit.0082.db.v2`;
-const mockKey = `venture82.mock.db.v2`;
-const realSaved = window.localStorage.getItem(realKey);
-const mockSaved = window.localStorage.getItem(mockKey);
-if (MODE === 'mock') {
-  ok('示範 key 存在', !!mockSaved);
-  ok('示範模式唔會寫入真實 key（完全隔離）', !!realSaved === false);
-  ok('示範 DB 寫入另一個 key', store.dbKey('mock', 'MOCK') === mockKey && store.dbKey('real', '0082') === realKey);
-  ok('示範 DB 標記 kind=mock', store.load().kind === 'mock');
-} else {
-  ok('真實 key 存在', !!realSaved);
-  ok('真實模式唔會寫入示範 key（完全隔離）', !!mockSaved === false);
+
+
+
+/* ---------- 資料隔離 ----------
+   ★ 2026-09-25：示範（MOCK）模式已經拆走 —— 以前呢度驗「真實／示範兩個 key 完全隔離」，
+     而家淨低一個旅團資料庫 key，改為驗「資料真係寫喺自己旅團嗰個 key」同「入面有 schema」。 */
+section('旅團資料存放位置');
+{
+  const realKey = `venture82.unit.0082.db.v2`;
+  const realSaved = window.localStorage.getItem(realKey);
+  ok('旅團資料寫喺自己嗰個 key（venture82.unit.<編號>.db.v2）', !!realSaved);
+  ok('入面係本系統嘅 schema 2 資料庫', (() => {
+    try { return JSON.parse(realSaved || '{}').schema === 2; } catch { return false; }
+  })(), String(realSaved).slice(0, 80));
 }
 
 /* ---------- 權限 / 密碼規則 ---------- */
@@ -268,35 +253,12 @@ ok('AGM 前一日屬上一個旅年度', fiscal.unitFYOf('2026-08-28', agm).key 
 const years = fiscal.listYears(store.load().transactions, store.load().settings);
 ok('可以列出兩套年度', years.scout.length >= 1 && years.unit.length >= 1);
 
-if (MODE === 'mock') {
-  const sum = fiscal.summarize(store.load().transactions, fiscal.unitFYRange('2026-27', agm));
-  ok('旅年度有數計（收入 > 0）', sum.income > 0, JSON.stringify({ income: sum.income, expense: sum.expense }));
-  const ssum = fiscal.summarize(store.load().transactions, fiscal.scoutFYRange('2026-27'));
-  ok('童軍年度有數計', ssum.count > 0, JSON.stringify({ count: ssum.count }));
-  ok('兩條數唔會一樣（因為期間唔同）', sum.count !== ssum.count || sum.income !== ssum.income, `${sum.count}/${ssum.count}`);
-}
+
 
 /* ---------- 生日 ---------- */
 section('生日提示');
 const b = model.birthdaySummary();
-if (MODE === 'mock') {
-  /* 種子嘅生日係寫死日子（09-05／09-16／09-18…）—— 過咗嗰幾日測試就會假失敗。
-     為咗任何日子跑都穩定：臨時將一位示範團員嘅生日設做「今日」，驗完還原。 */
-  const bmem = db.members.find(m => m.status !== 'alumni' && m.birthday);
-  const origBday = bmem?.birthday;
-  if (bmem) {
-    const now = new Date();                                  // 本地時間（同 todayISO() 一致）
-    const md = `${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-    bmem.birthday = `${String(bmem.birthday).slice(0, 4)}-${md}`;
-    store.commit();
-  }
-  const b2 = model.birthdaySummary();
-  ok('7 日內有生日提示', b2.in7.some(x => x.name === bmem?.name), b2.in7.map(x => `${x.name}:${x.days}`).join(', '));
-  ok('本月生日有清單', b2.month.some(x => x.name === bmem?.name), String(b2.month.length));
-  if (bmem) { bmem.birthday = origBday; store.commit(); }
-} else {
-  ok('真實資料可計出生日（本月/7日內）', Array.isArray(b.month) && Array.isArray(b.in7));
-}
+ok('可以計出生日（本月 / 7 日內）', Array.isArray(b.month) && Array.isArray(b.in7));
 ok('未填生日會列出', Array.isArray(b.unknown));
 
 /* ---------- 逐頁渲染（真實 DOM） ---------- */
@@ -365,18 +327,10 @@ section('一鍵匯入參考帳目');
 /* ---------- 團章公開頁所需的發布檔 ---------- */
 section('團章發布檔（公開頁面用）');
 const cons = store.load().constitution || {};
-if (MODE === 'mock') {
-  ok('有版本號', !!cons.version);
-  ok('有 footer', !!(cons.footer?.zh && cons.footer?.en));
-  ok('示範團章有章節', (cons.chapters || []).length >= 3, String((cons.chapters || []).length));
-  ok('示範團章中英對照', !!(cons.chapters?.[0]?.heading?.zh && cons.chapters?.[0]?.heading?.en));
-} else {
-  /* 新旅團由空白開始：團章要自己寫，所以呢度驗結構撐得住空白，
-     唔再驗 82 旅嗰 19 章嘅內容。 */
-  ok('團章結構存在（可以係空）', typeof cons === 'object' && cons !== null);
-  ok('章節係陣列', Array.isArray(cons.chapters || []));
-  ok('新旅團團章由空白開始', (cons.chapters || []).length === 0, String((cons.chapters || []).length));
-}
+/* 新旅團由空白開始：團章要自己寫，所以呢度驗結構撐得住空白 */
+ok('團章結構存在（可以係空）', typeof cons === 'object' && cons !== null);
+ok('章節係陣列', Array.isArray(cons.chapters || []));
+ok('新旅團團章由空白開始', (cons.chapters || []).length === 0, String((cons.chapters || []).length));
 
 /* ---------- AGM 日期逐年輸入 ---------- */
 section('AGM 日期（每年輸入）');
@@ -582,11 +536,8 @@ section('團費收款紀錄');
 
 /* ---------- 詳細頁 / 編輯頁 ---------- */
 section('詳細頁與編輯頁');
-const detailPages = MODE === 'mock'
-  ? ['#/meetings/dmt1', '#/meetings/new', '#/members/dm01', '#/members/new', '#/inventory/gi04',
-     '#/inventory/new', '#/finance/new', '#/admin/accounts', '#/docs/mock']
-  : ['#/meetings/new', '#/members/m001', '#/members/new', '#/inventory/new', '#/finance/new',
-     '#/admin/accounts', '#/docs/multiunit'];
+const detailPages = ['#/meetings/new', '#/members/m001', '#/members/new', '#/inventory/new', '#/finance/new',
+  '#/admin/accounts', '#/docs/multiunit'];
 for (const p of detailPages) {
   const before = errors.length;
   try {
@@ -905,16 +856,6 @@ section('通告詳情頁（同步到公開頁 ＝ 行同一條「儲存到後端
   await new Promise(r => setTimeout(r, 400));
   const lastToast = () => [...doc.querySelectorAll('.toast')].map(t => t.textContent).pop() || '';
   const actions = sent.map(x => x?.action);
-  if (MODE === 'mock') {
-    /* 示範模式永遠唔寫後端 —— 就算填咗 /exec 都唔會送 */
-    ok('示範模式：一個請求都唔會送去後端', sent.length === 0, JSON.stringify(actions));
-    ok('示範模式：toast 講明唔會寫入後端', /示範模式/.test(lastToast()), lastToast());
-    globalThis.fetch = realFetch;
-    const dbm = store.load(); dbm.sync = keepSync; store.commitMeta();
-    window.location.hash = '#/notices';
-    window.dispatchEvent(new window.HashChangeEvent('hashchange'));
-    await new Promise(r => setTimeout(r, 60));
-  } else {
   ok('撳一次：先問後端版本（dbInfo），再寫入（saveDb）—— 同頂部「儲存到後端」同一條路', actions[0] === 'dbInfo' && actions.includes('saveDb'), JSON.stringify(actions));
   const saved = sent.find(x => x?.action === 'saveDb');
   ok('寫入內容係整個資料庫，包括呢張通告（公開頁由「資料庫」分頁讀）',
@@ -943,7 +884,6 @@ section('通告詳情頁（同步到公開頁 ＝ 行同一條「儲存到後端
   window.location.hash = '#/notices';
   window.dispatchEvent(new window.HashChangeEvent('hashchange'));
   await new Promise(r => setTimeout(r, 60));
-  }
 }
 
 /* ---------- v3：表格設計（改名／加欄位） ----------
@@ -1016,15 +956,11 @@ google.visualization.Query.setResponse({"version":"0.6","reqId":"0","status":"ok
   window.dispatchEvent(new window.HashChangeEvent('hashchange'));
   await new Promise(r => setTimeout(r, 40));
   ok('有「同一條網址共用」畀手機記帳／通告報名', !!doc.querySelector('#y-share'));
-  if (MODE === 'real') {
+
     ok('總表同步頁顯示「後端已連接」', /後端已連接|已設定 Apps Script/.test(doc.getElementById('view')?.textContent || ''));
-    ok('Apps Script 網址已預填落輸入格',
-      /\/exec$/.test(doc.querySelector('#y-url')?.value || ''), doc.querySelector('#y-url')?.value);
-    ok('共用掣預設已剔（三條路同一個後端）', doc.querySelector('#y-share')?.checked === true);
-  } else {
-    ok('示範模式唔會預填後端（唔會送出街）', !doc.querySelector('#y-url')?.value, doc.querySelector('#y-url')?.value);
-    ok('示範模式仍然有共用掣（只係未設定網址）', !!doc.querySelector('#y-share'));
-  }
+  ok('Apps Script 網址已預填落輸入格',
+    /\/exec$/.test(doc.querySelector('#y-url')?.value || ''), doc.querySelector('#y-url')?.value);
+  ok('共用掣預設已剔（三條路同一個後端）', doc.querySelector('#y-share')?.checked === true);
 
   /* 2026-09-19 回歸（團長回報「有啲嘢把解決方法封死」）：
      平台用 Vercel 環境變數登記嘅旅團，`db.backend` **一定**係 null ——
@@ -1033,25 +969,25 @@ google.visualization.Query.setResponse({"version":"0.6","reqId":"0","status":"ok
      「睇後端有咩資料」「體積檢查」）用 `backend ? … : …` 閘住 → 全部收埋，
      用家根本撳唔到文件叫佢撳嘅嗰啲掣，只見到「未設定後端」。
      而家改用 remoteConfigured()（有同源代理＋旅團編號就算接得通）。 */
-  if (MODE === 'real') {
+
     const db0 = store.load();
-    const savedBackend = db0.backend;
-    db0.backend = null;
-    store.commitMeta();
-    window.dispatchEvent(new window.Event('v82:refresh'));
-    await new Promise(r => setTimeout(r, 40));
-    const viewTxt = () => doc.getElementById('view')?.textContent || '';
-    ok('平台登記嘅旅團（本機冇 backend 記錄）照樣見到「立即儲存到後端」',
-      !!doc.querySelector('[data-act="push-db"]'));
-    ok('…照樣見到「由後端還原資料」同「睇後端有咩資料」',
-      !!doc.querySelector('[data-act="pull-db"]') && !!doc.querySelector('[data-act="db-info"]'));
-    ok('…有「同步診斷」掣（逐格驗成條鏈）', !!doc.querySelector('[data-act="diagnose"]'));
-    ok('唔會再誤報「未設定後端」（明明經平台代理接得到）', !/未設定後端 ——/.test(viewTxt()), viewTxt().slice(0, 80));
-    db0.backend = savedBackend;
-    store.commitMeta();
-    window.dispatchEvent(new window.Event('v82:refresh'));
-    await new Promise(r => setTimeout(r, 40));
-  }
+  const savedBackend = db0.backend;
+  db0.backend = null;
+  store.commitMeta();
+  window.dispatchEvent(new window.Event('v82:refresh'));
+  await new Promise(r => setTimeout(r, 40));
+  const viewTxt = () => doc.getElementById('view')?.textContent || '';
+  ok('平台登記嘅旅團（本機冇 backend 記錄）照樣見到「立即儲存到後端」',
+    !!doc.querySelector('[data-act="push-db"]'));
+  ok('…照樣見到「由後端還原資料」同「睇後端有咩資料」',
+    !!doc.querySelector('[data-act="pull-db"]') && !!doc.querySelector('[data-act="db-info"]'));
+  ok('…有「同步診斷」掣（逐格驗成條鏈）', !!doc.querySelector('[data-act="diagnose"]'));
+  ok('唔會再誤報「未設定後端」（明明經平台代理接得到）', !/未設定後端 ——/.test(viewTxt()), viewTxt().slice(0, 80));
+  db0.backend = savedBackend;
+  store.commitMeta();
+  window.dispatchEvent(new window.Event('v82:refresh'));
+  await new Promise(r => setTimeout(r, 40));
+
 
   // 測試連線（jsdom fetch 係本機 shim → 應該優雅失敗，唔會拋錯）
   const { pushToMaster } = tablesMod;
@@ -1117,13 +1053,9 @@ section('快速記帳（影相＋選欄目）');
     (ov2?.querySelector('#es-url')?.value || '').includes('members.html?u='),
     ov2?.querySelector('#es-url')?.value);
   ok('可以設定 Apps Script 送出網址（寫入總表）', !!ov2?.querySelector('#es-submit'));
-  if (MODE === 'real') {
+
     ok('送出網址已預填你嘅 /exec',
-      /\/exec$/.test(ov2?.querySelector('#es-submit')?.value || ''), ov2?.querySelector('#es-submit')?.value);
-  } else {
-    ok('示範模式唔會預填送出網址（示範資料唔會送出街）',
-      !(ov2?.querySelector('#es-submit')?.value || ''), ov2?.querySelector('#es-submit')?.value);
-  }
+    /\/exec$/.test(ov2?.querySelector('#es-submit')?.value || ''), ov2?.querySelector('#es-submit')?.value);
   doc.querySelector('.overlay [data-close-x]')?.click();
   await new Promise(r => setTimeout(r, 20));
 
@@ -1267,14 +1199,9 @@ section('防呆（暫存 → 確認 → 可還原）');
      呢個斷言測嘅係「改動會排隊（pending 累加）」—— 即係暫存，唔係自動寫。 */
   dbx.sync = { ...(dbx.sync || {}), pending: 0 };
   store.commit();
-  if (MODE === 'mock') {
-    ok('示範資料永遠唔會排隊送去後端（唔會污染真實 Sheet）',
-      Number(store.load().sync?.pending || 0) === 0, String(store.load().sync?.pending));
-  } else {
-    ok('改動會排隊等寫入後端（pending 累加，寫入成功先清零）',
-      Number(store.load().sync.pending) >= 1, String(store.load().sync?.pending));
-  }
-  dbx.sync.auto = false; dbx.sync.pending = 0; store.commit();
+  ok('改動會排隊等寫入後端（pending 累加，寫入成功先清零）',
+    Number(store.load().sync.pending) >= 1, String(store.load().sync?.pending));
+  dbx.sync.pending = 0; dbx.sync.pending = 0; store.commit();
 }
 
 /* ---------- 4. 通告：詳情頁 + 輸出（連回覆出席與否） ---------- */
@@ -1429,7 +1356,7 @@ section('開新旅團教學（只限超管）');
 {
   /* 兩種模式都用得到嘅登入輔助（示範模式冇真實帳戶） */
   const loginAs = async role => {
-    if (MODE === 'mock') { auth.loginAsMock(role); return { ok: true }; }
+    
     return role === 'super' ? auth.login('exco', 'sheep', TEST_SUPER_PASSWORD) : auth.login('leader', 'leader', '8202');
   };
   await loginAs('super');      // 以超管身份睇
@@ -1543,7 +1470,9 @@ section('旅團選擇閘（先揀旅團再登入）');
   ok('main.js 先顯示旅團閘，之後先 init + 登入',
     /if \(!unitChosen\(\)\) return renderUnitGate\(\);/.test(mainSrc)
     && mainSrc.indexOf('renderUnitGate();') < mainSrc.indexOf('await init();'));
-  ok('旅團閘有 MOCK 選項', /data-pick="MOCK"/.test(mainSrc));
+  /* ★ 2026-09-25 團長：「示範資料 (MOCK) 我都在用要MOCK 幹什麼」
+     → 旅團閘唔應該再有「試用示範（MOCK）」嗰張卡。 */
+  ok('★ 旅團閘已經冇 MOCK 選項', !/data-pick="MOCK"/.test(mainSrc));
   ok('登入頁有「更換旅團」掣', /btnGate/.test(mainSrc));
 }
 
@@ -1568,11 +1497,16 @@ section('公開資料（免登入公開頁）');
   ok('頁上有 QR 掣', v3.querySelectorAll('[data-qr]').length >= 3, String(v3.querySelectorAll('[data-qr]').length));
   ok('頁上有列印海報掣', v3.querySelectorAll('[data-poster]').length >= 3);
   ok('側邊欄有「公開資料」（已由「成員連結」改名）', /公開資料/.test(doc.querySelector('.sidebar')?.textContent || ''));
-  if (MODE === 'real') {
+  /* ★ 2026-09-25 團長：「進入旅團後,旁邊選單第二行『選擇旅團』沒有用，都進入了還選什麼？
+     只須要下方登出」—— 呢度係 DOM 級驗證（gate-env 嗰邊開唔到完整殼，只做源碼級檢查）。 */
+  ok('★ 側邊欄已經冇「選擇旅團」掣', !doc.getElementById('unitSwitch')
+    && !/選擇旅團/.test(doc.querySelector('.sidebar')?.textContent || ''));
+  ok('★ 側邊欄底部「登出」仍然喺度', !!doc.getElementById('btnLogout'));
+
     ok('物資借用送出網址已設定（borrow.html → 總表）',
-      /\/exec$/.test(store.load().settings?.publicBorrow?.submitUrl || ''),
-      store.load().settings?.publicBorrow?.submitUrl);
-  }
+    /\/exec$/.test(store.load().settings?.publicBorrow?.submitUrl || ''),
+    store.load().settings?.publicBorrow?.submitUrl);
+
 }
 
 /* ---------- 7. 進度紀錄：一個後端、兩個前端 ---------- */
@@ -1585,9 +1519,7 @@ section('進度紀錄（一個後端 · 兩個前端）');
      所以「未登記」嗰陣進度後端係空 —— 呢個先係啱嘅私隱行為。
      有登記嘅話就要係個 /exec。 */
   ok('進度後端：有登記就係 /exec，未登記就要係空（唔可以借人哋嘅）',
-    MODE === 'mock'
-      ? cfg.backend === ''                     /* 示範模式唔可以指向真實旅團嘅後端 */
-      : (cfg.backend === '' || /\/exec$/.test(cfg.backend)),
+    cfg.backend === '' || /\/exec$/.test(cfg.backend),
     JSON.stringify({ backend: cfg.backend, registered: cfg.registered }));
   ok('預設用內建考核項目定義（唔使連任何其他系統）',
     lp.DEFAULT_CATALOG_URL === 'data/progress/items.json');
@@ -1735,14 +1667,14 @@ section('首頁帳目（現在結餘 · 期初結餘）');
   ok(`期初欄位包含本年度（${model.currentFY()}）`,
     !!fv.querySelector(`[data-open-year="${model.currentFY()}"]`));
   ok('年度設定有「由上年度期末結轉」掣', !!fv.querySelector('[data-act="carry-all"]'));
-  if (MODE === 'real') {
+
     /* 「用舊帳嘅數字填返」要有參考帳先出現。82 旅嗰份 finance.reference.json
-       已經隨私隱清理移走，所以新旅團唔會見到呢粒掣 —— 驗返呢個一致性就夠。 */
-    const hasRef = (store.load().reference?.transactions || []).length > 0;
-    const refBtn = fv.querySelector('[data-act="use-ref-opening"]');
-    ok('有參考帳先有「用舊帳嘅數字填返」掣（冇就唔應該出現）',
-      hasRef ? !!refBtn : !refBtn, `hasRef=${hasRef} btn=${!!refBtn}`);
-  }
+     已經隨私隱清理移走，所以新旅團唔會見到呢粒掣 —— 驗返呢個一致性就夠。 */
+  const hasRef = (store.load().reference?.transactions || []).length > 0;
+  const refBtn = fv.querySelector('[data-act="use-ref-opening"]');
+  ok('有參考帳先有「用舊帳嘅數字填返」掣（冇就唔應該出現）',
+    hasRef ? !!refBtn : !refBtn, `hasRef=${hasRef} btn=${!!refBtn}`);
+
 }
 
 /* ---------- 期初結餘遷移（舊嘅全域數字 → 逐年） ---------- */

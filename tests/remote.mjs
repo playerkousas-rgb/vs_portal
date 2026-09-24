@@ -630,7 +630,7 @@ section('只有一個儲存方式（原始碼守門：冇自動寫、冇 poll、
   ok('main.js 開機**等**後端載入完先出登入頁（await syncBoot）', /await syncBoot\(\)/.test(mainSrc));
   ok('開機後端失敗會停喺連線閘（唔會落入登入頁）',
     /const bootSync = await syncBoot\(\)/.test(mainSrc)
-    && /if \(!isMock\(\) && !bootSync\?\.ok\)[\s\S]*?renderBackendGate\(bootSync\)/.test(mainSrc)
+    && /if \(!bootSync\?\.ok\)[\s\S]*?renderBackendGate\(bootSync\)/.test(mainSrc)
     && /function renderBackendGate/.test(mainSrc));
   ok('連線閘只顯示普通用家可明白嘅重試／揀旅團操作',
     /暫時未能連線，請稍後再試/.test(mainSrc)

@@ -150,26 +150,26 @@ for (const [home, tab, needle] of RENDER) {
 }
 
 /* ============================================================
-   ②b 「示範資料（MOCK）」分頁＝super 限定
-       （2026-09 起 admin 嘅 mock 分頁淨係 super 見到 ——
-         leader 見唔到係預期，唔係分掣壞咗）
+   ②b 冇咗「示範資料（MOCK）」分頁
+      ★ 2026-09-25 團長：「刪除示範資料 (MOCK) 我都在用要MOCK 幹什麼」
+      → 連 super 都唔應該再見到呢個分頁，#/admin/mock 亦唔可以 render 到嘢。
    ============================================================ */
-section('mock 分頁＝super 限定');
+section('★ MOCK 分頁已經拆走');
 {
   await goTo('#/admin');
-  ok('leader 見唔到 mock 分頁（super 限定）', !doc.querySelector('#view [data-tab="mock"]'));
+  ok('leader 見唔到 mock 分頁', !doc.querySelector('#view [data-tab="mock"]'));
 
-  /* 轉 super 身份再驗一次：個掣喺度、撳得、render 到「示範」 */
   auth.logout();
   const r = await auth.login('super', 'sheep', TEST_SUPER_PASSWORD);
   ok('super 登入到', r.ok === true, JSON.stringify(r));
-  await goTo('#/');            /* 離開 #/admin 先，之後先會觸發 hashchange 返去 */
+  await goTo('#/');
   await goTo('#/admin');
-  ok('super 見到 mock 分頁', !!doc.querySelector('#view [data-tab="mock"]'));
-  const c = await clickTab('mock');
-  ok('super 撳「mock」→ 去到 #/admin/mock', c.found && c.hash === '#/admin/mock',
-    c.found ? `個 hash 仲係 ${c.hash}` : '搵唔到粒掣');
-  ok('render 到「示範」內容', (doc.getElementById('view')?.textContent || '').includes('示範'));
+  ok('★ super 都見唔到 mock 分頁（已經拆走）', !doc.querySelector('#view [data-tab="mock"]'));
+  ok('★ 分頁列得返身份與帳號／旅團設定／資料管理／操作紀錄',
+    ['accounts', 'unit', 'data', 'audit'].every(t => !!doc.querySelector(`#view [data-tab="${t}"]`))
+    && !doc.querySelector('#view [data-tab="mock"]'));
+  auth.logout();
+  await auth.login('leader', 'leader', '8202');
 }
 
 /* ============================================================
@@ -263,7 +263,7 @@ for (const [hash, label] of [['#/admin/accounts', '帳戶'], ['#/admin/unit', '�
   await goTo(hash);
   const before = errors.length;
   const btns = [...doc.querySelectorAll('#view [data-act]')]
-    .filter(b => !/wipe|reset-seed|import-json|clear-mock|reset-mock|enter-mock|exit-mock/.test(b.dataset.act));
+    .filter(b => !/wipe|reset-seed|import-json/.test(b.dataset.act));
   for (const b of btns) {
     b.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
     await wait(120);

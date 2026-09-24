@@ -80,7 +80,9 @@ ok('第一步係旅團選擇畫面（唔係登入畫面）',
   appText().replace(/\s+/g, ' ').slice(0, 120));
 ok('列出註冊咗嘅旅團 TEST9', !!doc.querySelector('[data-pick="TEST9"]'),
   Array.from(doc.querySelectorAll('[data-pick]')).map(b => b.dataset.pick).join(','));
-ok('有 MOCK（試用示範）選項', !!doc.querySelector('[data-pick="MOCK"]'));
+/* ★ 2026-09-25 團長：「刪除示範資料 (MOCK) 我都在用要MOCK 幹什麼」
+   → 旅團閘唔應該再有「試用示範（MOCK）」選項。 */
+ok('★ 已經冇「試用示範（MOCK）」選項', !doc.querySelector('[data-pick="MOCK"]'));
 ok('旅團卡顯示旅團名', /測試旅深資童軍團/.test(appText()));
 ok('未揀旅團之前唔會初始化資料庫',
   !window.localStorage.getItem('venture82.unit.TEST9.db.v2'), '（應該要揀完先種入資料）');
@@ -196,12 +198,14 @@ console.log('\n▌已揀過旅團（第二次開）');
 ok('記住咗選擇之後 unitChosen 條件成立',
   window.localStorage.getItem('venture82.unitChosen.v2') === 'TEST9');
 
-/* ---------- ④ 離開 MOCK 唔可以困死用家（2026-09 真實 bug） ----------
-   舊 exitMock 只係由 URL 刪走 mock=1，localStorage 仲留緊 mode=mock／unit=MOCK，
-   下次 boot 照樣入返示範 → 「離開示範」掣永遠出唔到。而家要清晒一切。 */
-console.log('\n▌離開 MOCK（唔會被困返入去）');
+/* ---------- ④ 登出／「返回旅團選擇」唔可以困死用家 ----------
+   ★ 2026-09-25：呢度以前係「離開 MOCK 唔可以困死用家」。示範模式拆走咗，
+     但同一個 bug 形態仲喺度：**清晒痕跡**先至返得到旅團選擇閘。
+     如果 resetToGate() 漏清任何一個 key，下次開網站又會自動入返同一個旅團，
+     用家想轉旅團就永遠出唔到（＝同一個「被困住」嘅感覺）。 */
+console.log('\n▌返回旅團選擇（清晒痕跡）');
 {
-  const dom2 = new JSDOM(html, { url: 'http://localhost:8080/?mock=1&u=MOCK', pretendToBeVisual: true, runScripts: 'dangerously' });
+  const dom2 = new JSDOM(html, { url: 'http://localhost:8080/?u=TEST9', pretendToBeVisual: true, runScripts: 'dangerously' });
   const w2 = dom2.window;
   w2.scrollTo = () => {};
   try { Object.defineProperty(w2, 'crypto', { value: globalThis.crypto, configurable: true }); } catch { /* ignore */ }
@@ -212,13 +216,13 @@ console.log('\n▌離開 MOCK（唔會被困返入去）');
     catch { /* 唯讀 → 略過 */ }
   }
   globalThis.window = w2;
-  await import('../assets/js/main.js?mockboot=1');  /* cache-bust：main.js 嘅 module-level boot() 只行一次；
+  w2.localStorage.setItem('venture82.unitChosen.v2', 'TEST9');
+  await import('../assets/js/main.js?gate2=1');  /* cache-bust：main.js 嘅 module-level boot() 只行一次；
      用 query 令 Node 當佢係另一個 module 重新執行，boot() 就喺新 jsdom 度行 */
   await wait(500);
 
   const store2 = await import('../assets/js/lib/store.js');  /* 同一個 module instance（main.js 用緊嗰個） */
-  ok('MOCK 開機：而家係示範模式', store2.isMock() === true);
-  ok('MOCK 開機：示范橫額「離開示範」掣存在', !!w2.document.getElementById('mockExit'));
+  ok('入咗旅團 TEST9', String(store2.currentUnit()) === 'TEST9', String(store2.currentUnit()));
 
   let navigated2 = '';
   try {
@@ -231,17 +235,14 @@ console.log('\n▌離開 MOCK（唔會被困返入去）');
     });
   } catch { /* 用唔到 proxy 就算 */ }
 
-  w2.document.getElementById('mockExit')?.dispatchEvent(new w2.MouseEvent('click', { bubbles: true }));
-  await wait(80);
-
-  ok('離開示範：mode 記錄被清走', w2.localStorage.getItem('venture82.mode.v2') === null,
-    String(w2.localStorage.getItem('venture82.mode.v2')));
-  ok('離開示範：unit 記錄被清走', w2.localStorage.getItem('venture82.currentUnit.v2') === null,
+  store2.resetToGate();
+  ok('★ 清走旅團記錄', w2.localStorage.getItem('venture82.currentUnit.v2') === null,
     String(w2.localStorage.getItem('venture82.currentUnit.v2')));
-  ok('離開示範：「已揀旅團」記錄被清走', w2.localStorage.getItem('venture82.unitChosen.v2') === null,
+  ok('★ 清走「已揀旅團」記錄', w2.localStorage.getItem('venture82.unitChosen.v2') === null,
     String(w2.localStorage.getItem('venture82.unitChosen.v2')));
-  ok('離開示範：重載嘅網址冇 mock=1 都冇 u=（下次開機會返去旅團選擇閘）',
-    navigated2 ? (!/mock=1/.test(navigated2) && !/[?&]u=/.test(navigated2)) : true,
+  ok('★ 清走 session（唔會用舊身份自動入返）', w2.localStorage.getItem('venture82.session.v2') === null);
+  ok('★ 重載嘅網址冇 u=（下次開機會返去旅團選擇閘）',
+    navigated2 ? !/[?&]u=/.test(navigated2) : true,
     navigated2 || '（jsdom 唔會真係轉頁）');
 }
 

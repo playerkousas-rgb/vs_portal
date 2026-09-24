@@ -19,7 +19,7 @@
    ============================================================ */
 
 import {
-  load, tryLoad, commitCritical, collection, find, add, remove, getSession, setSession, audit, isMock, currentUnit
+  load, tryLoad, commitCritical, collection, find, add, remove, getSession, setSession, audit, currentUnit
 } from './store.js';
 import { chief as chiefRecord, hasChief } from './model.js';
 
@@ -609,15 +609,12 @@ function auditLogin(who, what) {
   try { audit(what, '', who); } catch { /* 稽核失敗唔影響登入 */ }
 }
 
-export function loginAsMock(role = 'leader') {
-  setSession({ role, accountId: 'mock_' + role, username: 'demo-' + role, name: '示範' + (ROLES[role]?.short || ''), at: Date.now(), mock: true });
-}
-
 export function logout() { setSession(null); }
 export function current() { return getSession(); }
 export function currentRole() { return getSession()?.role || null; }
 export function isSuper() { return currentRole() === 'super'; }
-export function isMockSession() { return !!getSession()?.mock || isMock(); }
+/* ★ 2026-09-25 團長：「刪除示範資料 (MOCK) 我都在用要MOCK 幹什麼」
+   → 示範模式成個拆走，isMockSession() 亦都冇存在意義。 */
 export function roleInfo(role = currentRole()) { return ROLES[role] || null; }
 
 /** 介面上顯示嘅身份名稱（超管唔會顯示帳號） */

@@ -16,7 +16,6 @@ export const ROLE_PW = { chief: '8201', leader: '8202', exco: '8203' };
 export const ROLE_LOGIN = { chief: 'chief', leader: 'leader', exco: 'exco' };
 
 /* 示範（mock）資料庫已經有 12 位示範團員 —— 直接借用，唔好加人（加人會撞其他測試嘅數） */
-const MOCK_TARGETS = { chief: 'dm02', leader: 'dm00', exco: 'dm01' };
 const DEFS = {
   chief: { name: '測試團長', email: 'chief@example.com' },
   leader: { name: '測試領袖', email: 'leader@example.com' },
@@ -35,11 +34,6 @@ export async function seedRosterRoles(store, auth) {
   for (const role of ['chief', 'leader', 'exco']) {
     const loginId = ROLE_LOGIN[role];
     let m = (store.load().members || []).find(x => String(x.loginId || '') === loginId);
-    if (!m && store.isMock?.()) {
-      const id = MOCK_TARGETS[role];
-      m = (store.load().members || []).find(x => x.id === id);
-      if (m) { m.loginId = loginId; store.commit(); }
-    }
     if (!m) {
       const d = DEFS[role];
       m = store.add('members', {

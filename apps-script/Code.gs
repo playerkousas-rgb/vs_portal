@@ -563,8 +563,9 @@ function doPost(e) {
           if (a && a.active !== false && (textOf(a.username).toLowerCase() === actorName3 || textOf(a.email).toLowerCase() === actorName3)) { actor3 = a; return true; }
           return false;
         });
+        if (!actor3 && deleteSession.portal) actor3 = (deleteDb.db && deleteDb.db.members || []).filter(function(m){ return m && m.status !== 'alumni' && (textOf(m.ymis).toLowerCase() === actorName3 || textOf(m.email).toLowerCase() === actorName3); })[0];
         if ((!actor3 && !deleteSession.portal) || (!deleteSession.portal && deleteSession.id !== textOf(actor3.id))) return { success: false, error: '登入帳戶與操作帳戶不一致' };
-        var actorPw3 = actor3.pw || actor3.hubPw;
+        var actorPw3 = actor3 && (actor3.pw || actor3.hubPw);
         var actorOk3 = actorPw3 && actorPw3.algo === 'pbkdf2-sha256'
           ? verifyPasswordRecord(actorPw3, textOf(body.actorPassword))
           : actorPw3 && actorPw3.algo === 'sha256'
@@ -579,7 +580,7 @@ function doPost(e) {
           return false;
         });
         if (!target3) return { success: false, error: '搵唔到要刪除嘅帳戶' };
-        if (textOf(target3.id) === textOf(actor3.id)) return { success: false, error: '不能刪除自己目前登入嘅帳戶' };
+        if (actor3 && textOf(target3.id) === textOf(actor3.id)) return { success: false, error: '不能刪除自己目前登入嘅帳戶' };
         var targetRole3 = textOf(target3.role || target3.identity).toLowerCase();
         if (targetRole3 === 'leader' || targetRole3 === 'admin') {
           var managerCount3 = (deleteDb.db.accounts || []).filter(function (a) {
@@ -618,8 +619,9 @@ function doPost(e) {
           if (a && a.active !== false && (textOf(a.username).toLowerCase() === actorName4 || textOf(a.email).toLowerCase() === actorName4)) { actor4 = a; return true; }
           return false;
         });
+        if (!actor4 && restoreSession.portal) actor4 = (restoreDb.db && restoreDb.db.members || []).filter(function(m){ return m && m.status !== 'alumni' && (textOf(m.ymis).toLowerCase() === actorName4 || textOf(m.email).toLowerCase() === actorName4); })[0];
         if ((!actor4 && !restoreSession.portal) || (!restoreSession.portal && restoreSession.id !== textOf(actor4.id))) return { success: false, error: '登入帳戶與操作帳戶不一致' };
-        var actorPw4 = actor4.pw || actor4.hubPw;
+        var actorPw4 = actor4 && (actor4.pw || actor4.hubPw);
         var actorOk4 = actorPw4 && actorPw4.algo === 'pbkdf2-sha256'
           ? verifyPasswordRecord(actorPw4, textOf(body.actorPassword))
           : actorPw4 && actorPw4.algo === 'sha256'

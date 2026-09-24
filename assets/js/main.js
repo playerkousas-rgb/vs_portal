@@ -848,7 +848,15 @@ function renderMoved() {
 function renderBackendGate(reason = {}) {
   document.body.classList.add('login-body');
   const code = currentUnit() || '—';
-  /* 連線原因留喺內部狀態，普通用家只需要知道下一步：再試，或聯絡管理員。 */
+  /* 連線原因留喺內部狀態，普通用家只需要知道下一步：再試，或聯絡管理員。
+     ★ 2026-09-24（第三輪）：團長回報「無痕讀不到後端＝所有人睇唔到」——
+     以前呢頁只有「重新連線」，用家完全唔知係（甲）後端真係連唔到、
+     （乙）後端連得上但**入面根本冇資料**、（丙）後端資料讀唔到（有得救）。
+     而家三粒掣：睇醫生（檢查）／食藥（修復）／最後一招（用呢部機上載）。 */
+  const retryBtn = `<button class="btn btn-primary" id="btnRetryBackend" type="button">${icon('refresh', 15)} 重新連線</button>`;
+  const diagBtn = `<button class="btn" id="btnBackendHealth" type="button">${icon('shield', 15)} 檢查後端（睇下係咩事）</button>`;
+  const repairBtn = `<button class="btn" id="btnBackendRepair" type="button">${icon('settings', 15)} 修復後端（清垃圾／舊版本段）</button>`;
+  const uploadBtn = `<button class="btn btn-accent" id="btnBackendUpload" type="button">${icon('cloud', 15)} 用呢部機嘅資料上載到後端</button>`;
   app.innerHTML = `
   <div class="gate-wrap">
     <div class="gate-card">
@@ -862,10 +870,20 @@ function renderBackendGate(reason = {}) {
       <div class="note-box danger">${icon('alert', 16)}<div>
         <b>暫時未能連線，請稍後再試。</b>
         <div class="xs mt-4">後端未連線，所以暫時未能顯示登入畫面。</div>
+        <div class="xs mt-4"><b>想知係咩事？</b>撳下面「檢查後端」—— 會話你知係連唔到、後端冇資料，定係後端資料壞咗（有得修復）。</div>
       </div></div>
       <div class="row gap-8 wrap mt-16">
-        <button class="btn btn-primary" id="btnRetryBackend" type="button">${icon('refresh', 15)} 重新連線</button>
-        <button class="btn" id="btnChangeUnit" type="button">${icon('chevronL', 15)} 返回揀旅團</button>
+        ${retryBtn}
+        ${diagBtn}
+      </div>
+      <div class="row gap-8 wrap mt-8">
+        ${repairBtn}
+        ${uploadBtn}
+      </div>
+      <div class="xs faint mt-12">「修復後端」只會清走分頁入面嘅暫存垃圾同舊版本段（最新一套資料一行都唔會掂）。
+        「用呢部機嘅資料上載」係最後一招：後端冇資料／讀唔到，而<b>呢部機</b>手上有全部資料時用。</div>
+      <div class="row gap-8 wrap mt-8">
+        <button class="btn btn-ghost" id="btnChangeUnit" type="button">${icon('chevronL', 15)} 返回揀旅團</button>
       </div>
       <div class="gate-foot">如仍然未能連線，請聯絡旅團管理員。</div>
     </div>
@@ -884,6 +902,95 @@ function renderBackendGate(reason = {}) {
     renderBackendGate(r);
   });
   app.querySelector('#btnChangeUnit')?.addEventListener('click', () => resetToGate());
+  app.querySelector('#btnBackendHealth')?.addEventListener('click', runBackendHealth);
+  app.querySelector('#btnBackendRepair')?.addEventListener('click', runBackendRepair);
+  app.querySelector('#btnBackendUpload')?.addEventListener('click', runBackendUpload);
+}
+
+/* ============================================================
+   後端搶救（未登入都可以用 —— 呢個係最需要嘅時候）
+   ============================================================ */
+/** 顯示後端檢查結果（＋按情況提供修復／上載） */
+async function runBackendHealth() {
+  const { modal } = await import('./lib/util.js');
+  const h = await remoteApi.backendHealth();
+  const level = h.level === 'ok' ? 'ok' : h.level === 'warn' ? 'warn' : 'danger';
+  const choice = await modal({
+    title: '後端檢查',
+    body: `<div class="note-box ${level} mb-12">${icon(h.level === 'ok' ? 'check' : 'alert', 15)}<div><b>${esc(h.title)}</b></div></div>
+      ${h.lines.length ? `<div class="sm muted col gap-4 mb-12">${h.lines.map(l => `<div>· ${esc(l)}</div>`).join('')}</div>` : ''}
+      ${h.steps.length ? `<div class="sm"><b>下一步：</b><ol style="padding-left:18px;line-height:1.9">${h.steps.map(x => `<li>${esc(x)}</li>`).join('')}</ol></div>` : ''}
+      ${h.canRepair ? '<div class="sm mt-8">👉 可以用「修復後端」清走舊版本段／垃圾行（安全，最新資料唔會掂）。</div>' : ''}
+      ${h.canForce ? '<div class="sm mt-8">👉 或用「用呢部機嘅資料上載到後端」直接覆蓋後端。</div>' : ''}`,
+    actions: h.canRepair
+      ? [{ label: '關閉', class: 'btn', value: 'close' }, { label: '修復後端', class: 'btn-primary', value: 'repair' }]
+      : [{ label: '知道', class: 'btn', value: 'close' }]
+  });
+  if (choice === 'repair') return runBackendRepair();
+  return h;
+}
+
+/** 一鍵修復：清暫存垃圾行 ＋ 舊版本段，跟住即刻再試連線 */
+async function runBackendRepair() {
+  const { modal, toast } = await import('./lib/util.js');
+  const yes = await modal({
+    title: '修復後端分頁',
+    body: `<p class="sm">會喺旅團自己嘅 Google Sheet「資料庫」分頁：</p>
+      <ul class="sm" style="padding-left:18px;line-height:1.9">
+        <li>清走舊版留低嘅 <b>暫存垃圾行</b>（令分頁越嚟越大嗰啲）</li>
+        <li>清走同一旅團嘅 <b>舊版本段</b>，只留最新一套</li>
+      </ul>
+      <p class="sm"><b>最新一套完整資料一行都唔會刪</b>；唔會改任何正式紀錄。</p>`,
+    actions: [{ label: '取消', class: 'btn', value: false }, { label: '修復', class: 'btn-primary', value: true }]
+  });
+  if (!yes) return null;
+  const r = await remoteApi.repairBackend();
+  if (!r.ok) { toast(r.error || '修復失敗', 'err'); return r; }
+  toast(r.text, r.loadOk ? 'ok' : 'warn');
+  await syncBoot().then(res => {
+    if (res?.ok) { if (!current()) renderLogin(); else render(); }
+    else renderBackendGate(res);
+  });
+  return r;
+}
+
+/** 最後一招：用呢部機嘅資料覆蓋後端（要打字確認 `上載` 兩個字） */
+async function runBackendUpload() {
+  const { modal, toast } = await import('./lib/util.js');
+  const n = (load()?.members || []).length;
+  const yes = await modal({
+    title: '用呢部機嘅資料上載到後端',
+    danger: true,
+    sub: '呢個係搶救動作',
+    body: `<p class="sm">會用<b>呢部機而家手上嗰份資料</b>（${n} 位用戶）<b>覆蓋後端</b>。
+        適合情況：後端冇資料／讀唔到，而正確嗰份喺呢部機。</p>
+      <div class="note-box warn mt-8"><div class="sm">後端舊有嘅資料會被取代（會記錄舊版本號，方便追溯）。
+        如果後端其實有一份好嘅資料，請先撳「檢查後端」睇清楚。</div></div>
+      <div class="field mt-8"><label class="label">請打「上載」兩個字確認</label>
+        <input class="input" id="bk-confirm" placeholder="上載" autocomplete="off"></div>`,
+    /* 打字確認：未打啱就唔會關窗（同 confirmDanger 一樣嘅做法） */
+    actions: [{ label: '取消', class: 'btn', value: false }, {
+      label: '上載', class: 'btn-accent',
+      onClick: (el) => {
+        const typed = el.querySelector('#bk-confirm')?.value?.trim() || '';
+        if (typed !== '上載') {
+          const box = el.querySelector('.modal-body');
+          if (box) box.insertAdjacentHTML('afterbegin', '<div class="note-box danger mb-8" id="bk-err"><div class="sm">要打「上載」兩個字先得。</div></div>');
+          el.querySelector('#bk-confirm')?.focus();
+          return false;
+        }
+        return true;
+      }
+    }]
+  });
+  if (!yes) return null;
+  const r = await remoteApi.forcePushBackend();
+  if (!r.ok) { toast(r.error || '上載失敗', 'err'); return r; }
+  toast(r.text, 'ok');
+  const res = await syncBoot();
+  if (res?.ok) { if (!current()) renderLogin(); else render(); }
+  else renderBackendGate(res);
+  return r;
 }
 
 function renderFatal(e) {

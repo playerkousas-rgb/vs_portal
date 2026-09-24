@@ -381,5 +381,95 @@ section('⑧ ★ 進度讀寫 ＋ 後端自查（/api/progress diag）');
     JSON.stringify({ ok: badKey.ok, srv: badKey.serverSideKey }));
 }
 
+/* ============================================================
+   ⑨ ★ 搶救路線（團長 2026-09-24 第三輪）
+   ------------------------------------------------------------
+   「無痕讀取不了後端 ＝ 所有人都睇唔到，資料綁死喺我本機遊覽器」。
+   呢一節就係模擬呢個實況（真 Code.gs ＋ 真代理）：
+     ① 砌出壞掉嘅後端：好嘅一套段 ＋ 寫壞咗嘅較新一套 ＋ 暫存垃圾行
+     ② 新裝置（無痕）讀 → 應該失敗（重現用家見到嘅症狀）
+     ③ 經 /api/proxy 叫 repairDb（＝app 登入閘嗰粒「修復後端」）
+     ④ 同一部新裝置再讀 → 今次讀得到（資料係後端嘅，唔再困喺某一部機）
+     ⑤ 拎住資料嗰部機用 saveDbForce 強制覆蓋（＝「用呢部機嘅資料上載」）
+     ⑥ 又一部全新裝置讀 → 見到覆蓋後嘅版本
+   ============================================================ */
+section('⑨ ★ 搶救：後端讀唔到 → 修復 → 新裝置讀到（真 Code.gs）');
+{
+  const post = (payload) => fetch(`${BASE}/api/proxy`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+  }).then(r => r.json());
+
+  /* ① 砌出壞掉嘅後端（直接寫「資料庫」分頁，模擬舊版漏刪／寫到一半死咗） */
+  const goodDb = { profile: { name: '第八十二旅' }, members: [{ id: 'rm1', name: '原有團員', ymis: '8202000009', identity: 'member' }], transactions: [] };
+  const seed = await (await fetch(REAL_EXEC, {
+    method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ action: 'saveDbForce', unit: UNIT, apiKey: KEY, db: goodDb })
+  })).json();
+  ok('（前置）先用 force 寫入一份好嘅資料庫', seed.success === true, JSON.stringify(seed).slice(0, 120));
+  const goodVersion = String(seed.version || '');
+
+  /* 之後：加一套「較新但寫壞」嘅段 ＋ 兩行暫存垃圾（＝當時真實症狀） */
+  const junk = await (await fetch(`http://127.0.0.1:${GAS_PORT}/_seedBroken`, {
+    method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ unit: UNIT, half: '{"members":[{"id":"x-half', junkRows: 2 })
+  })).json();
+  ok('（前置）後端而家有「好嘅一套 ＋ 壞嘅較新一套 ＋ 垃圾行」',
+    junk.ok === true && junk.versions === 2 && junk.stagingRows === 2, JSON.stringify(junk));
+
+  /* ② 用「舊版讀法」示範用家見到嘅症狀：舊版會把同一旅團**所有**段一齊拼。
+     呢度如實照做一次 —— 砌唔返 JSON ＝ 舊部署嘅新裝置／無痕一定讀唔到。 */
+  const oldStyle = await (await fetch(`${REAL_EXEC}`, {
+    method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ action: 'loadDb-OLD-STYLE', unit: UNIT, apiKey: KEY })
+  })).json();
+  ok('★ 舊版讀法（全部段一齊拼）砌唔返 JSON ＝ 舊部署嘅無痕／新裝置讀唔到（用家見到嘅症狀）',
+    oldStyle.ok === false && /JSON|parse|壞/i.test(String(oldStyle.error || '')), JSON.stringify(oldStyle).slice(0, 200));
+
+  const inc1 = await runDevice({ steps: [{ op: 'load' }] });
+  ok('★ 已部署 v2.7.x 嘅後端有免疫：按版本分組讀，所以新裝置仍然讀得到（1 位舊團員）',
+    step(inc1, 'load').ok === true && step(inc1, 'load').members >= 1,
+    JSON.stringify(step(inc1, 'load')).slice(0, 220));
+
+  /* ③ 修復（app 登入閘嗰粒掣 → /api/proxy → repairDb） */
+  const fix = await post({ action: 'repairDb', unit: UNIT });
+  ok('★ 一鍵修復成功（唔使入 Apps Script）', fix.ok === true, JSON.stringify(fix).slice(0, 200));
+  ok('★ 清走垃圾行同壞嘅舊段', Number(fix.repaired?.removedStaging) === 2 && Number(fix.repaired?.removedOldVersions) >= 1,
+    JSON.stringify({ staging: fix.repaired?.removedStaging, old: fix.repaired?.removedOldVersions }));
+  ok('★ 修復之後後端讀得返（好嘅一套完好無缺）',
+    fix.repaired?.loadOk === true && Number(fix.repaired?.members) >= 1, JSON.stringify(fix.repaired).slice(0, 200));
+
+  /* ④ 同一部「無痕」裝置再讀 → 今次讀得到 */
+  const inc2 = await runDevice({ steps: [{ op: 'load' }] });
+  const inc2load = step(inc2, 'load');
+  ok('★★ 無痕裝置而家讀到後端資料（同一個後端，唔再綁死喺某一部機）',
+    inc2load.ok === true && inc2load.members >= 1, JSON.stringify(inc2load).slice(0, 240));
+
+  /* ⑤ 守住資料嗰部機：強制覆蓋（＝「用呢部機嘅資料上載到後端」） */
+  const forceDb = { profile: { name: '第八十二旅' }, members: [
+    { id: 'rm1', name: '原有團員', ymis: '8202000009', identity: 'member' },
+    { id: 'rm2', name: '搶救後加入', ymis: '8202000010', identity: 'member' }
+  ], transactions: [] };
+  const forced = await post({ action: 'saveDbForce', unit: UNIT, db: forceDb });
+  ok('★ 強制覆蓋成功（回報覆蓋咗邊個舊版本）',
+    forced.success === true && forced.forced === true && !!forced.overwroteVersion,
+    JSON.stringify(forced).slice(0, 200));
+
+  /* ⑥ 又一部全新裝置 → 見到覆蓋後嘅版本 */
+  const inc3 = await runDevice({ steps: [{ op: 'load' }] });
+  const inc3load = step(inc3, 'load');
+  ok('★★ 又一部全新裝置見到覆蓋後嘅資料（2 位、含新加入嘅）',
+    inc3load.ok === true && inc3load.members === 2 && inc3load.names.includes('搶救後加入'),
+    JSON.stringify(inc3load).slice(0, 240));
+
+  /* ⑦ 檢查（backendHealth 用嘅三個動作）全部答得到 */
+  const st = await post({ action: 'status', unit: UNIT });
+  const info = await post({ action: 'dbInfo', unit: UNIT });
+  ok('★ 後端檢查答得到：邊支腳本／邊張 Sheet／版本',
+    st.ok === true && !!st.backendVersion && !!st.spreadsheet, JSON.stringify({ v: st.backendVersion, sheet: st.spreadsheet }));
+  ok('★ 後端檢查答得到：修復後乾淨（1 套版本、0 垃圾、0 舊段）',
+    Number(info.versions) === 1 && Number(info.stagingRows) === 0 && Number(info.staleRows) === 0,
+    JSON.stringify({ v: info.versions, staging: info.stagingRows, stale: info.staleRows }));
+}
+
 console.log(`\n${fail ? '❌' : '✅'} 端到端（真 Code.gs）：${pass} 過 / ${fail} 唔過（${Date.now() - START}ms）`);
 process.exit(fail ? 1 : 0);

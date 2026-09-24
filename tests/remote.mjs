@@ -1656,5 +1656,137 @@ section('★ 登入硬閘：後端答唔到就唔准入主控頁');
       .slice(fs.readFileSync(path.join(ROOT, 'assets/js/lib/remote.js'), 'utf8').indexOf('requireBackendForLogin'))));
 }
 
+section('★ 搶救三寶（前端契約：後端讀唔到 → 檢查 → 修復 → 用呢部機上載）');
+{
+  const { JSDOM } = await import('jsdom');
+  const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost:8080/?u=0082', pretendToBeVisual: true });
+  const { window } = dom;
+  for (const k of ['window', 'document', 'navigator', 'localStorage', 'location', 'HTMLElement',
+    'CustomEvent', 'Event', 'Node', 'getComputedStyle', 'URL', 'URLSearchParams']) {
+    try { Object.defineProperty(globalThis, k, { value: window[k], configurable: true, writable: true }); } catch { /* 唯讀 */ }
+  }
+  globalThis.window = window;
+
+  /* ⚠️ 一定要用**冇 query**嗰份（同 remote.js 內部 import 嘅係同一個 module instance）——
+     用 `?rescue=1` 只會換到另一個 state 物件，remote 內部照樣睇住舊嗰個（2026-09-24 撞到）。 */
+  const store3 = await import('../assets/js/lib/store.js');
+  await store3.init({ mode: 'real', unit: '0082' });
+  const remote3 = await import('../assets/js/lib/remote.js');
+  const mainSrc3 = fs.readFileSync(path.join(ROOT, 'assets', 'js', 'main.js'), 'utf8');
+  const tablesSrc3 = fs.readFileSync(path.join(ROOT, 'assets', 'js', 'views', 'tables.js'), 'utf8');
+  const proxSrc3 = fs.readFileSync(path.join(ROOT, 'api', 'proxy.js'), 'utf8');
+
+  /* 本機有一份資料（＝「留住資料嗰部機」）——屋企名冊 2 位 */
+  const local3 = store3.load();
+  local3.members = [
+    { id: 'm1', name: '陳大文', ymis: '8202000001', identity: 'chief' },
+    { id: 'm2', name: '李小美', ymis: '8202000002', identity: 'member' }
+  ];
+  store3.commit();
+
+  let hits = [];
+  let mode3 = 'broken';   // broken／healthy／down
+  const memFetch3 = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    const clean = String(url).split('?')[0].replace(/^\.?\//, '');
+    if (clean !== 'api/proxy') return { ok: false, status: 404, text: async () => '404' };
+    const body = JSON.parse(init.body || '{}');
+    hits.push(body.action);
+    if (mode3 === 'down') return { ok: false, status: 500, text: async () => 'FUNCTION_RESPONSE_PAYLOAD_TOO_LARGE' };
+    if (body.action === 'status') {
+      return { ok: true, status: 200, text: async () => JSON.stringify({
+        ok: true, msg: '深資童軍管理系統 後端正常', backendVersion: 'v2.7.2', spreadsheet: 'VS 第八十二旅 資料庫' }) };
+    }
+    if (body.action === 'dbInfo') {
+      const broken = mode3 === 'broken';
+      return { ok: true, status: 200, text: async () => JSON.stringify({
+        ok: true, found: true, bytes: 4096, version: 'V1', counts: { members: 2 },
+        versions: broken ? 2 : 1, staleRows: broken ? 1 : 0, stagingRows: broken ? 3 : 0, stagingBytes: broken ? 12000 : 0 }) };
+    }
+    if (body.action === 'loadDb' || body.action === 'loadDbPart') {
+      return mode3 === 'broken'
+        ? { ok: true, status: 200, text: async () => JSON.stringify({ ok: false, error: 'Unexpected token } in JSON' }) }
+        : { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, found: true, version: 'V1', bytes: 2048, db: { schema: 2, unitCode: '0082', members: [{ id: 'm1', name: '陳大文' }] } }) };
+    }
+    if (body.action === 'repairDb') {
+      mode3 = 'healthy';
+      return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, repaired: {
+        ok: true, unit: '0082', before: { versions: 2, stagingRows: 3, staleRows: 1 },
+        removedStaging: 3, removedOldVersions: 1, keptVersions: 1, skippedUnits: [],
+        after: { versions: 1, stagingRows: 0, staleRows: 0 }, loadOk: true, loadError: '', members: 2 } }) };
+    }
+    if (body.action === 'saveDbForce') {
+      return { ok: true, status: 200, text: async () => JSON.stringify({
+        ok: true, success: true, forced: true, version: 'V-NEW', overwroteVersion: 'V1', bytes: 5120, chunks: 1 }) };
+    }
+    return { ok: false, status: 400, text: async () => JSON.stringify({ ok: false, error: '不支援的操作' }) };
+  };
+
+  /* ---- ① 壞後端：一睇就知發生咩事，而且有兩條救路 ---- */
+  hits = []; mode3 = 'broken';
+  const hBad = await remote3.backendHealth();
+  ok('★ 檢查後端（壞後端 ＋ 本機有料）→ 判 bad', hBad.level === 'bad', JSON.stringify({ level: hBad.level, title: hBad.title }));
+  ok('★ 講得出「讀唔到」＋ 有得救（唔係一句「同步失敗」）', /讀唔到/.test(hBad.title) && /修復/.test(hBad.title), hBad.title);
+  ok('★ 講出邊支腳本／邊張 Sheet（答「係唔係指錯咗」）',
+    hBad.lines.some(l => /第八十二旅/.test(l)) && hBad.lines.some(l => /v2\.7\.2/.test(l)), JSON.stringify(hBad.lines));
+  ok('★ 講出死因：幾套版本段 ＋ 幾行暫存垃圾',
+    hBad.lines.some(l => /2 套版本段/.test(l)) && hBad.lines.some(l => /3 行暫存垃圾/.test(l)), JSON.stringify(hBad.lines));
+  ok('★ 有得修復（canRepair）＋ 可以用呢部機上載（canForce，本機有料）',
+    hBad.canRepair === true && hBad.canForce === true && hBad.hasLocalData === true,
+    JSON.stringify({ r: hBad.canRepair, f: hBad.canForce, l: hBad.hasLocalData }));
+  ok('★ 步驟教人撳修復（唔使人自己入 Apps Script）',
+    hBad.steps.some(x => /修復後端/.test(x)) && hBad.steps.some(x => /呢部機嘅資料上載/.test(x)), JSON.stringify(hBad.steps));
+  ok('★ 檢查只係「睇」——冇偷偷寫後端（冇 saveDb／repairDb／saveDbForce）',
+    hits.every(a => ['status', 'dbInfo', 'loadDb', 'loadDbPart'].includes(a)) && hits.includes('status') && hits.includes('dbInfo'),
+    hits.join(','));
+
+  /* ---- ② 一鍵修復（經 /api/proxy，後端 API Key 由代理注入） ---- */
+  hits = [];
+  const rep = await remote3.repairBackend();
+  ok('★ 修復後端 → 打 repairDb（經同源代理）', hits.includes('repairDb'), hits.join(','));
+  ok('★ 修復回報清走幾多行（垃圾 3 ＋ 舊段 1）＋ 之後讀得返',
+    rep.ok === true && rep.removedStaging === 3 && rep.removedOldVersions === 1 && rep.loadOk === true && rep.members === 2,
+    JSON.stringify(rep).slice(0, 200));
+  ok('★ 修復文案係人話（唔係 JSON）', /清走暫存垃圾 3 行/.test(rep.text) && /2 位用戶/.test(rep.text), rep.text);
+
+  /* ---- ③ 最後一招：用呢部機嘅資料強制覆蓋 ---- */
+  hits = [];
+  const forced = await remote3.forcePushBackend();
+  ok('★ 強制上載 → 打 saveDbForce', hits.includes('saveDbForce'), hits.join(','));
+  ok('★ 上載嘅係「呢部機」手上嗰份（本機 2 位，唔會空空如也）',
+    forced.ok === true && forced.members === 2 && /2 位用戶/.test(forced.text), JSON.stringify(forced).slice(0, 200));
+  ok('★ 回報覆蓋咗邊個舊版本（有事都追得返）',
+    forced.overwroteVersion === 'V1' && forced.version === 'V-NEW', JSON.stringify(forced).slice(0, 160));
+
+  /* ---- ④ 後端健康 → 唔應該叫人多此一舉 ---- */
+  hits = []; mode3 = 'healthy';
+  const hOk = await remote3.backendHealth();
+  ok('★ 健康後端 → 判 ok、標題講「資料喺後端，唔係困喺某部機」',
+    hOk.level === 'ok' && /唔係困喺某部機/.test(hOk.title), JSON.stringify({ level: hOk.level, title: hOk.title }));
+  ok('★ 健康時唔會亂叫（canRepair／canForce 都 false）', hOk.canRepair === false && hOk.canForce === false,
+    JSON.stringify({ r: hOk.canRepair, f: hOk.canForce }));
+  ok('★ 健康時教「其他裝置係舊 cache，重新連線就得」',
+    hOk.steps.some(x => /cache|重新/.test(x)), JSON.stringify(hOk.steps));
+
+  /* ---- ⑤ 連唔到後端 ---- */
+  hits = []; mode3 = 'down';
+  const hDown = await remote3.backendHealth();
+  ok('★ 連唔到後端 → 如實講「連唔到」＋教查部署權限（唔會扮正常）',
+    hDown.level === 'bad' && /連唔到/.test(hDown.title) && hDown.steps.some(x => /部署|存取權/.test(x)),
+    JSON.stringify({ t: hDown.title, s: hDown.steps }));
+
+  /* ---- ⑥ 破壞性動作要有人肯撳、而且要打字確認（介面守門） ---- */
+  ok('★ 登入閘有三粒掣：檢查／修復／上載',
+    ['#btnBackendHealth', '#btnBackendRepair', '#btnBackendUpload'].every(id => mainSrc3.includes(id)));
+  ok('★ 上載要打字確認（打「上載」兩個字）先做得',
+    /上載/.test(mainSrc3) && /typeConfirm|打字|確認/.test(mainSrc3) && /runBackendUpload/.test(mainSrc3));
+  ok('★ 「儲存狀態」卡都有同一組搶救掣（唔使特登去登入閘）',
+    /backend-health/.test(tablesSrc3) && /backend-repair/.test(tablesSrc3) && /backend-upload/.test(tablesSrc3));
+  ok('★ 代理白名單放行三個新動作（舊 action 一個都冇拆）',
+    /'repairDb'/.test(proxSrc3) && /'saveDbForce'/.test(proxSrc3) && /'diag'/.test(proxSrc3));
+
+  globalThis.fetch = memFetch3;
+}
+
 console.log(`\n──────── 後端儲存測試結果：${pass} 通過 / ${fail} 失敗（${Date.now() - t0} ms）────────\n`);
 process.exit(fail ? 1 : 0);

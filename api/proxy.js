@@ -40,6 +40,10 @@ const ALLOWED_ACTIONS = new Set([
      saveDbPart／saveDbCommit ＝ v2.4.0 分件儲存（大資料庫拆件上，冇硬天花板）
      loadDbPart            ＝ v2.6.0 分段讀取（大資料庫分段落，唔會撞 Vercel 4.5MB 回應上限） */
   'saveDb', 'loadDb', 'loadDbPart', 'dbInfo', 'verifySetupKey', 'saveDbPart', 'saveDbCommit',
+  /* ★ v2.7.2：搶救路線 —— diag（後端自查）／repairDb（清垃圾同舊版本段）／
+     saveDbForce（強制用呢部機嘅資料覆蓋後端）。三個都要後端 API Key（由本代理注入），
+     前端唔會見到 Key。用途：後端資料讀唔到、所有人都入唔到嘅時候，由留住資料嗰部機救返。 */
+  'diag', 'repairDb', 'saveDbForce',
   /* 單據相片直上 Drive（v2.3.0 體積治理）—— db 入面只留連結。
      ★ 2026-09-20 事故：呢個 action 一直漏咗喺白名單，代理一律回 400
      「不支援的操作」，前端 finance.js 於是跌返落「本地存做後備」，

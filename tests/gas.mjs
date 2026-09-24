@@ -256,6 +256,129 @@ section('v2.6.1 團長回報：同步生分身分頁＋成員進度重複');
 }
 
 /* ============================================================
+   ③c ★ v2.7.2 搶救：repairDb（清垃圾／舊版本段）＋ saveDbForce
+   ------------------------------------------------------------
+   團長 2026-09-24 第三輪：「無痕讀取不了後端 ＝ 所有人都睇唔到，
+   資料綁死喺我本機瀏覽器」。呢兩招就係喺呢種情況救返：
+     ① repairDb    —— 清走 __staging__ 垃圾行 ＋ 舊版本段（安全刪除）
+     ② saveDbForce —— 用「留住資料嗰部機」手上嗰份，強制覆蓋後端
+   ============================================================ */
+section('★ v2.7.2：一鍵修復（repairDb）＋強制覆蓋（saveDbForce）');
+{
+  const g = makeGas({ apiKey: 'rescue_key' });
+  g.sandbox.initializeSheets();
+  const KEY = g.props.get('API_KEY');
+  const ss = g.sandbox.SpreadsheetApp.getActiveSpreadsheet();
+  const dbTab = ss.getSheetByName('資料庫');
+  dbTab._rows.length = 0;
+  dbTab.appendRow(['unit', 'seq', 'json', 'at', 'version']);
+
+  /* 砌出「中招」狀態：一套完整舊版本（parse 得到）＋ 一套被寫壞嘅較新版本
+     ＋ 兩行 __staging__ 垃圾 —— 舊版 Code.gs 讀到會撞、寫又會 conflict。 */
+  const good = JSON.stringify({ members: [{ id: 'm1', name: '陳大文', identity: 'leader' }], transactions: [] });
+  dbTab.appendRow(['0082', 1, good, new Date('2026-09-01T00:00:00Z'), 'ver-old']);
+  dbTab.appendRow(['0082', 1, '{"members":[{"id":"m2",', new Date('2026-09-02T00:00:00Z'), 'ver-broken']);
+  dbTab.appendRow(['0082', 2, '"name":"半截"]}', new Date('2026-09-02T00:00:00Z'), 'ver-broken']);
+  dbTab.appendRow(['__staging__', 1, 'x'.repeat(5000), new Date(), 'stg-1']);
+  dbTab.appendRow(['__staging__', 2, 'y'.repeat(5000), new Date(), 'stg-1']);
+
+  const info0 = g.post({ action: 'dbInfo', unit: '0082', apiKey: KEY });
+  ok('前提：dbInfo 見到舊版本段同垃圾行', Number(info0.versions) === 2 && Number(info0.staleRows) >= 1 && Number(info0.stagingRows) === 2,
+    JSON.stringify({ v: info0.versions, stale: info0.staleRows, staging: info0.stagingRows }));
+
+  /* repairDb 帶錯 Key → 拒（會刪行，唔可以俾冇權嘅人叫）
+     注意：g.post() 會自動補返平台 API Key（模擬 proxy 注入），所以用錯 key 測。 */
+  const noKeyRepair = g.post({ action: 'repairDb', unit: '0082', apiKey: 'wrong_key' });
+  ok('repairDb 錯 API Key → 拒（唔會亂刪分頁）', noKeyRepair.ok === false, JSON.stringify(noKeyRepair).slice(0, 80));
+
+  const rep = g.post({ action: 'repairDb', unit: '0082', apiKey: KEY });
+  ok('repairDb 成功（回報清咗幾多行）', rep.ok === true && rep.repaired?.ok === true, JSON.stringify(rep).slice(0, 160));
+  ok('★ 清走晒 2 行 __staging__ 垃圾', rep.repaired.removedStaging === 2, JSON.stringify(rep.repaired));
+  ok('★ 清走舊版本段（ver-broken 兩行）', rep.repaired.removedOldVersions === 2, JSON.stringify(rep.repaired));
+  ok('★ 修復之後讀得返（只剩一套完整資料）', rep.repaired.loadOk === true && rep.repaired.members === 1,
+    JSON.stringify({ ok: rep.repaired.loadOk, members: rep.repaired.members, err: rep.repaired.loadError }));
+  const info1 = g.post({ action: 'dbInfo', unit: '0082', apiKey: KEY });
+  ok('★ 修復之後 staleRows＝0、stagingRows＝0、versions＝1',
+    Number(info1.staleRows) === 0 && Number(info1.stagingRows) === 0 && Number(info1.versions) === 1,
+    JSON.stringify({ stale: info1.staleRows, staging: info1.stagingRows, v: info1.versions }));
+  ok('★ 正式資料一行都冇甩（仲讀到陳大文）',
+    (g.post({ action: 'loadDb', unit: '0082', apiKey: KEY }).db?.members || [])[0]?.name === '陳大文');
+
+  /* saveDbForce：留住資料嗰部機強制覆蓋（樂觀鎖對唔上都要寫得入） */
+  const info2 = g.post({ action: 'dbInfo', unit: '0082', apiKey: KEY });
+  const normal = g.post({ action: 'saveDb', unit: '0082', apiKey: KEY, baseVersion: 'stale-version',
+    db: { members: [{ id: 'm1', name: '陳大文' }] } });
+  ok('（對照）普通 saveDb 用過時版本 → conflict', normal.success === false && normal.conflict === true, JSON.stringify(normal).slice(0, 120));
+
+  /* 注意：makeGas.post() 會自動補 API Key（模擬平台注入），所以要測「冇權」要用錯 key */
+  const badKeyForce = g.post({ action: 'saveDbForce', unit: '0082', db: { members: [] }, apiKey: 'wrong_key' });
+  ok('saveDbForce 錯 API Key → 拒（唔可以隨便覆蓋後端）', badKeyForce.ok === false, JSON.stringify(badKeyForce).slice(0, 120));
+
+  const db = { members: [
+    { id: 'm1', name: '陳大文', identity: 'leader' },
+    { id: 'm2', name: '李小明', identity: 'member' },
+    { id: 'm3', name: '搶救加入嘅人', identity: 'member' }
+  ], transactions: [] };
+  const forced = g.post({ action: 'saveDbForce', unit: '0082', apiKey: KEY, db });
+  ok('★ saveDbForce 成功寫入（跳過樂觀鎖）', forced.success === true && forced.forced === true, JSON.stringify(forced).slice(0, 160));
+  ok('★ 回報覆蓋咗邊個舊版本（追溯用）', forced.overwroteVersion === 'ver-old',
+    JSON.stringify({ got: forced.overwroteVersion, want: 'ver-old', dbInfo: info2.version }));
+  const afterForce = g.post({ action: 'loadDb', unit: '0082', apiKey: KEY });
+  ok('★ 覆蓋之後讀返 3 位（新舊裝置都見到同一份）', (afterForce.db?.members || []).length === 3,
+    JSON.stringify((afterForce.db?.members || []).map(m => m.name)));
+  const info3 = g.post({ action: 'dbInfo', unit: '0082', apiKey: KEY });
+  ok('★ 覆蓋之後分頁乾淨（1 套版本、0 垃圾、0 舊段）',
+    Number(info3.versions) === 1 && Number(info3.staleRows) === 0 && Number(info3.stagingRows) === 0,
+    JSON.stringify({ v: info3.versions, stale: info3.staleRows, staging: info3.stagingRows }));
+}
+
+/* ============================================================
+   ③d ★ v2.7.2 安全網：修復**唔可以**刪走唯一一套好嘅資料
+   ------------------------------------------------------------
+   修復（pruneOldDbVersions）以前係「按時間留最新一套」——
+   如果最新嗰套係寫到一半（parse 唔到），佢就會把**唯一一套好嘅**
+   刪走，修復變成資料損失（比原本嘅問題更嚴重）。
+   而家：留「最新一套砌得返 JSON」嘅；全部壞 → 一套都唔刪。
+   ============================================================ */
+section('★ v2.7.2：修復安全網（唔會誤刪唯一一套好資料）');
+{
+  const g = makeGas({ apiKey: 'safe_key' });
+  g.sandbox.initializeSheets();
+  const KEY = g.props.get('API_KEY');
+  const dbTab = g.sandbox.SpreadsheetApp.getActiveSpreadsheet().getSheetByName('資料庫');
+
+  /* (甲) 好嘅舊版本 ＋ 壞嘅新版本 ＋ 壞嘅更新版本 */
+  dbTab._rows.length = 0;
+  dbTab.appendRow(['unit', 'seq', 'json', 'at', 'version']);
+  dbTab.appendRow(['0082', 1, JSON.stringify({ members: [{ id: 'm1', name: '陳大文' }] }), new Date('2026-09-01T00:00:00Z'), 'v-good']);
+  dbTab.appendRow(['0082', 1, '{"members":[', new Date('2026-09-02T00:00:00Z'), 'v-half']);
+  dbTab.appendRow(['0082', 1, '{"members":[{"id":', new Date('2026-09-03T00:00:00Z'), 'v-half2']);
+  const pr1 = g.sandbox.pruneOldDbVersions();
+  ok('★ 留低嘅係最新一套**讀得到**嘅段（唔係最新嗰套壞嘅）',
+    pr1.kept['0082'] === 'v-good', JSON.stringify(pr1.kept));
+  ok('★ 壞嘅兩套清走（2 行）', pr1.removed === 2, JSON.stringify(pr1));
+  const ld1 = g.post({ action: 'loadDb', unit: '0082', apiKey: KEY });
+  ok('★ 修復之後真係讀得返（1 個成員）', ld1.success === true && (ld1.db?.members || []).length === 1, JSON.stringify(ld1).slice(0, 120));
+
+  /* (乙) 全部都係壞嘅 → 一套都唔刪（留低俾人用 JSON 備份／版本記錄救） */
+  dbTab._rows.length = 0;
+  dbTab.appendRow(['unit', 'seq', 'json', 'at', 'version']);
+  dbTab.appendRow(['0082', 1, '{"a":', new Date('2026-09-01T00:00:00Z'), 'v-bad1']);
+  dbTab.appendRow(['0082', 1, '{"b":', new Date('2026-09-02T00:00:00Z'), 'v-bad2']);
+  const pr2 = g.sandbox.pruneOldDbVersions();
+  ok('★ 全部都讀唔到 → 一行都唔刪（唔會毀滅證據）',
+    pr2.removed === 0 && (pr2.skipped || []).includes('0082'), JSON.stringify(pr2));
+  ok('★ 分頁仍然有 2 行（等用家自己救）', dbTab._rows.length === 3, String(dbTab._rows.length));
+
+  /* (丙) 冇版本欄嘅遠古資料：亦唔會刪 */
+  dbTab._rows.length = 0;
+  dbTab.appendRow(['unit', 'seq', 'json', 'at', 'version']);
+  dbTab.appendRow(['0082', 1, JSON.stringify({ members: [] }), '', '']);
+  const pr3 = g.sandbox.pruneOldDbVersions();
+  ok('★ 冇版本欄嘅舊資料唔會刪', pr3.removed === 0 && dbTab._rows.length === 2, JSON.stringify(pr3));
+}
+
+/* ============================================================
    ③a ★ v2.7.1 後端自查（團長 2026-09-24 第二輪）：
    「無痕讀取不了後端／入咗 URL API KEY 都睇唔到進度，
      人係讀到但係個個都冇進度」

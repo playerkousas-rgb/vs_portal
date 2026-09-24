@@ -32,11 +32,13 @@ if (process.env.REALGAS_INIT !== '0') {
 }
 
 function readBody(req) {
+  // 記得讀過嘅內容：多個 handler 都想睇 body 時唔會把 stream 讀第二遍（會掛住）
+  if (req._body !== undefined) return Promise.resolve(req._body);
   return new Promise((resolve) => {
     const chunks = [];
     req.on('data', c => chunks.push(c));
-    req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-    req.on('error', () => resolve(''));
+    req.on('end', () => { req._body = Buffer.concat(chunks).toString('utf8'); resolve(req._body); });
+    req.on('error', () => { req._body = ''; resolve(''); });
   });
 }
 
@@ -70,6 +72,59 @@ const server = http.createServer(async (req, res) => {
     }));
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     return res.end(JSON.stringify({ spreadsheet: gas.sandbox.SpreadsheetApp.getActiveSpreadsheet().getName(), tabs: out }));
+  }
+
+  /* ★ 2026-09-24（第三輪）：砌出「壞掉嘅後端」——
+     一套好嘅段（現有）＋ 一套寫壞嘅較新段 ＋ N 行 __staging__ 垃圾。
+     用嚟驗「無痕讀唔到 → 一鍵修復 → 讀得返」成條搶救路線。 */
+  if (u.pathname === '/_seedBroken' && req.method === 'POST') {
+    const body = await readBody(req);
+    let reqBody = {};
+    try { reqBody = JSON.parse(body || '{}'); } catch { /* ignore */ }
+    const unit = String(reqBody.unit || '0082');
+    const dbTab = gas.sheets.get('資料庫');
+    const out = { ok: false };
+    if (dbTab) {
+      const now = Date.now();
+      dbTab.appendRow([unit, 1, String(reqBody.half || '{"broken":'), new Date(now), 'half-' + now]);
+      for (let i = 0; i < Number(reqBody.junkRows || 2); i++) {
+        dbTab.appendRow(['__staging__', i + 1, 'z'.repeat(4000), new Date(now), 'stg-' + now]);
+      }
+      const info = gas.sandbox.dbInfo(unit);
+      out.ok = true;
+      out.versions = Number(info.versions || 0);
+      out.staleRows = Number(info.staleRows || 0);
+      out.stagingRows = Number(info.stagingRows || 0);
+      out.loadOk = false;
+      try { out.loadOk = gas.sandbox.loadDb(unit).success === true; } catch { /* ignore */ }
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    return res.end(JSON.stringify(out));
+  }
+
+  /* 「舊版讀法」示範：v2.7.0 之前，loadDb 會把同一旅團**所有**段一齊拼
+     （唔分版本）—— 呢度如實重做一次，等測試證明「有垃圾／兩套版本」時
+     舊部署真係會讀唔到（＝無痕／新裝置讀唔到後端）。 */
+  if (req.method === 'POST') {
+    const raw = await readBody(req);
+    let body = {};
+    try { body = JSON.parse(raw || '{}'); } catch { /* ignore */ }
+    if (body.action === 'loadDb-OLD-STYLE') {
+      const sh = gas.sheets.get('資料庫');
+      const unit = String(body.unit || '');
+      let text = '';
+      if (sh) {
+        for (let i = 1; i < sh._rows.length; i++) {
+          const r = sh._rows[i] || [];
+          if (String(r[0] == null ? '' : r[0]) !== unit) continue;
+          text += String(r[2] == null ? '' : r[2]);
+        }
+      }
+      let ok = false, error = '';
+      try { JSON.parse(text); ok = true; } catch (e) { error = String(e.message); }
+      res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+      return res.end(JSON.stringify({ ok, bytes: text.length, error }));
+    }
   }
 
   /* 逃生門（v2.6.2）：直接叫後端嘅 cleanStaleStaging()，

@@ -16,7 +16,8 @@ import { toCSV, toWord, download as dlFile, stamp } from '../lib/exporter.js';
 import { go, parse, setQuery } from '../lib/router.js';
 import { can, current } from '../lib/auth.js';
 import { profile, settings } from '../lib/model.js';
-import { fmtBytes, remoteConfigured, backendStatus, remoteDiagnose, syncState } from '../lib/remote.js';
+import { fmtBytes, remoteConfigured, backendStatus, remoteDiagnose, syncState,
+  backendHealth, repairBackend, forcePushBackend } from '../lib/remote.js';
 import { pageHead, tabs, stat, empty, noteBox, kv, storageBar } from './ui.js';
 
 let tab = 'design';
@@ -481,6 +482,9 @@ function shortUrl(u) {
 /* 「同步診斷」結果（撳掣先至跑；呢度淨係畫返上次結果） */
 let lastDiag = null;
 let diagRunning = false;
+/* ★ 2026-09-24 第三輪：後端檢查（睇醫生）結果 */
+let lastBackendHealth = null;
+let healthRunning = false;
 
 function diagCard() {
   const d = lastDiag;
@@ -582,6 +586,15 @@ function syncView() {
       <button class="btn btn-primary btn-sm" data-act="push-db">${icon('cloud', 15)} 儲存到後端${pending ? `（${pending}）` : ''}</button>
       <button class="btn btn-sm" data-act="pull-db">${icon('download', 15)} 由後端重新載入${pending ? '（會丟棄未儲存改動）' : ''}</button>
     </div>
+    <div class="row gap-8 mt-12 wrap">
+      <button class="btn btn-sm" data-act="backend-health">${icon('shield', 15)} 檢查後端</button>
+      <button class="btn btn-sm" data-act="backend-repair">${icon('settings', 15)} 修復後端</button>
+      <button class="btn btn-sm" data-act="backend-upload">${icon('cloud', 15)} 用呢部機嘅資料覆蓋後端</button>
+    </div>
+    <div class="hint mt-8">「檢查後端」＝睇下後端係連唔到、冇資料，定係有舊版本段／垃圾行；
+      「修復後端」只會清走<b>舊版本段同暫存垃圾行</b>（最新一套資料一行都唔會掂）；
+      「用呢部機嘅資料覆蓋後端」係最後一招（要打字確認），適合後端壞咗／冇資料，
+      而正確嗰份喺呢部機。之前「其他人／無痕睇唔到」就係靠呢三步查出同救返。</div>
     <details class="mt-12" ${route.serverManaged ? 'style="display:none"' : ''}>
       <summary class="btn btn-xs">其他管理功能（一般不用）</summary>
       <div class="row gap-8 mt-8 wrap">
@@ -1369,6 +1382,70 @@ export function mount(root, params) {
         if (!(await confirmDlg({ title: '更新報表分頁', okText: '開始', message: '會將全部表格資料攤平送去你嘅 Google Sheet 嘅報表分頁（帳目／團員／物資…），畀你自己睇同用公式。<br><br><b>唔會</b>寫「資料庫」分頁 —— 資料庫本身要撳「儲存到後端」。' }))) return;
         await pushToMaster(); refresh();
       }
+
+      /* ---- 後端檢查／修復／強制上載（★ 2026-09-24 第三輪） ---- */
+      const healthReport = async () => {
+        const h = await backendHealth();
+        lastBackendHealth = h;
+        return h;
+      };
+      const el = root;
+      el.querySelectorAll('[data-act="backend-health"]').forEach(b => b.addEventListener('click', async () => {
+        if (healthRunning) return;
+        healthRunning = true;
+        try {
+          const h = await healthReport();
+          const level = h.level === 'ok' ? 'ok' : h.level === 'warn' ? 'warn' : 'danger';
+          const choice = await modal({
+            title: '後端檢查',
+            body: `<div class="note-box ${level} mb-12">${icon(h.level === 'ok' ? 'check' : 'alert', 15)}<div><b>${esc(h.title)}</b></div></div>
+              ${h.lines.length ? `<div class="sm muted col gap-4 mb-12">${h.lines.map(l => `<div>· ${esc(l)}</div>`).join('')}</div>` : ''}
+              ${h.steps.length ? `<div class="sm"><b>下一步：</b><ol style="padding-left:18px;line-height:1.9">${h.steps.map(x => `<li>${esc(x)}</li>`).join('')}</ol></div>` : ''}`,
+            actions: [{ label: '知道', class: 'btn-primary', value: true }]
+          });
+          return choice;
+        } finally { healthRunning = false; }
+      }));
+      el.querySelectorAll('[data-act="backend-repair"]').forEach(b => b.addEventListener('click', async () => {
+        const yes = await modal({
+          title: '修復後端分頁',
+          body: `<p class="sm">會喺旅團自己嘅 Google Sheet「資料庫」分頁清走：<b>舊版本段</b>同<b>暫存垃圾行</b>。</p>
+            <p class="sm">最新一套完整資料一行都唔會刪，亦唔會改任何正式紀錄。</p>`,
+          actions: [{ label: '取消', class: 'btn', value: false }, { label: '修復', class: 'btn-primary', value: true }]
+        });
+        if (!yes) return;
+        const r = await repairBackend();
+        if (!r.ok) { toast(r.error || '修復失敗', 'err'); return; }
+        toast(r.text, r.loadOk ? 'ok' : 'warn');
+        refresh();
+      }));
+      el.querySelectorAll('[data-act="backend-upload"]').forEach(b => b.addEventListener('click', async () => {
+        const n = (load().members || []).length;
+        const yes = await modal({
+          title: '用呢部機嘅資料覆蓋後端',
+          danger: true,
+          body: `<p class="sm">會用<b>呢部機而家手上嗰份資料</b>（${n} 位用戶）<b>覆蓋後端</b>。
+            後端舊有嘅資料會被取代。</p>
+            <div class="field mt-8"><label class="label">請打「上載」兩個字確認</label>
+              <input class="input" id="bd-confirm" placeholder="上載" autocomplete="off"></div>`,
+          actions: [{ label: '取消', class: 'btn', value: false }, {
+            label: '上載', class: 'btn-accent',
+            onClick: (box) => {
+              if ((box.querySelector('#bd-confirm')?.value || '').trim() !== '上載') {
+                box.querySelector('.modal-body')?.insertAdjacentHTML('afterbegin',
+                  '<div class="note-box danger mb-8"><div class="sm">要打「上載」兩個字先得。</div></div>');
+                return false;
+              }
+              return true;
+            }
+          }]
+        });
+        if (!yes) return;
+        const r = await forcePushBackend();
+        if (!r.ok) { toast(r.error || '上載失敗', 'err'); return; }
+        toast(r.text, 'ok');
+        refresh();
+      }));
 
       /* ---- 同步診斷（只讀；逐格驗成條鏈，如實話你知邊格斷） ---- */
       if (act === 'diagnose') {

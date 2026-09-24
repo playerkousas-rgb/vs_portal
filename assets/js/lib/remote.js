@@ -762,6 +762,179 @@ export async function loadFromBackend({ policy = 'ask' } = {}) {
   };
 }
 
+/* ============================================================
+   ★ 2026-09-24（第三輪）「無痕讀不到後端／其他人睇唔見」搶救三寶
+   ------------------------------------------------------------
+   實況：團長自己部機睇得到（因為資料喺本機 localStorage），
+   但新裝置／無痕入到登入閘就話「未能連接旅團後端」＝**所有人都入唔到**。
+   呢個唔係「前端睇唔到」，係後端真係讀唔到（或者根本未收到資料）。
+   以前前端冇任何方法分辨究竟係邊一種，所以新增三個動作（全部經同源
+   /api/proxy、後端要 API Key，由代理注入）：
+
+     ① backendHealth()   看醫生：status（邊支腳本／邊張 Sheet）＋ dbInfo
+                          （幾大／幾時更新／有冇垃圾行同舊版本段）＋ loadDb
+                          （讀唔讀得到），砌成人話結論 ＋ 下一步。
+     ② repairBackend()   一鍵修復（repairDb）：清走「資料庫」分頁嘅
+                          暫存垃圾行同舊版本段 —— 兩者都係安全刪除
+                          （最新一套完整段一行都唔會掂），唔使入 Apps Script。
+     ③ forcePushBackend() 最後一招（saveDbForce）：用**呢部機**手上嗰份
+                          資料庫強制覆蓋後端（跳過樂觀鎖）。救人用：後端讀唔到、
+                          只有一部機留住成份資料嘅時候。要人手打字確認。
+   ============================================================ */
+
+/** 睇後端「健康」：一支腳本／一張 Sheet／幾大／讀唔讀得到（唔會改任何嘢） */
+export async function backendHealth() {
+  const cfg = remoteCfg();
+  const out = {
+    ok: false, level: 'bad', title: '', lines: [], steps: [],
+    canRepair: false, canForce: false, hasLocalData: false,
+    status: null, info: null, load: null, unit: cfg.unit || '',
+    route: cfg.serverManaged ? 'proxy' : (cfg.url ? 'direct' : (cfg.viaProxy ? 'proxy' : ''))
+  };
+  try { out.hasLocalData = !!hasLocalContent(); } catch { out.hasLocalData = false; }
+  if (!cfg.ok) {
+    out.title = '呢個旅團未有可用嘅後端接線';
+    out.steps.push('去旅團選擇閘揀返自己旅團；如果係新旅團，先完成「新旅團部署」（Registry 要有 TROOP_<編號>_BACKEND / _APIKEY）。');
+    return out;
+  }
+
+  /* ① status：邊支腳本、邊張 Sheet、後端版本 */
+  const st = await callBackend({ action: 'status' }, { timeoutMs: 20000 });
+  out.status = st.ok ? st : null;
+  const sheetName = st?.spreadsheet || '';
+  const ver = String(st?.backendVersion || '');
+  if (!st.ok) {
+    out.level = 'bad';
+    out.title = '連唔到後端：' + (st.error || '冇回應');
+    out.lines.push(`後端（${cfg.serverManaged ? '平台已登記' : '本機填嘅 /exec'}）答唔到 —— 可能係部署權限、網址，或者後端本身出錯。`);
+    if (st.hint) out.steps.push(st.hint);
+    out.steps.push('確認 Apps Script「部署 → 管理部署作業」嘅版本係最新，而且「存取權：任何人」。');
+    return out;
+  }
+  out.lines.push(`後端自報：${st.msg || '(冇訊息)'}${sheetName ? `（試算表：${sheetName}）` : ''}${ver ? ` · ${ver}` : ''}`);
+  const isOurs = /深資童軍管理系統|82venture/.test(String(st.msg || '')) || !!ver;
+  if (!isOurs) {
+    out.level = 'warn';
+    out.title = '呢支 /exec 唔似係「深資童軍管理系統」嘅後端';
+    out.steps.push('打開該網址對應嘅 Apps Script／Google Sheet 睇下係唔係進度系統或者其他旅團。');
+  }
+
+  /* ② dbInfo：後端有冇資料、幾時更新、有冇垃圾行／舊版本段 */
+  const info = await callBackend({ action: 'dbInfo' }, { timeoutMs: 25000 });
+  out.info = info.ok ? info : null;
+  if (!info.ok) {
+    out.lines.push(`問唔到資料庫大小：${info.error || '未知原因'}`);
+  } else {
+    const bytes = Number(info.bytes || 0);
+    out.lines.push(info.found
+      ? `後端資料庫：${fmtBytes(bytes)} · 版本 ${String(info.version || '').slice(0, 19).replace('T', ' ')} · ${Number(info.counts?.members || 0)} 位用戶`
+      : '後端資料庫：**仲未有資料**（未有任何一次成功儲存）');
+    if (Number(info.versions || 0) > 1 || Number(info.staleRows || 0) > 0) {
+      out.canRepair = true;
+      out.lines.push(`分頁入面有 ${Number(info.versions || 0)} 套版本段（其中 ${Number(info.staleRows || 0)} 行係舊段／垃圾）`
+        + '—— 呢個就係「讀唔到／永遠讀舊嗰份」嘅死因。');
+    }
+    if (Number(info.stagingRows || 0) > 0) {
+      out.canRepair = true;
+      out.lines.push(`分頁入面有 ${Number(info.stagingRows || 0)} 行暫存垃圾（${fmtBytes(Number(info.stagingBytes || 0))}）—— 會令分頁越嚟越大、最後讀寫一齊死。`);
+    }
+  }
+
+  /* ③ loadDb：真正讀一次（細過門檻就單一讀，否則分段讀） */
+  const knownBytes = Number(info.ok ? (info.bytes || 0) : 0);
+  const ld = knownBytes > SEGMENT_ABOVE_BYTES
+    ? await pullDbSegmented({})
+    : await pullDb({ bytes: knownBytes });
+  out.load = { ok: !!ld.ok, found: !!ld.found, error: ld.error || '', reason: ld.reason || '', bytes: Number(ld.bytes || 0) };
+  if (ld.ok && ld.found) {
+    out.lines.push(`讀取測試：成功（${fmtBytes(Number(ld.bytes || 0))}）`);
+  } else if (ld.ok && !ld.found) {
+    out.lines.push('讀取測試：後端冇任何資料庫（新旅團／從未成功儲存）');
+  } else {
+    out.lines.push(`讀取測試：失敗 —— ${ld.error || '未知原因'}`);
+    out.canForce = out.hasLocalData;
+  }
+
+  /* ---- 砌結論 ---- */
+  if (out.level === 'warn') return out;                     // 唔係我哋嘅後端：已經講咗
+  if (ld.ok && ld.found && !out.canRepair) {
+    out.level = 'ok';
+    out.title = '後端正常：讀得到，資料喺後端（唔係困喺某部機）';
+    out.steps.push('如果其他裝置睇唔到，十成係嗰部機有舊 cache：撳「重新連線」或者重新整理一次就會拉到後端最新版本。');
+    return out;
+  }
+  if (ld.ok && !ld.found) {
+    out.level = 'warn';
+    out.title = '後端連得上，但入面**完全冇資料**（保存過嘅嘢從未上到後端）';
+    out.canForce = out.hasLocalData;
+    out.steps.push(out.hasLocalData
+      ? '呢部機手上有資料 —— 撳「用呢部機嘅資料上載到後端」，之後所有人（包括無痕）都睇得到。'
+      : '呢部機都冇資料：去嗰部一路做嘢嘅機（或者用 JSON 備份）上載一次。');
+    out.steps.push('跟住每次改完都撳右上角「儲存到後端（N）」—— 淨係改本機係唔會同步嘅。');
+    return out;
+  }
+  /* 讀唔到 */
+  out.level = 'bad';
+  if (out.canRepair) {
+    out.title = '後端資料讀唔到 —— 但係有得救：分頁有舊版本段／垃圾行（一鍵修復搞得掂）';
+    out.steps.push('撳「🛠 修復後端」：只會刪走舊版本段同暫存垃圾行，最新一套完整資料一行都唔會掂（唔使入 Apps Script）。');
+    out.steps.push('修復完如果仲係讀唔到，先至用最後一招「用呢部機嘅資料上載」。');
+  } else {
+    out.title = '後端資料讀唔到（JSON 砌唔返）';
+    out.steps.push('如果有一部機手上仲有全部資料 → 撳「用呢部機嘅資料上載到後端」（會覆蓋後端壞咗嗰份）。');
+    out.steps.push('冇嘅話：喺 Apps Script 執行 pruneOldDbVersions() 清舊版本段，再用 app 嘅 JSON 備份還原。');
+  }
+  return out;
+}
+
+/** 一鍵修復後端（清暫存垃圾行 ＋ 舊版本段 —— 兩者都係安全刪除） */
+export async function repairBackend() {
+  setState('saving', '修復緊後端分頁…');
+  const r = await callBackend({ action: 'repairDb' }, { timeoutMs: 60000 });
+  if (!r.ok) { setState('error', r.error || '修復失敗'); return r; }
+  const d = r.repaired || {};
+  setState('idle', '後端分頁已修復');
+  noteBackend({ ok: true, version: String(d.after?.version || '') });
+  return {
+    ok: true,
+    removedStaging: Number(d.removedStaging || 0),
+    removedOldVersions: Number(d.removedOldVersions || 0),
+    loadOk: d.loadOk === true,
+    loadError: d.loadError || '',
+    members: Number(d.members || 0),
+    before: d.before || null, after: d.after || null,
+    text: `清走暫存垃圾 ${Number(d.removedStaging || 0)} 行、舊版本段 ${Number(d.removedOldVersions || 0)} 行；`
+      + (d.loadOk ? `之後讀得返（${Number(d.members || 0)} 位用戶）` : `之後仍然讀唔到（${d.loadError || '未知'}）`)
+  };
+}
+
+/** 最後一招：用呢部機嘅資料庫強制覆蓋後端（救人用；跳過樂觀鎖） */
+export async function forcePushBackend() {
+  const cfg = remoteCfg();
+  if (!cfg.ok) return { ok: false, error: notConfiguredMessage(cfg) };
+  const local = tryLoad();
+  if (!local || !hasLocalContent()) {
+    return { ok: false, error: '呢部機冇資料可以上載（正確做法係去一路做嘢嗰部機撳）' };
+  }
+  const payload = exportForBackend(local);
+  setState('saving', '強制上載緊呢部機嘅資料…');
+  const r = await callBackend({ action: 'saveDbForce', unit: cfg.unit, db: payload }, { timeoutMs: 90000 });
+  if (!r.ok) {
+    setState('error', r.error || '強制上載失敗');
+    return { ok: false, error: r.error || '強制上載失敗', hint: r.hint || '' };
+  }
+  commitSaved(stripForBase(local), { version: String(r.version || ''), bytes: Number(r.bytes || 0), parts: Number(r.chunks || 0) });
+  lastLoadAt = Date.now();
+  setState('idle', '已用呢部機嘅資料覆蓋後端');
+  logLocal(`⚠ 強制覆蓋後端（人手搶救）：${fmtBytes(Number(r.bytes || 0))}、舊版本 ${String(r.overwroteVersion || '') || '(空)'}`);
+  return {
+    ok: true, bytes: Number(r.bytes || 0), chunks: Number(r.chunks || 0),
+    version: String(r.version || ''), overwroteVersion: String(r.overwroteVersion || ''),
+    members: (local.members || []).length,
+    text: `已上載 ${fmtBytes(Number(r.bytes || 0))}（${(local.members || []).length} 位用戶）—— 其他裝置而家讀得到。`
+  };
+}
+
 /** 冇基準嘅舊裝置專用：後端為準 ＋ 本機多出嚟嘅紀錄（有 id）補入。唔刪、唔蓋。 */
 function unionAdditions(remote, local) {
   const out = JSON.parse(JSON.stringify(remote));

@@ -1,7 +1,7 @@
 /**
  * ============================================================
  *  深資童軍管理系統 · 總表同步與多旅團後端 Apps Script（Code.gs）
- *  版本：v2.7.1
+ *  版本：v2.7.2
  *
  *  ★ v2.6.3 修正（2026-09-21，團長回報「佢話已寫入但張 Sheet 完全冇嘢；
  *    唔好搞咁多掣要人按，存入後端就資料庫同分頁都 SAVE 曬」）：
@@ -131,7 +131,7 @@ var MODE = 'per-unit-sheet';   // 'per-unit-sheet' = 每個旅團獨立工作表
 var DRIVE_FOLDER_ID = '';
 
 /** 後端版本（status 會回報；APP 用嚟檢查「你張 Sheet 係咪仲行舊 code」） */
-var BACKEND_VERSION = 'v2.7.1';
+var BACKEND_VERSION = 'v2.7.2';
 
 /* ============================================================
    初始化與 API KEY 管理
@@ -324,7 +324,9 @@ var SUPPORTED_ACTIONS = ['ping', 'test', 'status', 'sync', 'claim', 'claimDecisi
   'uploadPhotos', 'constitution', 'notices',
   'save', 'saveOtherBadge', 'reviewRequest', 'reviewLogRequest', 'addRequest', 'myRequests',
   /* ★ v2.7.1：「人讀到、進度全空」自查（見 diagnoseBackendTabs） */
-  'diag'];
+  'diag',
+  /* ★ v2.7.2：一鍵修復（清垃圾／舊版本段）＋ 強制覆蓋（人手搶救） */
+  'repairDb', 'saveDbForce'];
 
 /**
  * BUILD §1／§2：敏感 action 必須由 server-side API_KEY 明確授權。
@@ -965,6 +967,21 @@ function doPost(e) {
     if (body.action === 'status' || body.action === 'test') {
       return json({ ok: true, msg: '深資童軍管理系統 後端正常', spreadsheet: SpreadsheetApp.getActiveSpreadsheet().getName(), tabs: SHEET_TABS, backendVersion: BACKEND_VERSION, at: new Date() });
     }
+    /* ★ v2.7.2：一鍵修復（清暫存垃圾行 ＋ 舊版本段）—— 見上面 repairDb。
+       要 API Key（會刪行，雖然只刪垃圾）。 */
+    if (body.action === 'repairDb') {
+      var repairAuth = requireAuth(expectedKey, key);
+      if (!repairAuth.ok) return json(repairAuth);
+      var repaired = withLock(function () { return repairDb(textOf(body.unit)); });
+      return json({ ok: true, success: true, repaired: repaired });
+    }
+    /* ★ v2.7.2：強制用呢部機嘅資料覆蓋後端（人手搶救；見 saveDb 嘅 force 註解） */
+    if (body.action === 'saveDbForce') {
+      var forceAuth = requireAuth(expectedKey, key);
+      if (!forceAuth.ok) return json(forceAuth);
+      var forcedSaved = withLock(function () { return saveDb({ unit: textOf(body.unit), db: body.db, baseVersion: '', force: true }); });
+      return json(forcedSaved);
+    }
     /* ★ v2.7.1：後端自查（GET 同 POST 兩條路都通；見 diagnoseBackendTabs） */
     if (body.action === 'diag') {
       var diagAuth = requireAuth(expectedKey, key);
@@ -1096,10 +1113,17 @@ function saveDb(body) {
      而家：攞「讀得到」嗰套嘅版本。 */
   var curVersion = dbRawText(unit, true).version || '';
   var baseVersion = textOf(body.baseVersion);
-  if (curVersion && baseVersion !== curVersion) {
+  /* ★ v2.7.2：force（＝「用呢部機嘅資料修復後端」）。
+     情況：後端資料讀唔到（幾套版本段／寫壞咗），只有一部機留住成份資料，
+     但樂觀鎖會令佢永遠存唔入（baseVersion 對唔上讀唔到嘅版本）。
+     呢個係**人手、明確**嘅搶救動作（app 要打字確認），所以准佢跳過版本核對；
+     但仍然係「先刪舊段、再寫新段」嘅原子寫入，寫完之後所有人讀得到。 */
+  var forced = body.force === true;
+  if (curVersion && baseVersion !== curVersion && !forced) {
     return { success: false, conflict: true, version: curVersion,
       error: '後端已有較新版本（另一部機剛剛同步過）。唔敢用舊資料蓋上去 —— app 會自動拉後端合併後重存。' };
   }
+  var overwroteVersion = forced ? curVersion : '';
 
   /* v2.3.0：舊段成梳一次過刪（deleteRows）—— 以前逐行 deleteRow，
      200 段資料 = 200 次調用（每次成頁 shift），GAS 配額同時間都燒好快。
@@ -1128,7 +1152,8 @@ function saveDb(body) {
      團長開 Google Sheet 即刻睇到嘢，唔使再撳第二粒掣。 */
   var reports = body.refreshReports === false ? null : refreshReportsFromDb(db, unit);
 
-  return { success: true, chunks: chunks.length, bytes: text.length, at: now, version: version, reports: reports };
+  return { success: true, chunks: chunks.length, bytes: text.length, at: now, version: version,
+    reports: reports, forced: forced, overwroteVersion: overwroteVersion };
 }
 
 /** 由「資料庫」分頁把某旅團嘅所有段讀出嚟、拼返成份 JSON 純文字。
@@ -1481,7 +1506,8 @@ function cleanStaleStaging() {
 function pruneOldDbVersions() {
   var sh = dbSheet();
   var rows = sh.getDataRange().getValues();
-  var last = {};          // unit → { ver, at }（最新嗰套）
+  /* 逐個旅團分組：version → { parts: [{seq,text}], atMs, first } */
+  var byUnit = {};
   for (var i = 1; i < rows.length; i++) {
     var u = textOf(rows[i][0]);
     if (!u || u === '__staging__') continue;
@@ -1489,20 +1515,94 @@ function pruneOldDbVersions() {
     if (!ver) continue;                       // 冇版本欄嘅遠古資料：唔敢判斷新舊，唔刪
     var when = rows[i][3] ? new Date(rows[i][3]).getTime() : 0;
     if (isNaN(when)) when = 0;
-    /* 時間較新就是新版；時間一樣（同一秒寫入）就當後出現嗰個係新（寫入永遠喺最底） */
-    if (!last[u] || when >= last[u].at) last[u] = { ver: ver, at: when };
+    var bu = byUnit[u] || (byUnit[u] = { order: [], groups: {} });
+    if (!bu.groups[ver]) { bu.groups[ver] = { parts: [], atMs: when }; bu.order.push(ver); }
+    if (when >= bu.groups[ver].atMs) bu.groups[ver].atMs = when;
+    bu.groups[ver].parts.push({ seq: Number(rows[i][1]) || 0, text: String(rows[i][2] == null ? '' : rows[i][2]) });
   }
+  /* ★ v2.7.2：要留嘅係「最新一套**讀得到**嘅段」——
+     以前淨係按時間留最新，如果最新嗰套寫到一半（parse 唔到），就會
+     把**唯一一套好嘅資料刪走**（＝修復反而變成資料損失）。
+     而家：先按時間排序，揀最新一套砌得返 JSON 嘅；如果全部都砌唔返，
+     一套都唔刪（留低俾人用 JSON 備份／版本記錄救）。 */
+  var keeper = {};        // unit → version（要留）
+  var skipped = [];       // 全部壞 → 唔敢刪
+  Object.keys(byUnit).forEach(function (unit) {
+    var bu = byUnit[unit];
+    var cands = bu.order.map(function (v) {
+      var ps = bu.groups[v].parts.slice().sort(function (a, b) { return a.seq - b.seq; });
+      return { v: v, atMs: bu.groups[v].atMs, idx: bu.order.indexOf(v), text: ps.map(function (x) { return x.text; }).join('') };
+    });
+    cands.sort(function (a, b) {
+      if (a.atMs && b.atMs && a.atMs !== b.atMs) return b.atMs - a.atMs;
+      return b.idx - a.idx;
+    });
+    for (var k = 0; k < cands.length; k++) {
+      var goodSet = false;
+      try { JSON.parse(cands[k].text); goodSet = true; } catch (e0) { goodSet = false; }
+      if (goodSet) { keeper[unit] = cands[k].v; return; }
+    }
+    skipped.push(unit);
+  });
+
   var dead = [];
   for (var j = 1; j < rows.length; j++) {
     var u2 = textOf(rows[j][0]);
     if (!u2 || u2 === '__staging__') continue;
     var ver2 = textOf(rows[j][4]);
-    if (!ver2 || !last[u2]) continue;
-    if (ver2 !== last[u2].ver) dead.push(j + 1);
+    if (!ver2 || !keeper[u2]) continue;       // 冇 keeper（全部壞／冇版本）→ 一律唔刪
+    if (ver2 !== keeper[u2]) dead.push(j + 1);
   }
   var n = deleteRowRuns(sh, dead);
-  Logger.log('pruneOldDbVersions：清走 ' + n + ' 行舊版本段，「資料庫」分頁剩返 ' + Math.max(0, sh.getLastRow() - 1) + ' 行');
-  return { ok: true, removed: n, rowsLeft: Math.max(0, sh.getLastRow() - 1) };
+  Logger.log('pruneOldDbVersions：清走 ' + n + ' 行舊版本段，「資料庫」分頁剩返 ' + Math.max(0, sh.getLastRow() - 1) + ' 行'
+    + (skipped.length ? '（有 ' + skipped.length + ' 個旅團全部都讀唔到，冇刪）' : ''));
+  return { ok: true, removed: n, rowsLeft: Math.max(0, sh.getLastRow() - 1), kept: keeper, skipped: skipped };
+}
+
+/** ★ v2.7.2（2026-09-24 第三輪）：「無痕／其他人讀唔到後端」嘅**一鍵修復**。
+ *
+ *  症狀：團長自己部機睇得到（本機 localStorage 有份），但新裝置／無痕登入閘話
+ *  「未能連線旅團後端」＝所有人一齊入唔到。
+ *  兩個最常見嘅後端死因，都係**垃圾／舊段**留喺「資料庫」分頁：
+ *    ① 舊版留低嘅 __staging__ 暫存行（分頁越嚟越大，最後 getValues 撞執行上限）；
+ *    ② 同一旅團有兩套以上版本段（讀取會拼壞／永遠讀舊嗰套）。
+ *  呢兩個都係「刪得安全」嘅：只刪暫存行同舊版本段，
+ *  而且要留嘅係**最新一套砌得返 JSON** 嘅段（見 pruneOldDbVersions）——
+ *  連「最新嗰套寫壞咗」都唔會誤刪唯一一套好嘅資料。
+ */
+function repairDb(unit) {
+  var before = dbRawText(unit, false);
+  var out = {
+    ok: true,
+    unit: textOf(unit),
+    before: {
+      found: !!before.found, version: before.version || '', bytes: (before.text || '').length,
+      versions: before.versions || 0, staleRows: before.staleRows || 0,
+      stagingRows: before.stagingRows || 0, brokenNewer: before.brokenNewer || 0
+    },
+    removedStaging: 0, removedOldVersions: 0, after: null, loadOk: false, loadError: ''
+  };
+  try {
+    var st = cleanStaleStaging();
+    out.removedStaging = Number(st.removed) || 0;
+  } catch (e1) { out.stagingError = String((e1 && e1.message) || e1).slice(0, 160); }
+  try {
+    var pv = pruneOldDbVersions();
+    out.removedOldVersions = Number(pv.removed) || 0;
+    out.keptVersions = pv.kept || {};
+    out.skippedUnits = pv.skipped || [];
+  } catch (e2) { out.versionsError = String((e2 && e2.message) || e2).slice(0, 160); }
+  var after = dbRawText(unit, false);
+  out.after = {
+    found: !!after.found, version: after.version || '', bytes: (after.text || '').length,
+    versions: after.versions || 0, staleRows: after.staleRows || 0,
+    stagingRows: after.stagingRows || 0, brokenNewer: after.brokenNewer || 0
+  };
+  var ld = loadDb(unit);
+  out.loadOk = ld.success === true && ld.found === true;
+  out.loadError = ld.error || '';
+  out.members = ld.success && ld.found && ld.db ? (ld.db.members || []).length : 0;
+  return out;
 }
 
 /** 只睇 meta：後端有冇資料、幾時更新（唔會傳成份資料庫落嚟）。

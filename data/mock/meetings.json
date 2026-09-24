@@ -1,0 +1,67 @@
+{
+  "schema": 2,
+  "unitCode": "MOCK",
+  "_comment": "示範會議紀錄（狀態：draft 草稿 / pending 待處理 / confirmed 已確定 / done 已完成 / cancelled 已取消）",
+  "meetings": [
+    {
+      "id": "dmt1", "title": "九月執委會常會（示範）", "type": "exco", "date": "2026-09-20", "time": "15:00", "venue": "旅部活動室",
+      "chair": "dm01", "secretary": "dm02", "status": "pending",
+      "agenda": [
+        { "id": "dag1", "text": "通過上次會議記錄", "minutes": 3 },
+        { "id": "dag2", "text": "司庫報告（八月收支及團費進度）", "minutes": 10 },
+        { "id": "dag3", "text": "秋季露營籌備進度", "minutes": 15 },
+        { "id": "dag4", "text": "本月生日團員祝賀安排", "minutes": 5 },
+        { "id": "dag5", "text": "其他事項", "minutes": 5 }
+      ],
+      "attendance": {}, "minutes": "",
+      "decisions": [
+        { "id": "dd1", "text": "秋季露營定於 10 月 24–25 日，由張家俊統籌", "owner": "dm04", "due": "2026-10-10", "done": false }
+      ],
+      "attachments": [], "createdBy": "exco", "updatedAt": "2026-09-12 21:10"
+    },
+    {
+      "id": "dmt2", "title": "八月執委會常會（示範）", "type": "exco", "date": "2026-08-16", "time": "15:00", "venue": "旅部活動室",
+      "chair": "dm01", "secretary": "dm02", "status": "done",
+      "agenda": [
+        { "id": "dag6", "text": "通過上次會議記錄", "minutes": 3 },
+        { "id": "dag7", "text": "暑期活動檢討", "minutes": 20 },
+        { "id": "dag8", "text": "物資盤點報告", "minutes": 15 },
+        { "id": "dag9", "text": "其他事項", "minutes": 5 }
+      ],
+      "attendance": { "dm01": "present", "dm02": "present", "dm03": "present", "dm04": "late", "dm05": "apology", "dm06": "present" },
+      "minutes": "主席於下午三時正宣布會議開始。\n\n1. 通過上次會議記錄：一致通過。\n\n2. 暑期活動檢討：水上活動整體順利，惟報名截止日期需提早一星期。\n\n3. 物資盤點：天幕 3 張、營幕 6 個；營燈 1 個電池損壞，已報廢。\n\n4. 其他事項：無。\n\n會議於下午四時十分結束。",
+      "decisions": [
+        { "id": "dd2", "text": "更新物資清單並張貼於旅部倉", "owner": "dm05", "due": "2026-09-15", "done": false }
+      ],
+      "attachments": [{ "name": "2026 暑期活動檢討.pdf", "size": "412 KB" }],
+      "createdBy": "exco", "updatedAt": "2026-08-16 16:15"
+    },
+    {
+      "id": "dmt3", "title": "秋季露營籌備會議（示範）", "type": "activity", "date": "2026-09-27", "time": "14:00", "venue": "線上（Zoom）",
+      "chair": "dm04", "secretary": "dm05", "status": "confirmed",
+      "agenda": [
+        { "id": "dag10", "text": "路線及安全風險評估", "minutes": 20 },
+        { "id": "dag11", "text": "分工及物資", "minutes": 15 },
+        { "id": "dag12", "text": "預算及收費", "minutes": 10 }
+      ],
+      "attendance": {}, "minutes": "", "decisions": [], "attachments": [],
+      "createdBy": "exco", "updatedAt": "2026-09-10 12:00"
+    },
+    {
+      "id": "dmt4", "title": "2026 年度團員大會（示範）", "type": "agm", "date": "2026-08-29", "time": "15:00", "venue": "旅部禮堂",
+      "chair": "dm01", "secretary": "dm02", "status": "done",
+      "agenda": [
+        { "id": "dag13", "text": "通過上次會議記錄", "minutes": 5 },
+        { "id": "dag14", "text": "主席年度報告", "minutes": 15 },
+        { "id": "dag15", "text": "司庫年度財務報告（旅年度 2025–26）", "minutes": 15 },
+        { "id": "dag16", "text": "選舉下屆執行委員會", "minutes": 20 }
+      ],
+      "attendance": { "dm01": "present", "dm02": "present", "dm03": "present", "dm04": "present", "dm05": "present", "dm06": "present", "dm07": "present", "dm08": "absent" },
+      "minutes": "AGM 於下午三時正開始。\n\n1. 主席報告全年團務。\n\n2. 司庫提交旅年度（2025-08-30 至 2026-08-28）財務報告，一致通過。\n\n3. 選舉下屆執委會：主席 陳大文、秘書 李小明、司庫 黃美儀。\n\n4. 通過 2026–27 年度團費為 $360。\n\n會議於下午四時三十分結束。",
+      "decisions": [
+        { "id": "dd3", "text": "下屆執委會職位已確定並於一個月內通知團員", "owner": "dm02", "due": "2026-09-29", "done": true }
+      ],
+      "attachments": [], "createdBy": "exco", "updatedAt": "2026-08-29 16:40"
+    }
+  ]
+}

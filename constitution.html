@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-Hant-HK">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#5E1826">
+<title>團章 · Constitution</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%237B2233'/%3E%3Ctext x='32' y='43' font-family='Helvetica,Arial,sans-serif' font-size='30' font-weight='bold' fill='white' text-anchor='middle'%3E82%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="./assets/css/main.css">
+<style>
+  body{ background:#F7F3F4; }
+  .pub-wrap{ max-width:900px; margin:0 auto; padding:18px 16px 70px; }
+  .pub-bar{ position:sticky; top:0; z-index:20; background:rgba(255,255,255,.96); backdrop-filter:blur(8px);
+    border:1px solid var(--line); border-radius:0 0 14px 14px; padding:10px 12px; margin:-18px -16px 16px;
+    display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .pub-bar .ttl{ font-weight:800; letter-spacing:-.01em; }
+  .pub-bar .sp{ margin-left:auto; font-size:12px; color:var(--faint) }
+  .paper{ background:#fff; border:1px solid var(--line); border-radius:16px; box-shadow:var(--sh-1); padding:30px 34px; }
+  .art{ margin-bottom:9px; }
+  .art .en{ display:block; color:#54484C; font-size:13.5px; }
+  .art-item{ margin:4px 0 4px 20px; }
+  .art-item.sub{ margin-left:40px; }
+  .bi-single .en{ margin-top:0 }
+  body.lang-one .zh, body.lang-one .en { } /* 由 JS 控制顯示 */
+  @media print{
+    .pub-bar{ display:none } body{ background:#fff } .paper{ border:none; box-shadow:none; padding:0 }
+    .pub-wrap{ max-width:none; padding:0 }
+  }
+</style>
+</head>
+<body>
+<div class="pub-wrap" id="app">
+  <div style="padding:40px;text-align:center;color:#9A868C">載入團章…</div>
+</div>
+<script src="./assets/vendor/qrcode.js"></script>
+<script type="module" src="./assets/js/public.js"></script>
+</body>
+</html>

@@ -1,0 +1,7 @@
+node_modules/
+.DS_Store
+*.log
+.env
+.env.*
+# 部署時由 TROOP_* 焗出嚟嘅公開名單（Vercel build 生成，唔入 Git，免得有份過期嘅喺 repo 誤導人）
+data/units.generated.json

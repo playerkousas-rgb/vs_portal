@@ -1,0 +1,64 @@
+# ============================================================
+#  .vercelignore — 部署時唔上傳嘅嘢（Vercel 儲存空間／檔案數守門）
+# ------------------------------------------------------------
+#  呢個 project 嘅 vercel.json 係 "outputDirectory": "."（個站係根目錄靜態，
+#  冇 public/）—— 即係**根目錄入面乜都會變成靜態產物**。
+#  所以呢個檔係唯一一道閘：開發期嘅嘢（測試、文檔、備份、本機伺服器）
+#  一律唔好上到部署。
+#
+#  ⚠️ 加新條目之前一定過一過下面「唔好 exclude」清單，
+#     排除咗運行時要嘅檔 ＝ 即刻白屏。改完請跑：
+#         npm run check        # 測試 ＋ 模擬部署清單
+#
+#  【運行時／建置一定要留（千祈唔好加落嚟）】
+#    *.html（index / entry / borrow / notice / members / constitution）
+#    assets/**            CSS＋JS＋vendor qrcode（QR 離線要用）
+#    data/**              units.json、mock/*（示範模式）、progress/items.json、
+#                         units.generated.json（build 嗰陣由 scripts/build-units.mjs 焗出）
+#    api/**               Serverless Function（_registry.js 同時被 build 讀）
+#    scripts/**           build-units.mjs 係 vercel.json 嘅 buildCommand
+#    package.json / package-lock.json（鎖定版本，可重現安裝）
+#    vercel.json / .vercelignore 本身
+# ============================================================
+
+# ---- 版本控制／套件（Vercel 本身都會跳，寫返出嚟係為咗清楚＋CLI deploy 都受控）----
+.git
+node_modules
+.vercel
+
+# ---- 測試（546 KB／17 檔）：上到部署完全冇用，仲會被人由網址直接讀到 ----
+tests
+
+# ---- 文檔（230 KB）：留喺 Git 就夠，唔係網頁產物 ----
+docs
+README.md
+MD
+DEPLOY_GUIDE_FOR_TROOPS.md
+
+# ---- 本機開發伺服器（Vercel 用唔著；佢只係取代 python3 -m http.server）----
+dev-server.mjs
+
+# ---- 建置產物／複製本：apps-script/Code.gs 由 gasTemplate() 生成，
+#      APP 內「下載 Code.gs」係喺瀏覽器即刻生成（lib/onboard.js → gasTemplate()），
+#      **唔會** fetch 呢個檔 —— 所以佢對部署係死重（74 KB）。 ----
+apps-script
+
+# ---- 開發過程遺留嘅備份／暫存／日誌 ----
+*.bak
+*.tmp
+*.old
+*.orig
+*.rej
+*.log
+*.swp
+*~
+.DS_Store
+
+# ---- 環境變數／機密（.gitignore 已排除，呢度再擋多次）----
+.env
+.env.*
+
+# ---- 測試上傳資料夾（單據正路係直上 Drive；萬一有人本機試上載留低咗）----
+uploads
+tmp
+.cache

@@ -181,7 +181,7 @@ http.createServer((req, res) => {
     .map(k => k.split('_')[1]))];
   if (envTroops.length) console.log(`環境變數旅團（.env.local／env）：${envTroops.join(', ')}`);
   else console.log('（未載入任何 TROOP_* 環境變數 → 旅團選擇閘只會有 MOCK；想本地預覽有真實旅團，喺項目加 .env.local，見 docs/ADD_NEW_UNIT.md）');
-  console.log(`執委管理系統（本機）→ http://localhost:${PORT}/?u=0082`);
+  console.log(`深資童軍管理系統（本機）→ http://localhost:${PORT}/?u=0082`);
   console.log(`示範資料 → http://localhost:${PORT}/?mock=1`);
   console.log(`API（進度接駁）→ http://localhost:${PORT}/api/progress`);
 });

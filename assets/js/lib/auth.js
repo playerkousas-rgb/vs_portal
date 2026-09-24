@@ -1,15 +1,19 @@
 /* ============================================================
    auth.js — 身份、權限、密碼規則
 
-   登入身份只有兩種（＋一個隱藏帳戶）：
-     leader  領袖
-     exco    執行委員會
-     super   超級管理員 —— 隱藏：唔會顯示喺任何名單，
-             只可以用指定帳號／密碼登入，任何人（包括超管自己）
-             都唔可以改佢個密碼。
+   ★ 2026-09-24 團長定案：「所有嘢都以個人身份登入」
+     · **身份即帳號**：團長 / 領袖 / 執委 / 團員 都係名冊（members）嘅人，
+       登入代號 ＝ email → loginId → ymis（見 model.js loginIdOf）。
+       **冇咗「領袖共用帳戶」同「執行委員會帳號」** ——
+       要改權限＝改身份，唔係開多個帳戶（見 members.js「身份」欄）。
+     · 團長（chief）：每個旅團**永遠只有一位**，權限最高，可以轉移。
+       第一個設定嗰個（開團／開戶嗰位）就係團長。
+     · super 超級管理員 —— 隱藏：唔會顯示喺任何名單，
+       只可以用指定帳號／密碼登入（伺服器端核對），冇人可以改佢個密碼。
 
    密碼權限（依實際需要）：
-     超管：可改領袖、執委嘅密碼
+     超管：可改任何人嘅密碼
+     團長：可改自己、領袖、執委嘅密碼
      領袖：可改自己、執委嘅密碼
      執委：只可改自己嘅密碼
    ============================================================ */
@@ -17,19 +21,28 @@
 import {
   load, commit, collection, find, add, remove, getSession, setSession, audit, isMock, currentUnit
 } from './store.js';
+import { chief as chiefRecord, hasChief } from './model.js';
 
 export const ROLES = {
   super: {
-    id: 'super', name: '超級管理員', short: '超管', color: '#4A111C', level: 3, hidden: true,
+    id: 'super', name: '超級管理員', short: '超管', color: '#4A111C', level: 5, hidden: true,
     desc: '系統擁有者（隱藏帳戶）'
   },
+  chief: {
+    id: 'chief', name: '團長', short: '團長', color: '#B8892B', level: 4,
+    desc: '團長（每團一位）—— 最高權限：設定／轉移身份、所有模組；第一個開戶嘅人預設係團長'
+  },
   leader: {
-    id: 'leader', name: '領袖', short: '領袖', color: '#7B2233', level: 2,
+    id: 'leader', name: '領袖', short: '領袖', color: '#7B2233', level: 3,
     desc: '團領袖／支部領袖 —— 管理團務、財務、團章、物資'
   },
   exco: {
-    id: 'exco', name: '執行委員會', short: '執委', color: '#A83A4E', level: 1,
+    id: 'exco', name: '執委', short: '執委', color: '#A83A4E', level: 2,
     desc: '執委會成員 —— 日常團務：開會、點名、記帳、借用物資'
+  },
+  member: {
+    id: 'member', name: '團員', short: '團員', color: '#8A6E75', level: 1,
+    desc: '團員 —— 睇通告、報活動、自己的進度'
   }
 };
 
@@ -117,7 +130,7 @@ export const PERMS = {
   'fee.mark':       { super: 1, leader: 1, exco: 1 },
   'fee.edit':       { super: 1, leader: 1, exco: 0 },
 
-  /* 用戶（領袖 / 執委 / 團員 名冊）—— 執委都可以改資料同身份 */
+  /* 用戶（團長 / 領袖 / 執委 / 團員 名冊）—— 執委可以改資料，但改身份要有權 */
   'member.view':    { super: 1, leader: 1, exco: 1 },
   'member.create':  { super: 1, leader: 1, exco: 1 },
   'member.edit':    { super: 1, leader: 1, exco: 1 },
@@ -172,18 +185,38 @@ export const PERMS = {
   'docs.view':        { super: 1, leader: 1, exco: 1 }
 };
 
+/* ============================================================
+   ★ 團長（chief）權限 = 領袖嘅全部 ＋ 團長專屬
+   ------------------------------------------------------------
+   用「複製領袖」而唔係逐條抄一次，係因為漏一條就等於團長無故少一個權
+   （而且將來加新權限都會自動跟到）。下面先複製，再用專屬規則覆蓋。
+   ============================================================ */
+Object.keys(PERMS).forEach(k => {
+  if (PERMS[k].chief === undefined) PERMS[k].chief = PERMS[k].leader ?? 0;
+});
+
+/* ---- 團長專屬 / 覆蓋 ---- */
+/** 轉移團長身份（只有現任團長同超管） */
+PERMS['admin.chief'] = { super: 1, chief: 1, leader: 0, exco: 0 };
+/** 改別人嘅身份（＝改權限）。2026-09-24 團長定案：靠改身份做權限變更，
+ *  所以呢個權唔可以人人有 —— 團長／領袖先有，執委冇。 */
+PERMS['member.identity'] = { super: 1, chief: 1, leader: 1, exco: 0 };
+/** 團長可以改任何領袖／執委嘅密碼（同超管一樣，但改唔到超管） */
+PERMS['admin.pw.leader'] = { super: 1, chief: 1, leader: 'self', exco: 0 };
+PERMS['admin.accounts'] = { super: 1, chief: 1, leader: 1, exco: 0 };
+
 export const PERM_GROUPS = [
   { title: '會議', items: [['meeting.view', '查看會議'], ['meeting.create', '新增會議'], ['meeting.edit', '編輯會議'], ['meeting.delete', '刪除會議'], ['meeting.minutes', '記錄 / 點名'], ['meeting.approve', '確認 / 通過']] },
   { title: '財務', items: [['finance.view', '查看帳目'], ['finance.create', '新增收支'], ['finance.edit', '編輯收支'], ['finance.delete', '刪除收支'], ['finance.report', '年結 / 月結報表'], ['finance.export', '輸出 Word / PDF / CSV'], ['claim.submit', '提交收支申報'], ['claim.review', '批核申報']] },
   { title: '團費', items: [['fee.view', '查看收費'], ['fee.mark', '標記收款'], ['fee.edit', '增刪收費項目']] },
-  { title: '用戶（領袖／執委／團員）', items: [['member.view', '查看用戶名冊'], ['member.create', '新增用戶'], ['member.edit', '編輯資料 / 身份 / 生日'], ['member.note', '撰寫備註'], ['member.delete', '刪除用戶'], ['member.export', '輸出名冊及生日表']] },
+  { title: '用戶（團長／領袖／執委／團員）', items: [['member.view', '查看用戶名冊'], ['member.create', '新增用戶'], ['member.edit', '編輯資料 / 生日'], ['member.identity', '改身份（＝改權限）'], ['member.note', '撰寫備註'], ['member.delete', '刪除用戶'], ['member.export', '輸出名冊及生日表'], ['admin.chief', '轉移團長身份（每團一位）']] },
   { title: '物資', items: [['inv.view', '查看物資'], ['inv.manage', '新增 / 修改物資'], ['inv.borrow', '申請借用'], ['inv.approve', '批核借用 / 歸還'], ['inv.audit', '盤點調整庫存']] },
   { title: '通告', items: [['notice.view', '查看通告'], ['notice.create', '開新通告'], ['notice.edit', '編輯通告'], ['notice.publish', '發布 / 分享'], ['notice.signup', '睇報名紀錄']] },
   { title: '欄位與同步', items: [['table.view', '查看欄位設計'], ['table.design', '改欄位 / 加欄位（各分頁「欄位」掣）'], ['table.sync', '設定總表同步（帳號與系統 → 資料管理）']] },
   { title: '行事曆／試卷', items: [['calendar.view', '查看活動行事曆'], ['calendar.edit', '新增／編輯活動同點名'], ['quiz.view', '查看試卷'], ['quiz.edit', '新設／匯入試卷']] },
   { title: '進度系統', items: [['progress.view', '睇團員進度（直接讀取）'], ['progress.tick', '勾選 / 取消進度'], ['progress.config', '設定後端網址同 API Key']] },
   { title: '團章', items: [['constitution.view', '閱讀團章'], ['constitution.edit', '編輯條文'], ['constitution.publish', '發布新版本 / 輸出']] },
-  { title: '系統', items: [['admin.view', '開啟管理頁'], ['admin.accounts', '新增 / 刪除帳戶'], ['admin.pw.self', '改自己密碼'], ['admin.pw.leader', '改領袖密碼'], ['admin.pw.exco', '改執委密碼'], ['admin.pw.super', '改超管密碼（一律禁止）'], ['admin.data', '備份 / 還原資料'], ['admin.units', '旅團設定']] }
+  { title: '系統', items: [['admin.view', '開啟管理頁'], ['admin.accounts', '管理個人帳戶 / 設定密碼'], ['admin.pw.self', '改自己密碼'], ['admin.pw.leader', '改領袖密碼'], ['admin.pw.exco', '改執委密碼'], ['admin.pw.super', '改超管密碼（一律禁止）'], ['admin.data', '備份 / 還原資料'], ['admin.units', '旅團設定']] }
 ];
 
 /* ============================================================
@@ -249,35 +282,81 @@ function memberByYmis(ymis) {
   return collection('members').find(x => String(x.ymis || '').trim() === y && x.status !== 'alumni') || null;
 }
 
+/* ============================================================
+   ★ 個人身份登入（2026-09-24 團長定案）
+   ------------------------------------------------------------
+   一個入口：**打自己嘅登入代號 ＋ 密碼**。
+     登入代號（同一條路，唔使揀身份）：
+       電郵（團長／領袖）→ 自訂帳號 loginId → YMIS（執委／團員）
+     入到去嘅權限＝佢喺名冊嘅身份（改身份＝改權限）。
+     團員會去團員入口（members.html），其餘（團長／領袖／執委）入管理系統。
+   ★ 冇「領袖共用帳戶」／「執行委員會帳號」：共用帳號＝冇人知邊個做過乜，
+     而且呢個設計根本冇位放佢哋（見 store.js migrateSharedAccounts）。
+   ============================================================ */
+
+/** 登入代號 → 名冊紀錄（email／loginId／ymis 都認，大小寫唔拘） */
+export function memberForLogin(id) {
+  return membersByLogin(id);
+}
+function membersByLogin(id) {
+  const k = String(id || '').trim().toLowerCase();
+  if (!k) return null;
+  return collection('members').find(m => m.status !== 'alumni' &&
+    [m.email, m.loginId, m.ymis].some(v => String(v || '').trim().toLowerCase() === k)) || null;
+}
+
+/** 名冊身份 → session 角色（未知／空白一律當團員） */
+function roleOfMember(m) {
+  const k = m?.identity;
+  return (k === 'chief' || k === 'leader' || k === 'exco') ? k : 'member';
+}
+
+/** 建立 session（團長／領袖／執委／團員共用；accountId 一律 'member:<id>'） */
+function sessionForMember(m, { mustChangePw = false, via = 'roster' } = {}) {
+  const role = roleOfMember(m);
+  setSession({
+    role,
+    accountId: 'member:' + m.id,
+    username: String(m.ymis || m.email || m.loginId || m.id).trim(),
+    email: m.email || '', name: m.name, memberId: m.id, identity: role,
+    at: Date.now(), mustChangePw, via
+  });
+  auditLogin(m.name || m.ymis || m.id, `${ROLES[role]?.name || role}（個人）登入`);
+  return { ok: true, role, member: m, mustChangePw, dest: role === 'member' ? 'hub' : 'staff' };
+}
+
 /**
- * 團員／執委同一個入口：YMIS＋密碼。
- * 權限只跟名冊 identity（換屆改名冊就換權限），唔跟獨立「執委帳戶」。
- * 領袖請用電郵入口。
+ * 個人登入：電郵／自訂帳號／YMIS ＋ 密碼。
+ * 名冊有紀錄但未設密碼 → 首次用 1234 入（入去強制改）。
  */
-export async function loginMember(ymis, password) {
-  const y = String(ymis || '').trim();
+export async function loginIdentity(id, password) {
+  const raw = String(id || '').trim();
   const p = String(password || '');
-  if (!y) return { ok: false, msg: '請輸入 YMIS 會籍編號' };
+  if (!raw) return { ok: false, msg: '請輸入電郵（團長／領袖）或 YMIS 會籍編號（執委／團員）' };
   if (!p) return { ok: false, msg: '請輸入密碼' };
-  const m = memberByYmis(y);
-  if (!m) return { ok: false, msg: '會籍編號或密碼不正確' };
-  const ident = m.identity === 'leader' ? 'leader' : (m.identity === 'exco' ? 'exco' : 'member');
-  if (ident === 'leader') {
-    return { ok: false, msg: '領袖請用「領袖」入口（電郵＋密碼）登入' };
-  }
+  const m = membersByLogin(raw);
+  if (!m) return { ok: false, msg: '電郵／YMIS 或密碼不正確', notFound: true };
+
+  const role = roleOfMember(m);
+  const isAdult = role === 'chief' || role === 'leader';
   const hasPw = !!(m.hubPw?.hash || m.hubPassword);
   if (!hasPw) {
-    /* 2026-09-18 團長確認：名冊有個名＝當已開戶 —— 首次用 1234 就入到
-      （自動開戶，入去即刻強制改密碼）。以前要先喺後台撳「開戶」，呢步容易卡死人。 */
+    /* ★ 兩條路（安全考慮，唔可以一刀切）：
+       · 團員／執委（青少年）：名冊有個名＝當已開戶，首次密碼 1234（同進度追蹤一致），入去強制改。
+       · 團長／領袖（成人）：**唔可以**用 1234 自出自入（知道電郵就可以做領袖＝大漏洞），
+         一定要由團長／領袖喺「用戶」頁幫佢設密碼。 */
+    if (isAdult) {
+      return { ok: false, msg: `呢位${ROLES[role]?.name || '領袖'}仲未設定密碼 —— 請團長／領袖喺「用戶與身份」幫佢設定登入密碼` };
+    }
     if (p !== TEMP_PASSWORD) {
-      return { ok: false, msg: `會籍編號或密碼不正確（未設定過密碼嘅話，首次密碼係 ${TEMP_PASSWORD}）` };
+      return { ok: false, msg: `電郵／YMIS 或密碼不正確（未設定過密碼嘅話，首次密碼係 ${TEMP_PASSWORD}）` };
     }
     m.hubOpened = true;
     m.hubMustChangePw = true;
     commit();
   } else {
-    const fake = { pw: m.hubPw, password: m.hubPassword, role: 'member', username: y };
-    if (!(await verifyPassword(fake, p))) return { ok: false, msg: '會籍編號或密碼不正確' };
+    const fake = { pw: m.hubPw, password: m.hubPassword, role, username: raw };
+    if (!(await verifyPassword(fake, p))) return { ok: false, msg: '電郵／YMIS 或密碼不正確' };
     if (fake.pw && m.hubPassword) {
       m.hubPw = fake.pw;
       delete m.hubPassword;
@@ -285,16 +364,15 @@ export async function loginMember(ymis, password) {
     }
   }
   const mustChangePw = !!m.hubMustChangePw || p === TEMP_PASSWORD;
-  if (ident === 'exco') {
-    setSession({
-      role: 'exco', accountId: 'member:' + m.id, username: m.ymis, name: m.name,
-      memberId: m.id, via: 'ymis', at: Date.now(), mustChangePw
-    });
-    auditLogin(m.ymis, '執委（YMIS）登入');
-    return { ok: true, member: m, mustChangePw, dest: 'staff', role: 'exco' };
-  }
-  return { ok: true, member: m, mustChangePw, dest: 'hub', role: 'member' };
+  return sessionForMember(m, { mustChangePw, via: isAdult ? 'email' : 'ymis' });
 }
+
+/** 團員入口（members.html）用：一樣行個人身份登入 */
+export async function loginMember(ymis, password) {
+  return loginIdentity(ymis, password);
+}
+
+/* 團長查詢交畀 model.js（單一來源）：chief() / hasChief() */
 
 /** 後台開戶（單個／批量）：設首次密碼 1234，要改 */
 export async function openMemberAccount(memberId) {
@@ -470,10 +548,18 @@ export async function loginServer(role, username, password) {
   return { ok: true, role: accountRole, mustChangePw: !!data.mustChangePw, dest, member: { id: a.id, name: a.name, ymis: a.username, email: a.email, identity: accountRole } };
 }
 
+/**
+ * 登入（**一個入口**）。
+ *
+ * ★ 2026-09-24：唔再分「領袖入口／執委入口」，亦冇共用帳戶 ——
+ *   打自己嘅電郵／自訂帳號／YMIS ＋ 密碼，權限跟名冊身份。
+ *   `role` 參數保留只為向後兼容（呼叫者可能傳 'staff'），實際唔會用。
+ *   只要輸入超管帳號密碼，任何情況下都會直接進入超管（伺服器端核對）。
+ */
 export async function login(role, username, password) {
   const u = String(username || '').trim();
   const p = String(password || '');
-  if (!u) return { ok: false, msg: '請輸入電郵（領袖）或登入帳號' };
+  if (!u) return { ok: false, msg: '請輸入電郵（團長／領袖）或 YMIS 會籍編號（執委／團員）' };
   if (!p) return { ok: false, msg: '請輸入密碼' };
 
   /* 隱藏超管：唔理揀咗邊個身份都直接登入。
@@ -483,8 +569,6 @@ export async function login(role, username, password) {
   if (u.toLowerCase() === SUPER.username) {
     const v = await verifySuperServer(p);
     if (!v.ok) {
-      /* 「帳號或密碼不正確」同「服務未設定」要分開講 ——
-         後者係管理員要去做嘢，用家再試一萬次都唔會得。 */
       if (v.disabled) {
         return { ok: false, msg: `超級管理員登入未啟用 —— ${v.error}${v.hint ? `（${v.hint}）` : ''}` };
       }
@@ -498,52 +582,26 @@ export async function login(role, username, password) {
     return { ok: true, role: 'super' };
   }
 
+  /* ① 個人身份（名冊）—— 團長／領袖／執委／團員同一條路 */
+  const person = await loginIdentity(u, p);
+  if (person.ok || !person.notFound) return person;
+
+  /* ② 舊資料庫嘅個人帳戶（2026-09-24 之前開落嘅）—— 照樣入得，
+        但唔會再有「共用帳戶」：store.js 開機已經清走咗種子帳戶。 */
   const ul = u.toLowerCase();
   const acc = collection('accounts').find(a => a.active !== false && (
     String(a.username || '').toLowerCase() === ul ||
     String(a.email || '').toLowerCase() === ul
   ));
-  if (!acc) {
-    /* 2026-09-18 團長回報「開咗新領袖用戶、有電郵有密碼，但登入唔到」：
-       「用戶」頁加嘅領袖只係名冊紀錄，以前一定要再喺「帳號與系統 → 帳戶」
-       另開一個電郵帳戶（仲要超管先開到）—— 等於死路。
-       而家：名冊入面 identity=leader、電郵對得上的，用「用戶」頁設嗰個
-       入口密碼就直接入得（唔使再開第二個帳戶）。 */
-    const lm = collection('members').find(x =>
-      x.identity === 'leader' && x.status !== 'alumni' &&
-      String(x.email || '').trim().toLowerCase() === ul);
-    if (!lm) return { ok: false, msg: '電郵／帳號或密碼不正確' };
-    if (!lm.hubPw?.hash && !lm.hubPassword) {
-      return { ok: false, msg: '呢位領袖仲未設定密碼 —— 請喺「用戶」幫佢設定入口密碼' };
-    }
-    const lfake = { pw: lm.hubPw, password: lm.hubPassword, role: 'leader', username: lm.email };
-    if (!(await verifyPassword(lfake, p))) return { ok: false, msg: '電郵／帳號或密碼不正確' };
-    if (lfake.pw && lm.hubPassword) {
-      lm.hubPw = lfake.pw;
-      delete lm.hubPassword;
-      commit();
-    }
-    const leaderMustChange = !!lm.hubMustChangePw || p === TEMP_PASSWORD;
-    setSession({
-      role: 'leader', accountId: 'member:' + lm.id, username: lm.email || lm.ymis || lm.id,
-      email: lm.email || '', name: lm.name, memberId: lm.id, via: 'email', at: Date.now(),
-      mustChangePw: leaderMustChange
-    });
-    auditLogin(lm.email || lm.name, '領袖（名冊）登入');
-    return { ok: true, role: 'leader', mustChangePw: leaderMustChange };
-  }
-  /* 領袖／執委同一個入口：唔再強制揀身份，以帳戶本身角色為準 */
-  if (role && role !== 'staff' && acc.role !== role) {
-    return { ok: false, msg: `此帳號屬於「${ROLES[acc.role]?.name || acc.role}」，請用正確入口` };
-  }
-  if (!(await verifyPassword(acc, p))) return { ok: false, msg: '電郵／帳號或密碼不正確' };
+  if (!acc) return { ok: false, msg: '電郵／YMIS 或密碼不正確' };
+  if (!(await verifyPassword(acc, p))) return { ok: false, msg: '電郵／YMIS 或密碼不正確' };
 
   const mustChangePw = !!acc.mustChangePw || !!acc.defaultPw || p === TEMP_PASSWORD;
   setSession({
     role: acc.role, accountId: acc.id, username: acc.username, email: acc.email || '',
     name: acc.name, title: acc.title || '', at: Date.now(), mustChangePw
   });
-  auditLogin(acc.username, '登入');
+  auditLogin(acc.username, '登入（舊個人帳戶）');
   return { ok: true, role: acc.role, mustChangePw };
 }
 
@@ -608,25 +666,158 @@ export function accounts({ role = null, active = null } = {}) {
 }
 export function accountById(id) { return find('accounts', id); }
 
-/** 我係唔係可以改呢個帳戶（密碼／帳號名） */
+/** 我係唔係可以改呢個帳戶（密碼／帳號名）
+ *  ★ 2026-09-24：而家「帳戶」＝名冊入面嘅個人紀錄（accountId = 'member:<id>'）。
+ *    規則（見頂部註釋）：自己永遠改得；團長改得任何人（超管除外）；
+ *    領袖改自己＋執委／團員；執委只改自己。舊個人帳戶（accounts）照樣行舊規則。 */
 export function canChangePasswordOf(accountId) {
   const s = getSession();
   if (!s) return false;
   if (accountId === 'super') return false;                 // 超管密碼冇人改得
+  const sid = String(accountId || '');
+  const isSelf = s.accountId === accountId;
+  if (s.role === 'super') return true;
+  if (sid.startsWith('member:')) {
+    const m = find('members', sid.slice('member:'.length));
+    if (!m) return false;
+    if (isSelf) return true;
+    if (s.role === 'chief') return true;                   // 團長：全團都可以改（超管除外）
+    if (s.role === 'leader') return m.identity !== 'chief' && m.identity !== 'leader';
+    return false;
+  }
   const acc = accountById(accountId);
   if (!acc) return false;
-  if (s.role === 'super') return true;
-  const isSelf = s.accountId === accountId;
+  if (s.role === 'chief') return true;
   if (s.role === 'leader') return isSelf || acc.role === 'exco';
   if (s.role === 'exco') return isSelf;                    // 執委只可改自己
   return false;
+}
+
+/* ============================================================
+   ★ 身份（＝權限）管理（2026-09-24）
+   ------------------------------------------------------------
+   團長定案：「唔設執行委員會帳號，透過改身份嚟做權限變更」。
+   所以身份一定要改得到，但唔可以亂改：
+     · 團長／領袖／超管可以改身份（改人嘅身份 = 改人嘅權限）
+     · 執委唔可以改身份（只可以改資料）
+     · 「團長」唔可以用下拉改 —— 只可以由現任團長／超管**轉移**（每團一位）
+     · 唔可以改自己嘅身份（免得自己鎖死自己）
+   ============================================================ */
+
+/** 可以改呢位用戶嘅身份嗎？（團長身份要另外用 admin.chief 權限轉移） */
+export function canSetIdentityOf(target) {
+  const s = getSession();
+  if (!s) return false;
+  if (s.role === 'super' || s.role === 'chief') return true;
+  if (s.role !== 'leader') return false;
+  const ident = String(target?.identity || '');
+  return ident !== 'chief';                 // 領袖改唔到團長
+}
+
+/** 改身份（＝改權限）。identity: chief | leader | exco | member */
+export async function setMemberIdentity(memberId, identity) {
+  const m = find('members', memberId);
+  if (!m) return { ok: false, msg: '搵唔到呢位用戶' };
+  const want = String(identity || '').trim();
+  if (!['chief', 'leader', 'exco', 'member'].includes(want)) return { ok: false, msg: '身份唔正確' };
+  const s = getSession();
+  const before = m.identity || 'member';
+  if (before === want) return { ok: true, member: m, unchanged: true };
+
+  if (want === 'chief') {
+    if (!can('admin.chief')) return { ok: false, msg: '團長身份只有現任團長（或者超管）可以轉移 —— 請現任團長交棒' };
+    const cur = chiefRecord();
+    if (cur && cur.id !== m.id) {
+      cur.identity = 'leader';
+      audit('轉移團長身份', `${cur.name} → ${m.name}`);
+    } else {
+      audit('設定團長身份', m.name || m.id);
+    }
+    m.identity = 'chief';
+    m.chiefSince = new Date().toISOString().slice(0, 10);
+  } else {
+    if (m.identity === 'chief' && s?.role !== 'super') {
+      return { ok: false, msg: '團長身份唔可以直接改低 —— 要先去交棒嗰位嘅用戶頁撳「設為團長（轉移）」，你嘅身份就會自動變返領袖' };
+    }
+    if (s?.memberId && s.memberId === m.id && s.role !== 'super') {
+      return { ok: false, msg: '唔可以改自己嘅身份（免得自己鎖死自己）—— 請另一位領袖／團長幫你改' };
+    }
+    if (!canSetIdentityOf(m)) return { ok: false, msg: '你冇權限更改呢位用戶嘅身份' };
+    m.identity = want;
+    delete m.chiefSince;
+    audit('更改身份', `${m.name || m.id}：${IDENTITY_LABEL[before] || before} → ${IDENTITY_LABEL[want] || want}`);
+  }
+  commit();
+  /* 改嘅係自己（例如團長交棒畀人之後自己變領袖）→ 即刻更新 session，唔使重新登入 */
+  if (s?.memberId && s.memberId === m.id) {
+    setSession({ ...s, role: m.identity, identity: m.identity });
+  }
+  return { ok: true, member: m };
+}
+
+const IDENTITY_LABEL = { chief: '團長', leader: '領袖', exco: '執委', member: '團員' };
+
+/** 轉移團長身份（現任團長交棒） */
+export async function transferChief(toMemberId) {
+  return setMemberIdentity(toMemberId, 'chief');
+}
+
+/* ---------- 開戶 = 第一個設定嗰位係團長 ---------- */
+
+/** 而家可唔可以認領團長身份？（仲未有團長；而且係開團 KEY／超管／已登入嘅領袖） */
+export function canClaimChief() {
+  if (hasChief()) return false;
+  const s = getSession();
+  if (!s) return false;
+  return s.role === 'super' || s.role === 'chief' || s.role === 'leader' || !!s.setupKey;
+}
+
+/**
+ * 認領團長身份（開戶那個 = 團長）。
+ * @param {{name?:string,email?:string,password?:string,ymis?:string,loginId?:string,role?:string}} info
+ */
+export async function claimChief(info = {}) {
+  if (hasChief()) return { ok: false, msg: '已經有團長 —— 要換人請由現任團長用「設為團長（轉移）」' };
+  if (!canClaimChief()) return { ok: false, msg: '要由團長／領袖（或者用開團 KEY）先可以設定團長' };
+  const s = getSession();
+  let m = s?.memberId ? find('members', s.memberId) : null;
+  if (!m) {
+    const name = String(info.name || '').trim();
+    if (!name) return { ok: false, msg: '請填姓名' };
+    m = add('members', {
+      name, identity: 'chief', status: 'active',
+      email: String(info.email || '').trim(),
+      loginId: String(info.loginId || '').trim(),
+      ymis: String(info.ymis || '').trim(),
+      role: String(info.role || '團長').trim(),
+      hubOpened: true
+    });
+  } else {
+    m.identity = 'chief';
+    if (info.email != null && String(info.email).trim()) m.email = String(info.email).trim();
+    if (info.loginId != null && String(info.loginId).trim()) m.loginId = String(info.loginId).trim();
+    if (info.ymis != null && String(info.ymis).trim()) m.ymis = String(info.ymis).trim();
+    if (!m.role) m.role = '團長';
+  }
+  m.chiefSince = new Date().toISOString().slice(0, 10);
+  if (info.password) {
+    const pw = await setMemberHubPassword(m.id, String(info.password));
+    if (!pw.ok) return pw;
+  }
+  commit();
+  audit('設定團長身份', m.name || m.id);
+  if (s && (!s.memberId || s.memberId === m.id)) {
+    setSession({ ...s, role: 'chief', identity: 'chief', memberId: m.id, accountId: 'member:' + m.id, name: m.name, mustChangePw: false, setupKey: false });
+  }
+  return { ok: true, member: m };
 }
 
 /** 我係唔係可以開／刪呢個角色嘅帳戶 */
 export function canManageRole(role) {
   const s = getSession();
   if (!s) return false;
-  if (s.role === 'super') return role === 'leader' || role === 'exco';
+  if (s.role === 'super') return role === 'chief' || role === 'leader' || role === 'exco';
+  if (s.role === 'chief') return role === 'leader' || role === 'exco';
   if (s.role === 'leader') return role === 'exco';
   return false;
 }

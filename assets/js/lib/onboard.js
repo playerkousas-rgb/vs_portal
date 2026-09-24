@@ -13,7 +13,7 @@ import { download } from './exporter.js';
 import { toast, copyText, icon } from './util.js';
 
 export const APP_TYPE = '82venture';       // 中央收件匣用 appType 分辨來源（同 VSBADGE 共用收件匣）
-export const APP_NAME = '執委管理系統';        // 全名，方便管理員喺 ADMIN 系統睇到係邊個 app
+export const APP_NAME = '深資童軍管理系統';        // 全名，方便管理員喺 ADMIN 系統睇到係邊個 app
 
 /** 登入前／任何時候直接在 App 內下載 Code.gs */
 export function downloadCodeGs() {
@@ -183,7 +183,7 @@ export async function submitApplication(input = {}, timeoutMs = 20000) {
 export function applicationText(payload = {}) {
   const p = payload || {};
   return [
-    '【新旅團申請接入 · 執委管理系統】',
+    '【新旅團申請接入 · 深資童軍管理系統】',
     `旅團編號：${p.troopId || ''}`,
     `旅團名稱：${p.troopName || ''}`,
     `後端 /exec：${p.scriptUrl || ''}`,
@@ -231,8 +231,8 @@ export function envUnitSteps(code = '<編號>') {
 
 export function adminChecklist(troopId = '<編號>') {
   return [
-    `執委管理系統 → data/units.json：喺 units 加 "${troopId}" entry（code／name／section 等公開資料；唔好放 backend／apiKey 落 Git，亦唔使起資料夾 —— 新旅團由空白開始）`,
-    `執委管理系統 → Vercel 環境變數：加 TROOP_${troopId}_BACKEND（旅團嘅 /exec）同 TROOP_${troopId}_APIKEY，再 Redeploy（名單即現身，後端經伺服器端轉發）`,
+    `深資童軍管理系統 → data/units.json：喺 units 加 "${troopId}" entry（code／name／section 等公開資料；唔好放 backend／apiKey 落 Git，亦唔使起資料夾 —— 新旅團由空白開始）`,
+    `深資童軍管理系統 → Vercel 環境變數：加 TROOP_${troopId}_BACKEND（旅團嘅 /exec）同 TROOP_${troopId}_APIKEY，再 Redeploy（名單即現身，後端經伺服器端轉發）`,
     `（進度）一個後端、兩個前端：旅團自己嘅後端 /exec 就係進度資料所在；團員用嘅進度前端讀同一個後端`,
     `通知旅團：登入後去「進度 → 設定」填自己嘅 /exec 網址 + API Key，就可以喺執委系統直接讀寫進度`,
     '兩邊 deploy 一次，再由旅團喺「進度」撳「測試連線」實測（讀得到團員同進度就成功）'

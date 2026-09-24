@@ -2,7 +2,7 @@
   "name": "ecportal",
   "version": "2.0.0",
   "private": true,
-  "description": "執委管理系統（純靜態，零依賴）。jsdom 只係測試用。",
+  "description": "深資童軍管理系統（純靜態，零依賴）。jsdom 只係測試用。",
   "type": "module",
   "scripts": {
     "dev": "node dev-server.mjs",

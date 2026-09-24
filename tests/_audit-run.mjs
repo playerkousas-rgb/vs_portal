@@ -1,7 +1,7 @@
 /* ============================================================
    tests/_audit-run.mjs — 按鈕審計 worker（一個模式×角色×分頁 = 一個新 jsdom）
    由 tests/audit-buttons.mjs spawn，唔好直接跑。
-   用法：node tests/_audit-run.mjs <mock|real> <leader|exco|super> <section>
+   用法：node tests/_audit-run.mjs <mock|real> <chief|leader|exco|super> <section>
    輸出：stdout 一段 JSON 報告
    ============================================================ */
 
@@ -90,18 +90,24 @@ const errorsSince = (t0) => errors.filter(e => e.t >= t0);
 
 /* ---------- 載入 app ---------- */
 const auth = await import('../assets/js/lib/auth.js');
+const store = await import('../assets/js/lib/store.js');
 const util = await import('../assets/js/lib/util.js');
 await import('../assets/js/main.js');
 await wait(350);
 
-/* ---------- 登入目標角色 ---------- */
+/* ---------- 登入目標角色 ----------
+   ★ 2026-09-24：冇共用帳戶 —— 角色由名冊身份決定（見 tests/_roles.mjs）。
+   示範模式用示範團員改身份；真實模式種個人帳號（loginId：chief／leader／exco）。 */
+const needSeed = MODE !== 'mock' && ROLE !== 'super';
+const { seedRosterRoles, ROLE_PW } = await import('./_roles.mjs');
+if (needSeed) await seedRosterRoles(store, auth);
 if (MODE === 'mock') {
   if (ROLE !== 'leader') { auth.logout(); auth.loginAsMock(ROLE); }
 } else if (ROLE === 'super') {
   const r = await auth.login('leader', 'sheep', TEST_SUPER_PASSWORD);
   if (!r.ok) throw new Error('super 登入失敗');
 } else {
-  const r = await auth.login(ROLE, ROLE, ROLE === 'leader' ? '8202' : '8203');
+  const r = await auth.login(ROLE, ROLE, ROLE_PW[ROLE] || '8202');
   if (!r.ok) throw new Error(ROLE + ' 登入失敗: ' + r.msg);
 }
 doc.body.classList.remove('login-body');
@@ -236,9 +242,20 @@ async function auditOverlay(overlay, depth, ctx) {
 /** 審計一個範圍嘅全部可撳元素。
     scopeSel 係 selector——render() 每次重寫 app.innerHTML，舊元素引用會失效，
     所以每一輪都要重新 query scope 自己（否則撳到脫離文件嘅死元素＝假 dead）。 */
-async function auditScope(scopeSel, ctx) {
+async function auditScope(scopeSel, ctx, opts = {}) {
   const done = new Set();
   for (let i = 0; i < 100; i++) {
+    /* 頂欄／側欄／bottom bar：每個掣都要由「有效果可觀察」嘅起點撳。
+       理由：同一個目的地可以有多個響應式分身（例：#btnPw 桌面版同 #btnPw2 手機版
+       都係「改密碼 → #/admin/data」）。第一個撳完已經去咗目的地，第二個由同一個
+       hash 再撳就冇任何變化 → 假 dead。每次撳之前返去「唔係而家分頁」嘅 hash，
+       咁每個掣（包括分身）都真係會轉頁，dead 就只剩返真正冇反應嘅掣。
+       render() 重寫 app.innerHTML，所以要 continue 之後重新 query scope。 */
+    if (opts.resetHash && window.location.hash !== opts.resetHash) {
+      window.location.hash = opts.resetHash;
+      await wait(180);
+      continue;
+    }
     const scope = typeof scopeSel === 'string' ? doc.querySelector(scopeSel) : scopeSel;
     if (!scope || !scope.isConnected) break;
     const el = [...scope.querySelectorAll('button:not([disabled]), input[type=submit], input[type=button], a[href]')]
@@ -254,35 +271,58 @@ async function auditScope(scopeSel, ctx) {
       const href = el.getAttribute('href') || '';
       if (/^https?:/i.test(href)) { results.push({ ctx, key: btnKey(el), label, effect: 'link-external', errors: [] }); continue; }
     }
-    /* 已經 active 嘅分頁／篩選掣再撳一次＝重渲染同一狀態，冇變化係正常 */
+    /* 已經 active 嘅分頁／篩選／導覽掣再撳一次＝重渲染同一狀態，冇變化係正常。
+       （側邊欄用 aria-current="page"，bottom bar 用 aria-current 同款寫法。） */
     const alreadyActive = el.getAttribute('aria-selected') === 'true'
       || el.getAttribute('aria-pressed') === 'true'
+      || el.getAttribute('aria-current') === 'page'
       || el.classList.contains('active');
 
-    const base = snap();
-    const t0 = Date.now();
-    errors.length = 0;
-    let threw = null;
-    try { el.click(); } catch (e) { threw = String(e?.message || e); }
-    await wait(160);
-    const after = snap();
-    const errs = errorsSince(t0).map(e => e.msg);
-    const realErrs = errs.filter(m => !ENV_RE.test(m));
+    /* 撳一次、等 160ms、睇有冇反應；反應分類抽成函數，因為「dead」會 retry 一次（見下）。 */
+    async function clickAndClassify(target, waitMs) {
+      const base = snap();
+      const t0 = Date.now();
+      errors.length = 0;
+      let threw = null;
+      try { target.click(); } catch (e) { threw = String(e?.message || e); }
+      await wait(waitMs);
+      const after = snap();
+      const errs = errorsSince(t0).map(e => e.msg);
+      const realErrs = errs.filter(m => !ENV_RE.test(m));
+      let eff;
+      if (threw) eff = 'exception';
+      else if (realErrs.length) eff = 'exception';
+      else if (after.fx.nav > base.fx.nav) eff = 'navigate';
+      else if (after.overlays > base.overlays) eff = 'modal';
+      else if (hasNewToast(base, after)) eff = 'toast';
+      else if (after.app !== base.app) eff = 'dom';
+      else if (after.ls !== base.ls) eff = 'state';
+      else if (after.fx.dl > base.fx.dl) eff = 'download';
+      else if (after.fx.print > base.fx.print) eff = 'print';
+      else if (after.fx.clip > base.fx.clip) eff = 'clipboard';
+      else if (after.iframes > base.iframes) eff = 'printdoc';
+      else if (errs.length) eff = 'env-ok';
+      else eff = 'dead';
+      return { eff, after, errs, threw, base };
+    }
 
-    let effect;
-    if (threw) effect = 'exception';
-    else if (realErrs.length) effect = 'exception';
-    else if (after.fx.nav > base.fx.nav) effect = 'navigate';
-    else if (after.overlays > base.overlays) effect = 'modal';
-    else if (hasNewToast(base, after)) effect = 'toast';
-    else if (after.app !== base.app) effect = 'dom';
-    else if (after.ls !== base.ls) effect = 'state';
-    else if (after.fx.dl > base.fx.dl) effect = 'download';
-    else if (after.fx.print > base.fx.print) effect = 'print';
-    else if (after.fx.clip > base.fx.clip) effect = 'clipboard';
-    else if (after.iframes > base.iframes) effect = 'printdoc';
-    else if (errs.length) effect = 'env-ok';
-    else effect = 'dead';
+    const first = await clickAndClassify(el, 160);
+    let effect = first.eff;
+    const after = first.after, errs = first.errs, threw = first.threw, base = first.base;
+
+    /* ★ 假 dead 防護：jsdom 有時遲過 160ms 先報「Not implemented: window.open」
+       （公開頁預覽就係咁：第一次撳落去好似冇反應），又或者上一輪嘅重排打斷咗 render。
+       真 dead 掣撳兩次都應該冇反應，所以「dead」一律再撳一次（重新 query，
+       因為 render() 可能已經換咗個元素），第二次都話 dead 先算數。 */
+    if (effect === 'dead') {
+      const scopeNow = typeof scopeSel === 'string' ? doc.querySelector(scopeSel) : scopeSel;
+      const again = scopeNow ? [...scopeNow.querySelectorAll('button:not([disabled]), input[type=submit], input[type=button], a[href]')]
+        .find(x => x.isConnected && btnKey(x) === btnKey(el)) : null;
+      if (again) {
+        const second = await clickAndClassify(again, 320);
+        if (second.eff !== 'dead') effect = second.eff;
+      }
+    }
 
     if (effect === 'modal') {
       const fresh = [...doc.querySelectorAll('.overlay')][doc.querySelectorAll('.overlay').length - 1];
@@ -384,14 +424,16 @@ for (const tab of tabIds) {
 }
 
 /* 2) 側邊欄／頂欄／手機 bottom bar（審埋最後，因為撳佢哋會轉去別的分頁）。
-   先跳去一個「唔係而家分頁」嘅 hash，否則撳返目前 active 嘅 nav 掣冇變化＝假 dead。 */
-window.location.hash = SECTION === 'finance' ? '#/meetings' : '#/finance';
+   先跳去一個「唔係而家分頁」嘅 hash，否則撳返目前 active 嘅 nav 掣冇變化＝假 dead。
+   resetHash：每個掣撳之前都返返呢個 hash（見 auditScope 上面註解）。 */
+const awayHash = SECTION === 'finance' ? '#/meetings' : '#/finance';
+window.location.hash = awayHash;
 await wait(200);
-await auditScope('nav.sidebar', 'shell:sidebar');
+await auditScope('nav.sidebar', 'shell:sidebar', { resetHash: awayHash });
 await closeOverlaysTo(0);
-await auditScope('header.topbar', 'shell:topbar');
+await auditScope('header.topbar', 'shell:topbar', { resetHash: awayHash });
 await closeOverlaysTo(0);
-await auditScope('nav.tabbar', 'shell:tabbar');
+await auditScope('nav.tabbar', 'shell:tabbar', { resetHash: awayHash });
 await closeOverlaysTo(0);
 
 /* ---------- 輸出 ---------- */

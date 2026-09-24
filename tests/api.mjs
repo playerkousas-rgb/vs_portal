@@ -127,7 +127,7 @@ ok('unitsHandler 回傳 units 物件', !!resJson?.units?.TEST9);
       scriptUrl: 'https://script.google.com/macros/s/AKfycbTESTTESTTESTTESTTESTTESTTESTTEST/exec' }))
       && calls[calls.length - 1].target === ADMIN);
   ok('轉發 payload 帶 appType=82venture ＋ appName（同 VSBADGE 共用收件匣，可以分辨）',
-    sent.appType === '82venture' && sent.appName === '執委管理系統', JSON.stringify({ appType: sent.appType, appName: sent.appName }));
+    sent.appType === '82venture' && sent.appName === '深資童軍管理系統', JSON.stringify({ appType: sent.appType, appName: sent.appName }));
   ok('轉發 payload 帶齊旅團編號／名稱／後端／API Key／聯絡人／主系統網址',
     sent.troopId === '0100' && sent.troopName === '第一百旅深資童軍團'
     && /\/exec$/.test(sent.scriptUrl) && sent.apiKey === 'K1' && sent.contact === 'a@b.hk'

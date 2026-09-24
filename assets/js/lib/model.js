@@ -250,11 +250,18 @@ export function statusBadge(s) {
 
 /* ---------------- 團員 / 用戶 ---------------- */
 /**
- * 身份（呢個系統管嘅係「用戶」：領袖、執委、團員都可能喺名冊入面）
+ * 身份（呢個系統管嘅係「用戶」：團長、領袖、執委、團員都可能喺名冊入面）
  * identity = 系統身份（決定權限層級、顯示）
  * role     = 團內職位（自由文字，例：主席 / 司庫 / 小隊長）
+ *
+ * ★ 2026-09-24 團長定案：**身份即帳號**。
+ *   全系統冇「領袖共用帳戶」「執行委員會帳號」呢回事 —— 每人一條個人紀錄，
+ *   登入之後嘅權限＝佢喺名冊嘅身份。要換權限＝改身份（見 members.js「身份」欄）。
+ *   `chief`（團長）每個旅團**永遠只有一位**，係最高權限，可以轉移。
+ *   冇人自動升級做 chief：一定係有人明確設定／由現任團長轉移。
  */
 export const IDENTITIES = {
+  chief:  { l: '團長', short: '團長', c: 'b-warn', level: 4 },
   leader: { l: '領袖', short: '領袖', c: 'b-brand', level: 3 },
   exco:   { l: '執委', short: '執委', c: 'b-info', level: 2 },
   member: { l: '團員', short: '團員', c: 'b-grey', level: 1 }
@@ -271,6 +278,9 @@ export function identityOf(m) {
 export function guessIdentity(m) {
   if (m?.identity && IDENTITIES[m.identity]) return m.identity;
   const t = `${m?.role || ''} ${(m?.tags || []).join(' ')}`.toLowerCase();
+  /* ★ 注意：呢度**永遠唔會**自動產生 'chief'（團長）——
+     團長每個旅團只有一位，一定係人手設定／由前任轉移，
+     舊資料嘅「團長」職位一律先當領袖（否則升級會變出幾個團長）。 */
   if (/(團長|領袖|leader|scouter|隊長)/.test(t)) return 'leader';
   if (/(執委|執行委員會|exco|committee|主席|司庫|文書)/.test(t)) return 'exco';
   return 'member';
@@ -288,8 +298,35 @@ export function activeMembers() { return members().filter(m => m.status !== 'alu
    所以唔可以一刀切要求所有人都有 YMIS —— 領袖本來就唔會有，
    把領袖當「未填 YMIS」係計錯。呢度按身份揀啱嘅 key。 */
 
-/** 呢位用戶**應該**用邊種外部 key（領袖→email，其他→ymis） */
-export function expectedKeyKind(m) { return identityOf(m) === 'leader' ? 'email' : 'ymis'; }
+/** 身份係唔係「成人領袖」類（團長／領袖）—— 佢哋對外系統用 Email，唔用 YMIS */
+export function isAdultIdentity(m) { const k = identityOf(m); return k === 'chief' || k === 'leader'; }
+
+/** 呢位用戶**應該**用邊種外部 key（團長／領袖→email，其他→ymis） */
+export function expectedKeyKind(m) { return isAdultIdentity(m) ? 'email' : 'ymis'; }
+
+/* ---------- 個人登入帳號（身份即帳號） ----------
+   一個人有三種可能嘅登入代號，優先次序：email → loginId（自訂帳號名）→ ymis。
+   ★ 冇「共用帳號」：呢三個欄位全部屬於**某一個人**嘅名冊紀錄，
+     所以登入之後嘅權限就係佢自己嘅身份（改身份＝改權限）。 */
+export function loginIdOf(m) {
+  const email = String(m?.email || '').trim();
+  const lid = String(m?.loginId || '').trim();
+  const ymis = String(m?.ymis || '').trim();
+  return email || lid || ymis || '';
+}
+/** 用登入代號（email／loginId／ymis，大小寫唔拘）搵名冊入面嘅人 */
+export function memberByLogin(id) {
+  const k = String(id || '').trim().toLowerCase();
+  if (!k) return null;
+  return members().find(m => {
+    if (m.status === 'alumni') return false;
+    return [m.email, m.loginId, m.ymis]
+      .some(v => String(v || '').trim().toLowerCase() === k);
+  }) || null;
+}
+/** 團長（每個旅團最多一位）—— 冇設定就回 null */
+export function chief() { return members().find(m => identityOf(m) === 'chief') || null; }
+export function hasChief() { return !!chief(); }
 
 /** 用戶嘅跨系統 key（按身份揀：領袖 email 優先，團員／執委 YMIS 優先） */
 export function memberKey(m) {
@@ -311,8 +348,8 @@ export function memberKey(m) {
 export function keyCoverage(list = members(), { youthOnly = false } = {}) {
   if (youthOnly) list = list.filter(m => !progressIgnored(m));
   const total = list.length;
-  const leaders = list.filter(m => identityOf(m) === 'leader');
-  const youth = list.filter(m => identityOf(m) !== 'leader');
+  const leaders = list.filter(m => isAdultIdentity(m));
+  const youth = list.filter(m => !isAdultIdentity(m));
   const withYmis = list.filter(m => String(m.ymis || '').trim()).length;
   const withEmail = list.filter(m => String(m.email || '').trim()).length;
   const withSystemId = list.filter(m => String(m.systemId || '').trim()).length;

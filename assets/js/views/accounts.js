@@ -11,9 +11,11 @@ import { load, commit, collection, add, update, remove, exportAll, importAll, re
 import {
   ROLES, PERMS, PERM_GROUPS, accounts, accountById, can, canChangePasswordOf, canManageRole,
   createAccount, createAccountServer, changePassword, changeUsername, changeOwnPassword, setAccountActive, deleteAccount, deleteAccountServer, resetAccountPasswordServer, restoreAccountServer,
-  current, currentRole, isSuper, isMe, displayName, RESERVED_USERNAMES, TEMP_PASSWORD
+  current, currentRole, isSuper, isMe, displayName, RESERVED_USERNAMES, TEMP_PASSWORD,
+  setMemberIdentity, setMemberHubPassword, canClaimChief, claimChief, openMemberAccount
 } from '../lib/auth.js';
-import { profile, settings, members, memberName, money, balance, tx, invItems } from '../lib/model.js';
+import { loginIdOf } from '../lib/model.js';
+import { profile, settings, members, memberName, money, balance, tx, invItems, chief, identityOf, identityLabel, IDENTITIES, activeMembers } from '../lib/model.js';
 import * as fiscalLib from '../lib/fiscal.js';
 import { unitList, unitEntry, isLocalUnit, saveLocalUnit, removeLocalUnit, loadRegistry, registry } from '../lib/units.js';
 import { envUnitTemplate } from '../lib/onboard.js';
@@ -27,9 +29,11 @@ let tab = 'accounts';
 export function title() { return '帳號與系統'; }
 
 const PASSWORD_RULES = [
-  ['超級管理員（隱藏）', '可以改領袖、執委任何帳戶嘅密碼；可以開／刪帳戶。', '超管自己嘅密碼係固定嘅，冇人可以改。'],
-  ['領袖', '可以改自己嘅密碼，亦可以改執委會各成員嘅密碼；可以開／刪執委帳戶。', '唔可以改其他領袖嘅密碼。'],
-  ['執委會', '只可以改自己嘅密碼。', '唔可以改其他執委或領袖嘅密碼。']
+  ['超級管理員（隱藏）', '可以改任何人嘅密碼。', '超管自己嘅密碼係固定嘅，冇人可以改。'],
+  ['團長（每團一位）', '可以改自己、領袖、執委、團員嘅密碼；可以設定／轉移身份。', '唔可以改超管密碼；團長身份只可以轉移，唔可以直接改低。'],
+  ['領袖', '可以改自己嘅密碼，亦可以改執委／團員嘅密碼；可以改身份（團長除外）。', '唔可以改其他領袖或團長嘅密碼。'],
+  ['執委', '只可以改自己嘅密碼，可以改資料。', '唔可以改身份（＝唔可以改權限）。'],
+  ['團員', '只可以改自己嘅密碼。', '只入團員入口（members.html）。']
 ];
 
 export function render(params) {
@@ -38,11 +42,11 @@ export function render(params) {
   return `
   ${pageHead({
     title: '帳號與系統',
-    sub: `${profile().name || ''} · 目前身份：${displayName()}（${ROLES[currentRole()]?.name || ''}）`,
+    sub: `${profile().name || ''} · 目前身份：${displayName()}（${ROLES[currentRole()]?.name || ''}）· 一個人一個帳號（冇共用帳戶）`,
     actions: `${can('docs.view') ? `<button class="btn btn-sm" data-go="#/docs">${icon('note', 15)} 教學</button>` : ''}`
   })}
   ${tabs([
-    ['accounts', '帳戶', accounts().length],
+    ['accounts', '身份與帳號', activeMembers().length],
     ['perms', '權限總表'],
     ['unit', '旅團設定'],
     ['data', '資料管理'],
@@ -61,44 +65,52 @@ export function render(params) {
    帳戶
    ============================================================ */
 function accountsView() {
-  const list = accounts();
-  const leaders = list.filter(a => a.role === 'leader');
-  const exco = list.filter(a => a.role === 'exco');
-
-  return `
-  <div class="grid g-3 mb-16">
-    ${stat('領袖帳戶', String(leaders.length), leaders.map(a => a.name).join('、') || '—')}
-    ${stat('執委帳戶', String(exco.length), exco.map(a => a.name).join('、') || '—')}
-    ${stat('目前身份', ROLES[currentRole()]?.short || '', can('admin.accounts') ? '可以管理帳戶' : '只可以改自己密碼')}
-  </div>
-
-  ${noteBox(`<b>密碼權限：</b>超管可改領袖同執委 → 領袖可改自己同執委 → 執委只可改自己。
-    超管係隱藏帳戶，唔會顯示喺呢個名單，任何人都改唔到佢個密碼。`, 'brand')}
-  <div class="mt-16"></div>
-
-  <div class="row-between mb-16">
-    <div class="sm muted">每個團員／領袖可以有自己的登入帳戶（登入頁只可以揀「領袖」或「執委」身份）</div>
-    ${can('admin.accounts') ? `<button class="btn btn-sm btn-primary" data-act="add-account">${icon('plus', 15)} 新增帳戶</button>` : ''}
-  </div>
-
-  <div class="grid g-2 mb-16">
-    ${['leader', 'exco'].map(role => `
+  const list = accounts();                     // 舊版個人帳戶（向下兼容）
+  const all = activeMembers();
+  const cnt = k => all.filter(m => identityOf(m) === k).length;
+  const c = chief();
+  const rows = ['chief', 'leader', 'exco', 'member'].map(k => `
       <div class="card">
         <div class="card-head">
           <div class="row gap-10">
-            <span class="avatar" style="background:${ROLES[role].color}">${icon(role === 'leader' ? 'flag' : 'users', 17)}</span>
-            <div><div class="card-title">${ROLES[role].name}</div>
-              <div class="card-sub">${ROLES[role].desc}</div></div>
+            <span class="avatar" style="background:${ROLES[k].color}">${icon(k === 'chief' ? 'sparkle' : k === 'leader' ? 'flag' : 'users', 17)}</span>
+            <div><div class="card-title">${ROLES[k].name}${k === 'chief' ? '（每團一位）' : ''}</div>
+              <div class="card-sub">${ROLES[k].desc}</div></div>
           </div>
-          ${canManageRole(role) ? `<button class="btn btn-xs" data-add-role="${role}">${icon('plus', 13)} 新增</button>` : ''}
+          ${k === 'chief' && !c && canClaimChief() ? `<button class="btn btn-xs btn-primary" data-act="claim-chief">${icon('sparkle', 13)} 認領</button>` : ''}
+          ${k !== 'chief' && can('member.create') ? `<button class="btn btn-xs" data-go="#/members/new">${icon('plus', 13)} 新增</button>` : ''}
         </div>
         <div>
-          ${accounts({ role }).map(a => accountRow(a)).join('') || empty('users', '未有帳戶')}
+          ${all.filter(m => identityOf(m) === k).map(m => personRow(m)).join('') || empty('users', k === 'chief' ? '仲未設定團長（開戶嗰個就係團長）' : '未有人')}
         </div>
-      </div>`).join('')}
+      </div>`).join('');
+
+  return `
+  <div class="grid g-4 mb-16">
+    ${stat('團長', String(cnt('chief')), c ? c.name : '未設定')}
+    ${stat('領袖', String(cnt('leader')), '電郵登入')}
+    ${stat('執委', String(cnt('exco')), 'YMIS 登入')}
+    ${stat('團員', String(cnt('member')), '入團員入口')}
   </div>
 
-  ${(load()?.db?.deletedAccounts || []).length && can('admin.accounts') ? `<div class="card mt-16"><div class="card-head"><div><div class="card-title">可復原的已刪除帳戶</div><div class="card-sub">只保留帳戶復原資料，不包含舊密碼</div></div></div>${(load()?.db?.deletedAccounts || []).map(d => `<div class="row-between py-8"><span>${esc(d.name || d.email || d.username)}</span><button class="btn btn-xs" data-restore="${esc(d.email || d.username)}">復原（1234）</button></div>`).join('')}</div>` : ''}
+  ${noteBox(`<b>身份即帳號（2026-09-24 定案）：</b>唔會再有「領袖共用帳戶」或者「執行委員會帳號」——
+    每個人都係名冊入面嘅<b>一條紀錄</b>，登入代號係佢自己嘅<b>電郵 / 自訂帳號 / YMIS</b>，
+    密碼就係佢自己嗰個。要換權限＝去「用戶與身份」改<b>身份</b>（換屆唔使開新帳戶、唔使夾密碼）。
+    <br>團長：每個旅團<b>永遠只有一位</b>，最高權限，可以轉移。`, 'brand')}
+  <div class="mt-16"></div>
+
+  ${!c && canClaimChief() ? `<div class="note-box warn mb-16">${icon('alert', 15)}<div>
+    <b>仲未設定團長</b> —— 第一個設定嘅人（開戶嗰位）就係團長，之後可以轉移。
+    <button class="btn btn-sm btn-primary mt-8" data-act="claim-chief">${icon('sparkle', 14)} 我係團長（認領身份）</button>
+  </div></div>` : ''}
+
+  <div class="grid g-2 mb-16">${rows}</div>
+
+  ${list.length && can('admin.accounts') ? `<div class="card mb-16">
+    <div class="card-head"><div><div class="card-title">舊版個人帳戶（向下兼容）</div>
+      <div class="card-sub">2026-09-24 之前開落嘅帳戶。新做法唔會再開呢種帳戶 —— 改身份就得。</div></div></div>
+    <div>${list.map(a => accountRow(a)).join('')}</div>
+  </div>` : ''}
 
   <div class="card">
     <div class="card-head"><div><div class="card-title">密碼規則</div>
@@ -106,10 +118,34 @@ function accountsView() {
     <div class="scroll-x">
       <table class="table table-compact">
         <thead><tr><th style="width:150px">身份</th><th>可以改邊個嘅密碼</th><th>限制</th></tr></thead>
-        <tbody>${PASSWORD_RULES.map(([who, can, limit]) => `<tr>
-          <td class="semibold">${esc(who)}</td><td class="sm">${esc(can)}</td><td class="sm muted">${esc(limit)}</td></tr>`).join('')}
+        <tbody>${PASSWORD_RULES.map(([who, canDo, limit]) => `<tr>
+          <td class="semibold">${esc(who)}</td><td class="sm">${esc(canDo)}</td><td class="sm muted">${esc(limit)}</td></tr>`).join('')}
         </tbody>
       </table>
+    </div>
+  </div>`;
+}
+
+/** 名冊入面一個人嘅一行（帳號／身份管理用） */
+function personRow(m) {
+  const ident = identityOf(m);
+  const accId = 'member:' + m.id;
+  const editable = canChangePasswordOf(accId);
+  const me = current()?.memberId === m.id;
+  const login = loginIdOf(m);
+  return `
+  <div class="list-item">
+    <span class="avatar avatar-sm" style="background:${ROLES[ident]?.color || '#7B2233'}">${esc(String(m.name || '').slice(-2))}</span>
+    <div class="li-main">
+      <div class="li-t">${esc(m.name)} ${me ? '<span class="tag">你</span>' : ''}${m.role ? ` <span class="xs faint">${esc(m.role)}</span>` : ''}</div>
+      <div class="li-s">登入 <b class="mono">${esc(login || '（未設定 —— 去「編輯」填電郵／YMIS）')}</b>
+        ${m.hubPw?.hash || m.hubPassword ? '' : ' · <span class="tag">未設密碼（首次 1234）</span>'}
+        ${m.hubPwUpdatedAt ? ` · ${esc(m.hubPwUpdatedAt)} 改過密碼` : ''}</div>
+    </div>
+    <div class="row gap-4">
+      ${editable ? `<button class="btn btn-xs" data-mpw="${m.id}">${icon('key', 13)} 密碼</button>` : ''}
+      ${can('member.edit') ? `<button class="btn btn-xs btn-ghost" data-medit="${m.id}" title="編輯 / 改身份">${icon('edit', 13)}</button>` : ''}
+      ${can('admin.chief') && ident !== 'chief' ? `<button class="btn btn-xs btn-ghost" data-mchief="${m.id}" title="設為團長（轉移）">${icon('sparkle', 13)}</button>` : ''}
     </div>
   </div>`;
 }
@@ -139,7 +175,7 @@ function accountRow(a) {
    權限總表
    ============================================================ */
 function permsView() {
-  const cols = isSuper() ? ['super', 'leader', 'exco'] : ['leader', 'exco'];
+  const cols = isSuper() ? ['super', 'chief', 'leader', 'exco'] : (currentRole() === 'chief' ? ['chief', 'leader', 'exco', 'member'] : ['leader', 'exco']);
   return `
   <div class="card">
     <div class="card-head"><div><div class="card-title">權限總表</div>
@@ -450,10 +486,72 @@ function mockView() {
 export function mount(root) {
   root.querySelectorAll('[data-go]').forEach(el => el.addEventListener('click', () => go(el.dataset.go)));
 
+  /* ★ 名冊個人操作（身份與帳號分頁）：密碼 / 編輯 / 設為團長 */
+  root.querySelectorAll('[data-mpw]').forEach(b => b.addEventListener('click', async () => {
+    const m = members().find(x => x.id === b.dataset.mpw);
+    if (!m) return;
+    const r = await modal({
+      title: `設定密碼：${m.name}`, sub: '設定之後即刻生效',
+      body: `<div class="field"><label class="label">新密碼（最少 4 個字）</label>
+          <input class="input" id="sp1" type="password" autocomplete="new-password"></div>
+        <div class="field mt-12"><label class="label">再輸入一次</label>
+          <input class="input" id="sp2" type="password" autocomplete="new-password"></div>
+        <div id="spErr" class="err mt-8"></div>`,
+      actions: [{ label: '取消', class: 'btn', value: null },
+        { label: '儲存', class: 'btn-primary', onClick: el => {
+          const p1 = el.querySelector('#sp1').value, p2 = el.querySelector('#sp2').value;
+          const box = el.querySelector('#spErr');
+          if (p1.length < 4) { box.textContent = '最少 4 個字'; box.style.display = 'block'; return false; }
+          if (p1 !== p2) { box.textContent = '兩次輸入唔一樣'; box.style.display = 'block'; return false; }
+          return p1;
+        } }]
+    });
+    if (!r) return;
+    const res = await setMemberHubPassword(m.id, r);
+    toast(res.ok ? '密碼已設定' : res.msg, res.ok ? 'ok' : 'err');
+    refresh();
+  }));
+  root.querySelectorAll('[data-medit]').forEach(b => b.addEventListener('click', () => go('#/members/edit/' + b.dataset.medit)));
+  root.querySelectorAll('[data-mchief]').forEach(b => b.addEventListener('click', async () => {
+    const m = members().find(x => x.id === b.dataset.mchief);
+    if (!m) return;
+    const cur = chief();
+    if (!(await confirmDlg({
+      title: '轉移團長身份', okText: '確定轉移',
+      message: `將團長身份轉移畀 <b>${esc(m.name)}</b>？` + (cur ? `<br>${esc(cur.name)} 會變返「領袖」。` : '')
+    }))) return;
+    const res = await setMemberIdentity(m.id, 'chief');
+    toast(res.ok ? `已將團長身份轉移畀 ${m.name}` : res.msg, res.ok ? 'ok' : 'err');
+    refresh();
+  }));
+
   root.querySelectorAll('[data-act]').forEach(b => b.addEventListener('click', async () => {
     const act = b.dataset.act;
 
-    /* --- 帳戶 --- */
+    /* --- 身份 / 帳號 --- */
+    if (act === 'claim-chief') {
+      const s = current();
+      const me = s?.memberId ? members().find(x => x.id === s.memberId) : null;
+      const r = await modal({
+        title: '認領團長身份', sub: '每個旅團永遠只有一位團長（最高權限，可以轉移）',
+        body: me
+          ? `<p class="sm">你係 <b>${esc(me.name)}</b>。確定之後你就係團長。</p>`
+          : `<div class="field"><label class="label">姓名</label><input class="input" id="ccName"></div>
+             <div class="field mt-12"><label class="label">電郵（之後用呢個登入）</label><input class="input" id="ccEmail" type="email"></div>`,
+        actions: [{ label: '取消', class: 'btn', value: null },
+          { label: '確定', class: 'btn-primary', onClick: el => {
+            if (me) return { name: me.name };
+            const name = el.querySelector('#ccName')?.value.trim() || '';
+            if (!name) return false;
+            return { name, email: el.querySelector('#ccEmail')?.value.trim() || '' };
+          } }]
+      });
+      if (!r) return;
+      const info = me ? { name: me.name } : r;
+      const res = await claimChief(info);
+      toast(res.ok ? '已設定團長身份' : res.msg, res.ok ? 'ok' : 'err');
+      refresh(); return;
+    }
     if (act === 'add-account') return addAccountForm('exco');
 
     /* --- 旅團 --- */

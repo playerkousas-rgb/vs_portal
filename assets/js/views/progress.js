@@ -2,10 +2,10 @@
    progress.js — 進度紀錄（一個後端、兩個前端）
    ------------------------------------------------------------
    團長 2026-09-16 更正設計：
-     · 執委管理系統**唔需要連去任何其他系統**（唔開分頁、唔用 portal）
+     · 深資童軍管理系統**唔需要連去任何其他系統**（唔開分頁、唔用 portal）
      · 重點係：進度資料本來就係寫入**旅團自己嘅後端**（一個 Google Sheet
        ＋ 一支 Apps Script /exec）——後端只有一個，前端有兩個：
-          ① 執委管理系統（呢度）   ② 進度前端（團員／領袖用）
+          ① 深資童軍管理系統（呢度）   ② 進度前端（團員／領袖用）
      · 所以呢邊只做兩件事：讀後端、寫後端。API Key 對得上就等於執委身份。
 
    讀：POST /api/progress { action:'load' }           → GET 後端 ?action=load
@@ -24,7 +24,7 @@ import { pageHead, tabs, stat, empty, noteBox, kv, chipbar, progressBar } from '
 import {
   progressCfg, setProgressCfg, progressConfigured, progressIsRegistered,
   loadRemote, loadItems, saveTicks, flattenItems, summarizeRemote, memberDetail,
-  reviewRequest, reviewLogRequest
+  reviewRequest, reviewLogRequest, diagnoseBackend, diagVerdict, maskBackendUrl
 } from '../lib/progress.js';
 
 /* ---------- 狀態 ---------- */
@@ -38,6 +38,7 @@ let selBadge = 'all';     // 勾選：獎章篩選
 let pending = {};         // { 'ymis|itemId': true/false } 未儲存嘅改動
 let tickDate = '';        // 勾選日期
 let memberSearch = '';
+let diag = null;          // ★ 後端自查結果（見 runDiag）
 let checking = false;     // 測試連線中
 let reviewing = false;    // 審批中
 let reviewDate = '';      // 審批：確認日期（留空＝用申報日期）
@@ -81,7 +82,7 @@ function needSetup() {
       <div class="card-sub">一個後端、兩個前端 —— 進度資料就喺旅團自己嘅 Google Sheet，唔使去其他系統</div></div></div>
     <div style="padding:16px 18px" class="sm muted">
       ${noteBox('<b>設計係咁：</b>旅團只有<b>一個後端</b>（Google Sheet ＋ Apps Script）——'
-        + '執委管理系統同進度前端係<big>兩個前端</big>，共用同一份資料。所以呢度只係「讀／寫你嘅後端」，'
+        + '深資童軍管理系統同進度前端係<big>兩個前端</big>，共用同一份資料。所以呢度只係「讀／寫你嘅後端」，'
         + '唔會連去任何其他網站。', 'brand')}
       <ol style="padding-left:18px;line-height:1.95" class="mt-8">
         <li>打開旅團嘅 Google Sheet → 擴充功能 → Apps Script</li>
@@ -108,7 +109,46 @@ function reviewCount() {
 
 const maskUrl = u => String(u || '').replace(/\/macros\/s\/[^/]+/, '/macros/s/…');
 
+/* ============================================================
+   ★ 2026-09-24 後端自查（團長：「人係讀到，但係個個都冇進度」）
+   ------------------------------------------------------------
+   同一個症狀可以有幾個完全唔同嘅成因，而且**全部喺旅團張 Sheet 度**，
+   前端自己睇唔到。所以呢度問後端（/api/progress → GET ?action=diag）：
+     · 呢支 /exec 係邊張 Sheet（自報）
+     · 認唔認得 diag（＝係唔係深資童軍管理系統嘅後端；唔認得＝舊版／另一支腳本）
+     · 有邊啲分頁、每張幾多行、進度追蹤有幾個 YMIS／項目、同名冊對唔對得上
+   然後直接講結論＋要做乜，唔使人自己猜。
+   ============================================================ */
+async function runDiag({ quiet = false } = {}) {
+  if (!progressConfigured()) { toast('未設定進度後端', 'info'); return null; }
+  diag = { loading: true, at: '' };
+  if (!quiet) refresh();
+  const r = await diagnoseBackend();
+  diag = r.ok
+    ? { loading: false, at: new Date().toLocaleString('zh-HK', { hour12: false }), ...r.data }
+    : { loading: false, at: new Date().toLocaleString('zh-HK', { hour12: false }), error: r.error || '自查失敗' };
+  refresh();
+  return diag;
+}
+
 /* ---------- 總覽 ---------- */
+/** ★「人讀到、但個個冇進度」橫額 —— 直接講出下一步，唔使人自己猜 */
+function emptyProgressBanner() {
+  if (!remote) return '';
+  const sum = summarizeRemote(remote.data, { catalog, roster: members() });
+  if (!sum.memberCount || sum.withProgress > 0) return '';
+  const raw = remote.data?.progress || {};
+  const ticks = Object.values(raw).reduce((a, p) => a + Object.keys(p || {}).length, 0);
+  return `<div class="note-box warn">${icon('alert', 15)}<div>
+    <b>讀到 ${sum.memberCount} 位成員，但係冇任何人有進度紀錄</b>
+    <div class="sm mt-4">後端回嘅「進度追蹤」係空嘅（${ticks} 格）——所以每個人都顯示 0。
+    多數係：你填嘅 <code>/exec</code> 唔係進度資料嗰張 Sheet／「進度追蹤」分頁唔見咗或者空。</div>
+    <div class="row gap-8 mt-8 wrap">
+      <button class="btn btn-sm btn-primary" data-act="diag">${icon('search', 15)} 後端資料檢查</button>
+      <button class="btn btn-sm" data-act="settings">${icon('settings', 15)} 檢查設定</button>
+    </div></div></div>`;
+}
+
 function overviewView() {
   if (!progressConfigured()) return needSetup();
   if (errMsg) {
@@ -132,6 +172,8 @@ function overviewView() {
     ${stat('平均完成率', S.avgRate === null ? '—' : S.avgRate + '%', '以全團 × 全部項目計', S.avgRate >= 50 ? 'ok' : '')}
     ${stat('待確認', String(pendingReqs.length), pendingReqs.length ? '團員申報、等領袖確認' : '冇待確認', pendingReqs.length ? 'warn' : 'ok')}
   </div>
+
+  ${emptyProgressBanner()}
 
   ${S.unmatched ? `<div class="note-box mb-16">${icon('alert', 15)}<div>
     有 <b>${S.unmatched}</b> 位後端成員喺本系統名冊搵唔到（多數係未填 YMIS）。
@@ -453,9 +495,13 @@ function settingsView() {
           <div class="row gap-8 wrap mt-12">
             <button class="btn btn-primary" data-act="save-cfg">${icon('save', 16)} 儲存</button>
             <button class="btn" data-act="test">${icon('send', 16)} ${checking ? '測試中…' : '測試連線'}</button>
+            <button class="btn" data-act="diag">${icon('search', 16)} 後端資料檢查</button>
             <button class="btn" data-act="reload">${icon('refresh', 16)} 重新讀取</button>
             <button class="btn btn-ghost" data-act="clear-cfg">${icon('trash', 15)} 清除自訂設定</button>
           </div>
+          ${noteBox('★ 呢啲設定係<b>跟旅團資料庫走</b>嘅：撳完「儲存」要再撳<b>頂部「儲存到後端（N）」</b>，'
+            + '無痕視窗／另一部機（新裝置）先會自動有同一組設定。<b>冇撳</b>嘅話，只有呢部機讀得到 ——'
+            + '換部機就會好似「無痕讀唔到後端」。', 'warn')}
           <div class="hint mt-8"><b>點填：</b>① 喺 Apps Script 撳「部署 → 管理部署」複製 <code>/exec</code> 網址；
             ② 喺 Apps Script 執行 <code>showApiKey()</code> 複製 API Key；③ 貼上面兩個格 → 撳「測試連線」見到成員就成功。
             <div class="xs faint mt-4">填完存在旅團自己嘅資料（跟 JSON 備份走），唔會交畀第三方。
@@ -596,7 +642,7 @@ export function mount(root, params) {
     if (!changes.length) return;
     const onCount = changes.filter(c => !c.uncomplete).length;
     const offCount = changes.length - onCount;
-    const r = await saveTicks(changes, current()?.name || '執委管理系統');
+    const r = await saveTicks(changes, current()?.name || '深資童軍管理系統');
     if (!r.ok) { toast(r.error || '儲存失敗', 'err'); return; }
     const processed = r.data?.processed ?? changes.length;
     toast(`已寫入後端：新增 ${onCount} 項、取消 ${offCount} 項（後端處理 ${processed} 項）`, 'ok');
@@ -634,7 +680,7 @@ export function mount(root, params) {
     });
     if (!yes) return;
     reviewing = true; refresh();
-    const reviewer = current()?.name || '執委管理系統';
+    const reviewer = current()?.name || '深資童軍管理系統';
     const r = kind === 'log'
       ? await reviewLogRequest(id, { decision, reviewer })
       : await reviewRequest(id, { decision, reviewer, confirmedDate: reviewDate });
@@ -658,7 +704,10 @@ export function mount(root, params) {
   root.querySelector('[data-act="save-cfg"]')?.addEventListener('click', () => {
     if (!can('progress.tick')) { toast('只有領袖／執委可以改設定', 'err'); return; }
     readCfg();
-    toast('已儲存設定', 'ok');
+    const pend = Number(load()?.sync?.pending || 0);
+    toast(pend > 0
+      ? '已儲存喺呢部機 —— 記得撳頂部「儲存到後端（N）」，其他裝置／無痕先讀得到'
+      : '已儲存設定', 'ok');
     tab = 'overview';
     fetchAll();
   });
@@ -677,6 +726,23 @@ export function mount(root, params) {
       toast(r.error || '連線失敗', 'err');
     }
     refresh();
+  });
+  root.querySelector('[data-act="diag"]')?.addEventListener('click', async () => {
+    const d = await runDiag({ quiet: true });
+    if (!d) return;
+    const sum = remote
+      ? summarizeRemote(remote.data, { catalog, roster: members() })
+      : { memberCount: 0, withProgress: 0 };
+    const v = diagVerdict(d, { memberCount: sum.memberCount, withProgress: sum.withProgress });
+    const level = v.level === 'ok' ? 'ok' : 'warn';
+    await modal({
+      title: '後端資料檢查',
+      body: `<div class="note-box ${level} mb-12">${icon(v.level === 'ok' ? 'check' : 'alert', 15)}<div>
+          <b>${esc(v.title)}</b></div></div>
+        ${v.lines.length ? `<div class="sm muted col gap-4 mb-12">${v.lines.map(l => `<div>· ${esc(l)}</div>`).join('')}</div>` : ''}
+        ${v.steps.length ? `<div class="sm"><b>要做乜：</b><ol style="padding-left:18px;line-height:1.9">${v.steps.map(x => `<li>${esc(x)}</li>`).join('')}</ol></div>` : ''}`,
+      actions: [{ label: '知道', class: 'btn-primary', value: true }]
+    });
   });
   root.querySelector('[data-act="clear-cfg"]')?.addEventListener('click', async () => {
     if (!(await modal({

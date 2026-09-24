@@ -83,7 +83,11 @@ ok('模式正確', MODE === 'mock' ? store.isMock() === true : store.isMock() ==
 ok('旅團編號', String(store.currentUnit()) === (MODE === 'mock' ? 'MOCK' : '0082'), String(store.currentUnit()));
 
 const db = store.load();
-ok('帳戶名單存在（真實：2 / 示範：2）', db.accounts.length === 2, JSON.stringify(db.accounts.map(a => a.username)));
+/* ★ 2026-09-24 團長定案：唔再種「領袖共用帳戶／執行委員會帳號」。
+   帳戶＝名冊入面嘅人（身份即帳號），db.accounts 只留低舊資料庫嘅個人帳戶。 */
+ok('冇「共用帳戶」種子（領袖／執委都唔會自動開）',
+  !db.accounts.some(a => ['leader', 'exco'].includes(String(a.username).toLowerCase())),
+  JSON.stringify(db.accounts.map(a => a.username)));
 ok('帳戶名單永遠唔會有超管', !db.accounts.some(a => ['sheep', 'super'].includes(String(a.username).toLowerCase())));
 
 if (MODE === 'real') {
@@ -172,6 +176,10 @@ if (MODE === 'mock') {
 
 /* ---------- 權限 / 密碼規則 ---------- */
 section('登入與密碼權限');
+{
+  const { seedRosterRoles } = await import('./_roles.mjs');
+  await seedRosterRoles(store, auth);
+}
 const r1 = await auth.login('exco', 'sheep', TEST_SUPER_PASSWORD);
 ok('超管用隱藏帳密登入（即使揀執委）', r1.ok && r1.role === 'super', JSON.stringify(r1));
 ok('超管 session 唔會存帳號名', !auth.current()?.username);
@@ -180,41 +188,71 @@ ok('冇人可以改超管密碼', auth.canChangePasswordOf('super') === false);
 const rp = await auth.changePassword('super', 'xxxx');
 ok('改超管密碼會被拒絕', rp.ok === false, rp.msg);
 
-if (MODE === 'real') {
-  const bad = await auth.login('exco', 'leader', '8202');
-  ok('揀錯身份唔可以登入', bad.ok === false, bad.msg);
+{
+  /* ★ 一個入口：打自己嘅登入代號（email → loginId → ymis）＋ 密碼；
+       權限＝名冊身份（團長／領袖／執委／團員）—— 冇「身份」下拉要揀。 */
+  const bad = await auth.login('exco', 'leader', '唔啱嘅密碼');
+  ok('錯密碼唔可以登入', bad.ok === false, bad.msg);
+
   const lead = await auth.login('leader', 'leader', '8202');
-  ok('領袖帳號登入成功', lead.ok === true, JSON.stringify(lead));
-  ok('領袖可改自己密碼', auth.canChangePasswordOf('acc_leader') === true);
-  ok('領袖可改執委密碼', auth.canChangePasswordOf('acc_exco') === true);
+  ok('領袖以個人身份登入成功', lead.ok === true && lead.role === 'leader', JSON.stringify(lead));
+  ok('個人身份 session 指住名冊紀錄', String(auth.current()?.accountId || '').startsWith('member:'),
+    String(auth.current()?.accountId));
+
+  const chief = await auth.login('chief', 'chief', '8201');
+  ok('團長以個人身份登入成功（最高權限）', chief.ok === true && chief.role === 'chief', JSON.stringify(chief));
+  ok('團長擁有領袖全部權限 ＋ 轉移團長權', auth.can('member.edit') && auth.can('admin.chief') && auth.can('finance.create'));
+  ok('團長可以改領袖／執委密碼', auth.canChangePasswordOf('member:' + store.load().members.find(x => x.loginId === 'leader').id) === true);
 
   const ex = await auth.login('exco', 'exco', '8203');
-  ok('執委帳號登入成功', ex.ok === true);
-  ok('執委只可改自己密碼', auth.canChangePasswordOf('acc_exco') === true && auth.canChangePasswordOf('acc_leader') === false);
-
-  // 新增一個執委帳戶，測「執委不可改另一個執委」
-  const created = await auth.createAccount({ role: 'exco', username: 'testexco', password: 'test1234', name: '測試執委' });
-  ok('執委身份唔可以開新帳戶', created.ok === false, created.msg);
+  ok('執委以個人身份登入成功', ex.ok === true && ex.role === 'exco');
+  ok('執委唔可以改別人密碼（只可改自己）',
+    auth.canChangePasswordOf('member:' + store.load().members.find(x => x.loginId === 'leader').id) === false
+    && auth.canChangePasswordOf('member:' + store.load().members.find(x => x.loginId === 'exco').id) === true);
+  ok('執委唔可以改身份（只可以改資料）', auth.can('member.identity') === false && auth.canSetIdentityOf(store.load().members[0]) === false);
+  const victim = store.load().members.find(x => x.identity !== 'chief' && x.id !== auth.current()?.memberId);
+  const hijack = await auth.setMemberIdentity(victim.id, 'member');
+  ok('執委改人身份會被拒', hijack.ok === false, hijack.msg);
+  ok('執委冇權開新帳戶', auth.canManageRole('exco') === false && auth.canManageRole('leader') === false);
 
   await auth.login('leader', 'leader', '8202');
-  const created2 = await auth.createAccount({ role: 'exco', username: 'testexco', password: 'test1234', name: '測試執委' });
-  ok('領袖可以開執委帳戶', created2.ok === true, JSON.stringify(created2));
-  const newId = created2.account?.id;
-  ok('保留帳號名唔可以用（sheep）', (await auth.createAccount({ role: 'exco', username: 'sheep', password: 'abcd' })).ok === false);
+  ok('領袖改唔到團長身份（唔可以用下拉／直接改）',
+    auth.can('admin.chief') === false && auth.canSetIdentityOf({ identity: 'chief' }) === false);
+  const toChief = await auth.setMemberIdentity(store.load().members.find(x => x.loginId === 'exco').id, 'chief');
+  ok('領袖想扶人做團長 → 被拒（要現任團長交棒）', toChief.ok === false, toChief.msg);
 
-  await auth.login('exco', 'testexco', 'test1234');
-  ok('新執委可登入', !!auth.current());
-  ok('執委唔可以改另一個執委密碼', auth.canChangePasswordOf('acc_exco') === false && auth.canChangePasswordOf('acc_leader') === false);
-  ok('執委可以改自己', auth.canChangePasswordOf(newId) === true); // 自己帳戶 id === newId
-  const chg = await auth.changePassword('acc_exco', 'hacked');
-  ok('執委改其他執委密碼會失敗', chg.ok === false, chg.msg);
+  /* 團長轉移：永遠只會有一位；舊團長自動變返領袖 */
+  await auth.login('chief', 'chief', '8201');
+  const leaders = store.load().members.filter(x => x.identity === 'chief');
+  ok('而家只有一位團長', leaders.length === 1, String(leaders.length));
+  const target = store.load().members.find(x => x.loginId === 'leader');
+  const moved = await auth.setMemberIdentity(target.id, 'chief');
+  ok('團長可以交棒（設為團長）', moved.ok === true, moved.msg);
+  {
+    const nowChief = store.load().members.filter(x => x.identity === 'chief');
+    ok('★ 轉移之後一樣只有一位團長', nowChief.length === 1, String(nowChief.length));
+    ok('★ 舊團長自動變返領袖', store.load().members.find(x => x.loginId === 'chief').identity === 'leader');
+    ok('★ 新團長就係接棒嗰位', nowChief[0].id === target.id);
+    ok('★ 交棒之後新團長嘅 session 即刻係團長（唔使重新登入）', auth.current()?.role === 'chief');
+  }
+  const demote = await auth.setMemberIdentity(target.id, 'leader');
+  ok('★ 團長身份唔可以就咁改低（一定要交棒）', demote.ok === false, demote.msg);
+  /* 還原：而家嘅 session 就係新團長（未登出過）—— 由佢交返畀原本嗰位 */
+  const giveBack = await auth.setMemberIdentity(store.load().members.find(x => x.loginId === 'chief').id, 'chief');
+  ok('★ 可以交返畀原本嗰位（測試還原）', giveBack.ok === true, giveBack.msg);
+  ok('仲係只有一位團長', store.load().members.filter(x => x.identity === 'chief').length === 1);
 
+  /* 超管：可以改任何人嘅密碼（除咗佢自己） */
   await auth.login('super', 'sheep', TEST_SUPER_PASSWORD);
-  const chg2 = await auth.changePassword('acc_exco', 'exco-新密碼-1');
-  ok('超管可以改執委密碼', chg2.ok === true, chg2.msg || '');
-  const back = await auth.changePassword('acc_exco', '8203');
+  const excoId = store.load().members.find(x => x.loginId === 'exco').id;
+  ok('超管可以改個人帳戶密碼', auth.canChangePasswordOf('member:' + excoId) === true);
+  const chg2 = await auth.setMemberHubPassword(excoId, 'exco-新密碼-1');
+  ok('超管改密碼真係寫入到', chg2.ok === true, chg2.msg || '');
+  const back = await auth.setMemberHubPassword(excoId, '8203');
   ok('（已還原執委密碼）', back.ok === true);
-  ok('超管可以刪帳戶', auth.deleteAccount(newId).ok === true);
+  /* 還原密碼之後要可以照舊登入 */
+  const again = await auth.login('exco', 'exco', '8203');
+  ok('還原之後執委照樣登入', again.ok === true, again.msg);
 }
 
 /* ---------- 財政年度（兩條數） ---------- */
@@ -1110,7 +1148,7 @@ section('Code.gs（Apps Script 範本）');
 /* ---------- 2. 用戶（領袖／執委／團員）可以編輯 ---------- */
 section('用戶名冊（可編輯 · 身份）');
 {
-  await auth.login('leader', 'leader', '8202');
+  await auth.login('chief', 'chief', '8201');      // 團長＝最高權限，改身份一定得
   window.location.hash = '#/members';
   window.dispatchEvent(new window.HashChangeEvent('hashchange'));
   await new Promise(r => setTimeout(r, 40));
@@ -1118,16 +1156,22 @@ section('用戶名冊（可編輯 · 身份）');
   ok('名冊頁標題係「用戶」', /用戶/.test(view.textContent), view.textContent.slice(0, 60));
   ok('每一行有「編輯」掣（以前撳唔到）', view.querySelectorAll('[data-edit]').length >= 1,
     String(view.querySelectorAll('[data-edit]').length));
-  ok('有身份篩選（領袖／執委／團員）', view.querySelectorAll('[data-ident]').length === 4);
+  ok('有身份篩選（團長／領袖／執委／團員）', view.querySelectorAll('[data-ident]').length === 5);
 
-  const firstId = store.load().members[0].id;
-  view.querySelector('[data-edit]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  /* 揀一個唔係自己、又唔係 fixture 嘅用戶（唔可以改自己身份 ＝ 免得鎖死自己；
+     也唔好改動 leader／exco fixture，否則之後嘅登入會變咗第二個身份）。 */
+  const { FIXTURE_LOGINS } = await import('./_roles.mjs');
+  const isFixture = id => FIXTURE_LOGINS.includes(String(store.find('members', id)?.loginId || ''));
+  const editBtn = Array.from(view.querySelectorAll('[data-edit]'))
+    .find(b => b.dataset.edit !== auth.current()?.memberId && !isFixture(b.dataset.edit));
+  const firstId = editBtn.dataset.edit;
+  editBtn.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
   await new Promise(r => setTimeout(r, 50));
   ok('撳「編輯」會去編輯頁（#/members/edit/<id>）',
     window.location.hash === '#/members/edit/' + firstId, window.location.hash);
-  ok('編輯頁有身份下拉（領袖／執委／團員）', !!doc.querySelector('#f-identity'));
-  ok('身份選項係 領袖／執委／團員',
-    Array.from(doc.querySelectorAll('#f-identity option')).map(o => o.value).join(',') === 'leader,exco,member',
+  ok('編輯頁有身份下拉（團長／領袖／執委／團員）', !!doc.querySelector('#f-identity'));
+  ok('身份選項係 團長／領袖／執委／團員（團長睇得到）',
+    Array.from(doc.querySelectorAll('#f-identity option')).map(o => o.value).join(',') === 'chief,leader,exco,member',
     Array.from(doc.querySelectorAll('#f-identity option')).map(o => o.value).join(','));
 
   doc.querySelector('#f-name').value = '測試用戶甲';
@@ -1148,7 +1192,7 @@ section('用戶名冊（可編輯 · 身份）');
   ok('舊資料自動推算身份（團長→領袖 / 司庫→執委 / 其他→團員）',
     migrated === true, String(migrated));
   const g = store.load();
-  ok('每個用戶都有身份欄', g.members.length === 0 || g.members.every(x => ['leader', 'exco', 'member'].includes(x.identity)),
+  ok('每個用戶都有身份欄', g.members.length === 0 || g.members.every(x => ['chief', 'leader', 'exco', 'member'].includes(x.identity)),
     JSON.stringify(g.members.filter(x => !x.identity).map(x => x.name)));
   ok('執委都有權改用戶資料（以前只有領袖）',
     (await (async () => { await auth.login('exco', 'exco', '8203'); return auth.can('member.edit'); })()) === true);
@@ -1813,6 +1857,8 @@ console.log('\n▌跨系統身份 key（進度追蹤係獨立系統，要靠 key
   ok('用戶編輯頁顯示系統 ID（唯讀）',
     /系統 ID/.test(mv.textContent) && !!Array.from(mv.querySelectorAll('input[readonly]')).length);
 
+  /* 覆蓋率提示只在「有人對唔上」先會出 —— 臨時加一位冇 YMIS／Email 嘅團員嚟驗 */
+  const miss = store.add('members', { name: '未填編號團員（smoke）', identity: 'member', status: 'active' });
   window.location.hash = '#/members';
   window.dispatchEvent(new window.HashChangeEvent('hashchange'));
   await new Promise(r => setTimeout(r, 80));
@@ -1820,6 +1866,7 @@ console.log('\n▌跨系統身份 key（進度追蹤係獨立系統，要靠 key
     /可以同進度系統對上/.test(doc.getElementById('view').textContent)
     && /團員／執委/.test(doc.getElementById('view').textContent)
     && /領袖/.test(doc.getElementById('view').textContent));
+  store.remove('members', miss.id);
 
   window.location.hash = '#/progress';
   window.dispatchEvent(new window.HashChangeEvent('hashchange'));
@@ -1895,7 +1942,7 @@ console.log('\n▌新旅團申請接入（送去 ADMIN 收件匣）');
   ok('送出申請 → 行同源 /api/proxy（action=submitRegistration）',
     seen[0].url === 'api/proxy' && body.action === 'submitRegistration', seen[0].url);
   ok('送出嘅 payload 帶 appType=82venture ＋ appName（ADMIN 系統認得到係邊個 app）',
-    body.appType === '82venture' && body.appName === '執委管理系統', JSON.stringify({ appType: body.appType, appName: body.appName }));
+    body.appType === '82venture' && body.appName === '深資童軍管理系統', JSON.stringify({ appType: body.appType, appName: body.appName }));
   ok('送出成功 → 經 proxy 送到 ADMIN（唔會當自己「ADMIN 已確認」，因為收件匣唔回執）',
     okSend.ok === true && okSend.via === 'proxy' && okSend.receipt === false, JSON.stringify(okSend));
 
@@ -1973,7 +2020,7 @@ console.log('\n▌新旅團申請接入（送去 ADMIN 收件匣）');
   ok('教學講明考核項目已內建（唔使連網站）', /data\/progress\/items\.json/.test(pt));
   ok('教學有「審批中心」（批准寫入進度追蹤、拒絕唔會刪紀錄）',
     /審批中心/.test(pt) && /reviewRequest/.test(pt) && /已拒絕/.test(pt));
-  ok('教學講明團員只專心紀錄冊、批核喺執委系統', /專心/.test(pt) && /執委管理系統/.test(pt));
+  ok('教學講明團員只專心紀錄冊、批核喺管理系統', /專心/.test(pt) && /深資童軍管理系統/.test(pt));
   ok('教學講明團員用 YMIS、領袖用 Email', /團員／執委用 YMIS/.test(pt) && /領袖用 Email/.test(pt));
 }
 

@@ -256,6 +256,261 @@ section('v2.6.1 團長回報：同步生分身分頁＋成員進度重複');
 }
 
 /* ============================================================
+   ③c ★ v2.7.2 搶救：repairDb（清垃圾／舊版本段）＋ saveDbForce
+   ------------------------------------------------------------
+   團長 2026-09-24 第三輪：「無痕讀取不了後端 ＝ 所有人都睇唔到，
+   資料綁死喺我本機瀏覽器」。呢兩招就係喺呢種情況救返：
+     ① repairDb    —— 清走 __staging__ 垃圾行 ＋ 舊版本段（安全刪除）
+     ② saveDbForce —— 用「留住資料嗰部機」手上嗰份，強制覆蓋後端
+   ============================================================ */
+section('★ v2.7.2：一鍵修復（repairDb）＋強制覆蓋（saveDbForce）');
+{
+  const g = makeGas({ apiKey: 'rescue_key' });
+  g.sandbox.initializeSheets();
+  const KEY = g.props.get('API_KEY');
+  const ss = g.sandbox.SpreadsheetApp.getActiveSpreadsheet();
+  const dbTab = ss.getSheetByName('資料庫');
+  dbTab._rows.length = 0;
+  dbTab.appendRow(['unit', 'seq', 'json', 'at', 'version']);
+
+  /* 砌出「中招」狀態：一套完整舊版本（parse 得到）＋ 一套被寫壞嘅較新版本
+     ＋ 兩行 __staging__ 垃圾 —— 舊版 Code.gs 讀到會撞、寫又會 conflict。 */
+  const good = JSON.stringify({ members: [{ id: 'm1', name: '陳大文', identity: 'leader' }], transactions: [] });
+  dbTab.appendRow(['0082', 1, good, new Date('2026-09-01T00:00:00Z'), 'ver-old']);
+  dbTab.appendRow(['0082', 1, '{"members":[{"id":"m2",', new Date('2026-09-02T00:00:00Z'), 'ver-broken']);
+  dbTab.appendRow(['0082', 2, '"name":"半截"]}', new Date('2026-09-02T00:00:00Z'), 'ver-broken']);
+  dbTab.appendRow(['__staging__', 1, 'x'.repeat(5000), new Date(), 'stg-1']);
+  dbTab.appendRow(['__staging__', 2, 'y'.repeat(5000), new Date(), 'stg-1']);
+
+  const info0 = g.post({ action: 'dbInfo', unit: '0082', apiKey: KEY });
+  ok('前提：dbInfo 見到舊版本段同垃圾行', Number(info0.versions) === 2 && Number(info0.staleRows) >= 1 && Number(info0.stagingRows) === 2,
+    JSON.stringify({ v: info0.versions, stale: info0.staleRows, staging: info0.stagingRows }));
+
+  /* repairDb 帶錯 Key → 拒（會刪行，唔可以俾冇權嘅人叫）
+     注意：g.post() 會自動補返平台 API Key（模擬 proxy 注入），所以用錯 key 測。 */
+  const noKeyRepair = g.post({ action: 'repairDb', unit: '0082', apiKey: 'wrong_key' });
+  ok('repairDb 錯 API Key → 拒（唔會亂刪分頁）', noKeyRepair.ok === false, JSON.stringify(noKeyRepair).slice(0, 80));
+
+  const rep = g.post({ action: 'repairDb', unit: '0082', apiKey: KEY });
+  ok('repairDb 成功（回報清咗幾多行）', rep.ok === true && rep.repaired?.ok === true, JSON.stringify(rep).slice(0, 160));
+  ok('★ 清走晒 2 行 __staging__ 垃圾', rep.repaired.removedStaging === 2, JSON.stringify(rep.repaired));
+  ok('★ 清走舊版本段（ver-broken 兩行）', rep.repaired.removedOldVersions === 2, JSON.stringify(rep.repaired));
+  ok('★ 修復之後讀得返（只剩一套完整資料）', rep.repaired.loadOk === true && rep.repaired.members === 1,
+    JSON.stringify({ ok: rep.repaired.loadOk, members: rep.repaired.members, err: rep.repaired.loadError }));
+  const info1 = g.post({ action: 'dbInfo', unit: '0082', apiKey: KEY });
+  ok('★ 修復之後 staleRows＝0、stagingRows＝0、versions＝1',
+    Number(info1.staleRows) === 0 && Number(info1.stagingRows) === 0 && Number(info1.versions) === 1,
+    JSON.stringify({ stale: info1.staleRows, staging: info1.stagingRows, v: info1.versions }));
+  ok('★ 正式資料一行都冇甩（仲讀到陳大文）',
+    (g.post({ action: 'loadDb', unit: '0082', apiKey: KEY }).db?.members || [])[0]?.name === '陳大文');
+
+  /* saveDbForce：留住資料嗰部機強制覆蓋（樂觀鎖對唔上都要寫得入） */
+  const info2 = g.post({ action: 'dbInfo', unit: '0082', apiKey: KEY });
+  const normal = g.post({ action: 'saveDb', unit: '0082', apiKey: KEY, baseVersion: 'stale-version',
+    db: { members: [{ id: 'm1', name: '陳大文' }] } });
+  ok('（對照）普通 saveDb 用過時版本 → conflict', normal.success === false && normal.conflict === true, JSON.stringify(normal).slice(0, 120));
+
+  /* 注意：makeGas.post() 會自動補 API Key（模擬平台注入），所以要測「冇權」要用錯 key */
+  const badKeyForce = g.post({ action: 'saveDbForce', unit: '0082', db: { members: [] }, apiKey: 'wrong_key' });
+  ok('saveDbForce 錯 API Key → 拒（唔可以隨便覆蓋後端）', badKeyForce.ok === false, JSON.stringify(badKeyForce).slice(0, 120));
+
+  const db = { members: [
+    { id: 'm1', name: '陳大文', identity: 'leader' },
+    { id: 'm2', name: '李小明', identity: 'member' },
+    { id: 'm3', name: '搶救加入嘅人', identity: 'member' }
+  ], transactions: [] };
+  const forced = g.post({ action: 'saveDbForce', unit: '0082', apiKey: KEY, db });
+  ok('★ saveDbForce 成功寫入（跳過樂觀鎖）', forced.success === true && forced.forced === true, JSON.stringify(forced).slice(0, 160));
+  ok('★ 回報覆蓋咗邊個舊版本（追溯用）', forced.overwroteVersion === 'ver-old',
+    JSON.stringify({ got: forced.overwroteVersion, want: 'ver-old', dbInfo: info2.version }));
+  const afterForce = g.post({ action: 'loadDb', unit: '0082', apiKey: KEY });
+  ok('★ 覆蓋之後讀返 3 位（新舊裝置都見到同一份）', (afterForce.db?.members || []).length === 3,
+    JSON.stringify((afterForce.db?.members || []).map(m => m.name)));
+  const info3 = g.post({ action: 'dbInfo', unit: '0082', apiKey: KEY });
+  ok('★ 覆蓋之後分頁乾淨（1 套版本、0 垃圾、0 舊段）',
+    Number(info3.versions) === 1 && Number(info3.staleRows) === 0 && Number(info3.stagingRows) === 0,
+    JSON.stringify({ v: info3.versions, stale: info3.staleRows, staging: info3.stagingRows }));
+}
+
+/* ============================================================
+   ③d ★ v2.7.2 安全網：修復**唔可以**刪走唯一一套好嘅資料
+   ------------------------------------------------------------
+   修復（pruneOldDbVersions）以前係「按時間留最新一套」——
+   如果最新嗰套係寫到一半（parse 唔到），佢就會把**唯一一套好嘅**
+   刪走，修復變成資料損失（比原本嘅問題更嚴重）。
+   而家：留「最新一套砌得返 JSON」嘅；全部壞 → 一套都唔刪。
+   ============================================================ */
+section('★ v2.7.2：修復安全網（唔會誤刪唯一一套好資料）');
+{
+  const g = makeGas({ apiKey: 'safe_key' });
+  g.sandbox.initializeSheets();
+  const KEY = g.props.get('API_KEY');
+  const dbTab = g.sandbox.SpreadsheetApp.getActiveSpreadsheet().getSheetByName('資料庫');
+
+  /* (甲) 好嘅舊版本 ＋ 壞嘅新版本 ＋ 壞嘅更新版本 */
+  dbTab._rows.length = 0;
+  dbTab.appendRow(['unit', 'seq', 'json', 'at', 'version']);
+  dbTab.appendRow(['0082', 1, JSON.stringify({ members: [{ id: 'm1', name: '陳大文' }] }), new Date('2026-09-01T00:00:00Z'), 'v-good']);
+  dbTab.appendRow(['0082', 1, '{"members":[', new Date('2026-09-02T00:00:00Z'), 'v-half']);
+  dbTab.appendRow(['0082', 1, '{"members":[{"id":', new Date('2026-09-03T00:00:00Z'), 'v-half2']);
+  const pr1 = g.sandbox.pruneOldDbVersions();
+  ok('★ 留低嘅係最新一套**讀得到**嘅段（唔係最新嗰套壞嘅）',
+    pr1.kept['0082'] === 'v-good', JSON.stringify(pr1.kept));
+  ok('★ 壞嘅兩套清走（2 行）', pr1.removed === 2, JSON.stringify(pr1));
+  const ld1 = g.post({ action: 'loadDb', unit: '0082', apiKey: KEY });
+  ok('★ 修復之後真係讀得返（1 個成員）', ld1.success === true && (ld1.db?.members || []).length === 1, JSON.stringify(ld1).slice(0, 120));
+
+  /* (乙) 全部都係壞嘅 → 一套都唔刪（留低俾人用 JSON 備份／版本記錄救） */
+  dbTab._rows.length = 0;
+  dbTab.appendRow(['unit', 'seq', 'json', 'at', 'version']);
+  dbTab.appendRow(['0082', 1, '{"a":', new Date('2026-09-01T00:00:00Z'), 'v-bad1']);
+  dbTab.appendRow(['0082', 1, '{"b":', new Date('2026-09-02T00:00:00Z'), 'v-bad2']);
+  const pr2 = g.sandbox.pruneOldDbVersions();
+  ok('★ 全部都讀唔到 → 一行都唔刪（唔會毀滅證據）',
+    pr2.removed === 0 && (pr2.skipped || []).includes('0082'), JSON.stringify(pr2));
+  ok('★ 分頁仍然有 2 行（等用家自己救）', dbTab._rows.length === 3, String(dbTab._rows.length));
+
+  /* (丙) 冇版本欄嘅遠古資料：亦唔會刪 */
+  dbTab._rows.length = 0;
+  dbTab.appendRow(['unit', 'seq', 'json', 'at', 'version']);
+  dbTab.appendRow(['0082', 1, JSON.stringify({ members: [] }), '', '']);
+  const pr3 = g.sandbox.pruneOldDbVersions();
+  ok('★ 冇版本欄嘅舊資料唔會刪', pr3.removed === 0 && dbTab._rows.length === 2, JSON.stringify(pr3));
+}
+
+/* ============================================================
+   ③a ★ v2.7.1 後端自查（團長 2026-09-24 第二輪）：
+   「無痕讀取不了後端／入咗 URL API KEY 都睇唔到進度，
+     人係讀到但係個個都冇進度」
+   ------------------------------------------------------------
+   前端（進度 → 設定 → 後端資料檢查）要靠後端答得出：
+     ① 你填嘅 /exec 係邊張 Sheet
+     ② 有邊啲分頁、每張幾多行
+     ③ 「進度追蹤」有幾多 YMIS／項目、同「成員名單」對唔對得上
+   呢個測試釘死呢個契約（同埋要 API Key 先答）。
+   ============================================================ */
+section('★ v2.7.1：後端自查 diag（「人讀到、個個都冇進度」）');
+{
+  const g = makeGas({ apiKey: 'diag_key' });
+  g.sandbox.initializeSheets();
+  const KEY = g.props.get('API_KEY');
+
+  /* 種：兩個團員、一個有人有進度、一個冇 */
+  const ml = g.sheets.get('成員名單');
+  ml._rows.length = 0;
+  ml.appendRow(['YMIS', '姓名', '加入日期', '支部', '聯絡']);
+  ml.appendRow(['8202001', '陳大文', '', '', '']);
+  ml.appendRow(['8202002', '李小明', '', '', '']);
+  const pt = g.sheets.get('進度追蹤');
+  pt._rows.length = 0;
+  pt.appendRow(['YMIS', '項目', '日期', '記錄時間', '確認人', '備註']);
+  pt.appendRow(['8202001', 'L1-ACT-01', '2026-09-01', new Date(), '團長', '']);
+  pt.appendRow(['8202001', 'L1-UND-02', '2026-09-02', new Date(), '領袖', '']);
+  pt.appendRow(['9999999999', 'L1-ACT-01', '2026-09-03', new Date(), '團長', '']);   // 唔喺名冊
+
+  const noKey = g.get({ action: 'diag' });
+  ok('diag 冇 API Key → 拒（會報分頁名同行數，唔可以公開）', noKey.ok === false, JSON.stringify(noKey).slice(0, 80));
+
+  const d = g.get({ action: 'diag', apikey: KEY, unit: '0082' });
+  ok('diag 有 Key → ok', d.ok === true && d.success === true, JSON.stringify(d).slice(0, 120));
+  ok('diag 報邊張 Sheet 同後端版本', typeof d.spreadsheet === 'string' && /^v\d/.test(String(d.version || '')), JSON.stringify({ sheet: d.spreadsheet, v: d.version }));
+  ok('diag 報「進度追蹤」行數／YMIS／項目（3 行、2 個 YMIS、2 個項目）',
+    d.progress?.rows === 3 && d.progress?.ymis === 2 && d.progress?.items === 2,
+    JSON.stringify(d.progress));
+  ok('diag 報「進度同名冊對唔對得上」（1 個對得上、1 個唔喺名冊）',
+    d.progress?.matchedWithMemberList === 1 && d.progress?.notInMemberList === 1, JSON.stringify(d.progress));
+  ok('diag 報「成員名單」有 2 人', d.memberList?.rows === 2 && d.memberList?.ymis === 2, JSON.stringify(d.memberList));
+  ok('diag 報分頁清單（有「進度追蹤」同行數）',
+    (d.tabs || []).some(t => t.name === '進度追蹤' && t.rows === 3), JSON.stringify((d.tabs || []).slice(0, 4)));
+  ok('diag 報缺咗嘅分頁（空 ＝ 齊）', Array.isArray(d.missingTabs) && d.missingTabs.length === 0, JSON.stringify(d.missingTabs));
+  /* 進度追蹤有 2 個 YMIS（其中一個唔喺名冊）、3 格 —— 摘要要照實報 */
+  ok('diag 附帶 load 摘要（2 位成員、2 個 YMIS 有進度、3 格）',
+    d.loadSummary?.members === 2 && d.loadSummary?.withProgress === 2 && d.loadSummary?.ticks === 3,
+    JSON.stringify(d.loadSummary));
+
+  /* 分頁唔見咗（＝舊版 Code.gs 刪過／未 initializeSheets）→ 要講得出 */
+  const ss = g.sandbox.SpreadsheetApp.getActiveSpreadsheet();
+  ss.deleteSheet(ss.getSheetByName('進度追蹤'));
+  const d2 = g.get({ action: 'diag', apikey: KEY, unit: '0082' });
+  ok('「進度追蹤」唔見咗 → rows:-1 同列入 missingTabs（app 會教執行 initializeSheets）',
+    d2.progress?.rows === -1 && (d2.missingTabs || []).includes('進度追蹤'), JSON.stringify({ rows: d2.progress?.rows, missing: d2.missingTabs }));
+
+  /* POST 路線一樣通（api/progress 用 GET，但後端兩條路都要得） */
+  const viaPost = g.post({ action: 'diag', unit: '0082', apiKey: KEY });
+  ok('diag 亦可以經 POST 叫（同一份判斷）', viaPost.ok === true && viaPost.progress?.rows === -1, JSON.stringify(viaPost).slice(0, 100));
+  const viaPostNoKey = g.post({ action: 'diag', unit: '0082', apiKey: 'wrong' });
+  ok('diag POST 錯 Key → 拒', viaPostNoKey.ok === false);
+}
+
+/* ============================================================
+   ③b ★ v2.7.0 團長回報（2026-09-24）：
+   「不停存資料庫 → 加一項多一行 → 最後永遠只讀到之前儲嘅，
+     新儲嘅完全讀唔到」
+   ------------------------------------------------------------
+   死因：以前 dbRawText 會把同一旅團**所有**段一齊拼。分頁一旦有
+   兩套以上版本（舊版漏刪／手動加行／兩個部署同時寫），
+   拼出嚟一係 JSON 壞咗（＝讀唔到），一係舊版本行排前面
+   （＝用家見到永遠係以前嗰份，新儲嘅好似冇咗）。
+   而家：按**版本分組**，只讀砌得返 JSON 嘅最新一套 → 新儲嘅一定讀得到。
+   ============================================================ */
+section('★ v2.7.0：同一旅團兩套版本段（「新儲嘅讀唔到」死因）');
+{
+  const g = makeGas({ apiKey: 'test_key' });
+  g.sandbox.initializeSheets();
+  const ss = g.sandbox.SpreadsheetApp.getActiveSpreadsheet();
+  const dbTab = ss.getSheetByName('資料庫');
+  const KEY = g.props.get('API_KEY');
+  const CHUNK = 45000;
+  const push = (ver, at, obj) => {
+    const text = typeof obj === 'string' ? obj : JSON.stringify(obj);
+    let i = 1;
+    for (let p = 0; p < text.length; p += CHUNK, i++) dbTab.appendRow(['0082', i, text.substring(p, p + CHUNK), at, ver]);
+  };
+  const OLD_AT = new Date(Date.now() - 3600e3);
+  push('2026-09-24T00:00:00.000Z-11111', OLD_AT, { members: [{ id: 'old', name: '舊資料' }], transactions: [] });
+  push('2026-09-24T01:00:00.000Z-22222', new Date(), { members: [{ id: 'new', name: '新資料' }], transactions: [{ id: 't1' }] });
+
+  const ld = g.post({ action: 'loadDb', unit: '0082', apiKey: KEY });
+  ok('★ 讀返最新一套（新儲嘅一定讀得到）',
+    ld.db?.members?.[0]?.name === '新資料', JSON.stringify(ld.db || ld).slice(0, 140));
+  ok('★ 舊版本段完全唔會混入（唔會「永遠只讀到之前儲嘅」）',
+    (ld.db?.members || []).length === 1 && !(ld.db?.members || []).some(m => m.name === '舊資料'));
+
+  const info = g.post({ action: 'dbInfo', unit: '0082', apiKey: KEY });
+  ok('dbInfo 報有幾多行舊版本段（app 嘅「同步診斷」靠佢提你清）',
+    Number(info.staleRows) >= 1 && Number(info.versions) === 2,
+    JSON.stringify({ staleRows: info.staleRows, versions: info.versions }));
+
+  const pr = g.sandbox.pruneOldDbVersions();
+  ok('pruneOldDbVersions() 清走舊版本段（逃生門）', pr.removed >= 1, JSON.stringify(pr));
+  const after = g.post({ action: 'dbInfo', unit: '0082', apiKey: KEY });
+  ok('清完之後 dbInfo 報 0 行舊段', Number(after.staleRows) === 0, String(after.staleRows));
+  const ld2 = g.post({ action: 'loadDb', unit: '0082', apiKey: KEY });
+  ok('清完之後讀返嘅仍然係最新一套（正式資料一行都冇少）',
+    ld2.db?.members?.[0]?.name === '新資料' && (ld2.db?.transactions || []).length === 1);
+
+  /* 最新一套寫到一半就斷（GAS timeout）→ 唔可以拼出垃圾；
+     要退返上一個完整版本，並且老實報有幾多套壞咗。 */
+  dbTab.appendRow(['0082', 1, '{"members":[{"id":"half"', new Date(), '2026-09-24T02:00:00.000Z-33333']);
+  const ld3 = g.post({ action: 'loadDb', unit: '0082', apiKey: KEY });
+  ok('★ 最新一套壞咗（寫入中斷）→ 退返上一個完整版本，唔會拼出垃圾',
+    ld3.ok !== false && ld3.db?.members?.[0]?.name === '新資料', JSON.stringify(ld3).slice(0, 160));
+  ok('★ 老實報「有幾多套較新但壞咗」（唔會靜靜哋當冇事）',
+    Number(ld3.brokenNewer) >= 1, String(ld3.brokenNewer));
+
+  /* 下一次正常儲存：舊段＋壞段要成梳清走（saveDb 先刪晒該旅團所有行） */
+  const sv = g.post({ action: 'saveDb', unit: '0082', apiKey: KEY, baseVersion: String(ld3.version || ''),
+    db: { members: [{ id: 'm1', name: '儲存後' }], transactions: [] } });
+  ok('正常儲存成功（baseVersion 用返讀到嗰個）', sv.ok === true, JSON.stringify(sv).slice(0, 140));
+  const info2 = g.post({ action: 'dbInfo', unit: '0082', apiKey: KEY });
+  ok('★ 儲存之後冇殘留舊版本段（唔會再「加一項多一行」）',
+    Number(info2.staleRows) === 0 && Number(info2.versions) === 1,
+    JSON.stringify({ staleRows: info2.staleRows, versions: info2.versions }));
+  const ld4 = g.post({ action: 'loadDb', unit: '0082', apiKey: KEY });
+  ok('★ 儲存之後即刻讀得返新內容', ld4.db?.members?.[0]?.name === '儲存後');
+}
+
+/* ============================================================
    ④ 讀返嚟嘅資料要同寫出去嗰份一模一樣（唔可以走樣）
    ============================================================ */
 section('round-trip：資料唔可以走樣');

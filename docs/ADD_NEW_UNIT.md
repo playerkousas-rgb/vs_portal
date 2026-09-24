@@ -28,7 +28,7 @@ C 同 B 可以並存：同一個旅團兩邊都有，資料會合併（JSON 管�
   只有連線／逾時，或者你明確回 `{success:false}` 先當失敗 —— 嗰陣 App 會叫申請人
   **複製申請內容**（WhatsApp／電郵畀你）或者**再試一次**。
 * 你嘅跟進：收到申請 → 轉寄畀負責團長 → 開好團 → **email 通知旅團**（申請人 App 唔會收到任何自動通知）。
-* Payload 帶 `appType: '82venture'`、`appName: '執委管理系統'`、旅團編號／名稱、`/exec`、
+* Payload 帶 `appType: '82venture'`、`appName: '深資童軍管理系統'`、旅團編號／名稱、`/exec`、
   API Key、聯絡人、主系統網址、時間戳。**你嘅收件匣 GAS 如果有 `appType` 白名單，要加 `'82venture'`。**
 * 你收到之後照下面（方法 B 或方法 A）開團，再通知旅團。
 

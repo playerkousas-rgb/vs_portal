@@ -169,7 +169,7 @@ function render() {
       <div id="pb-local" class="sm muted">…</div>
     </div>
 
-    <div class="center xs faint mt-16">公開申請頁 · 由 ${esc(meta.name || '')} 執委管理系統提供</div>
+    <div class="center xs faint mt-16">公開申請頁 · 由 ${esc(meta.name || '')} 深資童軍管理系統提供</div>
   </div>`;
 
   app.querySelectorAll('[data-item]').forEach(b => b.addEventListener('click', () => {

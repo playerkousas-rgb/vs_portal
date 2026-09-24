@@ -88,13 +88,20 @@ if (process.argv[2] === 'device') {
     note('sync.unit', String(store.tryLoad()?.sync?.unit || '(未設)'));
     note('種子團員數', (store.tryLoad()?.members || []).length);
     note('開機後係咪停喺連線閘（連唔到後端）', /未能連接旅團後端/.test(txt()));
+    note('登入頁有冇「一個入口」嘅登入表單', !!doc.querySelector('#loginForm'));
 
-    /* ---- 登入（同真用戶一樣：先撳「領袖」門，再填電郵＋密碼，撳「進入系統」） ---- */
+    /* ---- ★ 2026-09-24：冇共用帳戶 —— 名冊要有「個人身份」先登入得到。
+           呢步等同真用戶做嘅嘢：團長喺「用戶」加人（團長／領袖／執委）＋設密碼。
+           第一次上後端之後，另一部機登入前會先由後端拉返名冊，所以一樣登入到。 ---- */
+    if (PLAN.seedRoster && (store.tryLoad()?.members || []).length < 3) {
+      const { seedRosterRoles } = await import('./_roles.mjs');
+      await seedRosterRoles(store, auth);
+      note('名冊種子（個人身份）', (store.tryLoad()?.members || []).map(m => `${m.name}:${m.identity}`).join('、'));
+    }
+
+    /* ---- 登入（同真用戶一樣：打自己嘅電郵／自訂帳號 ＋ 密碼） ---- */
     if (PLAN.login !== false) {
-      const door = doc.querySelector('#doorExco');
-      note('登入頁第一步：有冇「領袖／團員」揀門畫面', !!door);
-      if (door) { door.dispatchEvent(new window.MouseEvent('click', { bubbles: true })); await wait(500); }
-      note('撳完門之後有冇帳戶／密碼表單', !!doc.querySelector('#loginForm'));
+      note('登入頁第一步：有冇「領袖／團員」揀門畫面', false);
       if (doc.querySelector('#loginForm')) {
         doc.querySelector('#liUser').value = PLAN.user || 'leader';
         doc.querySelector('#liPass').value = PLAN.pass || '8202';
@@ -268,11 +275,11 @@ ok('後端＋代理已啟動', (await waitPort(GAS_PORT)) && (await waitPort(WEB
 
 /* ---------------- ① 團長部機：開機 → 登入 → 改嘢 → 撳儲存 ---------------- */
 section('① 用戶視角：開網站 → 登入 → 加團員 → 撳「儲存到後端」');
-const A = await runDevice({ addMember: '陳大文', addTx: '團費收入', save: true });
+const A = await runDevice({ addMember: '陳大文', addTx: '團費收入', save: true, seedRoster: true });
 ok('裝置 A 全程冇爆', A.ok === true, A.error || '');
 show(A);
 ok('開機真係出到登入頁（＝後端答到，硬閘通過；連唔到會停喺連線閘）',
-  got(A, '開機後係咪停喺連線閘（連唔到後端）') === false && got(A, '登入頁第一步：有冇「領袖／團員」揀門畫面') === true);
+  got(A, '開機後係咪停喺連線閘（連唔到後端）') === false && got(A, '登入頁有冇「一個入口」嘅登入表單') === true);
 ok('用 leader／8202 登入到主控頁', got(A, '登入有冇入到主控頁（見到頂部狀態 chip）') === true);
 const toastA = String(got(A, '★ 用戶撳完「儲存到後端」見到嘅提示（toast）') || '');
 ok('★ 撳「儲存到後端」之後用戶見到「已儲存到後端」', /已儲存到後端/.test(toastA), toastA.slice(0, 200));

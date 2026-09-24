@@ -1,7 +1,7 @@
 # 管理員手冊：每個旅團申請接入時要 SET 乜
 
 最後核實：**2026-09-16**（團長更正設計：**一個後端、兩個前端** —— 進度資料就喺旅團自己嘅後端
-（Google Sheet ＋ Apps Script）；執委管理系統同進度前端讀寫同一份，所以管理員**唔需要**設 `portalOrigin` 之類）。
+（Google Sheet ＋ Apps Script）；深資童軍管理系統同進度前端讀寫同一份，所以管理員**唔需要**設 `portalOrigin` 之類）。
 欄位名全部由 code 核對過（`assets/js/lib/units.js`、`assets/js/lib/store.js`、`api/_registry.js`、`api/progress.js`）。
 
 ---
@@ -24,7 +24,7 @@
   "scriptUrl": "https://script.google.com/macros/s/AKfyc…/exec",   // ← 佢嘅後端
   "apiKey":    "…",
   "appType":   "82venture",          // 用嚟分辨係邊個系統送出嘅申請
-  "appName":   "執委管理系統",        // 顯示名（同 appType 一齊，ADMIN 系統睇得到）
+  "appName":   "深資童軍管理系統",        // 顯示名（同 appType 一齊，ADMIN 系統睇得到）
   "mainSystemUrl": "https://…",      // ← 畀你核對／記錄，唔再係 portalOrigin（見下）
   "contact":   "…",
   "note":      "…",
@@ -54,7 +54,7 @@
 
 ---
 
-## 1. 執委管理系統呢邊要 SET 嘅嘢
+## 1. 深資童軍管理系統呢邊要 SET 嘅嘢
 
 ### 1a. `data/units.json` → `units.<旅團編號>`
 
@@ -112,7 +112,7 @@ meetings.json       ← 會議（可選）
 **注意：`progress` 係由 `unit.json` 讀（`db.profile`），唔係 `units.json`。**
 `units.json` 嗰份只係做記錄／種子。
 
-新做法**通常唔使填任何嘢**：執委管理系統會自動用返 `data/units.json` 登記嘅 `backend.gasUrl` / `backend.apiKey`
+新做法**通常唔使填任何嘢**：深資童軍管理系統會自動用返 `data/units.json` 登記嘅 `backend.gasUrl` / `backend.apiKey`
 （即係同一個後端）；要覆蓋先喺「進度 → 設定」填，儲存喺 `profile.progress.backend`（跟 JSON 備份走，唔會出現在網址）。
 執委系統**唔會連去任何其他系統** —— 只係讀／寫後端（`?action=load` / `action=save`）。
 
@@ -167,17 +167,17 @@ TROOP_<編號>_PROGRESSAPIKEY   = 進度用 API Key
 ## 3. 每次收到申請嘅 checklist
 
 ```
-□ 執委管理系統  data/units.json      加 units.<id>（code / name / dataPath / backend.gasUrl / backend.apiKey / notice.submitUrl / theme）
-□ 執委管理系統  data/units/<id>/     建資料夾（unit.json / members.json / constitution.json / finance.json / inventory.json）
-□ 執委管理系統  unit.json            （可選）填 progress.backend（後端 /exec ＋ API Key 覆蓋用；唔填就用 units.json 登記嗰個）
-□ 執委管理系統  後端 Code.gs    用最新範本（npm run build:gas → apps-script/Code.gs）；
+□ 深資童軍管理系統  data/units.json      加 units.<id>（code / name / dataPath / backend.gasUrl / backend.apiKey / notice.submitUrl / theme）
+□ 深資童軍管理系統  data/units/<id>/     建資料夾（unit.json / members.json / constitution.json / finance.json / inventory.json）
+□ 深資童軍管理系統  unit.json            （可選）填 progress.backend（後端 /exec ＋ API Key 覆蓋用；唔填就用 units.json 登記嗰個）
+□ 深資童軍管理系統  後端 Code.gs    用最新範本（npm run build:gas → apps-script/Code.gs）；
                                  執行 initializeSheets 會建「進度追蹤／其他獎章／活動履歷／成員名單」等分頁
 □ 通知旅團：想埋讀進度就去「進度 → 設定」填 /exec ＋ API Key（執行 showApiKey() 複製）
 □ Deploy 一次（同一個 /exec 服務兩個前端）
-□ 實測：執委管理系統揀該旅團 → 登入 → 「進度」→ 見到團員同進度（讀後端）
+□ 實測：深資童軍管理系統揀該旅團 → 登入 → 「進度」→ 見到團員同進度（讀後端）
         → 「勾選進度」勾一項 → 去 Google Sheet「進度追蹤」分頁應該見到新一行
         → 「審批中心」睇到團員申報 → 撳「批准」→ 「進度追蹤」分頁多一行（或者更新咗完成日期）
-□ 實測：執委管理系統 → 「帳號與系統 → 資料管理 → 總表同步」→ 應該寫入佢自己嘅 Sheet
+□ 實測：深資童軍管理系統 → 「帳號與系統 → 資料管理 → 總表同步」→ 應該寫入佢自己嘅 Sheet
 ```
 
 呢個 checklist 喺 app 入面都會自動列出（送出申請之後嘅確認對話框，

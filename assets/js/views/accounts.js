@@ -10,7 +10,7 @@
 import { load, commit, collection, add, update, remove, exportAll, importAll, resetToSeed, wipe, clearMockData, audit, isMock, currentUnit, enterMock, exitMock, switchUnit, setUnitCode } from '../lib/store.js';
 import {
   ROLES, PERMS, PERM_GROUPS, accounts, accountById, can, canChangePasswordOf, canManageRole,
-  createAccount, changePassword, changeUsername, changeOwnPassword, setAccountActive, deleteAccount, deleteAccountServer,
+  createAccount, changePassword, changeUsername, changeOwnPassword, setAccountActive, deleteAccount, deleteAccountServer, resetAccountPasswordServer,
   current, currentRole, isSuper, isMe, displayName, RESERVED_USERNAMES, TEMP_PASSWORD
 } from '../lib/auth.js';
 import { profile, settings, members, memberName, money, balance, tx, invItems } from '../lib/model.js';
@@ -714,6 +714,11 @@ async function passwordForm(id) {
       } }]
   });
   if (!r) return;
+  if (!me && !isMock()) {
+    const serverRes = await resetAccountPasswordServer(acc, r);
+    if (!serverRes.ok) return toast(serverRes.msg, 'err');
+    toast('密碼已重設，對方下次登入要改密碼', 'ok'); refresh(); return;
+  }
   const res = await changePassword(id, r);
   if (!res.ok) return toast(res.msg, 'err');
   toast('密碼已更改', 'ok');

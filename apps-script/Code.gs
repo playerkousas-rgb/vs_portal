@@ -373,6 +373,24 @@ function doPost(e) {
       return { token: token, expiresAt: Date.now() + 8 * 3600 * 1000 };
     }
 
+    function verifyPortalToken(unit, token, wantedRole) {
+      var parts = textOf(token).split('.');
+      var secret = PropertiesService.getScriptProperties().getProperty('PORTAL_SESSION_SECRET') || '';
+      if (!secret || parts.length !== 2) return { ok: false, error: '旅系統登入未設定' };
+      var expected = Utilities.computeHmacSha256Signature(parts[0], Utilities.newBlob(secret).getBytes())
+        .map(function (b) { return ('0' + (b & 255).toString(16)).slice(-2); }).join('');
+      var supplied = '';
+      try { supplied = Utilities.base64EncodeWebSafe(Utilities.base64DecodeWebSafe(parts[1])); } catch (e) { supplied = ''; }
+      /* GAS web-safe base64 比對轉 hex 較麻煩；用重新簽名的 base64 字串核對。 */
+      var expectedB64 = Utilities.base64EncodeWebSafe(Utilities.computeHmacSha256Signature(parts[0], Utilities.newBlob(secret).getBytes())).replace(/=+$/, '');
+      if (supplied.replace(/=+$/, '') !== expectedB64) return { ok: false, error: '旅系統登入票據無效' };
+      var payload = null;
+      try { payload = JSON.parse(Utilities.newBlob(Utilities.base64DecodeWebSafe(parts[0])).getDataAsString()); } catch (e2) { payload = null; }
+      if (!payload || textOf(payload.u) !== textOf(unit) || Number(payload.exp || 0) <= Date.now()) return { ok: false, error: '旅系統登入票據已過期' };
+      if (wantedRole && textOf(payload.role) !== textOf(wantedRole)) return { ok: false, error: '旅系統身份不符合' };
+      return { ok: true, portal: true, role: textOf(payload.role), subject: textOf(payload.sub) };
+    }
+
     function verifyAuthSession(unit, token) {
       var raw = textOf(token);
       if (!raw) return { ok: false, error: '登入狀態已失效，請重新登入' };
@@ -389,6 +407,7 @@ function doPost(e) {
     }
 
     function requireAuthSession(body) {
+      if (body.portalToken) return verifyPortalToken(body.unit, body.portalToken, body.portalRole || '');
       return verifyAuthSession(body.unit, body.sessionToken);
     }
 
@@ -494,15 +513,15 @@ function doPost(e) {
           if (m && m.status !== 'alumni' && (textOf(m.email).toLowerCase() === actorName || textOf(m.ymis).toLowerCase() === actorName)) { actor = m; return true; }
           return false;
         });
-        if (!actor || resetSession.id !== textOf(actor.id)) return { success: false, error: '登入帳戶與操作帳戶不一致' };
+        if ((!actor && !resetSession.portal) || (!resetSession.portal && resetSession.id !== textOf(actor.id))) return { success: false, error: '登入帳戶與操作帳戶不一致' };
         var actorPw = actor && (actor.pw || actor.hubPw);
         var actorOk = false;
         if (actor && actorPw && actorPw.algo === 'pbkdf2-sha256') actorOk = verifyPasswordRecord(actorPw, textOf(body.actorPassword));
         else if (actor && actorPw && actorPw.algo === 'sha256') actorOk = sha256HexGs(actorPw.salt + '::' + textOf(body.actorPassword)) === textOf(actorPw.hash);
         else if (actor && !actorPw && textOf(body.actorPassword) === '1234') actorOk = true;
-        if (resetSession.id === textOf(actor.id)) actorOk = true;
+        if (resetSession.portal || resetSession.id === textOf(actor && actor.id)) actorOk = true;
         if (!actorOk) return { success: false, error: '管理員帳戶或密碼不正確' };
-        var actorRole = textOf(actor.role || actor.identity).toLowerCase();
+        var actorRole = resetSession.portal ? textOf(resetSession.role).toLowerCase() : textOf(actor.role || actor.identity).toLowerCase();
         if (actorRole !== 'leader' && actorRole !== 'admin' && actorRole !== 'super') return { success: false, error: '你沒有權限重設其他帳戶密碼' };
         (resetDb.db && resetDb.db.accounts || []).some(function (a) {
           if (a && a.active !== false && (textOf(a.username).toLowerCase() === targetName || textOf(a.email).toLowerCase() === targetName)) { target = a; return true; }
@@ -544,16 +563,16 @@ function doPost(e) {
           if (a && a.active !== false && (textOf(a.username).toLowerCase() === actorName3 || textOf(a.email).toLowerCase() === actorName3)) { actor3 = a; return true; }
           return false;
         });
-        if (!actor3 || deleteSession.id !== textOf(actor3.id)) return { success: false, error: '登入帳戶與操作帳戶不一致' };
+        if ((!actor3 && !deleteSession.portal) || (!deleteSession.portal && deleteSession.id !== textOf(actor3.id))) return { success: false, error: '登入帳戶與操作帳戶不一致' };
         var actorPw3 = actor3.pw || actor3.hubPw;
         var actorOk3 = actorPw3 && actorPw3.algo === 'pbkdf2-sha256'
           ? verifyPasswordRecord(actorPw3, textOf(body.actorPassword))
           : actorPw3 && actorPw3.algo === 'sha256'
             ? sha256HexGs(actorPw3.salt + '::' + textOf(body.actorPassword)) === textOf(actorPw3.hash)
             : textOf(body.actorPassword) === '1234';
-        if (deleteSession.id === textOf(actor3.id)) actorOk3 = true;
+        if (deleteSession.portal || deleteSession.id === textOf(actor3 && actor3.id)) actorOk3 = true;
         if (!actorOk3) return { success: false, error: '管理員帳戶或密碼不正確' };
-        var actorRole3 = textOf(actor3.role || actor3.identity).toLowerCase();
+        var actorRole3 = deleteSession.portal ? textOf(deleteSession.role).toLowerCase() : textOf(actor3.role || actor3.identity).toLowerCase();
         if (actorRole3 !== 'leader' && actorRole3 !== 'admin' && actorRole3 !== 'super') return { success: false, error: '你沒有權限刪除帳戶' };
         (deleteDb.db && deleteDb.db.accounts || []).some(function (a, i) {
           if (a && (textOf(a.username).toLowerCase() === targetName3 || textOf(a.email).toLowerCase() === targetName3)) { target3 = a; targetIndex = i; return true; }
@@ -599,16 +618,16 @@ function doPost(e) {
           if (a && a.active !== false && (textOf(a.username).toLowerCase() === actorName4 || textOf(a.email).toLowerCase() === actorName4)) { actor4 = a; return true; }
           return false;
         });
-        if (!actor4 || restoreSession.id !== textOf(actor4.id)) return { success: false, error: '登入帳戶與操作帳戶不一致' };
+        if ((!actor4 && !restoreSession.portal) || (!restoreSession.portal && restoreSession.id !== textOf(actor4.id))) return { success: false, error: '登入帳戶與操作帳戶不一致' };
         var actorPw4 = actor4.pw || actor4.hubPw;
         var actorOk4 = actorPw4 && actorPw4.algo === 'pbkdf2-sha256'
           ? verifyPasswordRecord(actorPw4, textOf(body.actorPassword))
           : actorPw4 && actorPw4.algo === 'sha256'
             ? sha256HexGs(actorPw4.salt + '::' + textOf(body.actorPassword)) === textOf(actorPw4.hash)
             : textOf(body.actorPassword) === '1234';
-        if (restoreSession.id === textOf(actor4.id)) actorOk4 = true;
+        if (restoreSession.portal || restoreSession.id === textOf(actor4 && actor4.id)) actorOk4 = true;
         if (!actorOk4) return { success: false, error: '管理員帳戶或密碼不正確' };
-        var actorRole4 = textOf(actor4.role || actor4.identity).toLowerCase();
+        var actorRole4 = restoreSession.portal ? textOf(restoreSession.role).toLowerCase() : textOf(actor4.role || actor4.identity).toLowerCase();
         if (actorRole4 !== 'leader' && actorRole4 !== 'admin' && actorRole4 !== 'super') return { success: false, error: '你沒有權限復原帳戶' };
         var restoreTarget = textOf(body.targetEmail || body.targetYmis).toLowerCase();
         var tombstone = null;

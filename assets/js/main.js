@@ -1018,6 +1018,7 @@ function renderLogin() {
           <div id="liErr" class="err mt-8"></div>
           <button type="submit" class="btn btn-primary btn-lg btn-block mt-16">${icon('key', 17)} 進入系統</button>
         </form>
+        <button class="btn btn-ghost btn-block mt-8" type="button" id="btnForgotPassword">忘記密碼？用 EMAIL 重設</button>
         <form id="setupKeyForm" class="mt-16" autocomplete="off" style="border-top:1px solid var(--line-2);padding-top:14px">
           <div class="semibold sm mb-8">新旅團開團 KEY</div>
           <div class="hint mb-8">喺 Google 試算表 → Apps Script 執行 <code>issueSetupKey()</code>（每次 72 小時；過期再執行一次）。</div>
@@ -1163,6 +1164,28 @@ function renderLogin() {
     render();
     toast('已用開團 KEY 進入。請即刻新增領袖電郵帳戶。', 'ok');
     maybeShowLoginConflicts();
+  });
+
+  app.querySelector('#btnForgotPassword')?.addEventListener('click', async () => {
+    const r = await modal({
+      title: '忘記密碼',
+      sub: '請輸入登記過的 EMAIL；如果帳戶存在，系統會寄出一次性重設連結。',
+      body: `<div class="field"><label class="label">EMAIL</label><input class="input" id="forgotEmail" type="email" autocomplete="email"></div><div id="forgotErr" class="err mt-8"></div>`,
+      actions: [
+        { label: '取消', class: 'btn', value: null },
+        { label: '寄出重設連結', class: 'btn-primary', onClick: async el => {
+          const email = el.querySelector('#forgotEmail')?.value?.trim() || '';
+          if (!email) { el.querySelector('#forgotErr').textContent = '請輸入 EMAIL'; el.querySelector('#forgotErr').style.display = 'block'; return false; }
+          try {
+            const response = await fetch('./api/proxy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'authForgotPassword', unit: code, email, resetUrl: `${location.origin}/reset-password.html` }) });
+            const data = await response.json();
+            if (!response.ok || data.success === false) throw new Error(data.error || '暫時未能提交');
+            return true;
+          } catch (error) { el.querySelector('#forgotErr').textContent = error.message || '暫時未能提交，請稍後再試'; el.querySelector('#forgotErr').style.display = 'block'; return false; }
+        } }
+      ]
+    });
+    if (r) toast('如果 EMAIL 已登記，重設連結會寄出。', 'ok');
   });
 
   app.querySelector('#loginForm')?.addEventListener('submit', async e => {

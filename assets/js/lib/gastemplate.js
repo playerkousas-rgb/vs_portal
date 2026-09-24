@@ -731,9 +731,10 @@ function doPost(e) {
       var createSession = requireAuthSession(body); if (!createSession.ok) return json({ ok:false, success:false, error:createSession.error, code:'SESSION_REQUIRED' });
       var createdAccount = withLock(function () {
         var createDb = loadDb(textOf(body.unit));
-        var actorC = (createDb.db && createDb.db.accounts || []).filter(function(a){ return a && textOf(a.id) === createSession.id && a.active !== false; })[0];
+        var actorC = (createDb.db && createDb.db.accounts || []).filter(function(a){ return a && a.active !== false && (!createSession.portal ? textOf(a.id) === createSession.id : (textOf(a.username).toLowerCase() === textOf(body.actorUsername).toLowerCase() || textOf(a.email).toLowerCase() === textOf(body.actorUsername).toLowerCase())); })[0];
+        if (!actorC && createSession.portal) actorC = (createDb.db && createDb.db.members || []).filter(function(m){ return m && m.status !== 'alumni' && (textOf(m.ymis).toLowerCase() === textOf(body.actorUsername).toLowerCase() || textOf(m.email).toLowerCase() === textOf(body.actorUsername).toLowerCase()); })[0];
         if (!actorC) return { success:false, error:'管理員帳戶不存在' };
-        var actorRoleC = textOf(actorC.role || actorC.identity).toLowerCase();
+        var actorRoleC = createSession.portal ? textOf(createSession.role).toLowerCase() : textOf(actorC.role || actorC.identity).toLowerCase();
         var wantedRole = textOf(body.role || 'exco').toLowerCase();
         if (actorRoleC !== 'leader' && actorRoleC !== 'admin' && actorRoleC !== 'super') return { success:false, error:'你沒有權限新增帳戶' };
         if (actorRoleC === 'leader' && wantedRole !== 'exco') return { success:false, error:'團長只可以新增執委帳戶' };

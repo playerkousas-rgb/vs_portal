@@ -376,7 +376,7 @@ function doPost(e) {
 
     /* server-side session：登入成功後由 GAS 發出短期 token；hash 留喺 ScriptProperties。 */
     function issueAuthSession(unit, record, kind) {
-      var token = Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '');
+      var token = Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '') + String(Date.now()) + String(Math.random()).replace('.', '');
       var tokenHash = sha256HexGs(token);
       var key = 'AUTH_SESSION_' + textOf(unit) + '_' + tokenHash;
       PropertiesService.getScriptProperties().setProperty(key, JSON.stringify({ id: textOf(record.id), kind: kind, iat: Date.now(), exp: Date.now() + 8 * 3600 * 1000, pv: Number(record.pv || 1) }));

@@ -499,7 +499,8 @@ function settingsView() {
             <button class="btn" data-act="reload">${icon('refresh', 16)} 重新讀取</button>
             <button class="btn btn-ghost" data-act="clear-cfg">${icon('trash', 15)} 清除自訂設定</button>
           </div>
-          ${noteBox('★ 呢啲設定係<b>跟旅團資料庫走</b>嘅：撳完「儲存」要再撳<b>頂部「儲存到後端（N）」</b>，'
+          ${noteBox('★ 呢啲設定係<b>跟旅團資料庫走</b>嘅：撳完「儲存」系統會<b>自動寫入後端</b>（頂部狀態會轉做「已存到後端」；'
+            + '想即刻寫就撳頂部「即刻儲存」），'
             + '無痕視窗／另一部機（新裝置）先會自動有同一組設定。<b>冇撳</b>嘅話，只有呢部機讀得到 ——'
             + '換部機就會好似「無痕讀唔到後端」。', 'warn')}
           <div class="hint mt-8"><b>點填：</b>① 喺 Apps Script 撳「部署 → 管理部署」複製 <code>/exec</code> 網址；
@@ -706,7 +707,7 @@ export function mount(root, params) {
     readCfg();
     const pend = Number(load()?.sync?.pending || 0);
     toast(pend > 0
-      ? '已儲存喺呢部機 —— 記得撳頂部「儲存到後端（N）」，其他裝置／無痕先讀得到'
+      ? '已儲存 —— 自動寫入後端中，其他裝置／無痕好快讀得到（想即刻寫就撳頂部「即刻儲存」）'
       : '已儲存設定', 'ok');
     tab = 'overview';
     fetchAll();

@@ -80,7 +80,7 @@ async function boot() {
 
     notice = noticeId
       ? list.find(x => String(x.id) === String(noticeId)) || list.find(x => String(x.publicId) === String(noticeId))
-      : list.filter(x => x.status === 'published')[0];
+      : list.filter(x => x.status === 'published' && String(x.vis || 'other') === 'other')[0];
     if (!notice) throw new Error('搵唔到通告');
     document.title = `${notice.title?.zh || '通告'} · ${meta.name || unitCode}`;
     render();

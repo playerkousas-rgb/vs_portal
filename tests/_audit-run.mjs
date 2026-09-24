@@ -1,7 +1,7 @@
 /* ============================================================
    tests/_audit-run.mjs — 按鈕審計 worker（一個模式×角色×分頁 = 一個新 jsdom）
    由 tests/audit-buttons.mjs spawn，唔好直接跑。
-   用法：node tests/_audit-run.mjs <mock|real> <chief|leader|exco|super> <section>
+   用法：node tests/_audit-run.mjs <real> <chief|leader|exco|super> <section>
    輸出：stdout 一段 JSON 報告
    ============================================================ */
 
@@ -12,9 +12,10 @@ import { fileURLToPath } from 'url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const [,, MODE, ROLE, SECTION] = process.argv;
-if (!MODE || !ROLE || !SECTION) { console.error('用法：node tests/_audit-run.mjs <mode> <role> <section>'); process.exit(2); }
+if (!MODE || !ROLE || !SECTION) { console.error('用法：node tests/_audit-run.mjs <real> <role> <section>'); process.exit(2); }
 
-const URL_BASE = MODE === 'mock' ? 'http://localhost:8080/?mock=1&u=MOCK' : 'http://localhost:8080/?u=0082';
+/* ★ 2026-09-24：示範（MOCK）模式已經拆走 → 審計只跑真實模式 */
+const URL_BASE = 'http://localhost:8080/?u=0082';
 const wait = (ms) => new Promise(r => setTimeout(r, ms));
 
 /* ---------- 副作用計數器 ---------- */
@@ -97,13 +98,12 @@ await wait(350);
 
 /* ---------- 登入目標角色 ----------
    ★ 2026-09-24：冇共用帳戶 —— 角色由名冊身份決定（見 tests/_roles.mjs）。
-   示範模式用示範團員改身份；真實模式種個人帳號（loginId：chief／leader／exco）。 */
-const needSeed = MODE !== 'mock' && ROLE !== 'super';
+   種個人帳號（loginId：chief／leader／exco）。
+   ★ 2026-09-24：以前「示範模式用示範團員改身份」嗰條路已經隨 MOCK 拆走。 */
+const needSeed = ROLE !== 'super';
 const { seedRosterRoles, ROLE_PW } = await import('./_roles.mjs');
 if (needSeed) await seedRosterRoles(store, auth);
-if (MODE === 'mock') {
-  if (ROLE !== 'leader') { auth.logout(); auth.loginAsMock(ROLE); }
-} else if (ROLE === 'super') {
+if (ROLE === 'super') {
   const r = await auth.login('leader', 'sheep', TEST_SUPER_PASSWORD);
   if (!r.ok) throw new Error('super 登入失敗');
 } else {

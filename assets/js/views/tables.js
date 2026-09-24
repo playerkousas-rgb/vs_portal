@@ -294,39 +294,30 @@ export function openFieldDesigner(key, { onSaved = null } = {}) {
   });
 }
 
-export function render(params) {
-  const keys = Object.keys(tableDefs());
-  if (params.id && keys.includes(params.id)) tab = params.id;
-  else if (params.id === 'design' || params.id === 'source' || params.id === 'sync' || params.id === 'data') tab = params.id;
-  else if (params.query?.tab) tab = params.query.tab;
-  else if (!keys.includes(tab)) tab = keys[0];
+/* ★ 2026-09-24 團長：「總表同步／表格與同步 太複雜」「我設定好他們就用，統一化前端會更好」
+   → 呢一頁而家淨係三樣嘢（同「帳號與系統 → 資料管理」一樣）：
+        ① 插入自己嘅 Sheet　② 總表同步　③ 儲存與備份
+   逐個表嘅欄位設計已經搬去各自嘅分頁（財務／用戶／物資／通告／會議 都有「欄位」掣），
+   呢度唔再重複列一次 —— 少咗十幾個分頁，就少咗十幾個撳錯嘅機會。 */
+const DATA_TABS = [['source', '插入自己嘅 Sheet'], ['sync', '總表同步'], ['data', '儲存與備份']];
 
-  const defs = tableDefs();
-  const isTable = keys.includes(tab);
+export function render(params) {
+  if (params.id && DATA_TABS.some(([k]) => k === params.id)) tab = params.id;
+  else if (!DATA_TABS.some(([k]) => k === tab)) tab = 'source';
 
   return `
   ${pageHead({
-    title: '表格與同步（進階）',
-    sub: '欄位設計已經搬去各自嘅分頁（財務／用戶／物資／通告／會議 都有「欄位」掣）；呢度放「插入自己嘅 Sheet」同「總表同步」',
-    actions: `
-      <button class="btn btn-sm" data-go="#/admin/data">${icon('chevronL', 15)} 返回帳號與系統</button>
-      <button class="btn btn-sm" data-act="export-all-csv">${icon('download', 15)} 全部表格 CSV</button>
-      ${can('table.sync') ? `<button class="btn btn-sm" data-go="#/tables/sync">${icon('cloud', 15)} 總表同步</button>` : ''}`
+    title: '資料管理',
+    sub: '三樣嘢：插入自己嘅 Sheet、總表同步、儲存與備份',
+    actions: `<button class="btn btn-sm" data-go="#/admin/data">${icon('chevronL', 15)} 返回帳號與系統</button>`
   })}
 
-  ${tabs([
-    ...keys.map(k => [k, defs[k].label, (load()[defs[k].collection] || []).length]),
-    ['source', '插入自己嘅 Sheet'],
-    ['sync', '總表同步'],
-    ['data', '儲存與備份']
-  ], tab)}
+  ${tabs(DATA_TABS, tab)}
 
-  ${isTable ? designView(tab, defs[tab])
-    : tab === 'source' ? sourceView()
+  ${tab === 'source' ? sourceView()
     : tab === 'sync' ? syncView()
     : dataView()}`;
 }
-
 /* ============================================================
    1. 表格設計
    ============================================================ */
@@ -545,26 +536,28 @@ function syncView() {
   const lastPush = s.lastPushAt ? String(s.lastPushAt).slice(0, 19).replace('T', ' ') : '';
   const lastPull = s.lastPullAt ? String(s.lastPullAt).slice(0, 19).replace('T', ' ') : '';
   const base = getBase();
+  const pendAcc = (s.pendingAccounts || 0);
   const baseAt = base?.at ? String(base.at).slice(0, 19).replace('T', ' ') : '';
   const baseVer = base ? (base.empty ? '（後端仲係空）' : String(base.version || '').slice(0, 19).replace('T', ' ')) : '';
   return `
-  ${route.serverManaged ? `<div class="note-box mb-16">${icon('cloud', 15)}<div>
-    <b>資料已接上旅團後端。</b>改好資料後撳「儲存到後端」；想放棄呢部機未儲存嘅改動，就撳「由後端重新載入」。
-  </div></div>` : `<div class="note-box mb-16">${icon('cloud', 15)}<div>
-    <b>資料真正嘅家係你自己嘅 Google Sheet。只有一個方式：</b>
-    ① 登入嗰陣由後端攞成份資料（＝登入嗰一刻嘅後端）→
-    ② 之後改乜都<b>淨係暫存喺呢部機</b> →
-    ③ 撳「<b>儲存到後端</b>」先寫入：系統會先核對後端版本，有人喺你登入後儲存過就<b>逐格</b>比對 ——
-    改同一格同一個值＝冇問題；改唔同嘅格＝一齊儲存；同一格唔同值（例如一個登記早走、一個登記遲到）
-    ＝嗰格<b>唔會</b>寫入，會列出嚟等你再確認，確認咗先蓋過去。<br>
-    <span class="xs">其他分頁（帳目／團員／物資…）係攤平出嚟畀你自己睇同用公式嘅「報表」。
+  <div class="note-box mb-16">${icon('cloud', 15)}<div>
+    <b>資料真正嘅家係你自己嘅 Google Sheet。寫入後端只有一條路：頂部嗰粒「儲存到後端」。</b>
+    ① 登入嗰陣由後端攞成份資料（＝登入嗰一刻嘅後端，做基準）→
+    ② 之後<b>任何改動都只係寫入呢部機</b>（頂部會顯示「N 項未寫入」）→
+    ③ 撳頂部「<b>儲存到後端</b>」先至真正送出。送出前一定先核對後端版本，
+    有人喺你登入後儲存過就<b>逐格</b>比對 —— 改同一格同一個值＝冇問題；改唔同嘅格＝一齊儲存；
+    同一格唔同值（例如一個登記早走、一個登記遲到）＝嗰格<b>唔會</b>寫入，
+    會列出嚟等你再確認，確認咗先蓋過去。<br>
+    <span class="xs">「<b>重新載入</b>」＝由後端拉最新嗰份。另一個視窗改咗嘢會自動併入呢邊，唔使重新整理。<br>
+    ${pendAcc ? `<b style="color:var(--danger)">⚠ 有 ${pendAcc} 個帳戶改動未寫入後端 —— 未撳頂部掣之前，佢哋喺其他裝置登唔到。</b><br>` : ''}
+    其他分頁（帳目／團員／物資…）係攤平出嚟畀你自己睇同用公式嘅「報表」。
     同一個後端仲會處理 <b>成員手機記帳</b>（entry.html）同 <b>通告報名</b>（notice.html）。</span>
-  </div></div>`}
+  </div></div>
 
   ${wired ? `<div class="card mb-16"><div class="card-head">
     <div><div class="card-title">${icon('shield', 15)} 儲存狀態</div>
       <div class="card-sub">資料有冇真係入咗後端</div></div>
-    ${pending ? `<span class="badge b-warn"><span class="dot"></span>${pending} 項改動未儲存</span>`
+    ${pending ? `<span class="badge ${pendAcc ? 'b-danger' : 'b-warn'}"><span class="dot"></span>${pending} 項改動未寫入後端${pendAcc ? `（包括 ${pendAcc} 個帳戶）` : ''}</span>`
       : `<span class="badge b-ok"><span class="dot"></span>全部已儲存</span>`}
   </div>
   <div style="padding:12px 16px" class="sm muted">
@@ -582,6 +575,10 @@ function syncView() {
       <code>TROOP_${esc(load().unitCode || '編號')}_BACKEND</code> 係你個 <code>/exec</code>）→ 重新部署。
       咁條 key 淨係留喺伺服器端，瀏覽器完全唔會見到。
     </div></div>` : ''}
+    <div class="note-box mt-12">${icon('alert', 15)}<div class="sm">
+      <b>冇自動寫入。</b>改動一律先留喺呢部機，要撳<b>頂部「儲存到後端」</b>先至送出 ——
+      全系統得呢一條寫入路，唔會有第二個地方偷偷地寫。
+    </div></div>
     <div class="row gap-8 mt-12 wrap">
       <button class="btn btn-primary btn-sm" data-act="push-db">${icon('cloud', 15)} 儲存到後端${pending ? `（${pending}）` : ''}</button>
       <button class="btn btn-sm" data-act="pull-db">${icon('download', 15)} 由後端重新載入${pending ? '（會丟棄未儲存改動）' : ''}</button>
@@ -1379,7 +1376,7 @@ export function mount(root, params) {
         refresh();
       }
       if (act === 'push-sync') {
-        if (!(await confirmDlg({ title: '更新報表分頁', okText: '開始', message: '會將全部表格資料攤平送去你嘅 Google Sheet 嘅報表分頁（帳目／團員／物資…），畀你自己睇同用公式。<br><br><b>唔會</b>寫「資料庫」分頁 —— 資料庫本身要撳「儲存到後端」。' }))) return;
+        if (!(await confirmDlg({ title: '更新報表分頁', okText: '開始', message: '會將全部表格資料攤平送去你嘅 Google Sheet 嘅報表分頁（帳目／團員／物資…），畀你自己睇同用公式。<br><br><b>唔會</b>寫「資料庫」分頁 —— 資料庫本身由自動寫入／「即刻儲存」處理。' }))) return;
         await pushToMaster(); refresh();
       }
 
@@ -1467,7 +1464,7 @@ export function mount(root, params) {
         }
       }
 
-      /* ---- 整個資料庫：寫入／還原／檢視（真正嘅後端儲存） ---- */
+      /* ---- 整個資料庫：即刻寫入／還原／檢視（真正嘅後端儲存） ---- */
       if (act === 'push-db') {
         const { saveWithDialog } = await import('./syncdialog.js');
         const old = b.innerHTML;
@@ -1493,7 +1490,7 @@ export function mount(root, params) {
         const remote = await import('../lib/remote.js');
         const info = await remote.remoteInfo();
         if (!info?.ok) { toast('讀唔到後端：' + (info?.error || '未知錯誤'), 'err'); return; }
-        if (!info.found) { toast('後端仲未有資料庫（請先撳「儲存到後端」）', 'warn'); return; }
+        if (!info.found) { toast('後端仲未有資料庫（請先撳「即刻儲存」建立第一份）', 'warn'); return; }
         const c = info.counts || {};
         const pend = Number(load().sync?.pending || 0);
         const okGo = await confirmDlg({

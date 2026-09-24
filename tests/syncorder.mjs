@@ -9,13 +9,15 @@
    （真實世界＝GAS 凍啟動逾時／網絡瞬斷／proxy 一時 5xx）。
    讀寫一齊死嘅話舊版都一樣寫唔入，證明唔到任何嘢 —— 所以必須分開。
 
-   釘死：
+   釘死（2026-09-24 團長第五輪定案：**冇自動寫入**）：
      ① 空後端第一次儲存 ＝ 建立基線
      ② 核對唔到後端版本 → 一律唔寫，後端一個字都冇被蓋，改動留喺本機
-     ③ 改完嘢等幾耐都唔會自動寫
+     ③ 改完嘢等幾耐都**唔會**自動寫 —— 一定要撳頂部「儲存到後端」
+     ③b 讀唔到後端版本嗰陣，撳掣一樣唔會盲寫
      ④ 有人喺我登入後儲存過 → 拉落嚟三方比對 → 唔撞就一齊寫，兩邊資料一個都冇少
-     ⑤⑥ 未撳儲存之前後端一個字都未收到
-     ⑦ IG／FB 設定：儲存≠發布，撳「儲存到後端」先至到後端
+     ⑤ 未撳「儲存到後端」之前後端一個字都未收到
+     ⑥ 撳咗「儲存到後端」之後先至收到（唯一寫入路）
+     ⑦ IG／FB 設定：一樣要撳頂部掣先至到後端
    用法：node tests/syncorder.mjs
    ============================================================ */
 
@@ -170,20 +172,40 @@ section('② ★ 讀唔到後端但寫得入 → 舊版會盲蓋，而家必須�
     JSON.stringify({ now: truth, baseline }));
 }
 
-/* ---- ③ 自動寫入已經冇呢條路（唔係「擋住」，係「不存在」）---- */
-section('③ ★ 冇自動寫入：改完嘢等足時間都唔會寫');
+/* ---- ③ 寫入模型（2026-09-24 團長第五輪定案）----
+   2026-09-19／20 釘死「冇自動寫入」；2026-09-24 為咗救「帳戶寫唔入後端」加咗自動寫入；
+   2026-09-24 團長明確否決：「我只想要頂部1個儲到後端的制,其他任何時候都是暫儲在遊覽器」。
+   所以而家釘死嘅係：等幾耐都唔會自動寫 —— 一定要撳頂部嗰粒「儲存到後端」。
+   帳戶寫唔入後端嗰個問題改由兩個補救解決：頂部轉紅鬧醒（pendingAccounts）＋ 登出／閂頁擋住問。 */
+section('③ ★ 冇自動寫入：等足 5 秒都唔會寫後端（要撳頂部掣）');
 {
   const before = await backendTruth();
   const C = await runDevice({ steps: [
     { op: 'setSync', url: GOOD_EXEC, apiKey: KEY },
     { op: 'load' },
-    { op: 'autosave', name: '自動寫入測試', ymis: '2026000003', waitMs: 4000 }
+    { op: 'autosave', name: '自動寫入測試', ymis: '2026000003', waitMs: 5000 }
   ] });
   const a = step(C, 'autosave');
-  ok('★ 改動淨係暫存（pending 留住，冇自動寫）', Number(a.pending || 0) >= 1, JSON.stringify(a));
-  ok('★ 狀態係「未儲存」而唔係「已儲存」', a.state === 'pending', JSON.stringify(a));
+  ok('★ 等足 5 秒，改動仲係 pending（冇自動寫）', Number(a.pending || 0) === 1, JSON.stringify(a));
+  ok('★ 狀態係「未寫入」而唔係「已儲存」', a.state === 'pending', JSON.stringify(a));
   const after = await backendTruth();
-  ok('★ 後端 version 冇變（真係一個字都冇寫）', after.version === before.version, JSON.stringify({ before, after }));
+  ok('★ 後端一個字都未變（version 同團員數都冇郁）',
+    after.version === before.version && after.members === before.members,
+    JSON.stringify({ before, after }));
+}
+
+/* ---- ③b 讀唔到後端版本嗰陣，自動寫入唔會盲寫（同 ② 一樣嘅保險閘）---- */
+section('③b ★ 讀壞咗嗰陣自動寫入都唔會盲寫（改動留喺本機）');
+{
+  const before = await backendTruth();
+  const C2 = await runDevice({ steps: [
+    { op: 'setSync', url: BAD_READ_EXEC, apiKey: KEY },
+    { op: 'autosave', name: '讀壞測試', ymis: '2026000033', waitMs: 5000 }
+  ] });
+  const a2 = step(C2, 'autosave');
+  ok('★ 讀唔到後端版本 → 自動寫入冇寫（改動仲喺本機）', Number(a2.pending || 0) >= 1, JSON.stringify(a2));
+  const after2 = await backendTruth();
+  ok('★ 後端一個字都冇被蓋', after2.version === before.version, JSON.stringify({ before, after2 }));
 }
 
 /* ---- ④ 讀返到 → 撳「立即同步」：先拉後端合併，再寫 ---- */
@@ -192,6 +214,7 @@ section('④ ★ 「儲存到後端」＝ 核對版本 → 有人儲存過就拉
   const D = await runDevice({ steps: [
     { op: 'setSync', url: GOOD_EXEC, apiKey: KEY },
     { op: 'load' },                                                 // 登入（基準 ＝ 陳大文）
+    { op: 'setAutoSave', on: false },                               // 要測「有未存改動」就要關自動儲存
     { op: 'addMember', name: '黃小明', ymis: '2026000004' },         // 我改咗未存
     { op: 'teammatePush', name: '王五', ymis: '2026000009' },        // 隊友喺我登入後儲存咗
     { op: 'syncNow' }                                               // 我撳「儲存到後端」
@@ -211,8 +234,9 @@ section('④ ★ 「儲存到後端」＝ 核對版本 → 有人儲存過就拉
   ok('★★ 後端而家有齊三個團員（冇人蓋走人）', truth.members >= 3, JSON.stringify(truth));
 }
 
-/* ---- ⑤ 手動模式：暫存喺瀏覽器，撳同步先寫 ---- */
-section('⑤ 團長要嘅用法：改動淨係暫存，撳「儲存到後端」先寫');
+/* ---- ⑤ 手動模式（自動儲存**關咗**）：暫存喺瀏覽器，撳「即刻儲存」先寫 ----
+   呢條路依然存在（用家可以喺「總表同步」關自動儲存），所以要有測試覆蓋。 */
+section('⑤ 手動模式（自動儲存已關）：改動淨係暫存，撳「即刻儲存」先寫');
 {
   /* 取樣一定要喺劇本**中間**做：runDevice 成個跑完先至問後端嘅話，
      syncNow 嗰次合法寫入都會被計入，證明唔到「未撳同步之前冇寫」。 */
@@ -220,6 +244,7 @@ section('⑤ 團長要嘅用法：改動淨係暫存，撳「儲存到後端」�
   const E = await runDevice({ steps: [
     { op: 'setSync', url: GOOD_EXEC, apiKey: KEY },
     { op: 'load' },
+    { op: 'setAutoSave', on: false },
     { op: 'manualStage', name: '手動模式團員', ymis: '2026000005', waitMs: 4000 },
     { op: 'backendPeek' },          // ← 未撳同步之前
     { op: 'syncNow' },
@@ -240,48 +265,55 @@ section('⑤ 團長要嘅用法：改動淨係暫存，撳「儲存到後端」�
     JSON.stringify({ before, afterPeek }));
 }
 
-/* ---- ⑥ 團長指示：預設「只讀 ＋ 撳掣先一次過寫」 ---- */
-section('⑥ ★ 冇得揀：改動淨係暫存，乜都唔會自動寫（登入時攞完後端之後亦然）');
+/* ---- ⑥ 預設模式：改完淨係暫存，撳頂部掣先至寫 ---- */
+section('⑥ ★ 預設：改完淨係暫存喺瀏覽器；撳「儲存到後端」先至寫');
 {
   /* 對照版本一定要喺 manualStage **之前**即刻攞 —— 前面 ④⑤ 已經合法寫過後端 */
   const G = await runDevice({ steps: [
     { op: 'setSync', url: GOOD_EXEC, apiKey: KEY },
     { op: 'load' },
     { op: 'backendPeek' },         // ← 未改嘢之前
-    { op: 'manualStage', name: '預設模式團員', ymis: '2026000006', waitMs: 4000 },
-    { op: 'backendPeek' }          // ← 等完之後
+    { op: 'manualStage', name: '預設模式團員', ymis: '2026000006', waitMs: 5000 },
+    { op: 'backendPeek' },         // ← 等完之後（未撳掣）
+    { op: 'syncNow' },             // ← 撳頂部「儲存到後端」
+    { op: 'backendPeek' }          // ← 撳完之後
   ] });
   ok('登入攞後端本身唔會寫後端（load 之後 pending 0）', step(G, 'load').ok === true && step(G, 'load').pending === 0, JSON.stringify(step(G, 'load')));
   const m = step(G, 'manualStage');
-  ok('改動有暫存喺本機', Number(m.pending || 0) >= 1, JSON.stringify(m));
+  ok('改動淨係暫存（pending 1）', Number(m.pending || 0) === 1, JSON.stringify(m));
   const peeks = (G.steps || []).filter(s => s.op === 'backendPeek');
-  const [pre, post] = [peeks[0] || {}, peeks[1] || {}];
-  ok('★ 等完之後後端一個字都未收到（要自己撳「儲存到後端」）',
-    post.version === pre.version && post.members === pre.members,
+  const [pre, mid, post] = [peeks[0] || {}, peeks[1] || {}, peeks[2] || {}];
+  ok('★ 等完都未寫：後端同未改之前一模一樣',
+    mid.version === pre.version && mid.members === pre.members,
+    JSON.stringify({ pre, mid }));
+  ok('★ 撳「儲存到後端」之後先至收到（version 變咗、團員多咗一個）',
+    step(G, 'syncNow').ok === true && post.version !== pre.version && post.members === pre.members + 1,
     JSON.stringify({ pre, post }));
 }
 
-/* ---- ⑦ 團長回報：「IG／FB 公開資料，團員登入後完全見唔到」 ---- */
-section('⑦ ★ 團員公開連結（IG／FB）：儲存≠發布，撳「儲存到後端」先至到後端');
+/* ---- ⑦ 團長回報：「IG／FB 公開資料，團員登入後完全見唔到」 ----
+   2026-09-24：根因係「改動困喺本機」。2026-09-24 起冇自動寫入，
+   所以正確流程係：執委填 IG／FB → 撳分頁「儲存」（入瀏覽器）→ 撳頂部「儲存到後端」。
+   頂部嗰粒掣會話畀佢知有幾多項未寫入，唔會靜靜地漏。 */
+section('⑦ ★ 團員公開連結（IG／FB）：撳頂部「儲存到後端」之後團員入口先見到');
 {
-  /* 執委喺「帳號與系統 → 旅團設定」填 IG／FB → 撳「儲存」。
-     團長以為咁就出咗街；實際上（手動同步）改動淨係暫存喺佢部機。 */
+  /* 執委喺「帳號與系統 → 旅團設定」填 IG／FB → 撳「儲存」→ 再撳頂部「儲存到後端」。 */
   const H = await runDevice({ steps: [
     { op: 'setSync', url: GOOD_EXEC, apiKey: KEY },
     { op: 'load' },
     { op: 'backendPeek' },                     // ← 未改之前
     { op: 'patchSettings', patch: { troopLinks: { instagram: 'https://instagram.com/troop82', facebook: 'https://facebook.com/troop82' } } },
-    { op: 'backendPeek' },                     // ← 儲存咗，但未撳同步
+    { op: 'wait', ms: 4000 },                  // ← 等一排（證明冇自動寫入）
+    { op: 'backendPeek' },                     // ← 一個掣都未撳
     { op: 'syncNow' },
-    { op: 'backendPeek' }                      // ← 撳咗同步之後
+    { op: 'backendPeek' }                      // ← 撳咗「儲存到後端」之後
   ] });
   const pk = (H.steps || []).filter(s => s.op === 'backendPeek');
   const [b4, afterSave, afterSync] = [pk[0] || {}, pk[1] || {}, pk[2] || {}];
-  ok('★ 執委撳「儲存」之後，後端**未**收到（改動淨係暫存喺佢部機）',
-    afterSave.version === b4.version && afterSave.members === b4.members,
-    JSON.stringify({ b4, afterSave }));
-  ok('★ 撳「儲存到後端」之後後端先至變（version 唔同）',
-    afterSync.version !== b4.version, JSON.stringify({ b4, afterSync }));
+  ok('★ 執委撳完分頁「儲存」但未撳頂部掣 → 後端未收到（改動仲喺瀏覽器）',
+    afterSave.version === b4.version, JSON.stringify({ b4, afterSave }));
+  ok('★ 撳「儲存到後端」之後先至收到（同一條路，唔會出錯）',
+    step(H, 'syncNow').ok === true && afterSync.version !== b4.version, JSON.stringify({ b4, afterSync }));
   ok('同步本身成功', step(H, 'syncNow').ok === true, JSON.stringify(step(H, 'syncNow')));
 
   /* 後端而家實際存咗乜 settings.troopLinks（唔信前端自己講） */

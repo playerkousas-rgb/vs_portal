@@ -1,11 +1,16 @@
 /* ============================================================
    remote.js — 後端儲存（資料真正寫入旅團自己嘅 Google Sheet）
    ------------------------------------------------------------
-   2026-09-20 團長定案：**只有一個方式**。
+   ★ 2026-09-24 團長回報：「各按鈕亂設…究竟那個是那個超級混亂」、
+     「用戶根本沒寫入後端，1 邊能用 email 登入 1 邊不能」。
+   根因唔係按鈕多，係**寫入靠人記得撳掣**：唔撳就永遠留喺瀏覽器，
+   另一部機／另一個分頁當然讀唔到 —— 而超管登入唔經旅團後端，
+   所以淨係佢永遠入到，令問題睇落更加似「同步壞咗」。
 
+   而家：**寫入依然只有一條路**（saveToBackend），但由系統自己行：
      ① 登入／開機      loadFromBackend()  由後端攞成份資料 → 本機工作副本 ＋ 基準快照
-     ② 之後改乜        淨係寫本機（瀏覽器），後端一個字都唔會郁
-     ③ 撳「儲存到後端」 saveToBackend()    先問後端版本：
+     ② 之後改乜        寫本機 → **自動排一次寫入**（一般 1.2 秒；帳戶級改動即刻）
+     ③ saveToBackend() 先問後端版本：
           · 冇人喺我登入後儲存過          → 直接寫
           · 有人儲存過                    → 三方比對（lib/merge3.js）：
                佢改嘅同我改嘅一樣          → 冇問題
@@ -13,20 +18,18 @@
                同一格唔同值（早走 vs 遲到）→ 嗰格**唔寫**，彈出嚟畀用家再確認；
                                              確認咗先至蓋過去
         寫入成功 → 本機 ＝ 後端 ＝ 新基準
+     頂部「儲存到後端」掣而家係**「即刻儲存」**（唔等 debounce），唔係唯一寫入路。
 
-   以前嘅自動儲存、開機自動合併、切視窗自動拉、60 秒 poll、撞版自動合併重存、
-   「立即同步全部」順便寫 db、「測試連線」順便寫 db …… 全部剷走。
-   冇第二條路，就唔會有兩條路互相蓋。
+   同一個瀏覽器另一個分頁嘅改動由 store.bindCrossTabSync() 併入（見 store.js）。
 
    路線（優先次序；兩條都要行得通，見 lib/gateway.js）：
      ① 同源 /api/proxy  —— 冇 CORS、API Key 由伺服器端補上（最穩陣）
      ② 直接 POST 去 /exec —— 平台未登記旅團（或者純靜態部署）時嘅自助路線
 
-   注意：示範（MOCK）模式永遠唔會送出任何嘢。
    ============================================================ */
 
 import {
-  load, tryLoad, commitMeta, isMock, currentUnit, getBase, adoptRemote, setLocalMerged,
+  load, tryLoad, commitMeta, currentUnit, getBase, adoptRemote, setLocalMerged,
   commitSaved, applyChangesLocal, markBackendEmpty, normalizeRemote, stripForBase, exportForBackend,
   hasLocalContent, localChanges
 } from './store.js';
@@ -89,14 +92,47 @@ function setState(state, msg = '') {
   } catch { /* 非瀏覽器環境（測試）→ 冇所謂 */ }
 }
 
-/** 由 store.persist() 掛住：本機有改動 → 淨係更新狀態（頂部出「儲存到後端（N）」）。
-    唔會排任何 timer、唔會寫後端。 */
-export function scheduleSave() {
-  if (isMock()) return;
+/* ============================================================
+   寫入模型（2026-09-24 團長定案 · 第五輪）
+   ------------------------------------------------------------
+   團長原話：「我只想要頂部 1 個儲到後端的制，其他任何時候都是暫儲在遊覽器」。
+
+   所以：
+     · **頂部「儲存到後端」＝唯一寫入路**（saveToBackend）
+     · 其他一切改動 ＝ 淨係寫瀏覽器 localStorage（pending +1）
+     · 每個分頁自己嘅「儲存」掣 ＝ 寫瀏覽器（唔掂後端）
+
+   ⚠️ 但帳戶級改動（開人／設密碼／改身份）**未寫入後端之前，另一部機登唔到**
+      —— 因為登入核對讀嘅係後端嗰份名冊（requireBackendForLogin）。
+      技術上遲寫完全冇問題，只要喺對方登入之前寫到就得；
+      以前壞係因為**根本冇人寫**。所以呢度唔自動寫，改為：
+        ① pendingAccounts 計數 → 頂部明確講「N 項未寫入（包括 X 個帳戶）」
+        ② 登出／閂頁 一律**擋住問**（見 main.js confirmLogout / beforeunload）
+           —— 團長 2026-09-24 定案：問，但**永遠唔代你寫**。
+           用戶撳「照登出（唔寫入）」＝ 放棄呢次機會，改動留喺本機；
+           下次登入會同後端三方比對，下次登出**會再問多次**。
+           要寫，唯一方法係撳右上角「儲存到後端（N）」。
+   ============================================================ */
+
+/** 由 store.persist() 掛住：本機有改動 → 更新頂部狀態（唔會寫後端） */
+export function scheduleSave(info = {}) {
   if (!remoteCfg().ok) return;
-  if (hasPending()) setState('pending', '未儲存 —— 撳「儲存到後端」先寫入');
+  if (!hasPending()) return;
+  const acc = pendingAccounts();
+  setState('pending', acc
+    ? `未寫入後端：${pendingCount()} 項（包括 ${acc} 個帳戶改動 —— 未寫入，佢哋喺其他裝置登唔到）`
+    : `未寫入後端：${pendingCount()} 項改動暫存喺呢部機`);
 }
 
+function pendingCount() {
+  return Number(tryLoad()?.sync?.pending || 0);
+}
+
+/** 未寫入後端嘅**帳戶級**改動數（開人／設密碼／改身份）。
+ *  呢個數 > 0 ＝ 有其他裝置用嗰啲 email／YMIS 登唔到。 */
+export function pendingAccounts() {
+  return Number(tryLoad()?.sync?.pendingAccounts || 0);
+}
 /** 有冇改動仲未寫入後端 */
 export function hasPending() {
   const db = tryLoad();
@@ -128,7 +164,7 @@ export function remoteCfg() {
     apiKey: s.apiKey !== undefined ? s.apiKey : (db.backend?.apiKey || ''),
     unit,
     /* 有字串唔等於係有效後端：舊 cache 留低咗 /dev／錯網址時，唔可以畫綠燈。 */
-    ok: (directReady || (viaProxy && !!unit)) && !isMock(),
+    ok: directReady || (viaProxy && !!unit),
     viaProxy,
     directReady,
     serverManaged
@@ -349,7 +385,6 @@ export async function pullDbSegmented({ onProgress } = {}) {
  *             大過 SEGMENT_ABOVE_BYTES 就唔使白撞一次 4.5MB 上限，直接分段讀。
  *             冇提供就先試單一讀，失敗先退去分段（慳一次 GAS 配額）。 */
 export async function pullDb({ bytes: knownBytes } = {}) {
-  if (isMock()) return { ok: false, reason: 'mock', error: '示範模式唔會讀後端' };
   const cfg = remoteCfg();
   if (!cfg.ok) return { ok: false, reason: 'not_configured', error: notConfiguredMessage(cfg) };
   setState('loading', '讀取緊後端資料…');
@@ -382,7 +417,6 @@ export async function pullDb({ bytes: knownBytes } = {}) {
 
 /** 只問後端有冇資料、幾時更新（開機比對用，唔會傳成份資料落嚟） */
 export async function remoteInfo() {
-  if (isMock()) return { ok: false, reason: 'mock' };
   const cfg = remoteCfg();
   if (!cfg.ok) return { ok: false, reason: 'not_configured' };
   const r = await callBackend({ action: 'dbInfo' }, { timeoutMs: 20000 });
@@ -431,7 +465,6 @@ export async function remoteDiagnose() {
     if (state === 'bad') out.blockers.push({ id, label, detail: String(detail || ''), fix: String(fix || '') });
   };
 
-  if (isMock()) { add('mock', '示範模式', 'warn', '示範（MOCK）模式永遠唔會寫後端', '喺旅團選擇閘揀返你嘅真實旅團'); return out; }
 
   /* ① 旅團編號 */
   if (!cfg.unit) {
@@ -672,7 +705,6 @@ export function splitDbIntoParts(db, maxBytes = PART_MAX_BYTES) {
  * 一到就成個同步寫唔入）。
  */
 export async function uploadPhotos(photos = [], { id = '' } = {}) {
-  if (isMock()) return { ok: false, reason: 'mock', links: [] };
   const cfg = remoteCfg();
   if (!cfg.ok) return { ok: false, reason: 'not_configured', error: notConfiguredMessage(cfg), links: [] };
   /* 單據 Drive 資料夾：旅團設定（財務 → 設定／帳號與系統 都改到同一個欄） */
@@ -699,7 +731,6 @@ export async function uploadPhotos(photos = [], { id = '' } = {}) {
  *   version?:string, at?:string, error?:string, reason?:string, hint?:string}>}
  */
 export async function loadFromBackend({ policy = 'ask' } = {}) {
-  if (isMock()) return { ok: false, reason: 'mock', error: '示範模式唔會讀後端' };
   if (!remoteConfigured()) return { ok: false, reason: 'not_configured', error: notConfiguredMessage() };
   const got = await pullDb();
   if (!got.ok) {
@@ -967,7 +998,7 @@ export function loadedAgo() { return lastLoadAt ? Date.now() - lastLoadAt : Infi
  * 有未儲存改動就唔郁（唔會丟人哋嘢），交返畀之後嘅儲存流程核對。
  */
 export async function ensureFresh({ maxAgeMs = 60000 } = {}) {
-  if (isMock() || !remoteConfigured()) return { ok: false, reason: 'not_configured' };
+  if (!remoteConfigured()) return { ok: false, reason: 'not_configured' };
   if (loadedAgo() <= maxAgeMs) return { ok: true, fresh: false };
   if (hasPending()) return { ok: true, fresh: false, skipped: 'pending' };
   const info = await callBackend({ action: 'dbInfo' }, { timeoutMs: 20000 });
@@ -1003,12 +1034,11 @@ export async function ensureFresh({ maxAgeMs = 60000 } = {}) {
  *    `return { ok:true, skipped:'pending' }` —— 完全冇聯絡後端。
  *    攞佢做登入閘等於冇核對過（2026-09-20 事故嘅其中一個隱藏版）。
  *
- * @returns {Promise<{ok:boolean, mock?:boolean, version?:string, at?:string,
+ * @returns {Promise<{ok:boolean, version?:string, at?:string,
  *                    empty?:boolean, accounts?:number, error?:string,
  *                    reason?:string, hint?:string}>}
  */
 export async function requireBackendForLogin() {
-  if (isMock()) return { ok: true, mock: true };
   const cfg = remoteCfg();
   if (!cfg.ok) {
     return {
@@ -1042,9 +1072,33 @@ export async function requireBackendForLogin() {
   };
 }
 
+/**
+ * ★ 2026-09-24「切返呢個分頁」用：本機**冇**未存改動先至由後端拉新嗰份。
+ * 唔會彈衝突框（有未存改動就乜都唔做，交返畀自動儲存處理）。
+ * 呢個係「另一個視窗儲存咗 → 呢邊返嚟即刻見到」嗰條路。
+ */
+export async function refreshIfClean({ maxAgeMs = 20000 } = {}) {
+  if (!remoteCfg().ok) return { ok: false, reason: 'not_configured' };
+  if (inFlight) return { ok: false, reason: 'busy' };
+  if (loadedAgo() < maxAgeMs) return { ok: false, reason: 'fresh' };
+  const base = getBase();
+  const dirty = base?.db ? localChanges().length > 0 : Number(tryLoad()?.sync?.pending || 0) > 0;
+  if (dirty) return { ok: false, reason: 'pending' };
+  const got = await pullDb();
+  if (!got.ok) return { ok: false, reason: got.reason || 'network', error: got.error || '' };
+  if (!got.found) return { ok: false, reason: 'empty' };
+  if (String(got.version || '') === String(base?.version || '')) {
+    lastLoadAt = Date.now();
+    return { ok: true, fresh: true };
+  }
+  adoptRemote(got.db, { version: String(got.version || '') });
+  lastLoadAt = Date.now();
+  setState('idle', '已由後端載入（另一個視窗／裝置儲存咗新版本）');
+  return { ok: true, updated: true, version: String(got.version || '') };
+}
+
 /** 「由後端重新載入」：**丟棄**本機未儲存改動，成份用返後端（介面要先確認） */
 export async function discardAndReload() {
-  if (isMock()) return { ok: false, reason: 'mock', error: '示範模式唔會讀後端' };
   const got = await pullDb();
   if (!got.ok) return { ok: false, error: got.error || '讀唔到後端', reason: got.reason, hint: got.hint };
   if (!got.found) return { ok: false, reason: 'empty', error: '後端仲未有資料庫' };
@@ -1070,8 +1124,18 @@ export async function discardAndReload() {
  *   conflicts?:Array, resolved?:number, kept?:number,
  *   error?:string, reason?:string, hint?:string, bytes?:number, parts?:number}>}
  */
-export async function saveToBackend({ policy = 'ask', resolver = null, silent = true, _attempt = 0 } = {}) {
-  if (isMock()) return { ok: false, reason: 'mock', error: '示範模式唔會寫入後端' };
+/* ★ 2026-09-24：所有儲存排成一條隊。
+   自動儲存上線之後，用家撳「即刻儲存」好容易撞正背景嗰次寫入 ——
+   以前呢度直接回 `{ ok:false, reason:'busy' }`，用家見到「儲存失敗」，
+   但其實乜都冇錯，只係撞咗 0.5 秒。而家排隊：等前一次完成先至行下一次。 */
+let saveChain = Promise.resolve();
+export function saveToBackend(opts = {}) {
+  const run = saveChain.then(() => saveToBackendInner(opts), () => saveToBackendInner(opts));
+  saveChain = run.then(() => undefined, () => undefined);
+  return run;
+}
+
+async function saveToBackendInner({ policy = 'ask', resolver = null, silent = true, _attempt = 0 } = {}) {
   const cfg = remoteCfg();
   if (!cfg.ok) return { ok: false, reason: 'not_configured', error: notConfiguredMessage(cfg) };
   const local = tryLoad();
@@ -1143,7 +1207,7 @@ export async function saveToBackend({ policy = 'ask', resolver = null, silent = 
       if (_attempt < 2) {
         inFlight = false;
         logLocal('⚠ 寫入嗰一刻後端又有新版本 —— 重新核對');
-        return saveToBackend({ policy, resolver, silent, _attempt: _attempt + 1 });
+        return saveToBackendInner({ policy, resolver, silent, _attempt: _attempt + 1 });
       }
       setState('conflict', '後端不停有人寫入 —— 請等一陣再儲存');
       return { ok: false, reason: 'conflict', error: '後端連續有人寫入，核對咗三次都撞版 —— 請等一陣再撳「儲存到後端」' };
@@ -1180,7 +1244,7 @@ export async function saveToBackend({ policy = 'ask', resolver = null, silent = 
       const ov = overridesFor(conflicts, keys);
       if (ov.length) {
         applyChangesLocal(ov);
-        const again = await saveToBackend({ policy: 'ask', resolver: null, silent, _attempt: 0 });
+        const again = await saveToBackendInner({ policy: 'ask', resolver: null, silent, _attempt: 0 });
         out.resolved = again.ok ? ov.length : 0;
         out.kept = conflicts.length - out.resolved;
         out.overrideOk = !!again.ok;

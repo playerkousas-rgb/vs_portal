@@ -431,9 +431,15 @@ svg{ display:block; }
 .doc li{ margin-bottom:9px; }
 .doc .art-no{ font-weight:800; color:var(--brand-700); margin-right:6px; }
 
-.perm-cell{ text-align:center; }
+.perm-cell{ text-align:center; position:relative; }
 .perm-yes{ color:var(--ok); font-weight:800; }
-.perm-no{ color:#D3DDD7; }
+.perm-no{ color:#D3DDD7; font-weight:800; }
+/* ★ 2026-09-25 團長：「權限總表要能編輯…多點一下就變X」→ 每格都係掣 */
+.perm-cell.perm-editable{ cursor:pointer; border-radius:8px; transition:background .12s, box-shadow .12s; }
+.perm-cell.perm-editable:hover{ background:rgba(138,14,39,.07); box-shadow:inset 0 0 0 1px rgba(138,14,39,.22); }
+.perm-cell.perm-editable:active{ transform:scale(.94); }
+.perm-dot{ position:absolute; top:2px; right:4px; font-size:8px; color:var(--accent); line-height:1; }
+.perm-cell .badge{ font-size:11px; }
 
 .list-item{
   display:flex; align-items:center; gap:12px; padding:12px 14px; border-bottom:1px solid var(--line-2);
@@ -491,18 +497,6 @@ svg{ display:block; }
 .banner.warn{ background:var(--warn-bg); color:var(--warn); border:1px solid #F0DFB4; }
 .banner.info{ background:var(--info-bg); color:var(--info); border:1px solid #CBDDF5; }
 .banner.brand{ background:var(--brand-50); color:var(--brand-800); border:1px solid var(--brand-100); }
-
-/* ---------- 示範（MOCK）模式橫額 ---------- */
-.mock-bar{
-  position:sticky; top:0; z-index:70; display:flex; align-items:center; gap:12px; flex-wrap:wrap;
-  background:repeating-linear-gradient(45deg,#B8892B,#B8892B 12px,#A2761F 12px,#A2761F 24px);
-  color:#fff; padding:9px 16px; font-size:13px; font-weight:600;
-}
-.mock-bar .tag{ background:rgba(0,0,0,.22); padding:2px 9px; border-radius:99px; font-size:11.5px; letter-spacing:.06em; }
-.mock-bar .btns{ margin-left:auto; display:flex; gap:8px; flex-wrap:wrap; }
-.mock-bar button{ font:inherit; font-weight:700; background:rgba(255,255,255,.16); border:1px solid rgba(255,255,255,.4);
-  color:#fff; padding:5px 11px; border-radius:9px; cursor:pointer; }
-.mock-bar button:hover{ background:rgba(255,255,255,.28); }
 
 /* ---------- 旅團選擇 ---------- */
 .unit-grid{ display:grid; gap:10px; }
@@ -578,7 +572,6 @@ svg{ display:block; }
 
 /* ---------- 列印 ---------- */
 @media print{
-  .mock-bar{ position:static; }
   .doc .bi-pair{ grid-template-columns:1fr 1fr; }
   a[href]::after{ content:""; }
 }
@@ -648,7 +641,7 @@ pre.code { background:#2A1015; color:#F6E7EA; padding:14px 16px; border-radius:1
    新增（v2.1）：旅團選擇閘 · 結餘流程 · 草稿暫存 · toast 動作
    ============================================================ */
 
-/* ---------- 開機先揀旅團（0082 / MOCK）---------- */
+/* ---------- 開機先揀旅團 ---------- */
 .gate-wrap { min-height:100vh; display:grid; place-items:center; padding:28px 16px;
   background:
     radial-gradient(1000px 500px at 12% -10%, rgba(123,34,51,.16), transparent 60%),
@@ -666,8 +659,6 @@ pre.code { background:#2A1015; color:#F6E7EA; padding:14px 16px; border-radius:1
   cursor:pointer; border:1.5px solid var(--line); border-radius:14px; background:#fff; font:inherit; transition:.15s; }
 .gate-unit:hover { border-color:var(--brand-600); background:var(--brand-50); transform:translateY(-1px); }
 .gate-unit .code { font-family:var(--mono); font-weight:800; font-size:17px; color:var(--brand-700); min-width:62px; }
-.gate-unit.mock { border-style:dashed; background:#FFFDF6; }
-.gate-unit.mock .code { color:#8A6E12; }
 .gate-unit[disabled] { opacity:.5; cursor:not-allowed; }
 .gate-foot { margin-top:16px; font-size:12.5px; color:var(--muted); line-height:1.7; }
 /* 新旅團申請接入 */

@@ -21,7 +21,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 /* ---------- Node 環境 shim（等 store/auth 當自己喺瀏覽器度行） ---------- */
 globalThis.window = globalThis;                     // auth.js 用 window.crypto.subtle
-globalThis.location = new URL('http://localhost:8080/?mock=1&u=MOCK');
+globalThis.location = new URL('http://localhost:8080/?u=0082');
 globalThis.fetch = async (url) => {
   const clean = String(url).split('?')[0].replace(/^\.?\//, '');
   const file = path.join(ROOT, clean);
@@ -39,11 +39,13 @@ function ok(name, cond, extra = '') {
 }
 const section = t => console.log('\n▌' + t);
 
-/* ---------- 開機（示範資料） ---------- */
+/* ---------- 開機 ----------
+   ★ 2026-09-24：示範（MOCK）模式已經拆走。呢個測試自己會 store.add('members', …)
+     建測試用嘅人，唔需要任何種子資料 —— 所以用一個真實旅團編號（0082）就得。 */
 const store = await import('../assets/js/lib/store.js');
 const auth = await import('../assets/js/lib/auth.js');
-await store.init({ mode: 'mock', unit: 'MOCK' });
-ok('store 初始化完成', store.ready() && store.isMock());
+await store.init({ unit: '0082' });
+ok('store 初始化完成', store.ready() && String(store.currentUnit()) === '0082', String(store.currentUnit()));
 
 /* ============================================================ */
 section('1. 名冊領袖：用戶頁加嘅領袖用電郵＋入口密碼登入（團長回報嘅死路）');

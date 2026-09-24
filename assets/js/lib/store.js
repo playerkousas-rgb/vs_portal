@@ -1,36 +1,40 @@
 /* ============================================================
-   store.js — 資料層（多旅團 · 真實／示範完全分離）
+   store.js — 資料層（多旅團）
+
+   ★ 2026-09-24 團長：「刪除示範資料 (MOCK) 我都在用要MOCK 幹什麼」
+     → 示範模式成個拆走：冇再分「真實／示範」兩個命名空間，
+       只有一個旅團資料庫。唔會有「改咗示範資料」呢回事。
 
    命名空間（key）：
-     真實旅團   venture82.unit.<旅團編號>.db.v2
-     示範資料   venture82.mock.db.v2          ← 同真實資料完全隔離，唔會互相污染
-     旅團清單   venture82.units.cache.v2 / venture82.units.local.v2
-     登入狀態   venture82.session.v2
-     目前模式   venture82.mode.v2
+     旅團資料庫   venture82.unit.<旅團編號>.db.v2
+     旅團清單     venture82.units.cache.v2 / venture82.units.local.v2
+     登入狀態     venture82.session.v2
 
-   真實資料由 data/units/<編號>/*.json 首次載入時種入本機，
-   之後所有改動都寫入上面嘅獨立 key，唔會再寫返 data/ 檔案。
+   資料由 data/units/<編號>/*.json 首次載入時種入本機，
+   之後所有改動都寫入上面嘅 key，唔會再寫返 data/ 檔案。
    ============================================================ */
 
 import { todayISO, nowStamp } from './dates.js';
 import { canonicalUnitCode } from './units.js';
 import {
-  registry, unitEntry, backendOf, dataPathOf, fetchUnitData, fetchMockData, defaultUnitCode, localUnits
+  registry, unitEntry, backendOf, dataPathOf, fetchUnitData, defaultUnitCode, localUnits
 } from './units.js';
 import { scoutFYLabel } from './fiscal.js';
-import { SKIP_TOP, diffDb as _diffDb, applyChanges as _applyChanges, clone as _clone } from './merge3.js';
+import {
+  SKIP_TOP, diffDb as _diffDb, applyChanges as _applyChanges, clone as _clone,
+  threeWay as _threeWay, overridesFor as _overridesFor
+} from './merge3.js';
 
 export const SCHEMA = 2;
 
 const K = {
   session: 'venture82.session.v2',
-  mode: 'venture82.mode.v2',
   unit: 'venture82.currentUnit.v2',
   /* 最後一個**真實**旅團 —— 「離開示範」之後可以一撳就返去自己旅團，
      唔使喺清單再揀一次。示範模式永遠唔會寫呢個 key。 */
   lastReal: 'venture82.lastRealUnit.v2'
 };
-export const dbKey = (mode, code) => mode === 'mock' ? `venture82.mock.db.v${SCHEMA}` : `venture82.unit.${code}.db.v${SCHEMA}`;
+export const dbKey = (code) => `venture82.unit.${code}.db.v${SCHEMA}`;
 
 /* ---------------- 帳戶名單（**已取消共用帳戶**） ----------------
    ★ 2026-09-24 團長定案：「唔好再設執行委員會帳號／領袖共用帳戶」。
@@ -49,6 +53,46 @@ export const LEGACY_SHARED_ACCOUNTS = ['acc_leader', 'acc_exco'];
 export const LEGACY_SHARED_USERNAMES = ['leader', 'exco'];
 
 /** 清走舊版種落嘅共用帳戶（領袖／執行委員會）。@returns {boolean} 有冇改動 */
+/**
+ * 一次過把舊「旅團設定 → 團員睇到嘅公開連結」6 個槽搬入 `db.publicProfile`。
+ * 放喺 store.js（而唔係 public-profile.js）係為咗唔好整個循環 import
+ * （public-profile.js 要 import store.js 嘅 load／commit）。
+ * @returns {boolean} 有冇搬過嘢（有就要 persistLocalOnly）
+ */
+export function migrateTroopLinks(db) {
+  if (!db || db._troopLinksMigrated) return false;
+  const L = db.settings?.troopLinks || {};
+  db._troopLinksMigrated = true;
+  const urls = Object.values(L).map(v => String(v || '').trim()).filter(Boolean);
+  if (!urls.length) return true;                    // 冇嘢要搬，但記低已經搬過
+  const pp = db.publicProfile || (db.publicProfile = {});
+  ['socials', 'albums', 'links'].forEach(k => { if (!Array.isArray(pp[k])) pp[k] = []; });
+  pp.site = pp.site || { url: '', vis: 'member' };
+  const have = new Set([...pp.socials, ...pp.albums, ...pp.links]
+    .map(x => String(x.url || '').trim().replace(/\/+$/, '')));
+  const norm = u => String(u).trim().replace(/\/+$/, '');
+  const mk = () => `pp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  const put = (arr, rec) => {
+    if (have.has(norm(rec.url))) return;
+    have.add(norm(rec.url));
+    arr.push({ id: mk(), ...rec });
+  };
+  const SOCIAL = { instagram: 'Instagram', facebook: 'Facebook', whatsapp: 'WhatsApp' };
+  let n = 0;
+  Object.keys(SOCIAL).forEach(k => {
+    const u = String(L[k] || '').trim();
+    if (!u) return;
+    put(pp.socials, { kind: k, title: `旅團${SOCIAL[k]}`, url: u, desc: SOCIAL[k], vis: 'member' }); n++;
+  });
+  if (String(L.album || '').trim()) { put(pp.albums, { title: '活動相簿', url: String(L.album).trim(), desc: '活動相', vis: 'member' }); n++; }
+  if (String(L.drive || '').trim()) { put(pp.links, { title: 'Google Drive', url: String(L.drive).trim(), desc: '雲端硬碟／共用資料夾', vis: 'member' }); n++; }
+  if (String(L.website || '').trim() && !String(pp.site?.url || '').trim()) {
+    pp.site = { url: String(L.website).trim(), title: '旅團網頁', desc: '', vis: pp.site?.vis || 'member' }; n++;
+  }
+  if (n) console.info(`[store] 已把 ${n} 條舊「旅團設定」公開連結搬入公開資料`);
+  return true;
+}
+
 export function migrateSharedAccounts(db) {
   if (!db || !Array.isArray(db.accounts) || !db.accounts.length) return false;
   const before = db.accounts.length;
@@ -67,7 +111,6 @@ export function migrateSharedAccounts(db) {
 
 /* ---------------- 狀態 ---------------- */
 const state = {
-  mode: 'real',
   unitCode: null,
   db: null,
   seedSource: '',
@@ -173,10 +216,10 @@ export function migrateMemberKeys(db) {
 }
 
 /* ---------------- 種子資料 ---------------- */
-function blankDb(mode, code, entry = {}) {
+function blankDb(code, entry = {}) {
   return {
     schema: SCHEMA,
-    kind: mode,
+    kind: 'real',
     unitCode: code,
     unit: { code, name: entry.name || code, nameEn: entry.nameEn || '', short: entry.short || code, theme: entry.theme || {} },
     settings: {
@@ -198,14 +241,14 @@ function blankDb(mode, code, entry = {}) {
     methods: ['現金', '轉數快 FPS', '銀行轉賬', '自動扣賬', '支票', 'PayMe', '其他'],
     invItems: [], invLoans: [], invAudits: [], invNextCode: 'G-001',
     auditLog: [],
-    meta: { createdAt: nowStamp(), updatedAt: nowStamp(), seedSource: mode === 'mock' ? 'data/mock/' : (entry.local ? '（本地旅團：空白資料）' : (entry.fromApi ? '（伺服器 Registry：由空白資料庫開始）' : (dataPathOf(code) || ''))), real: mode === 'real' }
+    meta: { createdAt: nowStamp(), updatedAt: nowStamp(), seedSource: entry.local ? '（本地旅團：空白資料）' : (entry.fromApi ? '（伺服器 Registry：由空白資料庫開始）' : (dataPathOf(code) || '')), real: true }
   };
 }
 
-async function buildSeed(mode, code) {
+async function buildSeed(code) {
   const entry = unitEntry(code) || {};
-  const db = blankDb(mode, code, entry);
-  const pick = (mode === 'mock') ? fetchMockData : ((f) => fetchUnitData(code, f));
+  const db = blankDb(code, entry);
+  const pick = (f) => fetchUnitData(code, f);
 
   const [unit, cons, members, finance, inventory, meetings, finRef, notices, tables] = await Promise.all([
     pick('unit.json'), pick('constitution.json'), pick('members.json'),
@@ -262,14 +305,13 @@ async function buildSeed(mode, code) {
     if (tables.sources) db.tableSources = tables.sources;
     if (tables.sync) db.sync = tables.sync;
   }
-  seedBackend(db, mode, code);
+  seedBackend(db, code);
   return db;
 }
 
 /* ---------------- 後端（Apps Script 總表）：所有流出資料都用同一條 /exec ----------------
    優先次序：unit.json settings.sync / tables.json → 旅團 registry backend → Registry 共用 backend */
-function seedBackend(db, mode, code) {
-  if (mode === 'mock') return;                     // 示範資料永遠唔會送出街
+function seedBackend(db, code) {
   const be = backendOf(code);
   const s = db.settings || {};
   const unitSync = s.sync || {};
@@ -291,49 +333,31 @@ function seedBackend(db, mode, code) {
 }
 
 /* ---------------- 初始化 ---------------- */
-/** 由網址／記錄決定「而家係邊個模式、邊個旅團」。
+/** 由網址／記錄決定「而家係邊個旅團」。
  *
- * 【為咩要咁寫】2026-09 團長回報「去過 MOCK 之後，喺首頁揀返 Vercel 登記嘅旅團，
- * 入到去仍然係 MOCK，資料又冇同後端同步」。
- * 原因：`state.mode = lsGet(K.mode) || 'real'` —— mode 一寫入 localStorage 就
- * **永遠**贏，之後就算網址係 `?u=0081`（真人真旅團、冇 mock=1）都照樣當示範模式，
- * 於是：資料庫 key 變咗 mock 空間、MOCK 橫額照出、syncBoot() 又第一時間 return，
- * 用家嘅感覺就係「我揀咗自己旅團但入唔到」。
+ * 優先次序（網址永遠最權威）：
+ *   1. init({ unit }) —— 程式內部指定（測試、公開頁）
+ *   2. ?u=<旅團編號>
+ *   3. localStorage 記錄
+ *   4. Registry 預設旅團
  *
- * 正確嘅優先次序（網址永遠最權威）：
- *   1. init({ mode, unit }) —— 程式內部指定（測試、公開頁）
- *   2. ?mock=1 或者 ?u=MOCK  → 示範
- *   3. ?u=<真實編號>         → 真實（就算 localStorage 仲寫住 mock）
- *   4. localStorage 記錄
- *   5. 'real'
- */
+ * ★ 2026-09-24：以前呢度仲有「真實／示範（MOCK）」兩個模式，團長話
+ *   「我都在用要MOCK 幹什麼」→ 拆走。而家只有一個旅團資料庫，
+ *   唔會再出現「入錯示範空間、資料冇同步」呢類 bug。 */
 function resolveTarget(opts = {}, url = new URLSearchParams(location.search)) {
   const urlUnitRaw = String(url.get('u') || '').trim();
-  const isMockCode = urlUnitRaw.toUpperCase() === 'MOCK';
-  const urlMock = url.get('mock') === '1';
-
-  let mode;
-  if (opts.mode) mode = opts.mode;
-  else if (urlMock || isMockCode) mode = 'mock';
-  else if (urlUnitRaw) mode = 'real';
-  else mode = lsGet(K.mode) || 'real';
-
   let code;
   if (opts.unit) code = String(opts.unit);
-  else if (mode === 'mock') code = 'MOCK';                  // 示範永遠用自己嘅命名空間
   else code = urlUnitRaw || lsGet(K.unit) || defaultUnitCode();
-
-  /* 記錄最後一個真實旅團（唔好記錄 MOCK／空） */
-  if (mode === 'real' && code && code.toUpperCase() !== 'MOCK') lsSet(K.lastReal, code);
-  return { mode, code };
+  if (code) lsSet(K.lastReal, code);
+  return { code };
 }
 
 export async function init(opts = {}) {
-  const { mode, code } = resolveTarget(opts);
-  state.mode = mode;
+  const { code } = resolveTarget(opts);
   state.unitCode = code;
 
-  const key = dbKey(state.mode, code);
+  const key = dbKey(code);
   const raw = lsGet(key);
   if (raw) {
     try {
@@ -345,7 +369,7 @@ export async function init(opts = {}) {
     } catch (e) { console.warn('DB 解析失敗，重新種入種子資料', e); }
   }
   if (!state.db) {
-    state.db = await buildSeed(state.mode, code);
+    state.db = await buildSeed(code);
     state.seedFailed = !!state.db.meta?.seedFailed;
     state.seedSource = state.db.meta?.seedSource || '';
     persistLocalOnly();
@@ -361,29 +385,39 @@ export async function init(opts = {}) {
   if (migrateMemberKeys(state.db)) persistLocalOnly();
   // 期初結餘：舊嘅全域數字如果係上年度嘅期初，自動搬返去對應年度（見 migrateOpeningBalances）
   if (migrateOpeningBalances(state.db)) persistLocalOnly();
+  /* ★ 公開資料統一（2026-09-24 團長）：
+     「旅團設定嗰啲 LINK 都會放埋係公開資料度，理論上所有公開嘅資料都會喺公開資料睇到
+      —— 旅團設定嗰啲料基本上都係一啲公開資料而已。」
+
+     所以舊「旅團設定 → 團員睇到嘅公開連結」嗰 6 個槽（Drive／相簿／IG／FB／網頁／
+     WhatsApp）**一次過搬入 `db.publicProfile`**，之後：
+       · 填嘢嘅位 ＝ 旅團設定（`#/admin/settings`）
+       · 睇嘢嘅位 ＝ 公開資料（`#/links`，只讀一覽表）
+     搬完舊資料一條都唔會唔見。 */
+  if (migrateTroopLinks(state.db)) persistLocalOnly();
   // 後端設定升級：舊資料庫（未有 sync 設定）自動補上 Registry / unit.json 嘅 Apps Script 網址
-  if (state.mode === 'real') {
+  {
     const before = JSON.stringify([state.db.sync?.url || '', state.db.settings?.notice?.submitUrl || '', state.db.settings?.publicEntry?.submitUrl || '', state.db.settings?.publicBorrow?.submitUrl || '']);
-    if (state.db.sync?.url !== undefined || !state.db.backend) seedBackend(state.db, state.mode, code);
+    if (state.db.sync?.url !== undefined || !state.db.backend) seedBackend(state.db, code);
     const after = JSON.stringify([state.db.sync?.url || '', state.db.settings?.notice?.submitUrl || '', state.db.settings?.publicEntry?.submitUrl || '', state.db.settings?.publicBorrow?.submitUrl || '']);
     if (before !== after) persistLocalOnly();
   }
   lsSet(K.unit, code);
-  lsSet(K.mode, state.mode);
   /* 舊版（2026-09-19 之前）留低嘅指紋基準已經冇用 —— 而家用成份基準快照（getBase） */
   if (state.db.sync?.baseObjHash) { delete state.db.sync.baseObjHash; persistLocalOnly(); }
+  /* ★ 2026-09-24 同一個瀏覽器另一個分頁改咗嘢 → 併入本機（唔使重新整理）。
+     綁喺 init() 呢度：所有入口（主控頁／團員入口／公開頁）都自動有呢個行為。
+     介面想知道就聽 window 嘅 `v82:external` event。 */
+  bindCrossTabSync();
   state.ready = true;
   return state.db;
 }
 
 export function ready() { return state.ready; }
-export function isMock() { return state.mode === 'mock'; }
-export function currentMode() { return state.mode; }
 export function currentUnit() { return state.unitCode; }
 export function unitProfile() { return load().profile || load().unit; }
-export function seedInfo() { return { source: state.seedSource || load()?.meta?.seedSource || '', failed: state.seedFailed, real: !isMock() }; }
+export function seedInfo() { return { source: state.seedSource || load()?.meta?.seedSource || '', failed: state.seedFailed, real: true }; }
 
-export function setMode(mode) { lsSet(K.mode, mode); }
 /* ★ 旅團編號一律用 Registry 登記咗嗰個（82 → 0082）。
    團長喺閘度打「82」係最自然嘅做法，但 db.unitCode 一旦係「82」，
    寫落 Google Sheet 嘅旅團欄、讀返嘅 filter、報表分頁就會同「0082」對唔上
@@ -392,13 +426,9 @@ export function setUnitCode(code) { lsSet(K.unit, canonicalUnitCode(code) || cod
 
 /** 切換旅團（重載頁面，確保所有模組用新資料） */
 export function switchUnit(code) {
-  const isMockCode = String(code || '').toUpperCase() === 'MOCK';
-  lsSet(K.unit, isMockCode ? code : (canonicalUnitCode(code) || code));
-  lsSet(K.mode, isMockCode ? 'mock' : 'real');       // 由示範切去真旅團 = 一定要離開示範
+  lsSet(K.unit, canonicalUnitCode(code) || code);
   const u = new URL(location.href);
   u.searchParams.set('u', code);
-  if (isMockCode) u.searchParams.set('mock', '1');
-  else u.searchParams.delete('mock');
   u.hash = '#/dashboard';
   location.href = u.toString();
 }
@@ -408,57 +438,16 @@ export const CHOSEN_UNIT_KEY = 'venture82.unitChosen.v2';
 
 /** 最後一個用過嘅真實旅團（示範模式唔會覆蓋佢） */
 export function lastRealUnit() {
-  const c = lsGet(K.lastReal);
-  return c && c.toUpperCase() !== 'MOCK' ? c : '';
+  return lsGet(K.lastReal) || '';
 }
 
-export function enterMock() {
-  const u = new URL(location.href);
-  u.searchParams.set('mock', '1');
-  u.searchParams.set('u', 'MOCK');       // ⬅️ 一定要帶 u=MOCK，否則 ?mock=1 會被當成
-  u.hash = '';                           //    「真旅團 MOCK」→ 冇橫額、出唔返嚟（2026-09 真實 bug）
-  location.href = u.toString();
-}
-
-/**
- * 清晒所有「示範／已揀旅團」嘅痕跡，重載返去旅團選擇閘。
- *
- * 以前 exitMock 只係由 URL 刪走 mock=1 —— 但 localStorage 仲留緊
- * mode=mock、unit=MOCK，URL 又有 u=MOCK，下次 boot 照樣入返示範，
- * 用家撳「離開示範」永遠出唔到（2026-09 真實 bug：被困喺 MOCK）。
- *
- * 2026-09 追加：連登入 session 都要清 —— 示範 session（mock leader）唔應該
- * 帶到真實旅團，否則登入身份會係「示範領袖」。
- */
+/** 清晒「已揀旅團」嘅痕跡，重載返去旅團選擇閘（登出一併做）。 */
 export function resetToGate() {
-  lsDel(K.mode);
   lsDel(K.unit);
   lsDel(CHOSEN_UNIT_KEY);
   try { setSession(null); } catch { /* 未初始化都冇問題 */ }
   const u = new URL(location.href);
-  u.searchParams.delete('mock');
   u.searchParams.delete('u');
-  u.hash = '';
-  location.href = u.toString();
-}
-
-/** 離開示範 → 旅團選擇閘（清晒示範痕跡） */
-export function exitMock() { resetToGate(); }
-
-/**
- * 離開示範 → 直接返最後一個真實旅團（冇用過真實旅團就返閘）。
- * 畀「試完 MOCK，想即刻返自己旅團」用家一撳返去。
- */
-export function exitMockToUnit() {
-  const back = lastRealUnit();
-  if (!back) return resetToGate();
-  lsDel(K.mode);
-  lsDel(K.unit);
-  lsDel(CHOSEN_UNIT_KEY);
-  try { setSession(null); } catch { /* ignore */ }
-  const u = new URL(location.href);
-  u.searchParams.delete('mock');
-  u.searchParams.set('u', back);
   u.hash = '';
   location.href = u.toString();
 }
@@ -471,26 +460,34 @@ export function load() {
 export function tryLoad() { return state.db; }
 
 /* 後端自動儲存 hook（由 remote.js 喺開機時掛上；避免 store ↔ remote 循環 import）。
-   冇掛住（例如測試、公開頁）就淨係寫本機，行為同以前一樣。 */
+   冇掛住（例如測試、公開頁）就淨係寫本機，行為同以前一樣。
+
+   ★ 2026-09-24（團長：「用戶根本沒寫入後端」）：hook 而家會收到
+      { critical, reason } —— critical＝呢次改動係「另一部機要即刻見到」嘅嘢
+      （開人／設密碼／改身份／批開戶），remote.js 會即刻寫後端，唔等 debounce。 */
 let saveHook = null;
 export function setSaveHook(fn) { saveHook = typeof fn === 'function' ? fn : null; }
 
-function persist({ remote = true } = {}) {
+function persist({ remote = true, critical = false, reason = '' } = {}) {
   if (!state.db) return;
   state.db.meta = state.db.meta || {};
   state.db.meta.updatedAt = nowStamp();
   /* pending ＝「仲未寫入後端嘅改動次數」（介面提示用；真正要寫乜係 diff(基準, 本機)）。
      要**先**加、**後**寫 localStorage —— 以前掉轉次序，localStorage 入面嘅 pending
      永遠差一次，閂咗視窗再開就以為冇嘢未存。示範模式永遠唔計。 */
-  const bump = state.mode !== 'mock' && remote;
+  const bump = !!remote;
   if (bump) {
     state.db.sync = state.db.sync || {};
     state.db.sync.pending = Number(state.db.sync.pending || 0) + 1;
+    /* ★ 帳戶級改動另外計數：呢啲未寫入後端之前，另一部機用嗰個 email／YMIS 登唔到
+       （登入核對讀嘅係後端嗰份名冊）。頂部會明確講出嚟，登出／閂頁會擋住問。 */
+    if (critical) state.db.sync.pendingAccounts = Number(state.db.sync.pendingAccounts || 0) + 1;
   }
-  lsSet(dbKey(state.mode, state.unitCode), JSON.stringify(state.db));
-  /* 本機寫完 → 通知介面（頂部出「儲存到後端（N）」）。唔會寫後端。 */
+  lsSet(dbKey(state.unitCode), JSON.stringify(state.db));
+  /* 本機寫完 → 通知介面／後端儲存排程 */
   if (bump && saveHook) {
-    try { saveHook(); } catch (e) { console.warn('[store] 儲存狀態通知失敗', e); }
+    try { saveHook({ critical: !!critical, reason: String(reason || '') }); }
+    catch (e) { console.warn('[store] 儲存狀態通知失敗', e); }
   }
 }
 
@@ -501,6 +498,19 @@ export function commit() { persist(); return state.db; }
 export const save = commit;
 
 /**
+ * ★ 帳戶級寫入（2026-09-24）。
+ *
+ * 「身份即帳號」之後，**名冊紀錄本身就係登入帳戶**：開人、設密碼、改身份、
+ * 批開戶 —— 呢啲改動如果淨係留喺本機瀏覽器，另一部機（甚至同一個瀏覽器
+ * 另一個分頁）就用嗰個 email 登唔到。團長 2026-09-24 原話：
+ *   「1 邊能用 email 登入、1 邊不能，那＝用戶根本沒寫入後端。」
+ *
+ * 所以呢啲改動寫完本機之後，會叫 remote.js **即刻**寫後端（唔等 debounce）。
+ * 寫唔成功唔會靜靜地吞：頂部狀態會轉做「未儲存」，改動仍然留喺本機。
+ */
+export function commitCritical(reason = '') { persist({ critical: true, reason }); return state.db; }
+
+/**
  * 淨係寫低「同步簿記」（pending／lastPushAt／log）——
  * **唔會**動 meta.updatedAt、**唔會**加 pending、**唔會**再觸發後端儲存。
  * 如果用普通 commit() 去記錄「已儲存」，就會即刻又標記成「有改動要儲存」，
@@ -508,7 +518,7 @@ export const save = commit;
  */
 export function commitMeta() {
   if (!state.db) return state.db;
-  lsSet(dbKey(state.mode, state.unitCode), JSON.stringify(state.db));
+  lsSet(dbKey(state.unitCode), JSON.stringify(state.db));
   return state.db;
 }
 
@@ -518,26 +528,34 @@ export function collection(name) {
   return db[name];
 }
 export function find(name, id) { return collection(name).find(x => x.id === id) || null; }
-export function add(name, obj) {
+
+/* ★ 2026-09-24：呢三個 collection 就係「登入帳戶」本身（身份即帳號）。
+   任何改動都當**帳戶級**處理 —— 即刻寫後端，唔好困喺呢部機嘅瀏覽器。
+   以前淨係 pending +1，結果：團長開完人、設完密碼，另一部機／另一個分頁
+   用嗰個 email 登唔到（後端嗰份名冊根本冇呢個人）。 */
+export const IDENTITY_COLLECTIONS = new Set(['members', 'accounts', 'accountApps']);
+function criticalFor(name, opts) { return !!opts?.critical || IDENTITY_COLLECTIONS.has(String(name || '')); }
+
+export function add(name, obj, opts) {
   const id = obj.id || (name.slice(0, 2) + '_' + Math.random().toString(36).slice(2, 8));
   const rec = { ...obj, id };
   collection(name).push(rec);
-  persist();
+  persist({ critical: criticalFor(name, opts), reason: `add:${name}` });
   return rec;
 }
-export function update(name, id, patch) {
+export function update(name, id, patch, opts) {
   const rec = find(name, id);
   if (!rec) return null;
   Object.assign(rec, patch, { id });
-  persist();
+  persist({ critical: criticalFor(name, opts), reason: `update:${name}` });
   return rec;
 }
-export function remove(name, id) {
+export function remove(name, id, opts) {
   const list = collection(name);
   const i = list.findIndex(x => x.id === id);
   if (i < 0) return false;
   list.splice(i, 1);
-  persist();
+  persist({ critical: criticalFor(name, opts), reason: `remove:${name}` });
   return true;
 }
 export function setSetting(patch) {
@@ -557,7 +575,14 @@ export function setUnitProfile(patch) {
 export function audit(action, detail = '', who = null) {
   const db = load();
   db.auditLog = db.auditLog || [];
-  db.auditLog.unshift({ id: 'log_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6), at: nowStamp(), action, detail, by: who || '' });
+  /* ★ 2026-09-24 團長：「操作紀錄不顯示超級管理員的紀錄」。
+     要濾得到就要記低操作者身份 —— 由 session 攞（audit() 唔可以 import auth.js，會循環）。 */
+  const sess = getSession();
+  db.auditLog.unshift({
+    id: 'log_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+    at: nowStamp(), action, detail, by: who || '',
+    role: sess?.role || ''
+  });
   if (db.auditLog.length > 400) db.auditLog.length = 400;
   /* 操作紀錄係簿記：只寫本機、唔計入「未儲存改動」（否則一登入就話有嘢未存）。
      佢會跟下一次真正嘅儲存一齊上後端（三方合併：紀錄係併集，永遠唔會撞）。 */
@@ -565,24 +590,16 @@ export function audit(action, detail = '', who = null) {
 }
 
 /* ---------------- 備份 / 還原 / 重設 ---------------- */
-export function exportAll({ includeMock = false } = {}) {
+export function exportAll() {
   const db = load();
-  if (isMock() && !includeMock) {
-    // 示範資料要另外匯出，唔可以當成真資料備份
-    return JSON.stringify({ ...db, _exportedFrom: 'mock' }, null, 2);
-  }
-  return JSON.stringify({ ...db, _exportedFrom: isMock() ? 'mock' : 'real', _exportedAt: nowStamp() }, null, 2);
+  return JSON.stringify({ ...db, _exportedFrom: 'real', _exportedAt: nowStamp() }, null, 2);
 }
 
-export function importAll(jsonText, { allowMockIntoReal = false } = {}) {
+export function importAll(jsonText) {
   let obj;
   try { obj = JSON.parse(jsonText); } catch (e) { throw new Error('JSON 格式錯誤'); }
   if (!obj || typeof obj !== 'object' || !obj.schema) throw new Error('唔似係本系統嘅備份檔（缺少 schema）');
   if (obj.schema !== SCHEMA) throw new Error(`備份版本（schema ${obj.schema}）同現時版本（${SCHEMA}）唔一致`);
-  const from = obj._exportedFrom || obj.kind;
-  if (from === 'mock' && !isMock() && !allowMockIntoReal) {
-    throw new Error('呢個係示範（MOCK）備份，唔可以匯入真實資料庫（保護真實資料）');
-  }
   delete obj._exportedFrom;
   delete obj._exportedAt;
   /* 備份檔入面嘅 sync／backend 係**嗰部機**嘅連線設定 —— 呢部機自己嗰份要保留 */
@@ -594,7 +611,7 @@ export function importAll(jsonText, { allowMockIntoReal = false } = {}) {
   if (keepSync) state.db.sync = { ...keepSync, pending: Number(keepSync.pending || 0) };
   if (keepBackend) state.db.backend = keepBackend;
   state.db.unitCode = state.unitCode;
-  state.db.kind = state.mode;
+  state.db.kind = 'real';
   /* 還原備份 ＝ 一次改動（相對登入時嘅基準）—— 撳「儲存到後端」先會寫入，撞嘅格照樣會問 */
   persist();
   return state.db;
@@ -613,7 +630,7 @@ export function importAll(jsonText, { allowMockIntoReal = false } = {}) {
    sync／meta／backend 之後嘅 db。冇佢就分唔到「我改咗乜」同「對方改咗乜」。
    ============================================================ */
 
-const baseKey = (mode, code) => mode === 'mock' ? `venture82.mock.base.v${SCHEMA}` : `venture82.unit.${code}.base.v${SCHEMA}`;
+const baseKey = (code) => `venture82.unit.${code}.base.v${SCHEMA}`;
 let baseMem = undefined;           // localStorage 寫唔入（配額）嗰陣嘅後備
 
 /** 剝走簿記／連線設定 —— 基準快照同比對都用呢個形狀 */
@@ -626,7 +643,7 @@ export function stripForBase(db) {
 /** 而家嘅基準快照：{ version, at, db } ；未有就 null */
 export function getBase() {
   if (baseMem !== undefined) return baseMem;
-  const raw = lsGet(baseKey(state.mode, state.unitCode));
+  const raw = lsGet(baseKey(state.unitCode));
   if (!raw) return null;
   try {
     const b = JSON.parse(raw);
@@ -637,7 +654,7 @@ export function getBase() {
 /** 記低基準快照（db ＝ 呢一刻同後端一致嘅內容；version ＝ 後端版本字串） */
 export function setBase(db, version = '') {
   const rec = { version: String(version || ''), at: nowStamp(), db: stripForBase(db) };
-  const key = baseKey(state.mode, state.unitCode);
+  const key = baseKey(state.unitCode);
   try {
     localStorage.setItem(key, JSON.stringify(rec));
     baseMem = undefined;
@@ -651,7 +668,7 @@ export function setBase(db, version = '') {
 
 export function clearBase() {
   baseMem = undefined;
-  lsDel(baseKey(state.mode, state.unitCode));
+  lsDel(baseKey(state.unitCode));
 }
 
 /** 後端拉返嚟嘅 db 先過一次同本機一樣嘅升級（identity／systemId／帳戶），
@@ -668,7 +685,7 @@ export function normalizeRemote(remoteDb) {
 /* 本機嘅連線設定／簿記唔可以因為換咗資料而斷（部機連緊邊個後端係部機自己嘅事） */
 function keepLocalWiring(next, local) {
   next.schema = SCHEMA;
-  next.kind = state.mode;
+  next.kind = 'real';
   next.unitCode = state.unitCode;
   /* sync／backend 係**呢部機**連緊邊個後端、有幾多未存 —— 永遠用本機嗰份，
      唔會由後端資料帶入（另一部機貼嘅 /exec／API Key 唔應該經 Sheet 傳嚟傳去） */
@@ -683,7 +700,7 @@ export function exportForBackend(db = state.db) {
   const out = {};
   Object.keys(db || {}).forEach(k => { if (k !== 'sync' && k !== 'backend') out[k] = db[k]; });
   out.schema = SCHEMA;
-  out.kind = state.mode;
+  out.kind = 'real';
   out.unitCode = state.unitCode;
   out.meta = { ...(out.meta || {}), updatedAt: nowStamp() };
   return out;
@@ -700,7 +717,6 @@ function syncLog(db, msg) {
  */
 export function adoptRemote(remoteDb, { version = '' } = {}) {
   if (!remoteDb || typeof remoteDb !== 'object') throw new Error('後端資料格式唔啱');
-  if (isMock()) throw new Error('示範模式唔會採用後端資料');
   if (remoteDb.schema && remoteDb.schema !== SCHEMA) {
     throw new Error(`後端資料版本（schema ${remoteDb.schema}）同現時版本（${SCHEMA}）唔一致`);
   }
@@ -722,7 +738,6 @@ export function adoptRemote(remoteDb, { version = '' } = {}) {
  * 我嘅改動因此仍然係「基準 → 本機」嘅 diff，之後撳儲存先寫。
  */
 export function setLocalMerged(mergedDb, remoteDb, { version = '', pending = 0 } = {}) {
-  if (isMock()) throw new Error('示範模式唔會採用後端資料');
   const local = state.db;
   const remoteN = normalizeRemote(remoteDb);
   const next = keepLocalWiring(normalizeRemote(mergedDb), local);
@@ -731,7 +746,7 @@ export function setLocalMerged(mergedDb, remoteDb, { version = '', pending = 0 }
   syncLog(state.db, '⇩ 已由後端載入，並保留呢部機未儲存嘅改動（撳「儲存到後端」先寫）');
   /* 基準 ＝ 後端而家（唔係合併結果）—— 咁我嘅改動先至仍然睇得出 */
   const rec = { version: String(version || ''), at: nowStamp(), db: stripForBase(remoteN) };
-  try { localStorage.setItem(baseKey(state.mode, state.unitCode), JSON.stringify(rec)); baseMem = undefined; }
+  try { localStorage.setItem(baseKey(state.unitCode), JSON.stringify(rec)); baseMem = undefined; }
   catch { baseMem = rec; }
   state.db.sync.lastSyncedVersion = rec.version;
   state.db.sync.baseAt = rec.at;
@@ -749,7 +764,7 @@ export function commitSaved(finalDb, { version = '', bytes = 0, parts = 0 } = {}
   const local = state.db;
   const next = keepLocalWiring(normalizeRemote(finalDb), local);
   state.db = next;
-  state.db.sync = { ...(state.db.sync || {}), pending: 0, lastPushAt: nowStamp(), lastError: '' };
+  state.db.sync = { ...(state.db.sync || {}), pending: 0, pendingAccounts: 0, lastPushAt: nowStamp(), lastError: '' };
   setBase(state.db, version);
   syncLog(state.db, `✓ 已儲存到後端${bytes ? `（${(bytes / 1024).toFixed(0)} KB${parts ? `，分 ${parts} 件` : ''}）` : ''}`);
   state.db.meta = { ...(state.db.meta || {}), seedSource: '（後端：旅團自己嘅 Google Sheet）' };
@@ -776,7 +791,7 @@ export function localChanges() {
 export function markBackendEmpty() {
   if (!state.db) return;
   const rec = { version: '', at: nowStamp(), db: {}, empty: true };
-  try { localStorage.setItem(baseKey(state.mode, state.unitCode), JSON.stringify(rec)); baseMem = undefined; }
+  try { localStorage.setItem(baseKey(state.unitCode), JSON.stringify(rec)); baseMem = undefined; }
   catch { baseMem = rec; }
   state.db.sync = { ...(state.db.sync || {}), lastSyncedVersion: '', baseAt: rec.at, lastPullAt: nowStamp() };
   if (hasLocalContent()) state.db.sync.pending = Math.max(1, Number(state.db.sync.pending || 0));
@@ -785,7 +800,7 @@ export function markBackendEmpty() {
 
 /** 由 localStorage 重新讀返本機 db（測試／另一個視窗改咗 localStorage 之後用） */
 export function reloadFromStorage() {
-  const raw = lsGet(dbKey(state.mode, state.unitCode));
+  const raw = lsGet(dbKey(state.unitCode));
   if (!raw) return state.db;
   try {
     const parsed = JSON.parse(raw);
@@ -793,6 +808,87 @@ export function reloadFromStorage() {
   } catch { /* ignore */ }
   baseMem = undefined;
   return state.db;
+}
+
+/* ============================================================
+   ★ 2026-09-24 同一個瀏覽器、另一個分頁（團長：「不同視窗開的又不同步」）
+   ------------------------------------------------------------
+   問題：db 開機讀一次之後就一直住喺記憶體（state.db）。另一個分頁開咗人、
+   設咗密碼，呢邊個記憶體副本完全唔知 —— 除非重新整理。所以出現
+   「1 邊登到、1 邊登唔到」，用家完全冇辦法自己估到原因。
+
+   做法：聽瀏覽器嘅 `storage` event（**只有其他分頁**寫先會派，自己寫唔會派，
+   所以唔會自己咬自己尾），用同一套三方比對（lib/merge3.js）併入：
+     · 我未改過嘢      → 直接採用佢嗰份
+     · 我都改咗嘢      → 三方併合：佢嘅改動併入，我改過嗰幾格保留我嘅值
+   併完之後派 `v82:external` event，介面自己 re-render。
+   ============================================================ */
+let crossTabBound = false;
+let crossTabCallback = null;
+
+/**
+ * 把另一個分頁寫入 localStorage 嘅 db 併入本機。
+ * @returns {{ok:boolean, took?:'theirs'|'merge'|'same', applied?:number, conflicts?:number, reason?:string}}
+ */
+export function mergeFromOtherTab(otherDb) {
+  if (!state.db) return { ok: false, reason: 'no_db' };
+  if (!otherDb || typeof otherDb !== 'object') return { ok: false, reason: 'bad' };
+  if (otherDb.schema && otherDb.schema !== SCHEMA) return { ok: false, reason: 'schema' };
+  const other = normalizeRemote(_clone(otherDb));
+  const localStripped = stripForBase(state.db);
+  const otherStripped = stripForBase(other);
+  if (JSON.stringify(localStripped) === JSON.stringify(otherStripped)) return { ok: false, reason: 'same' };
+
+  const dirty = localChanges().length > 0;
+  const base = getBase();
+
+  if (!dirty || !base?.db) {
+    /* 我冇未存改動（或者冇基準快照分唔到邊個改咗乜）→ 採用佢嗰份，
+       但呢部機自己嘅連線設定／簿記要保留。 */
+    if (dirty) return { ok: false, reason: 'no_base_dirty' };
+    state.db = keepLocalWiring(other, state.db);
+    commitMeta();
+    return { ok: true, took: 'theirs' };
+  }
+
+  const tw = _threeWay(base.db, localStripped, otherStripped);
+  /* merged ＝ 佢嗰份 ＋ 我冇撞嘅改動；撞咗嗰幾格暫時係佢嘅值 ——
+     同一個瀏覽器入面，我啱啱打嘅嘢唔應該靜靜地消失，所以即刻用返我嘅，
+     然後照常寫後端（撞嘅部分由後端儲存嗰步再正式核對）。 */
+  const next = keepLocalWiring(normalizeRemote(tw.merged), state.db);
+  const ov = _overridesFor(tw.conflicts, true);
+  if (ov.length) _applyChanges(next, ov);
+  state.db = next;
+  commitMeta();
+  return { ok: true, took: 'merge', applied: tw.theirs?.length || 0, conflicts: tw.conflicts?.length || 0 };
+}
+
+/**
+ * 掛上「另一個分頁改咗嘢」嘅監聽（一個頁面只掛一次）。
+ * @param {(info:{kind:'db'|'session', result?:object})=>void} [onChange]
+ */
+export function bindCrossTabSync(onChange) {
+  if (typeof onChange === 'function') crossTabCallback = onChange;
+  if (crossTabBound) return false;
+  if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return false;
+  crossTabBound = true;
+  const fire = (info) => {
+    try { window.dispatchEvent(new CustomEvent('v82:external', { detail: info })); } catch { /* ignore */ }
+    if (typeof crossTabCallback === 'function') {
+      try { crossTabCallback(info); } catch (e) { console.warn('[store] 跨分頁回調失敗', e); }
+    }
+  };
+  window.addEventListener('storage', (ev) => {
+    const key = ev?.key || '';
+    if (!key) return;
+    if (key === SESSION_KEY) { fire({ kind: 'session' }); return; }
+    if (key !== dbKey(state.unitCode) || !ev.newValue) return;
+    let other = null;
+    try { other = JSON.parse(ev.newValue); } catch { return; }
+    const r = mergeFromOtherTab(other);
+    if (r.ok) fire({ kind: 'db', result: r });
+  });
+  return true;
 }
 
 /** 本機已知嘅「後端版本」（上次 pull／push 成功嗰個）—— 只係顯示用；樂觀鎖用 getBase().version */
@@ -818,7 +914,7 @@ export function hasLocalContent() {
 
 /** 由 data/ 檔案重新種入（清走本機改動） */
 export async function resetToSeed() {
-  state.db = await buildSeed(state.mode, state.unitCode);
+  state.db = await buildSeed(state.unitCode);
   state.seedFailed = !!state.db.meta?.seedFailed;
   persist();
   return state.db;
@@ -830,26 +926,14 @@ export async function resetToSeed() {
 export function wipe() {
   const keepSync = state.db?.sync ? { ...state.db.sync, pending: 0, log: [] } : null;
   const keepBackend = state.db?.backend ? { ...state.db.backend } : null;
-  state.db = blankDb(state.mode, state.unitCode, unitEntry(state.unitCode) || {});
-  if (state.mode === 'real') {
-    state.db.meta.seedFailed = false;
-    if (keepSync) state.db.sync = keepSync;
-    if (keepBackend) state.db.backend = keepBackend;
-    /* 冇原本設定就用返 Registry 登記嘅後端 */
-    if (!state.db.sync?.url) seedBackend(state.db, state.mode, state.unitCode);
-  }
+  state.db = blankDb(state.unitCode, unitEntry(state.unitCode) || {});
+  state.db.meta.seedFailed = false;
+  if (keepSync) state.db.sync = keepSync;
+  if (keepBackend) state.db.backend = keepBackend;
+  /* 冇原本設定就用返 Registry 登記嘅後端 */
+  if (!state.db.sync?.url) seedBackend(state.db, state.unitCode);
   persist();
   return state.db;
-}
-
-/** 清除示範資料（唔會影響真實資料） */
-export function clearMockData() {
-  lsDel(dbKey('mock', state.unitCode));
-  lsDel(baseKey('mock', state.unitCode));
-  if (isMock()) {
-    try { localStorage.removeItem('venture82.mock.db.v' + SCHEMA); } catch { /* ignore */ }
-    baseMem = undefined;
-  }
 }
 
 /* ---------------- session（登入狀態） ---------------- */

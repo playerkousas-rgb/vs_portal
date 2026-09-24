@@ -44,10 +44,14 @@ try {
   const units = await import('../assets/js/lib/units.js');
   const store = await import('../assets/js/lib/store.js');
   const remote = await import('../assets/js/lib/remote.js');
+  const auth = await import('../assets/js/lib/auth.js');
 
   await units.loadRegistry(true);
   await store.init({ mode: 'real', unit: '0082' });
-  store.setSaveHook(() => remote.scheduleSave());
+  /* 同 main.js 一樣：改動會自動排一次寫入（critical＝即刻）。
+     舊劇本想測「未撳掣之前後端應該冇嘢」嘅，加 { bootAutoSave:false }。 */
+  store.setSaveHook((info) => remote.scheduleSave(info));
+  if (PLAN.bootLoad) await remote.loadFromBackend();
 
   out.configured = remote.remoteConfigured();
   out.cfg = { url: remote.remoteCfg().url, unit: remote.remoteCfg().unit };
@@ -76,8 +80,17 @@ try {
       out.steps.push({ op: 'wipe', members: store.load().members.length });
     }
     if (step.op === 'addMember') {
-      store.add('members', { name: step.name, ymis: step.ymis, identity: 'member' });
-      out.steps.push({ op: 'addMember', name: step.name, total: store.load().members.length });
+      /* identity 可以指定（2026-09-24 團員入口要測「邊個睇到」——
+         要一個 leader 身份嘅團員先至驗到權限升高見到更多公開資料）。 */
+      store.add('members', { name: step.name, ymis: step.ymis, identity: step.identity || 'member' });
+      out.steps.push({ op: 'addMember', name: step.name, identity: step.identity || 'member', total: store.load().members.length });
+    }
+    /* 公開資料（db.publicProfile）—— 團員入口要讀佢 show 社交媒體／相簿／網站／連結 */
+    if (step.op === 'setPublicProfile') {
+      const db = store.load();
+      db.publicProfile = step.obj;
+      store.commit();
+      out.steps.push({ op: 'setPublicProfile', keys: Object.keys(step.obj || {}) });
     }
     if (step.op === 'bulkMembers') {
       /* 灌大量團員把 db 谷大過分件閾值 —— 測 v2.4.0 分件儲存。
@@ -113,6 +126,114 @@ try {
       db.constitution = step.obj;
       store.commit();
       out.steps.push({ op: 'setConstitution', version: step.obj?.version || '' });
+    }
+    /* ★ 2026-09-24 團長：「我只想要頂部1個儲到後端的制,其他任何時候都是暫儲在遊覽器」
+       → 自動儲存成條路都拆咗，setAutoSave 呢個 op 亦都冇嘢可以調（remote.setAutoSave 已刪）。
+       保留 op 名稱只係為咗舊 plan 唔會爆 —— 佢而家乜都唔做，只係報告而家嘅狀態。 */
+    if (step.op === 'setAutoSave') {
+      out.steps.push({ op: 'setAutoSave', removed: true, on: false, state: remote.syncState().state });
+    }
+    /* 等一排（而家冇自動儲存，純粹俾時間過） */
+    if (step.op === 'wait') {
+      await new Promise(r => setTimeout(r, Number(step.ms || 2500)));
+      out.steps.push({ op: 'wait', ms: Number(step.ms || 2500), pending: pendingN(), syncState: remote.syncState().state });
+    }
+    /* ---- 帳戶／身份（tests/accountsync.mjs 用）---- */
+    /* 「用戶與身份」頁開一個人（名冊紀錄＝帳號本身） */
+    if (step.op === 'addStaff') {
+      const rec = store.add('members', {
+        name: step.name, email: step.email || '', ymis: step.ymis || '',
+        identity: step.identity || 'leader', status: 'active'
+      });
+      out.steps.push({ op: 'addStaff', id: rec.id, pending: pendingN(), pendingAccounts: remote.pendingAccounts?.() ?? 0 });
+    }
+    /* 「用戶與身份」幫佢設登入密碼（＝名冊 hubPw）。id 可以用 '@last' ＝ 頭先開嗰個 */
+    if (step.op === 'setHubPw') {
+      const ms = store.load().members;
+      const id = step.id === '@last' ? (ms[ms.length - 1]?.id || '') : step.id;
+      const r = await auth.setMemberHubPassword(id, step.pw);
+      out.steps.push({ op: 'setHubPw', ok: !!r.ok, msg: r.msg || '', pending: pendingN(), pendingAccounts: remote.pendingAccounts?.() ?? 0, state: remote.syncState().state, statusMsg: remote.syncState().msg || '' });
+    }
+    /* 直接問後端：呢個 login 代號喺後端嗰份名冊存唔存在 */
+    if (step.op === 'backendHasLogin') {
+      const got = await remote.pullDb();
+      const list = (got.ok && got.db?.members) || [];
+      const k = String(step.login || '').trim().toLowerCase();
+      const hit = list.find(m => [m.email, m.loginId, m.ymis].some(v => String(v || '').trim().toLowerCase() === k));
+      out.steps.push({
+        op: 'backendHasLogin', ok: got.ok, found: !!hit, withPw: !!(hit?.hubPw?.hash || hit?.hubPassword),
+        backendMembers: list.length, error: got.error || ''
+      });
+    }
+    /* 登入閘 ＋ 個人登入（同 main.js gateLoginOnBackend() → loginIdentity() 同一條路） */
+    if (step.op === 'login') {
+      const gate = await remote.requireBackendForLogin();
+      let res = null;
+      if (gate.ok) res = await auth.loginIdentity(step.login, step.pw);
+      out.steps.push({
+        op: 'login', gateOk: !!gate.ok, gateReason: gate.reason || '', gateError: (gate.error || '').slice(0, 120),
+        ok: !!(res && res.ok), msg: res?.msg || '', role: res?.role || '',
+        session: !!store.getSession(), pending: pendingN()
+      });
+    }
+    if (step.op === 'logout') { auth.logout(); out.steps.push({ op: 'logout', session: !!store.getSession() }); }
+    /* 同一個瀏覽器另一個分頁寫咗 localStorage（瀏覽器會派 storage event） */
+    if (step.op === 'otherTabWrite') {
+      const db = JSON.parse(localStorage.getItem(DB_KEY) || 'null');
+      const before = (db?.members || []).length;
+      if (db) {
+        db.members = [...(db.members || []), {
+          id: 'me_othertab', name: step.name || '另一分頁開嘅人',
+          email: step.email || 'othertab@example.com', identity: 'leader', status: 'active'
+        }];
+        localStorage.setItem(DB_KEY, JSON.stringify(db));
+      }
+      try {
+        window.dispatchEvent(new window.StorageEvent('storage', {
+          key: DB_KEY, newValue: localStorage.getItem(DB_KEY), oldValue: null, storageArea: localStorage
+        }));
+      } catch (e) { out.steps.push({ op: 'otherTabWrite', eventError: String(e?.message || e) }); }
+      await new Promise(r => setTimeout(r, 150));
+      out.steps.push({
+        op: 'otherTabWrite', before, after: (store.tryLoad()?.members || []).length,
+        seesName: (store.tryLoad()?.members || []).some(m => m.name === (step.name || '另一分頁開嘅人'))
+      });
+    }
+    /* 讀進度後端（同一個 /exec）：成員名單有幾多個 YMIS、進度追蹤有幾多格 */
+    if (step.op === 'progressLoad') {
+      const r = await fetch(`${BASE}/api/progress`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ unit: '0082', action: 'load' })
+      }).then(x => x.json()).catch(e => ({ ok: false, error: String(e) }));
+      const d = r?.data || {};
+      const ymisList = (d.members || []).map(m => String(m.ymis || '')).filter(Boolean);
+      out.steps.push({
+        op: 'progressLoad', ok: !!r?.ok, error: r?.error || '',
+        memberList: ymisList.length, ymis: ymisList,
+        progressPeople: Object.keys(d.progress || {}).length,
+        ticks: Object.values(d.progress || {}).reduce((a, p2) => a + Object.keys(p2 || {}).length, 0)
+      });
+    }
+    /* 直接勾一項進度（經 /api/progress → 旅團後端「進度追蹤」分頁） */
+    if (step.op === 'progressTick') {
+      const r = await fetch(`${BASE}/api/progress`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ unit: '0082', action: 'save', data: {
+          changes: [{ ymis: step.ymis, itemId: step.itemId, date: step.date || '2026-09-24' }],
+          confirmer: step.confirmer || '測試領袖'
+        } })
+      }).then(x => x.json()).catch(e => ({ ok: false, error: String(e) }));
+      out.steps.push({ op: 'progressTick', ok: !!(r?.ok || r?.success), error: r?.error || '' });
+    }
+    /* 本機名冊有邊啲 login 代號（email／loginId／ymis） */
+    if (step.op === 'logins') {
+      out.steps.push({
+        op: 'logins',
+        list: (store.tryLoad()?.members || []).map(m => ({
+          name: m.name, email: m.email || '', ymis: m.ymis || '',
+          identity: m.identity || '', hasPw: !!(m.hubPw?.hash || m.hubPassword)
+        }))
+      });
     }
     /* 領袖喺「總表同步 → 同步設定」貼 /exec ＋ API Key（自助路線） */
     if (step.op === 'setSync') {
@@ -228,7 +349,7 @@ try {
         members: Number(j.counts?.members || 0), version: String(j.version || '')
       });
     }
-    /* 「成員連結」頁會派出去嘅公開連結（驗 ?be= 自助後端附埋入 link） */
+    /* 「公開資料」頁會派出去嘅公開連結（驗 ?be= 自助後端附埋入 link） */
     if (step.op === 'links') {
       const model = await import('../assets/js/lib/model.js');
       const route = model.publicLinkRoute();

@@ -4,7 +4,7 @@ import { memberName } from '../lib/model.js';
 import { esc, icon, uid, todayISO, toast, confirmDlg } from '../lib/util.js';
 import { go } from '../lib/router.js';
 import { can } from '../lib/auth.js';
-import { pageHead, tabs, empty, noteBox } from './ui.js';
+import { pageHead, tabs, empty, noteBox, visSelect } from './ui.js';
 
 let tab = 'list';
 
@@ -239,9 +239,14 @@ function editor(q) {
   <div class="card card-pad" style="max-width:760px">
     <div class="field"><label class="label">名稱</label><input class="input" id="qz-title" value="${esc(d.title)}"></div>
     <div class="field mt-12"><label class="label">說明（團員睇到）</label><textarea class="textarea" id="qz-note" rows="3">${esc(d.note || '')}</textarea></div>
-    <div class="field mt-12"><label class="label">狀態</label>
-      <select class="select" id="qz-status"><option value="open" ${d.status !== 'closed' ? 'selected' : ''}>開放填寫</option>
-        <option value="closed" ${d.status === 'closed' ? 'selected' : ''}>關閉</option></select></div>
+    <div class="grid g-2 mt-12" style="gap:12px">
+      <div class="field"><label class="label">狀態</label>
+        <select class="select" id="qz-status"><option value="open" ${d.status !== 'closed' ? 'selected' : ''}>開放填寫</option>
+          <option value="closed" ${d.status === 'closed' ? 'selected' : ''}>關閉</option></select></div>
+      <div class="field"><label class="label">邊個睇到</label>
+        ${visSelect('quiz', contentVis(d, 'quiz'), 'id="qz-vis"')}
+        <div class="hint mt-4">設「對外公開」＝ 免登入都睇到。去側邊欄<b>公開資料</b>可以一眼睇晒而家公開緊啲乜。</div></div>
+    </div>
     <div class="mt-16 semibold sm">題目</div>
     <div id="qz-qs">${qs.map((item, i) => qRow(item, i)).join('')}</div>
     <button class="btn btn-sm mt-12" type="button" data-act="add-q">${icon('plus', 14)} 加題</button>
@@ -329,6 +334,8 @@ export function mount(root, params) {
     const payload = {
       title, note: root.querySelector('#qz-note')?.value.trim() || '',
       status: root.querySelector('#qz-status')?.value || 'open',
+      /* ★「邊個睇到」（五級）—— 試卷預設團員（要登入團員入口先填到）。 */
+      vis: root.querySelector('#qz-vis')?.value || 'member',
       questions: collectQuestions(root), updatedAt: todayISO()
     };
     if (params.id && params.id !== 'new') {

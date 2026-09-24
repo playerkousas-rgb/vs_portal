@@ -126,7 +126,9 @@ export function memberLinks() {
       url: publicPageUrl('constitution.html', { u: code })
     }
   ];
-  collection('notices').filter(n => n.status === 'published').slice(0, 40).forEach(n => {
+  /* ★ 通告有「邊個睇到」：呢度列嘅係**派得出去**嘅公開連結（免登入），
+     所以淨係列「對外公開」嗰啲；收窄咗嘅通告唔會喺呢度出現（唔好派錯出去）。 */
+  collection('notices').filter(n => n.status === 'published' && String(n.vis || 'other') === 'other').slice(0, 40).forEach(n => {
     out.push({
       id: 'notice:' + n.id, icon: 'megaphone', label: `通告：${n.title?.zh || n.id}`,
       desc: `免登入閱讀${n.needSignup ? '＋回覆出席與否' : ''}${n.deadline ? `（截止 ${n.deadline}）` : ''}`,

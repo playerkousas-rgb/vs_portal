@@ -121,8 +121,7 @@ export function saveResultText(r) {
 export async function saveWithDialog({ silent = false, toastOk = true } = {}) {
   const remote = await import('../lib/remote.js');
   if (!remote.remoteConfigured()) {
-    const { isMock } = await import('../lib/store.js');
-    toast(isMock() ? '示範模式唔會寫入後端' : '未設定後端 —— 去「帳號與系統 → 資料管理 → 總表同步」', 'err');
+    toast('未設定後端 —— 去「帳號與系統 → 資料管理 → 總表同步」', 'err');
     return { ok: false, reason: 'not_configured' };
   }
   const r = await remote.saveToBackend({ policy: 'ask', resolver: resolveConflictsDialog, silent });

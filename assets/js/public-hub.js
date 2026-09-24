@@ -19,6 +19,7 @@
 import { loadRegistry, defaultUnitCode } from './lib/units.js';
 import { init, load, update } from './lib/store.js';
 import { profile, publicEvents, RSVP, quizzes, activeMembers, publicPageUrl, troopPublicLinks, identityOf, IDENTITIES } from './lib/model.js';
+import { publicProfile, visibleTo, socialName, socialIcon, contentVis } from './lib/public-profile.js';
 import { loadMe, saveMe } from './lib/member-me.js';
 import { loadHubAuth, saveHubAuth, clearHubAuth } from './lib/hub-session.js';
 import { loginMember, changeMemberOwnPassword, TEMP_PASSWORD } from './lib/auth.js';
@@ -81,10 +82,10 @@ async function syncBoot() {
     hubRemote = remoteApi;      // 畀 pushSubmit()（團員交嘢即刻寫後端）用
     const store = await import('./lib/store.js');
     if (!remoteApi.remoteConfigured?.()) {
-      syncError = '呢個網址冇帶旅團編號，或者未接後端 —— 請用系統「成員連結」頁生成嘅連結。';
+      syncError = '呢個網址冇帶旅團編號，或者未接後端 —— 請用系統「公開資料」頁生成嘅連結。';
       syncReady = true; paint(); return;
     }
-    store.setSaveHook(() => remoteApi.scheduleSave());
+    store.setSaveHook((info) => remoteApi.scheduleSave(info));
     /* 2026-09-20：同 main.js 一樣行 loadFromBackend() —— 開機由後端攞成份資料做基準。
        上次交咗但送唔出嘅嘢（pending）會三方比對保留（撞正就以團員自己嘅為準）。
        讀唔到就一律唔寫 —— 交卷／回覆都要先有基準先至可以寫。 */
@@ -220,6 +221,115 @@ function paintGate() {
 }
 
 /* ============================================================
+   公開資料（團員入口版）
+   ------------------------------------------------------------
+   團長 2026-09-24：「團員入口應該讀『旅團設定』頁嘅資料（主要係連結）
+   同『公開資料』（主要係 APP 內嘅內容）。」
+
+   兩個來源：
+     A. 旅團設定（`settings.troopLinks`，經 `troopPublicLinks()`）
+        —— 6 個固定槽：Drive／相簿／IG／FB／網頁／WhatsApp。登入咗就見到。
+     B. 公開資料（`db.publicProfile`）
+        —— 社交媒體／相簿／網站／其他連結／「關於我團」，
+           每一項都有「邊個睇到」：`other(1) < member(2) < exco(3) < leader(4) < chief(5)`。
+
+   ★ 合併規則 —— 唔會出現兩條一樣嘅 IG：
+     · 公開資料**有設**嗰個槽（IG／FB／WhatsApp／相簿／網站）→ 一律由公開資料話事：
+       睇得到就出，睇唔到就**連旅團設定嗰條都唔出**。
+       因為團長喺「公開資料」設咗可見範圍，就係想由嗰度統一管晒對外嘅嘢。
+     · 公開資料**冇設**嗰個槽 → 用返旅團設定嗰條（舊資料唔會無端端消失）。
+       Drive 喺公開資料冇對應，所以永遠嚟自旅團設定。
+   ============================================================ */
+
+/** 呢位團員嘅身份（用嚟計「邊個睇到」）。未登入／搵唔到＝''→ 乜都唔見。 */
+function viewerIdentity(auth) {
+  const m = activeMembers().find(x => x.id === auth?.id) || null;
+  return m ? identityOf(m) : '';
+}
+/** 行事曆／通告／試卷：呢位團員睇唔睇到？（各自嘅編輯器設「邊個睇到」） */
+function canSeeContent(rec, kind, role) {
+  return visibleTo(contentVis(rec, kind), role);
+}
+function safeHref(u) {
+  const s = String(u || '').trim();
+  if (!s) return '';
+  if (/^(https?:|mailto:|tel:)/i.test(s)) return s;
+  return 'https://' + s.replace(/^\/+/, '');
+}
+function card(it) {
+  return { href: safeHref(it.url), ic: it.ic || 'link', label: String(it.title || it.label || '').trim(), desc: String(it.desc || '').trim(), url: String(it.url || '').trim() };
+}
+
+/** 公開資料 ＋ 旅團設定 → 團員入口見到嘅嘢。
+ *  回傳 { about, groups:[{title, desc, items}] } —— 冇嘢嘅組唔會出。 */
+function hubPublic(auth) {
+  const role = viewerIdentity(auth);
+  const pp = publicProfile();
+  const seen = (arr) => (Array.isArray(arr) ? arr : []).filter(x => String(x?.url || '').trim());
+  const may = (it) => visibleTo(it?.vis, role);
+
+  const socials = seen(pp.socials).filter(may);
+  const albums = seen(pp.albums).filter(may);
+  const links = seen(pp.links).filter(may);
+  const siteUrl = String(pp.site?.url || '').trim();
+  const siteOn = siteUrl && may(pp.site);
+  const aboutTx = String(pp.about?.text || '').trim();
+  const aboutOn = aboutTx && may(pp.about);
+
+  const legacy = troopPublicLinks();                       // 旅團設定（6 個固定槽）
+  const legacyById = id => legacy.find(l => l.id === id);
+  /* 公開資料「管緊」邊啲槽 —— 管緊嘅話，旅團設定嗰條要讓位（包括設咗睇唔到） */
+  const managed = new Set();
+  seen(pp.socials).forEach(s => { if (['instagram', 'facebook', 'whatsapp'].includes(s.kind)) managed.add(s.kind); });
+  if (seen(pp.albums).length) managed.add('album');
+  if (siteUrl) managed.add('website');
+  /** 旅團設定嗰條要讓位俾公開資料 —— 公開資料管緊呢個槽就唔出 */
+  const fallback = (id, ic) => {
+    const l = legacyById(id);
+    return (l && !managed.has(id)) ? card({ ...l, ic }) : null;
+  };
+  const plus = (...arr) => arr.filter(Boolean);
+
+  /* ① 社交媒體 —— 公開資料嘅（連 YouTube／Telegram／電郵／電話）＋ 旅團設定剩低嘅 */
+  const socialItems = [
+    ...socials.map(s => card({ ...s, ic: socialIcon(s.kind), desc: s.desc || socialName(s.kind) })),
+    ...plus(fallback('instagram', 'instagram'), fallback('facebook', 'facebook'), fallback('whatsapp', 'whatsapp'))
+  ];
+
+  /* ② 相簿 —— 公開資料嘅相簿 ＋ 旅團設定「相簿」＋「Drive」（Drive 公開資料冇得設） */
+  const albumItems = [
+    ...albums.map(a => card({ ...a, ic: 'image' })),
+    ...plus(fallback('album', 'image'), legacyById('drive') ? card({ ...legacyById('drive'), ic: 'cloud' }) : null)
+  ];
+
+  /* ③ 網站與其他連結 —— 公開資料「網站」／旅團設定「網頁」／公開資料其他連結 */
+  const linkItems = [
+    ...plus(siteOn ? card({ title: pp.site.title || '旅團網站', url: siteUrl, desc: pp.site.desc || '', ic: 'globe' }) : null,
+            fallback('website', 'globe')),
+    ...links.map(l => card({ ...l, ic: 'external' }))
+  ];
+
+  const groups = [
+    { title: '社交媒體', desc: '我團嘅 IG／FB／YouTube 等 —— 撳一下就開', items: socialItems },
+    { title: '相簿', desc: '活動相、共用雲端硬碟', items: albumItems },
+    { title: '網站與其他連結', desc: '旅團網頁同其他有用連結', items: linkItems }
+  ].filter(g => g.items.length);
+
+  return { about: aboutOn ? aboutTx : '', groups };
+}
+
+/** 一張連結卡（團員入口用） */
+function linkCard(it) {
+  return `<a class="hub-card" href="${esc(it.href)}" target="_blank" rel="noopener noreferrer">
+    <span class="stat-ic">${icon(it.ic, 18)}</span>
+    <div class="grow"><div class="semibold">${esc(it.label || it.href)}</div>
+      ${it.desc ? `<div class="xs muted mt-4">${esc(it.desc)}</div>` : ''}
+      <div class="xs faint mt-4">${esc(it.url)}</div></div>
+    <span class="stat-ic">${icon('external', 15)}</span>
+  </a>`;
+}
+
+/* ============================================================
    主頁
    ============================================================ */
 function home(auth) {
@@ -227,7 +337,9 @@ function home(auth) {
   /* ① 活動：分「即將舉行」同「過往」—— 過往嘅唔會排先做提醒，
      但**內容照留得住**：報咗名嘅團員想睇返詳情、遲咗想參加嘅可以
      搵領袖／執委跟進，都唔會搵唔返。 */
-  const evAll = publicEvents();
+  const role = viewerIdentity(auth);
+  /* ★ 行事曆都有「邊個睇到」（喺活動編輯器設）—— 睇唔到嘅唔會出 */
+  const evAll = publicEvents().filter(e => canSeeContent(e, 'event', role));
   const isPast = e => {
     const end = String(e.dateEnd || e.date || '').slice(0, 10);
     return !!end && end < today;
@@ -235,14 +347,15 @@ function home(auth) {
   const evs = evAll.filter(e => !isPast(e));
   const pastEvs = evAll.filter(isPast).sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
   /* ② 試卷：closed 嘅唔顯示（同以前一樣） */
-  const qz = quizzes().filter(q => q.status !== 'closed');
+  /* ★ 試卷都有「邊個睇到」（喺試卷編輯器設） */
+  const qz = quizzes().filter(q => q.status !== 'closed' && canSeeContent(q, 'quiz', role));
   /* ③ 通告：已發布嘅全部顯示 —— 截止咗報名嘅會擺後＋標「已截止」，
      內容照開得到（成員遲咗想報就問領袖／執委）；草稿先係完全唔出街。 */
-  const notices = (load().notices || []).filter(n => n.status === 'published')
+  /* ★ 通告都有「邊個睇到」（喺通告編輯器設，預設「對外公開」＝免登入都睇到） */
+  const notices = (load().notices || []).filter(n => n.status === 'published' && canSeeContent(n, 'notice', role))
     .sort((a, b) => Number(closedN(a, today)) - Number(closedN(b, today)));
-  const links = troopPublicLinks();
+  const media = hubPublic(auth);
   const u = code();
-  const LINK_ICON = { drive: 'cloud', album: 'image', instagram: 'instagram', facebook: 'facebook', website: 'globe', whatsapp: 'whatsapp' };
   const tools = [
     { href: '#/progress', icon: 'target', title: '我的進度', desc: '睇自己獎章進度，仲可以申報完成咗邊項' },
     { href: publicPageUrl('entry.html', { u }), icon: 'camera', title: '影單據／記一筆', desc: '墊支或代收，影相交司庫' },
@@ -261,17 +374,14 @@ function home(auth) {
           <div class="grow"><div class="semibold">${esc(t.title)}</div><div class="xs muted mt-4">${esc(t.desc)}</div></div>
         </a>`).join('')}
 
-    ${links.length ? `
-    <div class="semibold mt-24 mb-8">旅團連結</div>
-    <div class="xs muted mb-8">後台填咗嘅 IG／FB／網頁等 —— 撳一下就開，唔使記網址</div>
-    ${links.map(l => {
-      const safe = /^https?:\/\//i.test(l.url) ? l.url : 'https://' + l.url;
-      return `<a class="hub-card" href="${esc(safe)}" target="_blank" rel="noopener noreferrer">
-        <span class="stat-ic">${icon(LINK_ICON[l.id] || 'link', 18)}</span>
-        <div class="grow"><div class="semibold">${esc(l.label)}</div><div class="xs muted mt-4">${esc(l.desc)} · ${esc(l.url)}</div></div>
-        <span class="stat-ic">${icon('external', 15)}</span>
-      </a>`;
-    }).join('')}` : ''}
+    ${media.about ? `
+    <div class="semibold mt-24 mb-8">關於我團</div>
+    <div class="card card-pad"><div class="sm" style="white-space:pre-wrap">${esc(media.about)}</div></div>` : ''}
+
+    ${media.groups.map(g => `
+    <div class="semibold mt-24 mb-8">${esc(g.title)}</div>
+    <div class="xs muted mb-8">${esc(g.desc)}</div>
+    ${g.items.map(linkCard).join('')}`).join('')}
 
     <div class="semibold mt-24 mb-8">活動行事曆</div>
     ${evs.length ? evs.map(e => {

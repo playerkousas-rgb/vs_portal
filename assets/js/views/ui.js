@@ -157,3 +157,34 @@ export function storageBar(db) {
     <div class="bar ${tone}"><span style="width:${u.percent}%"></span></div>
   </div>`;
 }
+
+/* ============================================================
+   「邊個睇到」—— 可見範圍選擇器 ／ 標籤
+   ------------------------------------------------------------
+   ★ 2026-09-24 團長：「權限總表要能編輯，TICK 很直觀，多點一下就變 X」
+     可見範圍層級（由最開放到最收緊）：
+       對外公開(1) < 團員(2) < 執委(3) < 領袖(4) < 團長(5)
+     一項設成 N ＝ 「權限 N 或以上」先見到。
+   放喺 ui.js 係因為「公開資料一覽表」同「旅團設定（填嘢位）」都要用。
+   ============================================================ */
+import { VIS_LEVELS, visName, viewerRank, visOf } from '../lib/public-profile.js';
+import { currentRole } from '../lib/auth.js';
+
+/** 下拉：揀「邊個睇到」 */
+export function visSelect(name, cur = 'member', extra = '') {
+  return `<select class="input input-sm" data-vis="${esc(name)}" ${extra} style="min-width:132px">
+    ${VIS_LEVELS.map(v => `<option value="${v.id}"${v.id === visOf({ vis: cur }) ? ' selected' : ''}>${icon(v.icon, 12)} ${esc(v.name)}以上</option>`).join('')}
+  </select>`;
+}
+
+/** 標籤：呢項而家「邊個睇到」；如果**你自己**都睇唔到會標紅 */
+export function visBadge(vis) {
+  const v = VIS_LEVELS.find(x => x.id === visOf({ vis })) || VIS_LEVELS[1];
+  const blind = v.rank > viewerRank(currentRole());
+  return `<span class="badge ${blind ? 'b-danger' : 'b-info'}" title="${esc(v.desc)}">${icon(v.icon, 12)} ${esc(v.name)}以上${blind ? '（你睇唔到）' : ''}</span>`;
+}
+
+/** 只讀顯示（免登入公開頁用 —— 嗰度冇 currentRole） */
+export function visLabel(vis) {
+  return esc(visName(visOf({ vis })) + '以上');
+}

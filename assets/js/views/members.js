@@ -21,7 +21,9 @@ import { go, parse } from '../lib/router.js';
 import {
   can, setMemberHubPassword, TEMP_PASSWORD, openMemberAccount, reviewAccountApp,
   setMemberIdentity, canClaimChief, claimChief, canChangePasswordOf,
-  displayName, current
+  displayName, current,
+  ROLES, PERMS, PERM_GROUPS, permValue, permIsCustom, permCycle, setPerm, resetPerms, canEditPerms,
+  currentRole, isSuper
 } from '../lib/auth.js';
 import { pageHead, tabs, empty, kv, chipbar, progressBar, noteBox } from './ui.js';
 
@@ -55,6 +57,7 @@ export function render(params) {
   if (id === 'new') return editor(null);
   if (id === 'edit') return editor(params.action);        // #/members/edit/<id>
   if (id === 'birthdays') return birthdayView();
+  if (id === 'perms') return permsView();          // ★ 權限總表由「帳號與系統」搬過嚟（2026-09-24）
   if (id) return detail(id);
   return listView();
 }
@@ -84,6 +87,7 @@ function listView() {
       <button class="btn btn-sm" data-act="exp-word">${icon('download', 15)} Word</button>
       <button class="btn btn-sm" data-act="exp-bday">${icon('sparkle', 15)} 生日表</button>` : ''}
       <button class="btn btn-sm" data-fields="members" title="改名／加欄位（例：小隊、收據編號）">${icon('table', 15)} 欄位</button>
+      <button class="btn btn-sm" data-go="#/members/perms" title="邊個身份做得到邊樣嘢（可改）">${icon('shield', 15)} 權限總表</button>
       ${can('member.create') ? `<button class="btn btn-sm" data-act="bulk-open">${icon('users', 15)} 批量開戶</button>
       <button class="btn btn-sm btn-primary" data-act="new">${icon('plus', 15)} 新增用戶</button>` : ''}`
   })}
@@ -559,8 +563,94 @@ function exportBirthdayIcs() {
 /* ============================================================
    mount
    ============================================================ */
+/* ============================================================
+   權限總表（可編輯）
+   ------------------------------------------------------------
+   ★ 2026-09-24 團長兩點：
+   ①「權限總表由身份與帳號 移去 用戶與身份」
+   ②「權限總表要能編輯，而家TICK 很直觀，多點一下就變X」
+   → 每一格都係掣：撳一下就換下一種狀態（✓ 可以 → 自己 → ✗ 不可以 → 返返 ✓）。
+   改動寫入旅團資料庫（跟同步、跟備份走），唔會改到出廠預設。
+   ============================================================ */
+function permCellText(v) {
+  if (v === 1) return `<span class="perm-yes">${icon('check', 17)}</span>`;
+  if (v === 'self') return '<span class="badge b-info">自己</span>';
+  if (v === 'own') return '<span class="badge b-info">自己建立</span>';
+  return '<span class="perm-no">✗</span>';
+}
+function permsView() {
+  const editable = canEditPerms();
+  /* 睇緊嘅身份欄：團長睇晒；其他身份只睇到自己同以下 */
+  const mine = currentRole();
+  const lvl = ROLES[mine]?.level || 0;
+  const cols = isSuper() ? ['chief', 'leader', 'exco', 'member']
+    : ['chief', 'leader', 'exco', 'member'].filter(r => (ROLES[r]?.level || 9) >= lvl);
+  let custom = 0;
+  const rows = PERM_GROUPS.map(g => `
+    <tr><td colspan="${cols.length + 1}" style="background:#FBF6F7;font-weight:700;font-size:12px;letter-spacing:.04em;color:var(--faint);padding:8px 14px">${esc(g.title)}</td></tr>
+    ${g.items.map(([k, label]) => `<tr>
+      <td>${esc(label)}<div class="xs faint mono">${k}</div></td>
+      ${cols.map(role => {
+        const v = permValue(k, role);
+        const isCustom = permIsCustom(k, role);
+        if (isCustom) custom++;
+        const cycle = permCycle(k);
+        return `<td class="perm-cell${editable ? ' perm-editable' : ''}"${editable
+          ? ` data-perm-toggle data-perm="${esc(k)}" data-role="${role}" title="撳一下換狀態（而家：${v === 1 ? '可以' : v === 0 ? '不可以' : v}）"` : ''}>
+          ${permCellText(v)}${isCustom ? '<span class="perm-dot" title="已自訂（唔同出廠預設）">●</span>' : ''}</td>`;
+      }).join('')}
+    </tr>`).join('')}`).join('');
+
+  return `
+  ${pageHead({
+    title: '權限總表',
+    sub: '邊個身份做得到邊樣嘢' + (editable ? '（撳格子就可以改）' : '（只有團長可以改）'),
+    actions: `<button class="btn btn-sm" data-go="#/members">${icon('chevronL', 15)} 返回用戶</button>
+      ${editable ? `<button class="btn btn-sm" data-act="perm-reset">${icon('undo', 15)} 還原預設</button>` : ''}`
+  })}
+  <div class="card">
+    <div class="card-head"><div><div class="card-title">權限總表</div>
+      <div class="card-sub">${editable
+        ? `<b>撳格子</b>就會換：${icon('check', 13)} 可以 → 自己 → ✗ 不可以 → 返返 ${icon('check', 13)}${custom ? ` · 已有 <b>${custom}</b> 格改過（<span class="perm-dot">●</span>）` : ''}`
+        : `✓ 可以　<span class="faint">自己</span> 只限自己　✗ 不可以${isSuper() ? '' : '（只顯示你可見嘅身份）'}`}</div></div></div>
+    <div class="scroll-x">
+      <table class="table table-compact">
+        <thead><tr><th style="min-width:200px">功能</th>
+          ${cols.map(c => `<th class="center" style="width:120px">${ROLES[c].name}</th>`).join('')}</tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+  </div>
+  ${noteBox(`<b>改咗會點？</b>
+    <ul style="margin:8px 0 0;padding-left:18px;line-height:1.9">
+      <li>改動<b>即刻生效</b>（呢部機），並跟旅團資料庫一齊<b>同步去其他裝置</b>。</li>
+      <li>出廠預設唔會被改走 —— 撳「還原預設」就全部返晒去原本。</li>
+      <li>「自己」＝只限自己嗰份（例如自己開嘅帳目）；「自己建立」＝只限自己建立嘅。</li>
+    </ul>`, 'info')}`;
+}
+
 export function mount(root, params = {}) {
   root.querySelectorAll('[data-go]').forEach(el => el.addEventListener('click', () => go(el.dataset.go)));
+
+  /* 權限總表：撳格子換狀態 */
+  root.querySelectorAll('[data-perm-toggle]').forEach(td => td.addEventListener('click', () => {
+    const k = td.dataset.perm, role = td.dataset.role;
+    const cycle = permCycle(k);
+    const cur = permValue(k, role);
+    const i = cycle.indexOf(cur);
+    const next = cycle[(i + 1) % cycle.length];
+    const r = setPerm(k, role, next);
+    if (!r.ok) { toast(r.msg || '改唔到', 'err'); return; }
+    refresh();
+  }));
+  root.querySelector('[data-act="perm-reset"]')?.addEventListener('click', async () => {
+    const { confirmDlg } = await import('../lib/util.js');
+    if (!(await confirmDlg({ title: '還原權限總表', okText: '確定還原', danger: true, message: '會把<b>所有自訂權限</b>還原成出廠預設。' }))) return;
+    const r = resetPerms();
+    if (!r.ok) { toast(r.msg || '還原唔到', 'err'); return; }
+    toast(`已還原（清走 ${r.cleared} 項自訂）`, 'ok');
+    refresh();
+  });
 
   root.querySelectorAll('[data-status]').forEach(b => b.addEventListener('click', () => { statusFilter = b.dataset.status; refresh(); }));
   root.querySelectorAll('[data-ident]').forEach(b => b.addEventListener('click', () => { idFilter = b.dataset.ident; refresh(); }));
@@ -628,6 +718,19 @@ export function mount(root, params = {}) {
       /* 免收團費：有剔 = true；冇剔 = 移除欄位（回到「領袖自動免收 / 其他人要交」嘅預設） */
       if (root.querySelector('#f-feeexempt')?.checked) patch.feeExempt = true;
       else delete patch.feeExempt;
+      /* ★ 2026-09-24 登入代號防呆（團長：「進度追蹤顯示 0 紀錄，可能因為 YMIS 對不上」、
+         「1 邊能用 email 登入 1 邊不能」）。
+         「身份即帳號」之後，呢一格空咗＝呢個人**登唔到**，而且進度追蹤永遠對唔上佢
+         （兩邊靠 YMIS 認人）—— 但個 app 以前一聲不響就儲存咗，用家完全唔知。 */
+      const keyNeed = expectedKeyKind({ identity: wantIdentity });
+      const keyValue = keyNeed === 'email' ? patch.email : (patch.ymis || patch.loginId);
+      /* 只係**警告**，唔會擋住儲存 —— 舊名冊成批人都未填 YMIS，
+         每次儲存都彈框問一次會煩死人（而且團長回報過「有嘢把解決方法封死」）。 */
+      const keyWarn = String(keyValue || '').trim() ? ''
+        : (keyNeed === 'email'
+          ? '未填電郵 —— 呢位領袖／團長而家登唔到（「身份即帳號」，領袖用電郵登入）'
+          : '未填會籍編號（YMIS）—— 呢位團員登唔到入口，進度追蹤亦對唔上佢（會顯示 0）');
+
       /* 同名防呆：唔好一時手誤開多一個同一個人 */
       const dup = members().find(m => m.id !== id && String(m.name).trim() === name);
       if (dup && !(await confirmDlg({
@@ -648,6 +751,7 @@ export function mount(root, params = {}) {
         }
         clearDraft('member', id);
         toast(`已儲存 ${name}（${identityLabel(member(id))}）`, 'ok');
+        if (keyWarn) toast(keyWarn + ' —— 去「編輯」補返', 'warn');
         const hubPw = v('#f-hubpw');
         if (hubPw) {
           const pwRes = await setMemberHubPassword(id, hubPw);
@@ -671,6 +775,7 @@ export function mount(root, params = {}) {
           if (!cr.ok) { update('members', rec.id, { identity: 'member' }); toast(cr.msg, 'err'); }
         }
         toast(`已新增 ${name}（${identityLabel(member(rec.id))}）`, 'ok');
+        if (keyWarn) toast(keyWarn + ' —— 去「編輯」補返', 'warn');
         go('#/members/' + rec.id);
       }
     }
@@ -727,7 +832,7 @@ export function mount(root, params = {}) {
       if (!m) return;
       const r = await modal({
         title: `設定密碼：${m.name}`,
-        sub: '設定之後即刻生效（唔使等儲存到後端）',
+        sub: '設定之後即刻生效，並會自動寫入後端（另一部機都用得）',
         body: `<div class="field"><label class="label">新密碼（最少 4 個字）</label>
             <input class="input" id="sp1" type="password" autocomplete="new-password"></div>
           <div class="field mt-12"><label class="label">再輸入一次</label>

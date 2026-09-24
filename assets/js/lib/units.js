@@ -363,11 +363,3 @@ export async function fetchUnitData(code, file) {
     return await r.json();
   } catch (e) { return null; }
 }
-
-export async function fetchMockData(file) {
-  try {
-    const r = await fetch(`data/mock/${file}?_=${Date.now()}`, { cache: 'no-store' });
-    if (!r.ok) return null;
-    return await r.json();
-  } catch (e) { return null; }
-}

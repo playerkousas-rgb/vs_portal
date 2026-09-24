@@ -3,8 +3,8 @@
    ============================================================ */
 
 import {
-  init, load, tryLoad, isMock, currentUnit, seedInfo, enterMock, exitMock, exitMockToUnit,
-  switchUnit, clearMockData, resetToGate, setMode, setUnitCode, lastRealUnit, CHOSEN_UNIT_KEY
+  init, load, tryLoad, currentUnit, seedInfo,
+  switchUnit, resetToGate, setUnitCode, lastRealUnit, CHOSEN_UNIT_KEY
 } from './lib/store.js';
 import {
   loadRegistry, unitList, unitEntry, defaultUnitCode, registryReachable,
@@ -18,7 +18,7 @@ import {
 import { applyTheme, MAROON } from './lib/theme.js';
 import {
   login, loginServer, loginMember, loginPortalFromUrl, logout, current, currentRole, ROLES, displayName, displaySub,
-  loginAsMock, accounts, isSuper, can, changeOwnPassword, TEMP_PASSWORD,
+  accounts, isSuper, can, changeOwnPassword, TEMP_PASSWORD,
   loginSetupKey, applyAccount
 } from './lib/auth.js';
 import { pendingMeetings, overdueFees, pendingClaims, pendingLoans, profile, notices, onLegacyHost, canonicalUrl } from './lib/model.js';
@@ -57,7 +57,7 @@ const NAV = [
   { id: 'inventory', label: '物資', icon: 'grid', badge: () => pendingLoans().length },
   { id: 'progress', label: '進度', icon: 'chart' },
   { id: 'notices', label: '通告', icon: 'megaphone', badge: () => (load()?.notices || []).filter(n => n.status === 'published').length },
-  { id: 'links', label: '成員連結', icon: 'share' },
+  { id: 'links', label: '公開資料', icon: 'share' },   /* ★ 2026-09-24 團長：「成員連結」改名「公開資料」 */
   { id: 'constitution', label: '團章', icon: 'book' },
   { id: 'docs', label: '教學', icon: 'note' },
   { id: 'admin', label: '身份與系統', icon: 'shield' }
@@ -80,7 +80,7 @@ async function boot() {
     await loadRegistry();
     const portalEntry = await loginPortalFromUrl();
     if (!portalEntry.skipped && !portalEntry.ok) return renderFatal(new Error(portalEntry.msg || '旅系統入口驗證失敗'));
-    /* 第一步：先揀旅團（或者 MOCK），揀完先出現登入畫面 */
+    /* 第一步：先揀旅團，揀完先出現登入畫面 */
     if (!unitChosen()) return renderUnitGate();
     await init();
     applyTheme(load()?.unit?.theme);
@@ -89,7 +89,22 @@ async function boot() {
     bootError = e;
     return renderFatal(e);
   }
-  window.addEventListener('hashchange', render);
+  /* ★ 離開分頁（2026-09-24 團長定案，再修訂）：
+     團長問：「如果分頁走嗰時無 SAVE 就唔得了，定係我哋當佢自動遊覽器儲存晒？」
+     → **當佢自動瀏覽器儲存咗。** 因為「暫存喺瀏覽器」同「寫入後端」係兩件事：
+       團長嘅鐵律只係「**寫入後端得一個掣**」，寫瀏覽器點自動都唔犯規。
+     所以轉分頁：
+       · 未撳分頁「儲存」嘅表單改動 ＝ 草稿 → **即刻 flush 落瀏覽器並保留**
+         （唔會彈框問、唔會放棄），只係用 toast 話你知返嚟可以撳「還原」；
+       · 已經撳咗「儲存」嘅改動 ＝ 冚唪唥留喺瀏覽器 db，等頂部「儲存到後端」。
+     ★ 要彈框問嘅得一樣：**未寫入後端**（尤其帳戶級）—— 嗰個喺登出／閂頁問
+       （confirmLogout ／ beforeunload），因為嗰啲先係會「第二部機登唔到」嘅嘢。 */
+  window.addEventListener('hashchange', async () => {
+    const { stashActiveDrafts } = await import('./lib/guard.js');
+    const n = stashActiveDrafts();
+    if (n) toast(`呢個分頁有 ${n} 份未完成草稿 —— 已自動暫存喺呢部機，返嚟撳「還原」就攞得返`, 'info');
+    render();
+  });
   window.addEventListener('v82:refresh', render);
   window.addEventListener('v82:sync', paintSyncChip);
 
@@ -97,27 +112,32 @@ async function boot() {
      真實旅團要先成功載入後端，先可以顯示帳戶／密碼畫面。
      連唔到後端就停喺「後端未連線」頁，唔會畀用家輸入一堆一定登入唔到嘅資料。 */
   const bootSync = await syncBoot();
-  if (!isMock() && !bootSync?.ok) {
+  if (!bootSync?.ok) {
     /* 舊 session 唔可以繞過後端硬閘直接入 app。 */
     if (current()) logout();
     return renderBackendGate(bootSync);
   }
-
-  /* 示範 session 唔可以帶入真實旅團（否則會用「示範領袖」身份改真資料） */
-  if (!isMock() && current()?.mock) logout();
-  if (isMock() && !current()) loginAsMock('leader');
   if (!current()) renderLogin();
   else { render(); maybeForceChangePw(); maybeShowLoginConflicts(); }
 }
 
 /* ============================================================
-   後端儲存 —— 唯一模式（2026-09-20 團長定案）
+   後端儲存 —— 一條寫入路，由系統自己行（2026-09-24 修訂）
    ------------------------------------------------------------
      開機／登入   → loadFromBackend()：由後端攞成份資料 ＝ 基準
-     之後改乜     → 淨係寫瀏覽器
-     撳「儲存到後端」→ saveToBackend()：核對版本 → 逐格三方比對 →
-                     唔撞嘅寫入；撞嘅（早走 vs 遲到）彈框問，確認咗先蓋
-   冇自動儲存、冇 poll、冇切視窗自動拉、冇關視窗自動寫。
+     之後改乜     → 寫本機 ＋ **自動排一次寫入**（一般 1.2 秒；
+                    開人／設密碼／改身份＝帳戶級，即刻寫）
+     saveToBackend() → 核對版本 → 逐格三方比對 → 唔撞嘅寫入；
+                       撞嘅（早走 vs 遲到）彈框問，確認咗先蓋
+     頂部掣「即刻儲存」＝ 唔想等 debounce；「重新載入」＝ 由後端拉新嘅
+     另一個分頁嘅改動 → store.bindCrossTabSync() 併入（唔使重新整理）
+     切返呢個分頁 → refreshIfClean()（本機冇未存改動先至拉，唔會彈衝突框）
+
+   ★ 點解改（2026-09-20「冇自動儲存」→ 2026-09-24「自動寫入」）：
+     團長回報「1 邊能用 email 登入、1 邊不能，那＝用戶根本沒寫入後端」。
+     舊設計要人記得撳掣先寫，結果帳戶困喺瀏覽器，另一部機登唔到；
+     而超管登入唔經旅團後端，所以淨係佢入到 —— 睇落就似「同步壞晒」。
+     寫入路依然只有一條（saveToBackend），唔會有兩條路互相蓋。
    ============================================================ */
 let remoteApi = null;
 /* 開機問唔到後端嗰陣嘅原因（登入頁會出橫額） */
@@ -128,7 +148,6 @@ let unloadGuardOn = false;
 export function remoteMod() { return remoteApi; }
 
 async function syncBoot() {
-  if (isMock()) return { ok: true, mock: true };
   try {
     remoteApi = await import('./lib/remote.js');
   } catch (e) {
@@ -136,18 +155,39 @@ async function syncBoot() {
     return { ok: false, error: '同步模組載入失敗 —— 請重新整理頁面再試' };
   }
   const store = await import('./lib/store.js');
-  /* 本機一有改動 → 淨係更新頂部狀態（「儲存到後端（N）」），唔會寫後端 */
-  store.setSaveHook(() => remoteApi.scheduleSave());
+  /* 本機一有改動 → 淨係更新頂部狀態（「儲存到後端（N）」）。
+     ★ 2026-09-24 團長定案：頂部一粒掣係**唯一**寫入路，其他一律暫存瀏覽器。 */
+  store.setSaveHook((info) => remoteApi.scheduleSave(info));
+  /* 同一個瀏覽器另一個分頁改咗嘢 → 併入本機 ＋ 重畫（唔使重新整理） */
+  store.bindCrossTabSync((info) => {
+    paintSyncChip();
+    if (info?.kind === 'db') {
+      try { applyTheme(load()?.unit?.theme); } catch { /* ignore */ }
+      if (current()) render();
+      toast(info?.result?.took === 'merge'
+        ? '另一個視窗改咗嘢已併入呢邊'
+        : '已讀入另一個視窗儲存咗嘅資料', 'info');
+    }
+  });
 
   if (!unloadGuardOn) {
     unloadGuardOn = true;
-    /* 離開頁面前提醒有嘢未存。**唔會**寫後端（團長：「唔好比佢有機會出事」）。 */
+    /* 離開頁面前提醒有嘢未存。**冇自動寫入**，所以呢個 net 係唯一一道
+       擋「改完嘢就閂頁」嘅門（同 confirmLogout 一樣：只係問，唔會代你寫）。 */
     window.addEventListener('beforeunload', (e) => {
       if (remoteApi?.hasPending?.()) {
         e.preventDefault();
         e.returnValue = '仲有改動未儲存到後端，真係要離開？';
         return e.returnValue;
       }
+    });
+    /* 切返呢個分頁 → 由後端拉新嘅（本機冇未存改動先至拉，唔會彈衝突框） */
+    document.addEventListener('visibilitychange', async () => {
+      if (document.visibilityState !== 'visible' || !remoteApi) return;
+      try {
+        const r = await remoteApi.refreshIfClean?.();
+        if (r?.updated) { paintSyncChip(); if (current()) render(); }
+      } catch (e) { console.warn('[sync] 切返分頁時刷新失敗', e); }
     });
   }
 
@@ -167,7 +207,7 @@ async function syncBoot() {
       try { applyTheme(load()?.unit?.theme); } catch { /* ignore */ }
       if (r.merged) {
         loginConflicts = r.conflicts?.length ? { conflicts: r.conflicts, ctx: r.ctx, remoteAt: r.at } : null;
-        toastAction('上次未儲存嘅改動已保留喺呢部機 —— 記得撳「儲存到後端」', '去睇', () => go('#/tables/sync'), '');
+        toastAction('上次未寫入嘅改動已保留喺呢部機 —— 系統會自動寫入', '去睇', () => go('#/tables/sync'), '');
       }
     }
   } catch (e) {
@@ -189,13 +229,13 @@ async function maybeShowLoginConflicts() {
     const { applyChangesLocal } = await import('./lib/store.js');
     const choice = await resolveConflictsDialog({ conflicts: lc.conflicts, ctx: lc.ctx, mode: 'login', remoteAt: lc.remoteAt });
     const ov = overridesFor(lc.conflicts, choice?.useMine || []);
-    if (ov.length) { applyChangesLocal(ov); render(); toast(`已用返你嘅 ${ov.length} 項 —— 記得撳「儲存到後端」`, 'ok'); }
+    if (ov.length) { applyChangesLocal(ov); render(); toast(`已用返你嘅 ${ov.length} 項 —— 自動寫入後端中`, 'ok'); }
   } catch (e) { console.warn('[sync] 登入衝突對話框失敗', e); }
 }
 
 /** 登入頁頂：後端狀態橫額（連唔到／後端仲係空） */
 function loginSyncBanner() {
-  if (isMock() || !remoteApi) return '';
+  if (!remoteApi) return '';
   if (!remoteApi.remoteConfigured()) return '';
   if (bootSyncWarn) {
     return `<div class="note-box danger mb-12" id="loginSyncWarn">${icon('alert', 15)}<div>
@@ -221,7 +261,12 @@ function loginSyncBanner() {
 
   const s = remoteApi.syncState();
   if (s.state === 'pending' && remoteApi.hasPending()) {
-    return `<div class="note-box warn mb-12">${icon('clock', 15)}<div>呢部機有改動仲未儲存到後端 —— 登入後撳右上角「儲存到後端」。</div>${prov}</div>`;
+    const acc = remoteApi.pendingAccounts?.() || 0;
+    return `<div class="note-box ${acc ? 'err' : 'warn'} mb-12">${icon('clock', 15)}<div>`
+      + (acc
+        ? `呢部機有 <b>${acc}</b> 個<b>帳戶改動</b>未寫入後端 —— <b>佢哋喺其他裝置登唔到</b>。登入後撳右上角「儲存到後端」。`
+        : '呢部機有改動仲未寫入後端 —— 登入後撳右上角「儲存到後端」。')
+      + `</div>${prov}</div>`;
   }
   return `<div class="mb-12">${prov}</div>`;
 }
@@ -231,7 +276,7 @@ function loginSyncBanner() {
 function paintSyncChip() {
   const el = document.getElementById('syncChip');
   if (!el) return;
-  if (isMock()) { el.innerHTML = ''; return; }
+
 
   if (!remoteApi || !remoteApi.remoteConfigured()) {
     el.innerHTML = `<span class="badge b-warn" title="資料淨係存喺呢部機嘅瀏覽器，換機／清 cache 就會冇咗。去「帳號與系統 → 資料管理 → 總表同步」設定後端。">
@@ -243,6 +288,9 @@ function paintSyncChip() {
 
   const s = remoteApi.syncState();
   const pending = Number(tryLoad()?.sync?.pending || 0);
+  /* ★ 2026-09-24：帳戶級改動（開人／設密碼／改身份）未寫入後端之前，
+     其他裝置用嗰個 email／YMIS **登唔到**。呢個數要独立顯示，唔好溝埋入「N 項」入面。 */
+  const pendAcc = remoteApi.pendingAccounts?.() || 0;
   const map = {
     saving:  ['b-warn', 'cloud', '儲存緊…'],
     saved:   ['b-ok', 'check', '已存到後端'],
@@ -255,12 +303,17 @@ function paintSyncChip() {
   };
   let state = s.state;
   if (pending > 0 && (state === 'idle' || state === 'saved')) state = 'pending';
-  const [cls, ic, label] = map[state] || map.idle;
+  let [cls, ic, label] = map[state] || map.idle;
+  /* 有帳戶改動未寫入 → 紅色，因為後果係「有人登唔到」，唔係「遲啲先同步到」 */
+  if (pendAcc > 0) { cls = 'b-danger'; ic = 'alert'; label = `${pendAcc} 個帳戶未寫入後端`; }
   const needSave = pending > 0;
   const unreachable = state === 'unreachable';
+  /* ★ 2026-09-24 團長定案：呢粒係**全系統唯一**寫入後端嘅掣。其他一切都係暫存瀏覽器。 */
   const actLabel = needSave ? `儲存到後端${pending > 1 ? `（${pending}）` : ''}` : unreachable ? '重試' : '重新載入';
   const actTitle = needSave
-    ? '先核對後端版本；有人喺你登入後儲存過就逐格比對 —— 唔撞嘅寫入，撞嘅會問你'
+    ? (pendAcc
+      ? `寫入後端（唯一寫入路）。⚠ 當中 ${pendAcc} 個係帳戶改動 —— 未寫入，佢哋喺其他裝置登唔到。`
+      : '寫入後端（唯一寫入路）。寫入前先核對後端版本，撞嘅格會問你。')
     : '由後端攞返最新資料（冇未儲存改動，唔會丟嘢）';
   el.innerHTML = `<span class="badge ${cls}" title="${esc(s.msg || label)}">${icon(ic, 12)} ${esc(label)}</span>
     <button class="btn btn-xs ${needSave ? 'btn-primary' : ''}" id="syncActBtn" title="${esc(actTitle)}" ${s.state === 'saving' ? 'disabled' : ''}>
@@ -284,23 +337,19 @@ function paintSyncChip() {
 
 /* ============================================================
    旅團選擇閘（登入之前）
-   網址有 ?u= / ?mock=1，或者之前已經揀過，就直接入登入畫面。
+   網址有 ?u=，或者之前已經揀過，就直接入登入畫面。
    ============================================================ */
 function unitChosen() {
   const url = new URLSearchParams(location.search);
   const urlUnit = (url.get('u') || '').trim();
-  if (urlUnit || url.get('mock') === '1') return true;
+  if (urlUnit) return true;
   let saved = '';
   try { saved = localStorage.getItem(CHOSEN_UNIT_KEY) || ''; } catch { return false; }
   if (!saved) return false;
-  /* 示範模式**唔會**自動記住：下次由普通網址開（例如書籤、首頁連結）一律返旅團選擇閘。
-     以前記住咗 MOCK，之後每次開網站都靜靜雞入返示範，用家就覺得「入咗 MOCK 走唔出」。
-     想入示範，撳閘嘅 MOCK 或者用 ?mock=1 連結就得。 */
-  if (saved.toUpperCase() === 'MOCK') return false;
   /* 例外：記住咗一個 Registry 已經冇嘅旅團（例如之前係 Git entry、而家改咗用
      環境變數開、或者打錯編號）→ 唔好靜靜雞入一個空殼旅團，返去選擇閘再揀。
      只喺「Registry 真係讀到」嘅時候至咁做，否則網絡一斷就會被踢返出嚟。 */
-  if (registryReachable() && saved.toUpperCase() !== 'MOCK') {
+  if (registryReachable()) {
     const known = unitList().some(u => String(u.code) === String(saved)
       || String(u.code).replace(/^0+/, '') === String(saved).replace(/^0+/, ''));
     if (!known) return false;
@@ -359,7 +408,7 @@ function renderUnitGate() {
                <li>部署未完成／網絡問題 —— 可以撳下面「重新載入清單」再試</li>
              </ul>
              你亦可以撳「<b>診斷伺服器登記</b>」睇實際讀到啲咩，或直接<b>輸入旅團編號</b>入去。`
-          : `你可以揀下面嘅「試用示範（MOCK）」即刻試玩，或者撳「新旅團申請接入」登記自己旅團 —— 登記好之後，你嘅旅團就會喺呢度出現，由空白資料庫開始。
+          : `你可以撳「新旅團申請接入」登記自己旅團 —— 登記好之後，你嘅旅團就會喺呢度出現，由空白資料庫開始。
              <ul style="margin:6px 0 0;padding-left:18px;line-height:1.8">
                <li>已經喺 Vercel 加咗 <code>TROOP_&lt;編號&gt;_*</code>？記得撳 <b>Redeploy</b>，
                    同埋將變數嘅 Environments 勾埋 <b>Preview ＋ Production</b>
@@ -376,7 +425,7 @@ function renderUnitGate() {
         <div class="logo">82</div>
         <div>
           <div class="gate-title">深資童軍管理系統</div>
-          <div class="gate-sub">第一步：揀你嘅旅團（或者用示範資料試玩）</div>
+          <div class="gate-sub">第一步：揀你嘅旅團</div>
         </div>
       </div>
 
@@ -403,14 +452,6 @@ function renderUnitGate() {
 
         ${emptyBox}
 
-        <button class="gate-unit mock" data-pick="MOCK">
-          <span class="code">MOCK</span>
-          <span class="grow">
-            <span class="semibold" style="display:block">試用示範（MOCK）</span>
-            <span class="xs faint">假資料，同真實資料完全隔離，隨便試都唔會影響真數據（隨時可以「離開示範」）</span>
-          </span>
-          ${icon('chevronR', 17)}
-        </button>
       </div>
 
       <div class="gate-apply" style="display:flex;flex-direction:column;gap:12px">
@@ -481,12 +522,10 @@ function renderUnitGate() {
 }
 
 /* ============================================================
-   去某個旅團（真實／示範都由呢度行）
-   真實旅團一定要帶 ?u=<編號> 而**冇** mock=1 —— store.init() 見到 ?u= 就會用返真實模式，
-   唔會再被 localStorage 入面嘅 mode=mock 蓋住（2026-09「揀極都係 MOCK」嘅根本原因）。
+   去某個旅團
+   ★ 2026-09-24：示範（MOCK）模式已經拆走 —— 呢度淨係處理真實旅團。
    ============================================================ */
 function gotoUnit(code, { remember = true } = {}) {
-  const isMockCode = String(code).toUpperCase() === 'MOCK';
   /* ★ 一律用 Registry 登記咗嗰個編號入去（82 → 0082）。
      以前打「82」就會 ?u=82 ＋ db.unitCode='82'：
        · /api/proxy 以前搵唔到「0082」→ 404「找不到此旅團或後端網址未設定」
@@ -495,14 +534,11 @@ function gotoUnit(code, { remember = true } = {}) {
          而用「0082」讀又搵唔到 → 同一張表兩套資料庫，兩邊永遠對唔到料。
      兩邊都喺伺服器端校正咗（api/_registry.js、api/proxy.js），
      呢度再校正多一層，令 ?u=、localStorage、db.unitCode、data/units/<編號>/ 全部一致。 */
-  code = isMockCode ? code : (canonicalUnitCode(code) || code);
-  if (remember) markChosen(isMockCode ? 'MOCK' : code);
-  if (isMockCode) { enterMock(); return; }
-  setMode('real');
+  code = canonicalUnitCode(code) || code;
+  if (remember) markChosen(code);
   setUnitCode(code);
   const u = new URL(location.href);
   u.searchParams.set('u', code);
-  u.searchParams.delete('mock');
   u.hash = '';
   location.href = u.toString();
 }
@@ -894,7 +930,7 @@ function renderBackendGate(reason = {}) {
     if (b) { b.disabled = true; b.textContent = '連線中…'; }
     const r = await syncBoot();
     if (r?.ok) {
-      if (isMock() && !current()) loginAsMock('leader');
+
       if (!current()) renderLogin();
       else render();
       return;
@@ -1022,26 +1058,37 @@ let pickedUnit = null;
    改權限＝改身份（「用戶」頁），所以門口只需要一個：
    打自己嘅電郵（團長／領袖）／YMIS（執委／團員）＋ 密碼。
    ============================================================ */
+/**
+ * ★ 登入頁「公開資料」（免登入）—— 團長 2026-09-24：
+ *   「各團嘅公開資料，應該係喺登入帳戶嗰個版面睇到；未來就係登入咗旅系統之後，
+ *     喺選擇支部進入前應該會睇到。」
+ *
+ * 所以未登入都睇得。淨係 show 可見範圍 ＝ 「對外公開」（rank 1）嘅嘢 ——
+ * 團員級／執委級／領袖級嘅內容一律唔會喺呢度出現（未登入冇身份＝睇唔到）。
+ *
+ * 資料由邊度嚟：開機 syncBoot() 已經由後端拉咗成份資料庫落嚟（登入核對要用），
+ * 所以呢度直接讀本機就得，唔使再問後端、亦唔會洩露任何團員資料。
+ */
+function showPublicInfo() {
+  const u = unitEntry(currentUnit() || defaultUnitCode()) || {};
+  import('./lib/public-profile.js').then(({ publicPageHtml, publicGroupsFor }) => {
+    const g = publicGroupsFor('other');
+    modal({
+      title: '公開資料', wide: true,
+      sub: `${u.name || '呢個旅團'} · 免登入睇到嘅嘢（${g.reduce((n, x) => n + x.items.length, 0)} 項）`,
+      body: publicPageHtml({ unitName: u.name }),
+      actions: [{ label: '關閉', class: 'btn-primary', value: null }]
+    });
+  }).catch(() => toast('讀唔到公開資料', 'err'));
+}
+
 function renderLogin() {
   document.body.classList.add('login-body');
   const units = unitList();
   const code = currentUnit() || defaultUnitCode();
   const u = unitEntry(code) || {};
 
-  /* 示範模式嘅登入畫面都要有「離開示範」——
-     以前只有 app 入面嗰條黃色橫額有，一旦登出／未登入（例如喺「更多」撳登出）
-     就完全冇掣返出去，用家感覺就係「入咗 MOCK 出唔返嚟」。 */
-  const mockBanner = isMock() ? `
-    <div class="gate-mock-banner" style="margin-bottom:14px;padding:12px 14px;border-radius:12px;
-      background:repeating-linear-gradient(45deg,#B8892B,#B8892B 12px,#A2761F 12px,#A2761F 24px);color:#fff">
-      <div class="semibold" style="font-size:13.5px">示範模式（MOCK）中 —— 而家睇嘅係假資料</div>
-      <div class="xs" style="opacity:.92;margin:4px 0 10px">示範資料同真實旅團完全分開，唔會寫入任何 Google Sheet。</div>
-      <div class="row gap-8 wrap">
-        ${lastRealUnit() ? `<button class="btn btn-sm" id="btnBackReal">${icon('chevronL', 14)} 返 ${esc(lastRealUnit())}（真實旅團）</button>` : ''}
-        <button class="btn btn-sm" id="btnExitMock">${icon('logout', 14)} 離開示範（返旅團選擇）</button>
-        <button class="btn btn-sm" id="btnGate2">${icon('refresh', 14)} 揀其他旅團</button>
-      </div>
-    </div>` : `
+  const gateBanner = `
     <div style="margin-bottom:14px" class="xs faint">
       <button class="btn btn-xs" id="btnGate2">${icon('refresh', 13)} 旅團選擇畫面</button>
     </div>`;
@@ -1072,7 +1119,7 @@ function renderLogin() {
 
     <main class="login-panel">
       <div class="login-card">
-        ${mockBanner}
+        ${gateBanner}
         ${loginSyncBanner()}
 
         <h1>登入</h1>
@@ -1095,6 +1142,7 @@ function renderLogin() {
         </form>
         <div class="hint mt-8">名冊有個名但未設密碼？首次用 <code>${TEMP_PASSWORD}</code> 入，入去即刻要改。</div>
 
+        <button class="btn btn-block mt-8" type="button" id="btnPublicInfo">${icon('globe', 16)} 睇吓${esc(u.name || '呢個旅團')}嘅公開資料（免登入）</button>
         <button class="btn btn-ghost btn-block mt-8" type="button" id="btnForgotPassword">忘記密碼？用 EMAIL 重設</button>
         <button class="btn btn-block mt-8" type="button" id="btnApply">${icon('plus', 16)} 未開戶？申請開戶</button>
 
@@ -1106,12 +1154,8 @@ function renderLogin() {
           <button type="submit" class="btn btn-block mt-12">用 KEY 進入開戶</button>
         </form>
 
-        <div class="mt-16">
-          <button class="btn btn-block" id="btnMock">${icon('eye', 16)} 試用示範（MOCK）</button>
-          <div class="hint mt-8">示範模式用假資料，同真實資料完全分開。</div>
-        </div>
         <div class="mt-16" style="border-top:1px solid var(--line-2);padding-top:12px">
-          <div class="xs faint">而家嘅旅團：<b class="mono">${esc(code)}</b>${isMock() ? '（示範模式）' : ''}</div>
+          <div class="xs faint">而家嘅旅團：<b class="mono">${esc(code)}</b></div>
           <button class="btn btn-xs mt-8" id="btnGate" type="button">${icon('refresh', 13)} 返回旅團選擇</button>
         </div>
       </div>
@@ -1129,22 +1173,19 @@ function renderLogin() {
     location.href = url.toString();
   });
 
-  app.querySelector('#btnMock')?.addEventListener('click', () => enterMock());
   app.querySelector('#btnRetrySync')?.addEventListener('click', async () => {
     const b = app.querySelector('#btnRetrySync');
     if (b) { b.disabled = true; b.textContent = '連線中…'; }
     const r = await syncBoot();
-    if (!isMock() && !r?.ok) return renderBackendGate(r);
+    if (!r?.ok) return renderBackendGate(r);
     renderLogin();
     toast('已由後端載入最新資料', 'ok');
   });
   app.querySelector('#loginDlGs')?.addEventListener('click', () => downloadCodeGs());
   app.querySelector('#loginGuide')?.addEventListener('click', openDeployGuideModal);
   app.querySelector('#btnGate')?.addEventListener('click', () => forgetChoice());
-  /* 示範模式登入畫面嘅逃生門（見上面 mockBanner 註釋） */
   app.querySelector('#btnGate2')?.addEventListener('click', () => forgetChoice());
-  app.querySelector('#btnExitMock')?.addEventListener('click', () => exitMock());
-  app.querySelector('#btnBackReal')?.addEventListener('click', () => exitMockToUnit());
+  app.querySelector('#btnPublicInfo')?.addEventListener('click', () => showPublicInfo());
 
   app.querySelector('#btnApply')?.addEventListener('click', async () => {
     const r = await modal({
@@ -1222,7 +1263,7 @@ function renderLogin() {
        （後端載入成功＝本機呢份名冊密碼就係後端嗰份 → 個人身份登入即係核對過後端。） */
     const gate = await gateLoginOnBackend();
     if (!gate.ok) {
-      if (!isMock()) return renderBackendGate(gate);
+      return renderBackendGate(gate);
       btn.disabled = false;
       passInput.value = '';
       renderLogin();
@@ -1231,7 +1272,7 @@ function renderLogin() {
     }
     let res = await login('staff', userInput.value, passInput.value);
     /* 舊個人帳戶（開喺後端但本機名冊冇）：最後試一次後端核對 —— 唔會靜靜哋放行。 */
-    if (!res.ok && !isMock() && res.notFound === true) {
+    if (!res.ok && res.notFound === true) {
       const srv = await loginServer('staff', userInput.value, passInput.value).catch(() => ({ ok: false }));
       if (srv?.ok) res = srv;
     }
@@ -1330,7 +1371,7 @@ function chiefFormHtml(me) {
  *     先由後端載入成功（`requireBackendForLogin()`），名冊／密碼對得上先算真係核對過。
  *  而家：開機／核對唔到就停喺連線閘，唔會顯示登入表單。 */
 async function gateLoginOnBackend() {
-  if (isMock()) return { ok: true, mock: true };
+
   if (!remoteApi) {
     bootSyncWarn = { ok: false, error: '同步模組載入失敗 —— 請重新整理頁面再試' };
     return bootSyncWarn;
@@ -1354,15 +1395,53 @@ function gateMessage(g) {
   return `登入已封鎖 —— ${why}`;
 }
 
-/** 登出確認：有未儲存改動一定要講明（改動會留喺呢部機，下次登入再三方比對） */
+/* ============================================================
+   登出確認（團長 2026-09-24 定案 · 第五輪之後再確認一次）
+   ------------------------------------------------------------
+   團長原話：「而家咁做 —— 提示多次等用戶 CONFIRM，確定登出＝唔寫入；
+             如果唔係就係返回，等佢自己 CONFIRM 多次資料，要寫入就用返
+             右上角大掣寫，唔係就再登出時都會再問佢。」
+
+   所以登出嘅鐵律：
+     · **永遠唔會自動寫入** —— 登出就係登出，系統唔會偷偷代你寫後端。
+       寫入後端得一個方法：右上角「儲存到後端（N）」。
+     · 有未寫入嘅改動 → 彈框攞用戶 confirm，講清楚：
+         - 撳「照登出（唔寫入）」＝ 放棄呢次寫入機會；
+           改動留喺呢部機（localStorage），下次登入會同後端三方比對。
+         - 撳「取消」＝ 返返去 app；要寫就自己撳右上角大掣。
+     · 未寫入嘅嘢唔會因為登出而消失 —— **下次登出會再問多次**
+       （pending 一直數住，直至你撳掣寫入或者由後端重新載入）。
+     · 特別係**帳戶級改動**（開人／設密碼／改身份）：未寫入後端＝
+       嗰啲人喺其他裝置登唔到，所以要用紅色最狠嗰個框。
+   ============================================================ */
 async function confirmLogout() {
   const pending = Number(tryLoad()?.sync?.pending || 0);
-  const warn = pending > 0
-    ? `<div class="note-box warn mt-8">${icon('alert', 14)}<div>仲有 <b>${pending}</b> 項改動未儲存到後端。登出唔會寫入後端；改動會留喺呢部機，下次開機再同後端比對。<br>想而家就儲存，撳「取消」再撳右上角「儲存到後端」。</div></div>`
-    : '';
+  const acc = Number(remoteApi?.pendingAccounts?.() || tryLoad()?.sync?.pendingAccounts || 0);
+  let warn = '';
+  if (acc > 0) {
+    warn = `<div class="note-box danger mt-8">${icon('alert', 14)}<div>
+      <b>有 ${acc} 個帳戶改動仲未寫入後端</b> —— 開咗人／改咗密碼／改咗身份。
+      <div class="mt-8">未寫入，<b>呢啲人喺其他裝置登唔到</b>（登入核對讀嘅係後端嗰份名冊）。</div>
+      <div class="mt-8">登出<b>唔會</b>幫你寫。要寫：撳「<b>取消</b>」，再撳右上角
+      <b>「儲存到後端」</b>呢個大掣。</div>
+      <div class="xs faint mt-4">照登出嘅話，改動會留喺呢部機；下次登入會同後端比對，
+      下次登出<b>會再問多次</b>。</div>
+    </div></div>`;
+  } else if (pending > 0) {
+    warn = `<div class="note-box warn mt-8">${icon('alert', 14)}<div>
+      仲有 <b>${pending}</b> 項改動未寫入後端（暫存喺呢部機）。
+      <div class="mt-8">登出<b>唔會</b>幫你寫。要寫：撳「<b>取消</b>」，再撳右上角
+      <b>「儲存到後端」</b>呢個大掣。</div>
+      <div class="xs faint mt-4">照登出嘅話，改動會留喺呢部機；下次登入會同後端比對，
+      下次登出<b>會再問多次</b>。</div>
+    </div></div>`;
+  }
   return modal({
     title: '登出', body: `<p class="sm">確定登出系統？</p>${warn}`,
-    actions: [{ label: '取消', class: 'btn', value: false }, { label: pending > 0 ? '照登出（暫不儲存）' : '登出', class: 'btn-primary', value: true }]
+    actions: [
+      { label: '取消（返返去）', class: 'btn', value: false },
+      { label: pending > 0 ? '照登出（唔寫入）' : '登出', class: 'btn-primary', value: true }
+    ]
   });
 }
 
@@ -1371,13 +1450,13 @@ async function doLogout() {
   logout();
   document.body.classList.add('login-body');
   const r = await syncBoot();
-  if (!isMock() && !r?.ok) return renderBackendGate(r);
+  if (!r?.ok) return renderBackendGate(r);
   renderLogin();
 }
 
 async function maybeForceChangePw() {
   const s = current();
-  if (!s?.mustChangePw || s.role === 'super' || s.mock) return;
+  if (!s?.mustChangePw || s.role === 'super') return;
   const r = await modal({
     title: '首次登入：請改密碼',
     sub: `唔可以繼續用預設密碼 ${TEMP_PASSWORD}`,
@@ -1421,12 +1500,11 @@ function render() {
   const r = parse();
   const view = VIEWS[r.section] || VIEWS.dashboard;
   const u = profile();
-  const mock = isMock();
+
   const info = seedInfo();
 
   app.innerHTML = `
-  ${mock ? mockBar() : ''}
-  ${info.failed && !mock ? `<div class="banner warn no-print" style="border-radius:0">
+  ${info.failed ? `<div class="banner warn no-print" style="border-radius:0">
       ${icon('alert', 16)} 讀唔到 <code>data/units/${esc(currentUnit())}/</code> 嘅資料檔案，系統用空白資料庫啟動。請用 HTTP 伺服器開啟或部署上網。
     </div>` : ''}
   <div class="shell">
@@ -1439,20 +1517,12 @@ function render() {
         </div>
       </div>
 
-      <div style="padding:10px 10px 0">
-        <button type="button" id="unitSwitch" class="unit-chip" style="width:100%;justify-content:space-between"
-          title="切換旅團（示範模式下揀真實旅團＝離開示範）">
-          <span>${icon('flag', 13)} ${esc(currentUnit())}</span>
-          <span class="faint xs">${icon('chevronR', 13)}</span>
-        </button>
-      </div>
-
       <div class="sb-nav">
         ${NAV.map(n => sidebarItem(n, r.section)).join('')}
       </div>
       <div class="sb-foot">
         <div class="sb-user">
-          <span class="avatar avatar-sm" style="background:${mock ? MAROON.accent : ROLES[currentRole()]?.color || MAROON.brand700}">
+          <span class="avatar avatar-sm" style="background:${ROLES[currentRole()]?.color || MAROON.brand700}">
             ${icon(currentRole() === 'super' ? 'shield' : currentRole() === 'chief' ? 'sparkle' : currentRole() === 'leader' ? 'flag' : 'users', 14)}</span>
           <div class="grow" style="min-width:0">
             <div class="n truncate">${esc(displayName())}</div>
@@ -1468,12 +1538,11 @@ function render() {
       <header class="topbar">
         <div style="min-width:0">
           <div class="tb-title truncate">${esc(view.title ? view.title() : '')}</div>
-          <div class="tb-sub truncate">${esc(u.name || '')} ${mock ? '· 示範模式' : ''}</div>
+          <div class="tb-sub truncate">${esc(u.name || '')} </div>
         </div>
         <div class="row gap-8">
           <span id="syncChip" class="no-print"></span>
-          ${mock ? `<button class="btn btn-sm no-print" id="topMockExit" title="離開示範模式">${icon('logout', 14)} 離開示範</button>` : ''}
-          ${notices().length ? `<span class="badge b-warn no-print"><span class="dot"></span>${notices().length} 項提示</span>` : ''}
+                    ${notices().length ? `<span class="badge b-warn no-print"><span class="dot"></span>${notices().length} 項提示</span>` : ''}
           <button class="btn btn-ghost btn-sm hide-desktop" id="btnPw2" title="改密碼">${icon('key', 16)}</button>
           <button class="btn btn-ghost btn-sm hide-desktop" id="btnLogout2" title="登出">${icon('logout', 16)}</button>
         </div>
@@ -1499,23 +1568,11 @@ function render() {
     go('#/' + id);
   }));
   app.querySelectorAll('#btnLogout, #btnLogout2').forEach(el => el.addEventListener('click', async () => {
-    if (isMock()) {
-      exitMock();
-      return;
-    }
     if (await confirmLogout()) doLogout();
   }));
-  app.querySelector('#topMockExit')?.addEventListener('click', () => exitMock());
   app.querySelectorAll('#btnPw, #btnPw2').forEach(el => el.addEventListener('click', async () => {
     go('#/admin/data');
   }));
-
-  /* 示範橫額「以 XXX 身份預覽」：<select> 撳落去選值係 change 事件（唔係 click），
-     以前用 document click 攞 e.target.id 永遠攞唔到 → 下拉框係壞嘅。 */
-  app.querySelector('#mockRole')?.addEventListener('change', e => {
-    loginAsMock(e.target.value);
-    render();
-  });
 
   /* 任何分頁嘅「欄位」掣（data-fields="transactions" / members / invItems / notices / meetings…）
      都會打開同一個欄位設計器 —— 唔再需要一個獨立「表格」分頁 */
@@ -1544,24 +1601,6 @@ function render() {
   window.scrollTo({ top: 0 });
 }
 
-function mockBar() {
-  const role = currentRole();
-  const back = lastRealUnit();
-  return `
-  <div class="mock-bar">
-    <span class="tag">MOCK 示範模式</span>
-    <span>你而家睇嘅係假資料，所有改動只會寫入示範空間，唔會影響真實資料。</span>
-    <div class="btns">
-      <select id="mockRole" class="select" style="height:30px;font-size:12.5px;padding:0 8px">
-        ${['chief', 'leader', 'exco', 'member', 'super'].map(r => `<option value="${r}" ${role === r ? 'selected' : ''}>以 ${ROLES[r].name} 身份預覽</option>`).join('')}
-      </select>
-      <button id="mockReset">重設示範</button>
-      ${back ? `<button id="mockBackReal">返 ${esc(back)}（真實）</button>` : ''}
-      <button id="mockExit">離開示範</button>
-    </div>
-  </div>`;
-}
-
 function sidebarItem(n, active) {
   let b = 0;
   try { b = n.badge ? n.badge() : 0; } catch { b = 0; }
@@ -1579,7 +1618,7 @@ function moreSheet() {
       ${items.map(n => `<button class="role-card" data-more="${n.id}" style="flex-direction:column;align-items:flex-start;gap:6px">
         <span class="role-ic">${icon(n.icon, 18)}</span><span class="role-name">${n.label}</span></button>`).join('')}
       <button class="role-card" data-more="logout" style="flex-direction:column;align-items:flex-start;gap:6px">
-        <span class="role-ic">${icon('logout', 18)}</span><span class="role-name">${isMock() ? '離開示範' : '登出'}</span></button>
+        <span class="role-ic">${icon('logout', 18)}</span><span class="role-name">登出</span></button>
     </div>`,
     actions: [],
     onMount: el => {
@@ -1587,10 +1626,9 @@ function moreSheet() {
         const id = b.dataset.more;
         const { closeModal } = await import('./lib/util.js');
         closeModal(null);
-        /* 示範模式冇「登出」呢回事 —— 以前呢度 logout() + renderLogin() 會將用家
-           留喺一個示範模式嘅登入畫面，又冇橫額又冇掣，睇落好似走唔到。 */
+        /* 登出一律經 confirmLogout()：有未寫入改動（尤其帳戶級）會先問，
+           但**永遠唔會代你寫後端** —— 要寫就撳右上角「儲存到後端」。 */
         if (id === 'logout') {
-          if (isMock()) { exitMock(); return; }
           if (await confirmLogout()) doLogout();
           return;
         }
@@ -1600,65 +1638,5 @@ function moreSheet() {
   });
 }
 
-async function unitPicker() {
-  const units = unitList();
-  const cur = currentUnit();
-  await modal({
-    title: '選擇旅團',
-    sub: `${units.length} 個旅團 · 每個旅團資料獨立`,
-    wide: true,
-    body: `<div class="unit-grid">
-      ${units.map(x => `<button class="unit-card" data-unit="${esc(x.code)}" ${x.code === cur ? 'disabled' : ''}>
-        <span class="code">${esc(x.code)}</span>
-        <span class="grow"><span class="semibold" style="display:block">${esc(x.name || '')}</span>
-          <span class="xs faint">${esc(x.nameEn || '')}${unitSourceTags(x)}</span></span>
-        ${x.code === cur ? '<span class="badge b-brand">目前</span>' : icon('chevronR', 16)}
-      </button>`).join('')}
-    </div>
-    ${isMock() ? `<div class="note-box warn mt-16">${icon('alert', 15)}<div>
-        你而家喺<b>示範模式</b> —— 揀上面任何一個旅團都會離開示範，返回真實資料（示範資料唔會受影響）。
-      </div></div>` : ''}
-    <div class="row gap-8 wrap mt-16">
-      <button class="btn btn-sm" data-act="pick-gate">${icon('refresh', 14)} 旅團選擇畫面（重新載入清單／轉示範）</button>
-      <button class="btn btn-sm" data-act="pick-diag">${icon('target', 14)} 診斷伺服器登記</button>
-    </div>
-    <div class="hint mt-8">冇你想揀嘅旅團？新旅團要由管理員喺 Vercel 加 <code>TROOP_&lt;編號&gt;_BACKEND</code> 等環境變數（詳見 <code>docs/ADD_NEW_UNIT.md</code>）。</div>`,
-    actions: [{ label: '關閉', class: 'btn', value: null }],
-    onMount: el => {
-      el.querySelectorAll('[data-unit]').forEach(b => b.addEventListener('click', () => {
-        const code = b.dataset.unit;
-        if (code === cur && !isMock()) return;
-        switchUnit(code);
-      }));
-      el.querySelector('[data-act="pick-gate"]')?.addEventListener('click', () => forgetChoice());
-      el.querySelector('[data-act="pick-diag"]')?.addEventListener('click', async () => {
-        const { closeModal } = await import('./lib/util.js');
-        closeModal(null);
-        openRegistryDiag();
-      });
-    }
-  });
-}
-
-/* 示範模式橫額按鈕（每次 render 後重新綁定） */
-document.addEventListener('click', async e => {
-  const t = e.target;
-  if (!(t instanceof HTMLElement)) return;
-  if (t.id === 'mockExit') { exitMock(); return; }
-  if (t.id === 'mockBackReal') { exitMockToUnit(); return; }
-  /* 側邊欄旅團徽章＝切換旅團入口（unitPicker 會列晒登記咗嘅旅團，
-     示範模式揀真實旅團會即時離開示範 —— 逃生門之一） */
-  if (t.closest('#unitSwitch')) { unitPicker(); return; }
-  if (t.id === 'mockReset') {
-    if (await confirmDlg({ title: '重設示範資料', okText: '確定重設', message: '會把示範資料還原成 <code>data/mock/</code> 嘅初始內容。' })) {
-      clearMockData();
-      const url = new URL(location.href);
-      url.searchParams.set('mock', '1');
-      location.href = url.toString();
-    }
-    return;
-  }
-  /* mockRole 已改做 render() 入面綁 change（select 唔係 click 事件） */
-});
 
 boot();

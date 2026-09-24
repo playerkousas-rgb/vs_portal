@@ -1824,7 +1824,13 @@ function loadPublicNotices(unit) {
   try {
     var r = loadDb(unit);
     if (r.success && r.found && r.db && Array.isArray(r.db.notices)) {
-      var fromDb = r.db.notices.filter(function (n) { return n && n.status === 'published' && n.id; });
+      /* ★ 2026-09-24 團長：通告都有「邊個睇到」（喺通告編輯器設）。
+         呢個係**免登入**公開接口，所以淨係出「對外公開」（vis ＝ 'other'，
+         冇設嘅當對外公開 ＝ 同以前一樣）嗰啲；團員級／執委級／領袖級一律唔出，
+         否則未登入嘅人攞個連結就睇到內部通告。 */
+      var fromDb = r.db.notices.filter(function (n) {
+        return n && n.status === 'published' && n.id && String(n.vis || 'other') === 'other';
+      });
       if (fromDb.length) return fromDb;
     }
   } catch (e0) { /* 跌落去「通告全文」分頁 */ }

@@ -413,7 +413,7 @@ function bootEntry(search) {
    ============================================================ */
 console.log('\n▌物資借用（免登入・揀物資＋數量）');
 
-function bootBorrow(search, { remapMock = false } = {}) {
+function bootBorrow(search) {
   const html = fs.readFileSync(path.join(ROOT, 'borrow.html'), 'utf8');
   const dom4 = new JSDOM(html, {
     url: 'http://localhost:8080/borrow.html' + search,
@@ -428,23 +428,18 @@ function bootBorrow(search, { remapMock = false } = {}) {
     catch (e) { /* 唯讀 → 略過 */ }
   }
   globalThis.window = w;
-  if (remapMock) {
-    /* 示範旅團嘅資料喺 data/mock/（唔係 data/units/MOCK/） */
-    const base = globalThis.fetch;
-    globalThis.fetch = (url) => base(String(url).replace('data/units/MOCK/', 'data/mock/'));
-  }
   return w;
 }
 
-// ① 有物資嘅旅團（用示範資料）
+// ① 有物資嘅旅團（用 tests/fixtures/units/TEST9/ 嘅測試物資）
 {
-  const w = bootBorrow('?u=MOCK', { remapMock: true });
+  const w = bootBorrow('?u=0082');
   await import('../assets/js/public-borrow.js?case=' + ++noticeCase);
   await wait(400);
   const d = w.document;
   const txt = () => d.getElementById('app')?.textContent || '';
   ok('物資借用頁有渲染（免登入）', txt().length > 200, String(txt().length));
-  ok('顯示旅團名', txt().includes('示範') || txt().includes('MOCK'), txt().slice(0, 80));
+  ok('顯示旅團名', txt().includes('測試旅'), txt().slice(0, 80));
   ok('列出可借物資（帶可用數量）', d.querySelectorAll('[data-item]').length >= 5,
     String(d.querySelectorAll('[data-item]').length));
   ok('顯示可用數量（總數減借出）', /可用 \d/.test(txt()), txt().slice(0, 200));
@@ -457,7 +452,7 @@ function bootBorrow(search, { remapMock = false } = {}) {
   await wait(120);
   ok('未揀物資會提示（唔會送出）', (d.getElementById('pb-err')?.textContent || '').includes('未填'),
     d.getElementById('pb-err')?.textContent);
-  ok('未送出時本機冇紀錄', !w.localStorage.getItem('venture82.borrow.MOCK'));
+  ok('未送出時本機冇紀錄', !w.localStorage.getItem('venture82.borrow.0082'));
 
   // 揀物資 + 填好 → 送出
   d.querySelector('[data-item]').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
@@ -471,7 +466,7 @@ function bootBorrow(search, { remapMock = false } = {}) {
   d.getElementById('pb-form').dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true }));
   await wait(320);
 
-  const rows = JSON.parse(w.localStorage.getItem('venture82.borrow.MOCK') || '[]');
+  const rows = JSON.parse(w.localStorage.getItem('venture82.borrow.0082') || '[]');
   ok('填好之後送出成功（本機有紀錄）', rows.length === 1, String(rows.length));
   ok('紀錄有物資名／數量／用途／申請人',
     !!rows[0]?.payload?.itemName && rows[0]?.payload?.qty === 1
@@ -481,7 +476,7 @@ function bootBorrow(search, { remapMock = false } = {}) {
   ok('成功畫面有「複製內容」傳送畀執委', !!d.querySelector('[data-pb="copy"]'));
 
   // 借超過可用數量 → 擋住
-  const w2 = bootBorrow('?u=MOCK', { remapMock: true });
+  const w2 = bootBorrow('?u=0082');
   await import('../assets/js/public-borrow.js?case=' + ++noticeCase);
   await wait(400);
   const d2 = w2.document;
@@ -500,9 +495,12 @@ function bootBorrow(search, { remapMock = false } = {}) {
     d2.querySelector('[data-err="qty"]')?.textContent);
 }
 
-// ② 未登記物資嘅旅團（真實 0082 而家未有物資）
+/* ② 未登記物資嘅旅團
+   ★ 2026-09-24：以前用 0082（嗰陣 Git 入面冇物資檔），但而家物資借用測試
+     需要真嘅物資資料 → 0082 嘅 fixture 已經有 10 件物資（睇上面 ①）。
+     呢度改用一個**冇登記**嘅編號（0099）—— 冇資料檔＝冇物資，一樣驗到「友善提示」。 */
 {
-  const w = bootBorrow('?u=0082');
+  const w = bootBorrow('?u=0099');
   await import('../assets/js/public-borrow.js?case=' + ++noticeCase);
   await wait(400);
   const d = w.document;

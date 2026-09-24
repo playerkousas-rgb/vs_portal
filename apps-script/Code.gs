@@ -517,6 +517,9 @@ function doPost(e) {
         if (textOf(target3.id) === textOf(actor3.id)) return { success: false, error: '不能刪除自己目前登入嘅帳戶' };
         var linkedMember = textOf(target3.memberId);
         deleteDb.db.accounts.splice(targetIndex, 1);
+        deleteDb.db.deletedAccounts = deleteDb.db.deletedAccounts || [];
+        deleteDb.db.deletedAccounts.push({ id: textOf(target3.id), username: textOf(target3.username), email: textOf(target3.email),
+          name: textOf(target3.name), role: textOf(target3.role), memberId: linkedMember, deletedAt: new Date().toISOString() });
         /* 成員 row 保留；只標記其管理登入已撤銷，避免資料與歷史被刪掉。 */
         (deleteDb.db.members || []).forEach(function (m) {
           if (linkedMember && textOf(m.id) === linkedMember) m.accountDeletedAt = new Date().toISOString();
@@ -550,20 +553,28 @@ function doPost(e) {
         var actorRole4 = textOf(actor4.role || actor4.identity).toLowerCase();
         if (actorRole4 !== 'leader' && actorRole4 !== 'admin' && actorRole4 !== 'super') return { success: false, error: '你沒有權限復原帳戶' };
         var restoreTarget = textOf(body.targetEmail || body.targetYmis).toLowerCase();
+        var tombstone = null;
+        (restoreDb.db && restoreDb.db.deletedAccounts || []).some(function (d) {
+          if (d && (textOf(d.email).toLowerCase() === restoreTarget || textOf(d.username).toLowerCase() === restoreTarget)) { tombstone = d; return true; }
+          return false;
+        });
         (restoreDb.db && restoreDb.db.members || []).some(function (m) {
           if (m && m.accountDeletedAt && (textOf(m.email).toLowerCase() === restoreTarget || textOf(m.ymis).toLowerCase() === restoreTarget)) { member4 = m; return true; }
           return false;
         });
-        if (!member4) return { success: false, error: '搵唔到可復原嘅已刪除帳戶' };
+        if (!member4 && !tombstone) return { success: false, error: '搵唔到可復原嘅已刪除帳戶' };
         var restorePw = makePasswordRecord(textOf(body.newPassword || '1234'), true);
         if (!restorePw.ok) return { success: false, error: restorePw.error };
-        var role4 = textOf(member4.identity || 'member');
+        var role4 = textOf((member4 && member4.identity) || (tombstone && tombstone.role) || 'member');
         restoreDb.db.accounts = restoreDb.db.accounts || [];
         restoreDb.db.accounts.push({ id: 'acc_' + Utilities.getUuid().replace(/-/g, '').slice(0, 12),
-          role: role4, username: textOf(member4.email || member4.ymis), email: textOf(member4.email),
-          name: textOf(member4.name), memberId: textOf(member4.id), active: true,
+          role: role4, username: textOf((member4 && (member4.email || member4.ymis)) || (tombstone && tombstone.username)),
+          email: textOf((member4 && member4.email) || (tombstone && tombstone.email)),
+          name: textOf((member4 && member4.name) || (tombstone && tombstone.name)),
+          memberId: textOf((member4 && member4.id) || (tombstone && tombstone.memberId)), active: true,
           pw: restorePw.pw, mustChangePw: true, defaultPw: textOf(body.newPassword || '1234') === '1234' });
-        delete member4.accountDeletedAt;
+        if (member4) delete member4.accountDeletedAt;
+        if (tombstone) restoreDb.db.deletedAccounts = restoreDb.db.deletedAccounts.filter(function (d) { return d !== tombstone; });
         var savedRestore = saveDb({ unit: textOf(body.unit), db: restoreDb.db, baseVersion: restoreDb.version, refreshReports: false });
         return savedRestore.success === true ? { success: true, version: savedRestore.version || '' } : savedRestore;
       });

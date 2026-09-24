@@ -222,6 +222,8 @@ export function getRegistry() {
       troopEnv(id, 'NOTICE') || jsonEntry.notice?.submitUrl || jsonEntry.noticeSubmitUrl ||
       fileEntry.notice?.submitUrl || gasUrl;
     const envName = troopEnv(id, 'NAME') || jsonEntry.name || '';
+    const portalOrigin = troopEnv(id, 'PORTALORIGIN') || jsonEntry.portalOrigin || fileEntry.portalOrigin || '';
+    const portalRoles = jsonEntry.portalRoles || fileEntry.portalRoles || ['leader', 'admin', 'exco'];
     const name = fileEntry.name || envName || `第 ${id} 旅`;
     const code = fileEntry.code || jsonEntry.code || id;
     /* 伺服器端已經有進度後端＋Key ＝ 前端唔使填任何嘢（純 env 開團用） */
@@ -316,7 +318,9 @@ export function getTrustedUnit(id) {
     gasUrl: u.backend.gasUrl.trim(),
     apiKey: (u.backend.apiKey || '').trim(),
     noticeSubmitUrl: (u.notice?.submitUrl || u.backend.gasUrl).trim(),
-    theme: u.theme
+      theme: u.theme,
+    portalOrigin: u.portalOrigin || '',
+    portalRoles: Array.isArray(u.portalRoles) ? u.portalRoles.slice() : []
   };
 }
 

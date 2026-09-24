@@ -17,7 +17,7 @@ import {
 } from './lib/onboard.js';
 import { applyTheme, MAROON } from './lib/theme.js';
 import {
-  login, loginServer, loginMember, logout, current, currentRole, ROLES, displayName, displaySub,
+  login, loginServer, loginMember, loginPortalFromUrl, logout, current, currentRole, ROLES, displayName, displaySub,
   loginAsMock, accounts, isSuper, can, changeOwnPassword, TEMP_PASSWORD,
   loginSetupKey, applyAccount
 } from './lib/auth.js';
@@ -78,6 +78,8 @@ async function boot() {
   app.innerHTML = loadingScreen();
   try {
     await loadRegistry();
+    const portalEntry = await loginPortalFromUrl();
+    if (!portalEntry.skipped && !portalEntry.ok) return renderFatal(new Error(portalEntry.msg || '旅系統入口驗證失敗'));
     /* 第一步：先揀旅團（或者 MOCK），揀完先出現登入畫面 */
     if (!unitChosen()) return renderUnitGate();
     await init();

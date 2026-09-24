@@ -407,7 +407,7 @@ export async function changeMemberOwnPassword(memberId, oldPw, newPw) {
 export async function createAccountServer(payload) {
   const s = getSession();
   if (!s?.sessionToken) return { ok: false, msg: '登入狀態已失效，請重新登入' };
-  const r = await fetch('./api/proxy', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action:'authCreateAccount', unit:currentUnit(), ...payload, sessionToken:s.sessionToken }) });
+  const r = await fetch('./api/proxy', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action:'authCreateAccount', unit:currentUnit(), ...payload, ...(s.via === 'portal' ? { portalToken:s.portalToken, portalRole:s.portalRole, actorUsername:s.username } : { sessionToken:s.sessionToken }) }) });
   const data = await r.json().catch(() => ({}));
   return r.ok && data.success !== false ? { ok:true } : { ok:false, msg:data.error || '新增帳戶失敗' };
 }
@@ -415,7 +415,7 @@ export async function createAccountServer(payload) {
 export async function restoreAccountServer(target, newPassword = '1234') {
   const s = getSession();
   if (!s?.sessionToken) return { ok: false, msg: '登入狀態已失效，請重新登入' };
-  const r = await fetch('./api/proxy', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ action:'authRestoreAccount', unit:currentUnit(), targetEmail:target?.email || target?.username || '', newPassword, sessionToken:s.sessionToken }) });
+  const r = await fetch('./api/proxy', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ action:'authRestoreAccount', unit:currentUnit(), targetEmail:target?.email || target?.username || '', newPassword, ...(s.via === 'portal' ? { portalToken:s.portalToken, portalRole:s.portalRole, actorUsername:s.username } : { sessionToken:s.sessionToken }) }) });
   const data = await r.json().catch(() => ({}));
   return r.ok && data.success !== false ? { ok:true } : { ok:false, msg:data.error || '復原帳戶失敗' };
 }
@@ -423,15 +423,28 @@ export async function restoreAccountServer(target, newPassword = '1234') {
 export async function resetAccountPasswordServer(target, newPassword) {
   const s = getSession();
   if (!s?.sessionToken) return { ok: false, msg: '登入狀態已失效，請重新登入' };
-  const r = await fetch('./api/proxy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'authResetPassword', unit: currentUnit(), targetUsername: target?.username || target?.email || '', newPassword: String(newPassword || ''), sessionToken: s.sessionToken }) });
+  const r = await fetch('./api/proxy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'authResetPassword', unit: currentUnit(), targetUsername: target?.username || target?.email || '', newPassword: String(newPassword || ''), ...(s.via === 'portal' ? { portalToken: s.portalToken, portalRole: s.portalRole, actorUsername: s.username } : { sessionToken: s.sessionToken }) }) });
   const data = await r.json().catch(() => ({}));
   return r.ok && data.success !== false ? { ok: true } : { ok: false, msg: data.error || '重設密碼失敗' };
+}
+
+export async function loginPortalFromUrl(params = new URLSearchParams(location.search)) {
+  const unit = String(params.get('u') || params.get('unit') || '').trim();
+  const role = String(params.get('role') || '').trim().toLowerCase();
+  const src = String(params.get('src') || '').trim();
+  const subject = String(params.get('ymis') || params.get('sub') || '').trim();
+  if (params.get('from') !== 'portal' || !unit || !role || !src) return { ok: false, skipped: true };
+  const r = await fetch(`./api/portal?u=${encodeURIComponent(unit)}&role=${encodeURIComponent(role)}&src=${encodeURIComponent(src)}&ymis=${encodeURIComponent(subject)}`);
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok || !data.ok || !data.portalToken) return { ok: false, msg: data.reason || '旅系統入口驗證失敗' };
+  setSession({ role: role === 'admin' ? 'leader' : role === 'exco' ? 'exco' : role, accountId: `portal:${subject || role}`, username: subject || `PORTAL-${unit}-${role}`, name: params.get('name') || '旅系統使用者', at: Date.now(), via: 'portal', portalToken: data.portalToken, portalRole: role, portalUnit: unit, mustChangePw: false });
+  return { ok: true };
 }
 
 export async function deleteAccountServer(target) {
   const s = getSession();
   if (!s?.sessionToken) return { ok: false, msg: '登入狀態已失效，請重新登入' };
-  const r = await fetch('./api/proxy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'authDeleteAccount', unit: currentUnit(), targetUsername: target?.username || target?.email || '', sessionToken: s.sessionToken }) });
+  const r = await fetch('./api/proxy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'authDeleteAccount', unit: currentUnit(), targetUsername: target?.username || target?.email || '', ...(s.via === 'portal' ? { portalToken: s.portalToken, portalRole: s.portalRole, actorUsername: s.username } : { sessionToken: s.sessionToken }) }) });
   const data = await r.json().catch(() => ({}));
   return r.ok && data.success !== false ? { ok: true } : { ok: false, msg: data.error || '刪除帳戶失敗' };
 }

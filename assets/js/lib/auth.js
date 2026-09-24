@@ -404,6 +404,14 @@ export async function changeMemberOwnPassword(memberId, oldPw, newPw) {
 }
 
 /** 正式支部登入：密碼由 GAS server-side authLogin 核對，瀏覽器只保存安全身份資料。 */
+export async function createAccountServer(payload) {
+  const s = getSession();
+  if (!s?.sessionToken) return { ok: false, msg: '登入狀態已失效，請重新登入' };
+  const r = await fetch('./api/proxy', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action:'authCreateAccount', unit:currentUnit(), ...payload, sessionToken:s.sessionToken }) });
+  const data = await r.json().catch(() => ({}));
+  return r.ok && data.success !== false ? { ok:true } : { ok:false, msg:data.error || '新增帳戶失敗' };
+}
+
 export async function resetAccountPasswordServer(target, newPassword) {
   const s = getSession();
   if (!s?.sessionToken) return { ok: false, msg: '登入狀態已失效，請重新登入' };

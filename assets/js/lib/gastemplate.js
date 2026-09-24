@@ -325,7 +325,7 @@ function initializeSheets() {
      （2026-09-20 之前呢句係手寫死嘅字串，一直漏咗 constitution，
        加咗 loadDbPart 之後更加唔可以再靠人手記得改。） */
 var SUPPORTED_ACTIONS = ['ping', 'test', 'status', 'sync', 'claim', 'noticeSignup', 'loan',
-  'authLogin', 'authChangePassword', 'authResetPassword', 'authDeleteAccount', 'authRestoreAccount', 'authForgotPassword', 'authResetByToken', 'saveDb', 'loadDb', 'loadDbPart', 'dbInfo', 'saveDbPart', 'saveDbCommit', 'verifySetupKey',
+  'authLogin', 'authChangePassword', 'authResetPassword', 'authDeleteAccount', 'authRestoreAccount', 'authCreateAccount', 'authForgotPassword', 'authResetByToken', 'saveDb', 'loadDb', 'loadDbPart', 'dbInfo', 'saveDbPart', 'saveDbCommit', 'verifySetupKey',
   'uploadPhotos', 'constitution', 'notices',
   'save', 'saveOtherBadge', 'reviewRequest', 'reviewLogRequest', 'addRequest', 'myRequests'];
 
@@ -704,6 +704,30 @@ function doPost(e) {
       if (tokenSaved.success !== true) return json({ ok: false, success: false, error: tokenSaved.error || '重設失敗，請重新申請' });
       PropertiesService.getScriptProperties().deleteProperty(tokenKey2);
       return json({ ok: true, success: true, mustChangePw: true });
+    }
+
+    /* ---- 管理員／團長新增支部帳戶 ---- */
+    if (body.action === 'authCreateAccount') {
+      var createAuth = requireAuth(expectedKey, key); if (!createAuth.ok) return json(createAuth);
+      var createSession = requireAuthSession(body); if (!createSession.ok) return json({ ok:false, success:false, error:createSession.error, code:'SESSION_REQUIRED' });
+      var createdAccount = withLock(function () {
+        var createDb = loadDb(textOf(body.unit));
+        var actorC = (createDb.db && createDb.db.accounts || []).filter(function(a){ return a && textOf(a.id) === createSession.id && a.active !== false; })[0];
+        if (!actorC) return { success:false, error:'管理員帳戶不存在' };
+        var actorRoleC = textOf(actorC.role || actorC.identity).toLowerCase();
+        var wantedRole = textOf(body.role || 'exco').toLowerCase();
+        if (actorRoleC !== 'leader' && actorRoleC !== 'admin' && actorRoleC !== 'super') return { success:false, error:'你沒有權限新增帳戶' };
+        if (actorRoleC === 'leader' && wantedRole !== 'exco') return { success:false, error:'團長只可以新增執委帳戶' };
+        var usernameC = textOf(body.username || body.email).trim();
+        if (!usernameC) return { success:false, error:'請填帳號或 EMAIL' };
+        if ((createDb.db.accounts || []).some(function(a){ return a && (textOf(a.username).toLowerCase() === usernameC.toLowerCase() || (textOf(a.email) && textOf(a.email).toLowerCase() === usernameC.toLowerCase())); })) return { success:false, error:'帳戶已存在' };
+        var pwC = makePasswordRecord(textOf(body.password || '1234'), true); if (!pwC.ok) return { success:false, error:pwC.error };
+        createDb.db.accounts = createDb.db.accounts || [];
+        createDb.db.accounts.push({ id:'acc_' + Utilities.getUuid().replace(/-/g,'').slice(0,12), role:wantedRole, username:usernameC, email:textOf(body.email || usernameC), name:textOf(body.name || usernameC), title:textOf(body.title), memberId:textOf(body.memberId), active:true, pw:pwC.pw, mustChangePw:true, defaultPw:textOf(body.password || '1234') === '1234' });
+        var savedC = saveDb({ unit:textOf(body.unit), db:createDb.db, baseVersion:createDb.version, refreshReports:false });
+        return savedC.success === true ? { success:true, version:savedC.version || '' } : savedC;
+      });
+      return json({ ok:createdAccount.success === true, success:createdAccount.success === true, version:createdAccount.version || '', error:createdAccount.error || '' });
     }
 
     /* ---- 整份資料庫讀／寫（app 嘅真正儲存；一定要 API Key）---- */

@@ -10,7 +10,7 @@
 import { load, commit, collection, add, update, remove, exportAll, importAll, resetToSeed, wipe, clearMockData, audit, isMock, currentUnit, enterMock, exitMock, switchUnit, setUnitCode } from '../lib/store.js';
 import {
   ROLES, PERMS, PERM_GROUPS, accounts, accountById, can, canChangePasswordOf, canManageRole,
-  createAccount, changePassword, changeUsername, changeOwnPassword, setAccountActive, deleteAccount, deleteAccountServer, resetAccountPasswordServer,
+  createAccount, createAccountServer, changePassword, changeUsername, changeOwnPassword, setAccountActive, deleteAccount, deleteAccountServer, resetAccountPasswordServer,
   current, currentRole, isSuper, isMe, displayName, RESERVED_USERNAMES, TEMP_PASSWORD
 } from '../lib/auth.js';
 import { profile, settings, members, memberName, money, balance, tx, invItems } from '../lib/model.js';
@@ -685,7 +685,7 @@ async function addAccountForm(role) {
       } }]
   });
   if (!r) return;
-  const res = await createAccount({ role, ...r });
+  const res = !isMock() ? await createAccountServer({ role, ...r }) : await createAccount({ role, ...r });
   if (!res.ok) return (await modal({ title: '新增失敗', body: `<p class="sm">${esc(res.msg)}</p>`, actions: [{ label: '關閉', class: 'btn-primary', value: null }] }));
   toast('已新增帳戶', 'ok');
   refresh();

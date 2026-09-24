@@ -628,6 +628,19 @@ export function mount(root, params = {}) {
       /* 免收團費：有剔 = true；冇剔 = 移除欄位（回到「領袖自動免收 / 其他人要交」嘅預設） */
       if (root.querySelector('#f-feeexempt')?.checked) patch.feeExempt = true;
       else delete patch.feeExempt;
+      /* ★ 2026-09-24 登入代號防呆（團長：「進度追蹤顯示 0 紀錄，可能因為 YMIS 對不上」、
+         「1 邊能用 email 登入 1 邊不能」）。
+         「身份即帳號」之後，呢一格空咗＝呢個人**登唔到**，而且進度追蹤永遠對唔上佢
+         （兩邊靠 YMIS 認人）—— 但個 app 以前一聲不響就儲存咗，用家完全唔知。 */
+      const keyNeed = expectedKeyKind({ identity: wantIdentity });
+      const keyValue = keyNeed === 'email' ? patch.email : (patch.ymis || patch.loginId);
+      /* 只係**警告**，唔會擋住儲存 —— 舊名冊成批人都未填 YMIS，
+         每次儲存都彈框問一次會煩死人（而且團長回報過「有嘢把解決方法封死」）。 */
+      const keyWarn = String(keyValue || '').trim() ? ''
+        : (keyNeed === 'email'
+          ? '未填電郵 —— 呢位領袖／團長而家登唔到（「身份即帳號」，領袖用電郵登入）'
+          : '未填會籍編號（YMIS）—— 呢位團員登唔到入口，進度追蹤亦對唔上佢（會顯示 0）');
+
       /* 同名防呆：唔好一時手誤開多一個同一個人 */
       const dup = members().find(m => m.id !== id && String(m.name).trim() === name);
       if (dup && !(await confirmDlg({
@@ -648,6 +661,7 @@ export function mount(root, params = {}) {
         }
         clearDraft('member', id);
         toast(`已儲存 ${name}（${identityLabel(member(id))}）`, 'ok');
+        if (keyWarn) toast(keyWarn + ' —— 去「編輯」補返', 'warn');
         const hubPw = v('#f-hubpw');
         if (hubPw) {
           const pwRes = await setMemberHubPassword(id, hubPw);
@@ -671,6 +685,7 @@ export function mount(root, params = {}) {
           if (!cr.ok) { update('members', rec.id, { identity: 'member' }); toast(cr.msg, 'err'); }
         }
         toast(`已新增 ${name}（${identityLabel(member(rec.id))}）`, 'ok');
+        if (keyWarn) toast(keyWarn + ' —— 去「編輯」補返', 'warn');
         go('#/members/' + rec.id);
       }
     }
@@ -727,7 +742,7 @@ export function mount(root, params = {}) {
       if (!m) return;
       const r = await modal({
         title: `設定密碼：${m.name}`,
-        sub: '設定之後即刻生效（唔使等儲存到後端）',
+        sub: '設定之後即刻生效，並會自動寫入後端（另一部機都用得）',
         body: `<div class="field"><label class="label">新密碼（最少 4 個字）</label>
             <input class="input" id="sp1" type="password" autocomplete="new-password"></div>
           <div class="field mt-12"><label class="label">再輸入一次</label>

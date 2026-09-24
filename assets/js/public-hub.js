@@ -84,7 +84,10 @@ async function syncBoot() {
       syncError = '呢個網址冇帶旅團編號，或者未接後端 —— 請用系統「成員連結」頁生成嘅連結。';
       syncReady = true; paint(); return;
     }
-    store.setSaveHook(() => remoteApi.scheduleSave());
+    /* 團員入口唔會自動成份 db 寫入後端 —— 團員交嘢（RSVP／交卷／申報進度）
+       行自己嗰條 pushSubmit()（policy:'mine'），權限清晰啲。 */
+    remoteApi.suppressAutoSave?.(true);
+    store.setSaveHook((info) => remoteApi.scheduleSave(info));
     /* 2026-09-20：同 main.js 一樣行 loadFromBackend() —— 開機由後端攞成份資料做基準。
        上次交咗但送唔出嘅嘢（pending）會三方比對保留（撞正就以團員自己嘅為準）。
        讀唔到就一律唔寫 —— 交卷／回覆都要先有基準先至可以寫。 */

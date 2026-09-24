@@ -18,7 +18,10 @@ import {
   registry, unitEntry, backendOf, dataPathOf, fetchUnitData, fetchMockData, defaultUnitCode, localUnits
 } from './units.js';
 import { scoutFYLabel } from './fiscal.js';
-import { SKIP_TOP, diffDb as _diffDb, applyChanges as _applyChanges, clone as _clone } from './merge3.js';
+import {
+  SKIP_TOP, diffDb as _diffDb, applyChanges as _applyChanges, clone as _clone,
+  threeWay as _threeWay, overridesFor as _overridesFor
+} from './merge3.js';
 
 export const SCHEMA = 2;
 
@@ -372,6 +375,10 @@ export async function init(opts = {}) {
   lsSet(K.mode, state.mode);
   /* 舊版（2026-09-19 之前）留低嘅指紋基準已經冇用 —— 而家用成份基準快照（getBase） */
   if (state.db.sync?.baseObjHash) { delete state.db.sync.baseObjHash; persistLocalOnly(); }
+  /* ★ 2026-09-24 同一個瀏覽器另一個分頁改咗嘢 → 併入本機（唔使重新整理）。
+     綁喺 init() 呢度：所有入口（主控頁／團員入口／公開頁）都自動有呢個行為。
+     介面想知道就聽 window 嘅 `v82:external` event。 */
+  bindCrossTabSync();
   state.ready = true;
   return state.db;
 }
@@ -471,11 +478,15 @@ export function load() {
 export function tryLoad() { return state.db; }
 
 /* 後端自動儲存 hook（由 remote.js 喺開機時掛上；避免 store ↔ remote 循環 import）。
-   冇掛住（例如測試、公開頁）就淨係寫本機，行為同以前一樣。 */
+   冇掛住（例如測試、公開頁）就淨係寫本機，行為同以前一樣。
+
+   ★ 2026-09-24（團長：「用戶根本沒寫入後端」）：hook 而家會收到
+      { critical, reason } —— critical＝呢次改動係「另一部機要即刻見到」嘅嘢
+      （開人／設密碼／改身份／批開戶），remote.js 會即刻寫後端，唔等 debounce。 */
 let saveHook = null;
 export function setSaveHook(fn) { saveHook = typeof fn === 'function' ? fn : null; }
 
-function persist({ remote = true } = {}) {
+function persist({ remote = true, critical = false, reason = '' } = {}) {
   if (!state.db) return;
   state.db.meta = state.db.meta || {};
   state.db.meta.updatedAt = nowStamp();
@@ -488,9 +499,10 @@ function persist({ remote = true } = {}) {
     state.db.sync.pending = Number(state.db.sync.pending || 0) + 1;
   }
   lsSet(dbKey(state.mode, state.unitCode), JSON.stringify(state.db));
-  /* 本機寫完 → 通知介面（頂部出「儲存到後端（N）」）。唔會寫後端。 */
+  /* 本機寫完 → 通知介面／後端儲存排程 */
   if (bump && saveHook) {
-    try { saveHook(); } catch (e) { console.warn('[store] 儲存狀態通知失敗', e); }
+    try { saveHook({ critical: !!critical, reason: String(reason || '') }); }
+    catch (e) { console.warn('[store] 儲存狀態通知失敗', e); }
   }
 }
 
@@ -499,6 +511,19 @@ function persistLocalOnly() { persist({ remote: false }); }
 
 export function commit() { persist(); return state.db; }
 export const save = commit;
+
+/**
+ * ★ 帳戶級寫入（2026-09-24）。
+ *
+ * 「身份即帳號」之後，**名冊紀錄本身就係登入帳戶**：開人、設密碼、改身份、
+ * 批開戶 —— 呢啲改動如果淨係留喺本機瀏覽器，另一部機（甚至同一個瀏覽器
+ * 另一個分頁）就用嗰個 email 登唔到。團長 2026-09-24 原話：
+ *   「1 邊能用 email 登入、1 邊不能，那＝用戶根本沒寫入後端。」
+ *
+ * 所以呢啲改動寫完本機之後，會叫 remote.js **即刻**寫後端（唔等 debounce）。
+ * 寫唔成功唔會靜靜地吞：頂部狀態會轉做「未儲存」，改動仍然留喺本機。
+ */
+export function commitCritical(reason = '') { persist({ critical: true, reason }); return state.db; }
 
 /**
  * 淨係寫低「同步簿記」（pending／lastPushAt／log）——
@@ -518,26 +543,34 @@ export function collection(name) {
   return db[name];
 }
 export function find(name, id) { return collection(name).find(x => x.id === id) || null; }
-export function add(name, obj) {
+
+/* ★ 2026-09-24：呢三個 collection 就係「登入帳戶」本身（身份即帳號）。
+   任何改動都當**帳戶級**處理 —— 即刻寫後端，唔好困喺呢部機嘅瀏覽器。
+   以前淨係 pending +1，結果：團長開完人、設完密碼，另一部機／另一個分頁
+   用嗰個 email 登唔到（後端嗰份名冊根本冇呢個人）。 */
+export const IDENTITY_COLLECTIONS = new Set(['members', 'accounts', 'accountApps']);
+function criticalFor(name, opts) { return !!opts?.critical || IDENTITY_COLLECTIONS.has(String(name || '')); }
+
+export function add(name, obj, opts) {
   const id = obj.id || (name.slice(0, 2) + '_' + Math.random().toString(36).slice(2, 8));
   const rec = { ...obj, id };
   collection(name).push(rec);
-  persist();
+  persist({ critical: criticalFor(name, opts), reason: `add:${name}` });
   return rec;
 }
-export function update(name, id, patch) {
+export function update(name, id, patch, opts) {
   const rec = find(name, id);
   if (!rec) return null;
   Object.assign(rec, patch, { id });
-  persist();
+  persist({ critical: criticalFor(name, opts), reason: `update:${name}` });
   return rec;
 }
-export function remove(name, id) {
+export function remove(name, id, opts) {
   const list = collection(name);
   const i = list.findIndex(x => x.id === id);
   if (i < 0) return false;
   list.splice(i, 1);
-  persist();
+  persist({ critical: criticalFor(name, opts), reason: `remove:${name}` });
   return true;
 }
 export function setSetting(patch) {
@@ -793,6 +826,87 @@ export function reloadFromStorage() {
   } catch { /* ignore */ }
   baseMem = undefined;
   return state.db;
+}
+
+/* ============================================================
+   ★ 2026-09-24 同一個瀏覽器、另一個分頁（團長：「不同視窗開的又不同步」）
+   ------------------------------------------------------------
+   問題：db 開機讀一次之後就一直住喺記憶體（state.db）。另一個分頁開咗人、
+   設咗密碼，呢邊個記憶體副本完全唔知 —— 除非重新整理。所以出現
+   「1 邊登到、1 邊登唔到」，用家完全冇辦法自己估到原因。
+
+   做法：聽瀏覽器嘅 `storage` event（**只有其他分頁**寫先會派，自己寫唔會派，
+   所以唔會自己咬自己尾），用同一套三方比對（lib/merge3.js）併入：
+     · 我未改過嘢      → 直接採用佢嗰份
+     · 我都改咗嘢      → 三方併合：佢嘅改動併入，我改過嗰幾格保留我嘅值
+   併完之後派 `v82:external` event，介面自己 re-render。
+   ============================================================ */
+let crossTabBound = false;
+let crossTabCallback = null;
+
+/**
+ * 把另一個分頁寫入 localStorage 嘅 db 併入本機。
+ * @returns {{ok:boolean, took?:'theirs'|'merge'|'same', applied?:number, conflicts?:number, reason?:string}}
+ */
+export function mergeFromOtherTab(otherDb) {
+  if (!state.db) return { ok: false, reason: 'no_db' };
+  if (!otherDb || typeof otherDb !== 'object') return { ok: false, reason: 'bad' };
+  if (otherDb.schema && otherDb.schema !== SCHEMA) return { ok: false, reason: 'schema' };
+  const other = normalizeRemote(_clone(otherDb));
+  const localStripped = stripForBase(state.db);
+  const otherStripped = stripForBase(other);
+  if (JSON.stringify(localStripped) === JSON.stringify(otherStripped)) return { ok: false, reason: 'same' };
+
+  const dirty = localChanges().length > 0;
+  const base = getBase();
+
+  if (!dirty || !base?.db) {
+    /* 我冇未存改動（或者冇基準快照分唔到邊個改咗乜）→ 採用佢嗰份，
+       但呢部機自己嘅連線設定／簿記要保留。 */
+    if (dirty) return { ok: false, reason: 'no_base_dirty' };
+    state.db = keepLocalWiring(other, state.db);
+    commitMeta();
+    return { ok: true, took: 'theirs' };
+  }
+
+  const tw = _threeWay(base.db, localStripped, otherStripped);
+  /* merged ＝ 佢嗰份 ＋ 我冇撞嘅改動；撞咗嗰幾格暫時係佢嘅值 ——
+     同一個瀏覽器入面，我啱啱打嘅嘢唔應該靜靜地消失，所以即刻用返我嘅，
+     然後照常寫後端（撞嘅部分由後端儲存嗰步再正式核對）。 */
+  const next = keepLocalWiring(normalizeRemote(tw.merged), state.db);
+  const ov = _overridesFor(tw.conflicts, true);
+  if (ov.length) _applyChanges(next, ov);
+  state.db = next;
+  commitMeta();
+  return { ok: true, took: 'merge', applied: tw.theirs?.length || 0, conflicts: tw.conflicts?.length || 0 };
+}
+
+/**
+ * 掛上「另一個分頁改咗嘢」嘅監聽（一個頁面只掛一次）。
+ * @param {(info:{kind:'db'|'session', result?:object})=>void} [onChange]
+ */
+export function bindCrossTabSync(onChange) {
+  if (typeof onChange === 'function') crossTabCallback = onChange;
+  if (crossTabBound) return false;
+  if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return false;
+  crossTabBound = true;
+  const fire = (info) => {
+    try { window.dispatchEvent(new CustomEvent('v82:external', { detail: info })); } catch { /* ignore */ }
+    if (typeof crossTabCallback === 'function') {
+      try { crossTabCallback(info); } catch (e) { console.warn('[store] 跨分頁回調失敗', e); }
+    }
+  };
+  window.addEventListener('storage', (ev) => {
+    const key = ev?.key || '';
+    if (!key) return;
+    if (key === SESSION_KEY) { fire({ kind: 'session' }); return; }
+    if (key !== dbKey(state.mode, state.unitCode) || !ev.newValue) return;
+    let other = null;
+    try { other = JSON.parse(ev.newValue); } catch { return; }
+    const r = mergeFromOtherTab(other);
+    if (r.ok) fire({ kind: 'db', result: r });
+  });
+  return true;
 }
 
 /** 本機已知嘅「後端版本」（上次 pull／push 成功嗰個）—— 只係顯示用；樂觀鎖用 getBase().version */

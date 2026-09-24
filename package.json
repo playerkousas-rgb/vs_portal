@@ -10,7 +10,7 @@
     "lint": "node scripts/lint.mjs",
     "build": "node scripts/build-gas.mjs && node scripts/build-units.mjs",
     "check": "npm run lint && npm run build && npm test",
-    "test": "node scripts/build-gas.mjs && node tests/smoke.mjs real && node tests/smoke.mjs mock && node tests/public.mjs && node tests/gate.mjs && node tests/gate-env.mjs && node tests/bake.mjs && node tests/api.mjs && node tests/progress.mjs && node tests/pdftext.mjs && node tests/login.mjs && node tests/merge3.mjs && node tests/remote.mjs && node tests/selfserve.mjs && node tests/syncorder.mjs && node tests/tabs.mjs && node tests/gas.mjs && node tests/e2ereal.mjs && node tests/usersim.mjs && node tests/hub.mjs",
+    "test": "node scripts/build-gas.mjs && node tests/smoke.mjs real && node tests/smoke.mjs mock && node tests/public.mjs && node tests/gate.mjs && node tests/gate-env.mjs && node tests/bake.mjs && node tests/api.mjs && node tests/progress.mjs && node tests/pdftext.mjs && node tests/login.mjs && node tests/merge3.mjs && node tests/remote.mjs && node tests/selfserve.mjs && node tests/syncorder.mjs && node tests/tabs.mjs && node tests/gas.mjs && node tests/e2ereal.mjs && node tests/usersim.mjs && node tests/hub.mjs && node tests/accountsync.mjs",
     "test:api": "node tests/api.mjs && node tests/progress.mjs",
     "test:real": "node tests/smoke.mjs real",
     "test:mock": "node tests/smoke.mjs mock",
@@ -30,7 +30,8 @@
     "test:gas": "node tests/gas.mjs",
     "test:e2ereal": "node tests/e2ereal.mjs",
     "test:usersim": "node tests/usersim.mjs",
-    "test:hub": "node tests/hub.mjs"
+    "test:hub": "node tests/hub.mjs",
+    "test:accountsync": "node tests/accountsync.mjs"
   },
   "devDependencies": {
     "jsdom": "^26.0.0"

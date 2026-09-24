@@ -545,26 +545,29 @@ function syncView() {
   const lastPush = s.lastPushAt ? String(s.lastPushAt).slice(0, 19).replace('T', ' ') : '';
   const lastPull = s.lastPullAt ? String(s.lastPullAt).slice(0, 19).replace('T', ' ') : '';
   const base = getBase();
+  /* 自動寫入開唔開（2026-09-24；預設開，跟旅團資料存） */
+  const autoOn = s.autoSave !== false;
   const baseAt = base?.at ? String(base.at).slice(0, 19).replace('T', ' ') : '';
   const baseVer = base ? (base.empty ? '（後端仲係空）' : String(base.version || '').slice(0, 19).replace('T', ' ')) : '';
   return `
-  ${route.serverManaged ? `<div class="note-box mb-16">${icon('cloud', 15)}<div>
-    <b>資料已接上旅團後端。</b>改好資料後撳「儲存到後端」；想放棄呢部機未儲存嘅改動，就撳「由後端重新載入」。
-  </div></div>` : `<div class="note-box mb-16">${icon('cloud', 15)}<div>
-    <b>資料真正嘅家係你自己嘅 Google Sheet。只有一個方式：</b>
-    ① 登入嗰陣由後端攞成份資料（＝登入嗰一刻嘅後端）→
-    ② 之後改乜都<b>淨係暫存喺呢部機</b> →
-    ③ 撳「<b>儲存到後端</b>」先寫入：系統會先核對後端版本，有人喺你登入後儲存過就<b>逐格</b>比對 ——
+  <div class="note-box mb-16">${icon('cloud', 15)}<div>
+    <b>資料真正嘅家係你自己嘅 Google Sheet。寫入只有一條路，由系統自己行：</b>
+    ① 登入嗰陣由後端攞成份資料（＝登入嗰一刻嘅後端，做基準）→
+    ② 之後改乜都先寫呢部機，<b>然後自動寫入後端</b>（一般 1 秒幾；
+    <b>開人／設密碼／改身份＝即刻寫</b>，所以另一部機先用嗰個 email 登到）→
+    ③ 寫入前一定先核對後端版本，有人喺你登入後儲存過就<b>逐格</b>比對 ——
     改同一格同一個值＝冇問題；改唔同嘅格＝一齊儲存；同一格唔同值（例如一個登記早走、一個登記遲到）
     ＝嗰格<b>唔會</b>寫入，會列出嚟等你再確認，確認咗先蓋過去。<br>
-    <span class="xs">其他分頁（帳目／團員／物資…）係攤平出嚟畀你自己睇同用公式嘅「報表」。
+    <span class="xs">頂部嗰粒掣<b>唔係唯一寫入路</b>：「<b>即刻儲存</b>」＝唔想等自動儲存；
+    「<b>重新載入</b>」＝由後端拉最新嗰份。另一個視窗改咗嘢會自動併入呢邊，唔使重新整理。<br>
+    其他分頁（帳目／團員／物資…）係攤平出嚟畀你自己睇同用公式嘅「報表」。
     同一個後端仲會處理 <b>成員手機記帳</b>（entry.html）同 <b>通告報名</b>（notice.html）。</span>
-  </div></div>`}
+  </div></div>
 
   ${wired ? `<div class="card mb-16"><div class="card-head">
     <div><div class="card-title">${icon('shield', 15)} 儲存狀態</div>
       <div class="card-sub">資料有冇真係入咗後端</div></div>
-    ${pending ? `<span class="badge b-warn"><span class="dot"></span>${pending} 項改動未儲存</span>`
+    ${pending ? `<span class="badge b-warn"><span class="dot"></span>${pending} 項改動${autoOn ? '等緊自動寫入' : '未儲存'}</span>`
       : `<span class="badge b-ok"><span class="dot"></span>全部已儲存</span>`}
   </div>
   <div style="padding:12px 16px" class="sm muted">
@@ -582,8 +585,15 @@ function syncView() {
       <code>TROOP_${esc(load().unitCode || '編號')}_BACKEND</code> 係你個 <code>/exec</code>）→ 重新部署。
       咁條 key 淨係留喺伺服器端，瀏覽器完全唔會見到。
     </div></div>` : ''}
+    <div class="row gap-8 mt-12 wrap align-center">
+      <label class="row gap-8 align-center" style="cursor:pointer" title="開（預設）：改完自動寫入後端。關：改動留喺呢部機，要自己撳「即刻儲存」。">
+        <input type="checkbox" data-act="toggle-autosave" ${autoOn ? 'checked' : ''}>
+        <span class="sm"><b>自動寫入後端</b>（建議開）</span>
+      </label>
+      <span class="xs faint">${autoOn ? '改完約 1 秒後自動寫；帳戶改動即刻寫' : '已關 —— 所有改動都要自己撳「即刻儲存」'}</span>
+    </div>
     <div class="row gap-8 mt-12 wrap">
-      <button class="btn btn-primary btn-sm" data-act="push-db">${icon('cloud', 15)} 儲存到後端${pending ? `（${pending}）` : ''}</button>
+      <button class="btn btn-primary btn-sm" data-act="push-db">${icon('cloud', 15)} 即刻儲存${pending ? `（${pending}）` : ''}</button>
       <button class="btn btn-sm" data-act="pull-db">${icon('download', 15)} 由後端重新載入${pending ? '（會丟棄未儲存改動）' : ''}</button>
     </div>
     <div class="row gap-8 mt-12 wrap">
@@ -1379,7 +1389,7 @@ export function mount(root, params) {
         refresh();
       }
       if (act === 'push-sync') {
-        if (!(await confirmDlg({ title: '更新報表分頁', okText: '開始', message: '會將全部表格資料攤平送去你嘅 Google Sheet 嘅報表分頁（帳目／團員／物資…），畀你自己睇同用公式。<br><br><b>唔會</b>寫「資料庫」分頁 —— 資料庫本身要撳「儲存到後端」。' }))) return;
+        if (!(await confirmDlg({ title: '更新報表分頁', okText: '開始', message: '會將全部表格資料攤平送去你嘅 Google Sheet 嘅報表分頁（帳目／團員／物資…），畀你自己睇同用公式。<br><br><b>唔會</b>寫「資料庫」分頁 —— 資料庫本身由自動寫入／「即刻儲存」處理。' }))) return;
         await pushToMaster(); refresh();
       }
 
@@ -1467,7 +1477,22 @@ export function mount(root, params) {
         }
       }
 
-      /* ---- 整個資料庫：寫入／還原／檢視（真正嘅後端儲存） ---- */
+      /* ---- 自動寫入開關（2026-09-24）---- */
+      const autoBox = root.querySelector('[data-act="toggle-autosave"]');
+      if (autoBox && !autoBox.dataset.bound) {
+        autoBox.dataset.bound = '1';
+        autoBox.addEventListener('change', async () => {
+          const remote = await import('../lib/remote.js');
+          const on = remote.setAutoSave(autoBox.checked);
+          toast(on
+            ? '已開啟自動寫入 —— 改完約 1 秒後自動寫入後端（帳戶改動即刻寫）'
+            : '已關閉自動寫入 —— 所有改動都要自己撳「即刻儲存」先至到後端', on ? 'ok' : 'warn');
+          if (on) await remote.flushAutoSave?.();
+          refresh();
+        });
+      }
+
+      /* ---- 整個資料庫：即刻寫入／還原／檢視（真正嘅後端儲存） ---- */
       if (act === 'push-db') {
         const { saveWithDialog } = await import('./syncdialog.js');
         const old = b.innerHTML;
@@ -1493,7 +1518,7 @@ export function mount(root, params) {
         const remote = await import('../lib/remote.js');
         const info = await remote.remoteInfo();
         if (!info?.ok) { toast('讀唔到後端：' + (info?.error || '未知錯誤'), 'err'); return; }
-        if (!info.found) { toast('後端仲未有資料庫（請先撳「儲存到後端」）', 'warn'); return; }
+        if (!info.found) { toast('後端仲未有資料庫（請先撳「即刻儲存」建立第一份）', 'warn'); return; }
         const c = info.counts || {};
         const pend = Number(load().sync?.pending || 0);
         const okGo = await confirmDlg({

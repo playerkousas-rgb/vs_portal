@@ -124,6 +124,32 @@ function apiGenDir() {
   return path.join(API_TMP, 'g' + apiGen);
 }
 
+/** 讀 request body（Vercel 會自動 parse 好 JSON 放喺 req.body；
+    呢個本機伺服器要自己讀，否則 api/auth.js 之類會回「請求格式錯誤」——
+    即係話 `npm run dev` 度超管登入一定失敗，同 Vercel 行為唔一致）。
+    上限同 Vercel 一樣寛鬆啲（4.5MB），讀完照 Vercel 咁 parse JSON 放 req.body。 */
+function readReqBody(req, limitBytes = 4.5 * 1024 * 1024) {
+  return new Promise((resolve) => {
+    const chunks = [];
+    let size = 0;
+    let done = false;
+    const finish = (v) => { if (!done) { done = true; resolve(v); } };
+    const timer = setTimeout(() => finish(null), 15000);
+    req.on('data', (c) => {
+      size += c.length;
+      if (size > limitBytes) { req.destroy(); finish(null); return; }
+      chunks.push(c);
+    });
+    req.on('end', () => {
+      clearTimeout(timer);
+      const raw = Buffer.concat(chunks).toString('utf8');
+      if (!raw) return finish(undefined);
+      try { finish(JSON.parse(raw)); } catch { finish(raw); }   // 唔係 JSON 就照原文交畀 handler
+    });
+    req.on('error', () => { clearTimeout(timer); finish(null); });
+  });
+}
+
 async function handleApi(req, res, name) {
   const file = path.join(ROOT, 'api', `${name}.js`);
   if (!file.startsWith(path.join(ROOT, 'api')) || !fs.existsSync(file)) {
@@ -134,6 +160,15 @@ async function handleApi(req, res, name) {
   }
   const qIdx = req.url.indexOf('?');
   req.query = Object.fromEntries(new URLSearchParams(qIdx >= 0 ? req.url.slice(qIdx + 1) : '').entries());
+  if (req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH') {
+    const body = await readReqBody(req);
+    if (body === null) {
+      res.statusCode = 413;
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      return res.end(JSON.stringify({ ok: false, error: '請求太大或者讀唔到' }));
+    }
+    req.body = body;
+  }
   try {
     const live = path.join(apiGenDir(), `${name}.js`);
     const mod = await import(url.pathToFileURL(live).href + `?t=${Date.now()}`);

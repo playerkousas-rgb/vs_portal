@@ -19,7 +19,7 @@
    ============================================================ */
 
 import {
-  load, commit, collection, find, add, remove, getSession, setSession, audit, isMock, currentUnit
+  load, commitCritical, collection, find, add, remove, getSession, setSession, audit, isMock, currentUnit
 } from './store.js';
 import { chief as chiefRecord, hasChief } from './model.js';
 
@@ -245,7 +245,7 @@ async function verifyPassword(acc, password) {
     if (String(acc.password) === String(password)) {
       acc.pw = await hashPassword(password, makeSalt(acc.role, acc.username));
       delete acc.password;
-      commit();
+      commitCritical('auth');
       return true;
     }
     return false;
@@ -353,14 +353,14 @@ export async function loginIdentity(id, password) {
     }
     m.hubOpened = true;
     m.hubMustChangePw = true;
-    commit();
+    commitCritical('auth');
   } else {
     const fake = { pw: m.hubPw, password: m.hubPassword, role, username: raw };
     if (!(await verifyPassword(fake, p))) return { ok: false, msg: '電郵／YMIS 或密碼不正確' };
     if (fake.pw && m.hubPassword) {
       m.hubPw = fake.pw;
       delete m.hubPassword;
-      commit();
+      commitCritical('auth');
     }
   }
   const mustChangePw = !!m.hubMustChangePw || p === TEMP_PASSWORD;
@@ -408,7 +408,7 @@ export async function reviewAccountApp(appId, { decision, reviewer = '' } = {}) 
   rec.status = decision === 'approved' ? 'approved' : 'rejected';
   rec.reviewedAt = new Date().toISOString();
   rec.reviewedBy = reviewer;
-  commit();
+  commitCritical('auth');
   if (rec.status !== 'approved') {
     audit('拒絕開戶申請', rec.ymis);
     return { ok: true };
@@ -461,7 +461,7 @@ export async function setMemberHubPassword(memberId, newPassword, { mustChange =
   m.hubPwUpdatedAt = new Date().toISOString().slice(0, 10);
   m.hubMustChangePw = force;
   m.hubOpened = true;
-  commit();
+  commitCritical('auth');
   audit('設定團員入口密碼', m.name || memberId);
   return { ok: true };
 }
@@ -747,7 +747,7 @@ export async function setMemberIdentity(memberId, identity) {
     delete m.chiefSince;
     audit('更改身份', `${m.name || m.id}：${IDENTITY_LABEL[before] || before} → ${IDENTITY_LABEL[want] || want}`);
   }
-  commit();
+  commitCritical('auth');
   /* 改嘅係自己（例如團長交棒畀人之後自己變領袖）→ 即刻更新 session，唔使重新登入 */
   if (s?.memberId && s.memberId === m.id) {
     setSession({ ...s, role: m.identity, identity: m.identity });
@@ -804,7 +804,7 @@ export async function claimChief(info = {}) {
     const pw = await setMemberHubPassword(m.id, String(info.password));
     if (!pw.ok) return pw;
   }
-  commit();
+  commitCritical('auth');
   audit('設定團長身份', m.name || m.id);
   if (s && (!s.memberId || s.memberId === m.id)) {
     setSession({ ...s, role: 'chief', identity: 'chief', memberId: m.id, accountId: 'member:' + m.id, name: m.name, mustChangePw: false, setupKey: false });
@@ -863,7 +863,7 @@ export async function changePassword(accountId, newPassword) {
   acc.defaultPw = false;
   acc.mustChangePw = false;
   acc.pwUpdatedAt = new Date().toISOString().slice(0, 10);
-  commit();
+  commitCritical('auth');
   audit('更改密碼', `${ROLES[acc.role]?.name || acc.role}：${acc.username}`);
   if (getSession()?.accountId === accountId) {
     const s = getSession(); s.pwChangedAt = Date.now(); s.mustChangePw = false; setSession(s);
@@ -907,7 +907,7 @@ export function changeUsername(accountId, newUsername) {
     return { ok: false, msg: '此帳號名稱已被使用' };
   }
   acc.username = u;
-  commit();
+  commitCritical('auth');
   if (getSession()?.accountId === accountId) { const s = getSession(); s.username = u; setSession(s); }
   audit('更改登入帳號', u);
   return { ok: true };
@@ -919,7 +919,7 @@ export function setAccountActive(accountId, active) {
   if (!canChangePasswordOf(accountId)) return { ok: false, msg: '你冇權限' };
   if (getSession()?.accountId === accountId && !active) return { ok: false, msg: '唔可以停用自己嘅帳戶' };
   acc.active = !!active;
-  commit();
+  commitCritical('auth');
   audit(active ? '啟用帳戶' : '停用帳戶', acc.username);
   return { ok: true };
 }

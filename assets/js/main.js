@@ -111,13 +111,22 @@ async function boot() {
 }
 
 /* ============================================================
-   後端儲存 —— 唯一模式（2026-09-20 團長定案）
+   後端儲存 —— 一條寫入路，由系統自己行（2026-09-24 修訂）
    ------------------------------------------------------------
      開機／登入   → loadFromBackend()：由後端攞成份資料 ＝ 基準
-     之後改乜     → 淨係寫瀏覽器
-     撳「儲存到後端」→ saveToBackend()：核對版本 → 逐格三方比對 →
-                     唔撞嘅寫入；撞嘅（早走 vs 遲到）彈框問，確認咗先蓋
-   冇自動儲存、冇 poll、冇切視窗自動拉、冇關視窗自動寫。
+     之後改乜     → 寫本機 ＋ **自動排一次寫入**（一般 1.2 秒；
+                    開人／設密碼／改身份＝帳戶級，即刻寫）
+     saveToBackend() → 核對版本 → 逐格三方比對 → 唔撞嘅寫入；
+                       撞嘅（早走 vs 遲到）彈框問，確認咗先蓋
+     頂部掣「即刻儲存」＝ 唔想等 debounce；「重新載入」＝ 由後端拉新嘅
+     另一個分頁嘅改動 → store.bindCrossTabSync() 併入（唔使重新整理）
+     切返呢個分頁 → refreshIfClean()（本機冇未存改動先至拉，唔會彈衝突框）
+
+   ★ 點解改（2026-09-20「冇自動儲存」→ 2026-09-24「自動寫入」）：
+     團長回報「1 邊能用 email 登入、1 邊不能，那＝用戶根本沒寫入後端」。
+     舊設計要人記得撳掣先寫，結果帳戶困喺瀏覽器，另一部機登唔到；
+     而超管登入唔經旅團後端，所以淨係佢入到 —— 睇落就似「同步壞晒」。
+     寫入路依然只有一條（saveToBackend），唔會有兩條路互相蓋。
    ============================================================ */
 let remoteApi = null;
 /* 開機問唔到後端嗰陣嘅原因（登入頁會出橫額） */
@@ -136,18 +145,45 @@ async function syncBoot() {
     return { ok: false, error: '同步模組載入失敗 —— 請重新整理頁面再試' };
   }
   const store = await import('./lib/store.js');
-  /* 本機一有改動 → 淨係更新頂部狀態（「儲存到後端（N）」），唔會寫後端 */
-  store.setSaveHook(() => remoteApi.scheduleSave());
+  /* 本機一有改動 → 自動排一次寫入後端（帳戶級改動＝即刻）。
+     remote.scheduleSave() 收到 { critical } 就知道要唔要等 debounce。 */
+  store.setSaveHook((info) => remoteApi.scheduleSave(info));
+  /* 自動儲存撞格嗰陣嘅確認框（同一個對話框，唔好搞出第二套） */
+  remoteApi.setAutoConflictResolver(async (args) => {
+    const { resolveConflictsDialog } = await import('./views/syncdialog.js');
+    return resolveConflictsDialog(args);
+  });
+  /* 同一個瀏覽器另一個分頁改咗嘢 → 併入本機 ＋ 重畫（唔使重新整理） */
+  store.bindCrossTabSync((info) => {
+    paintSyncChip();
+    if (info?.kind === 'db') {
+      try { applyTheme(load()?.unit?.theme); } catch { /* ignore */ }
+      if (current()) render();
+      toast(info?.result?.took === 'merge'
+        ? '另一個視窗改咗嘢已併入呢邊'
+        : '已讀入另一個視窗儲存咗嘅資料', 'info');
+    }
+  });
 
   if (!unloadGuardOn) {
     unloadGuardOn = true;
-    /* 離開頁面前提醒有嘢未存。**唔會**寫後端（團長：「唔好比佢有機會出事」）。 */
+    /* 離開頁面前提醒有嘢未存。自動儲存通常已經寫咗，
+       呢個 net 只係擋「改完 1 秒內就閂」嗰種情況。 */
     window.addEventListener('beforeunload', (e) => {
       if (remoteApi?.hasPending?.()) {
+        try { remoteApi.flushAutoSave?.(); } catch { /* ignore */ }
         e.preventDefault();
         e.returnValue = '仲有改動未儲存到後端，真係要離開？';
         return e.returnValue;
       }
+    });
+    /* 切返呢個分頁 → 由後端拉新嘅（本機冇未存改動先至拉，唔會彈衝突框） */
+    document.addEventListener('visibilitychange', async () => {
+      if (document.visibilityState !== 'visible' || isMock() || !remoteApi) return;
+      try {
+        const r = await remoteApi.refreshIfClean?.();
+        if (r?.updated) { paintSyncChip(); if (current()) render(); }
+      } catch (e) { console.warn('[sync] 切返分頁時刷新失敗', e); }
     });
   }
 
@@ -167,7 +203,7 @@ async function syncBoot() {
       try { applyTheme(load()?.unit?.theme); } catch { /* ignore */ }
       if (r.merged) {
         loginConflicts = r.conflicts?.length ? { conflicts: r.conflicts, ctx: r.ctx, remoteAt: r.at } : null;
-        toastAction('上次未儲存嘅改動已保留喺呢部機 —— 記得撳「儲存到後端」', '去睇', () => go('#/tables/sync'), '');
+        toastAction('上次未寫入嘅改動已保留喺呢部機 —— 系統會自動寫入', '去睇', () => go('#/tables/sync'), '');
       }
     }
   } catch (e) {
@@ -189,7 +225,7 @@ async function maybeShowLoginConflicts() {
     const { applyChangesLocal } = await import('./lib/store.js');
     const choice = await resolveConflictsDialog({ conflicts: lc.conflicts, ctx: lc.ctx, mode: 'login', remoteAt: lc.remoteAt });
     const ov = overridesFor(lc.conflicts, choice?.useMine || []);
-    if (ov.length) { applyChangesLocal(ov); render(); toast(`已用返你嘅 ${ov.length} 項 —— 記得撳「儲存到後端」`, 'ok'); }
+    if (ov.length) { applyChangesLocal(ov); render(); toast(`已用返你嘅 ${ov.length} 項 —— 自動寫入後端中`, 'ok'); }
   } catch (e) { console.warn('[sync] 登入衝突對話框失敗', e); }
 }
 
@@ -221,7 +257,7 @@ function loginSyncBanner() {
 
   const s = remoteApi.syncState();
   if (s.state === 'pending' && remoteApi.hasPending()) {
-    return `<div class="note-box warn mb-12">${icon('clock', 15)}<div>呢部機有改動仲未儲存到後端 —— 登入後撳右上角「儲存到後端」。</div>${prov}</div>`;
+    return `<div class="note-box warn mb-12">${icon('clock', 15)}<div>呢部機有改動仲未寫入後端 —— 登入後系統會自動寫；想即刻寫就撳右上角「即刻儲存」。</div>${prov}</div>`;
   }
   return `<div class="mb-12">${prov}</div>`;
 }
@@ -258,9 +294,11 @@ function paintSyncChip() {
   const [cls, ic, label] = map[state] || map.idle;
   const needSave = pending > 0;
   const unreachable = state === 'unreachable';
-  const actLabel = needSave ? `儲存到後端${pending > 1 ? `（${pending}）` : ''}` : unreachable ? '重試' : '重新載入';
+  /* ★ 2026-09-24：自動儲存已經會自己寫。呢粒掣而家係「唔想等，即刻寫」，
+     唔再係**唯一**嘅寫入路 —— 用字要講清楚，唔好令人以為唔撳就冇寫入。 */
+  const actLabel = needSave ? `即刻儲存${pending > 1 ? `（${pending}）` : ''}` : unreachable ? '重試' : '重新載入';
   const actTitle = needSave
-    ? '先核對後端版本；有人喺你登入後儲存過就逐格比對 —— 唔撞嘅寫入，撞嘅會問你'
+    ? `改動會自動寫入後端；呢粒掣係「唔想等，即刻寫」。寫入前先核對後端版本，撞嘅格會問你。`
     : '由後端攞返最新資料（冇未儲存改動，唔會丟嘢）';
   el.innerHTML = `<span class="badge ${cls}" title="${esc(s.msg || label)}">${icon(ic, 12)} ${esc(label)}</span>
     <button class="btn btn-xs ${needSave ? 'btn-primary' : ''}" id="syncActBtn" title="${esc(actTitle)}" ${s.state === 'saving' ? 'disabled' : ''}>
@@ -1358,7 +1396,7 @@ function gateMessage(g) {
 async function confirmLogout() {
   const pending = Number(tryLoad()?.sync?.pending || 0);
   const warn = pending > 0
-    ? `<div class="note-box warn mt-8">${icon('alert', 14)}<div>仲有 <b>${pending}</b> 項改動未儲存到後端。登出唔會寫入後端；改動會留喺呢部機，下次開機再同後端比對。<br>想而家就儲存，撳「取消」再撳右上角「儲存到後端」。</div></div>`
+    ? `<div class="note-box warn mt-8">${icon('alert', 14)}<div>仲有 <b>${pending}</b> 項改動未寫入後端（自動儲存未完成）。登出唔會等佢；改動會留喺呢部機，下次開機再同後端比對。<br>想而家就寫，撳「取消」再撳右上角「即刻儲存」。</div></div>`
     : '';
   return modal({
     title: '登出', body: `<p class="sm">確定登出系統？</p>${warn}`,

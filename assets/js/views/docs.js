@@ -354,7 +354,7 @@ function tablesDoc() {
     <div class="step"><div>開團 KEY：執行 <code>issueSetupKey()</code>（72 小時；過期再執行）</div></div>
     <div class="step"><div><b>部署 → 新增部署作業 → 網頁應用程式</b>；執行身分：我；存取權：任何人</div></div>
     <div class="step"><div>複製 <code>/exec</code> 網址，貼返「Apps Script 網址」，填旅團編號與 API Key</div></div>
-    <div class="step"><div>按「<b>測試連線</b>」→ 成功後撳頂部「<b>儲存到後端</b>」（改動只會喺你撳嗰陣先寫入；唔會自動同步）</div></div>
+    <div class="step"><div>按「<b>測試連線</b>」→ 成功之後改動會<b>自動寫入後端</b>（想即刻寫就撳頂部「<b>即刻儲存</b>」）；唔會自動同步）</div></div>
     <div class="step"><div>專屬 Sheet 會自動建立／更新分頁：帳目、物資、團員、收支申報、通告、報名、會議、同步紀錄</div></div>
   </div>
   ${noteBox('<b>一個後端、兩個前端。</b>每個旅團一張 Google Sheet ＋ 一支 Apps Script：深資童軍管理系統同進度前端共用同一份資料（進度追蹤／其他獎章／活動履歷等分頁由 <code>initializeSheets</code> 建立）。相片唔會直接塞入 Sheet（只記數量），如果想存相就喺 Code.gs 頂部填 <code>DRIVE_FOLDER_ID</code>，相片會自動上載去 Drive 再貼連結落 Sheet。', 'brand')}

@@ -571,6 +571,7 @@ section('只有一個儲存方式（原始碼守門：冇自動寫、冇 poll、
   const mainSrc = fs.readFileSync(path.join(ROOT, 'assets/js/main.js'), 'utf8');
   const hubSrc = fs.readFileSync(path.join(ROOT, 'assets/js/public-hub.js'), 'utf8');
   const tablesSrc = fs.readFileSync(path.join(ROOT, 'assets/js/views/tables.js'), 'utf8');
+  const guardSrc = fs.readFileSync(path.join(ROOT, 'assets/js/lib/guard.js'), 'utf8');
   const storeSrc = fs.readFileSync(path.join(ROOT, 'assets/js/lib/store.js'), 'utf8');
   ok('remote.js 有 loadFromBackend（登入攞後端）＋ saveToBackend（唯一寫入路）',
     /export async function loadFromBackend/.test(remoteSrc) && /export function saveToBackend/.test(remoteSrc));
@@ -618,8 +619,18 @@ section('只有一個儲存方式（原始碼守門：冇自動寫、冇 poll、
     /pendingAccounts/.test(mainSrc) && /個帳戶未寫入後端/.test(mainSrc) && /b-danger/.test(mainSrc));
   ok('main.js 掛咗跨分頁同步 ＋ 切返分頁刷新（自動儲存衝突框已隨自動儲存一齊拆走）',
     /bindCrossTabSync/.test(mainSrc) && /refreshIfClean/.test(mainSrc) && !/setAutoConflictResolver/.test(mainSrc));
-  ok('★ main.js 有離開分頁閘（未撳「儲存」嘅表單改動會彈提示）',
-    /activeDrafts/.test(mainSrc) && /discardActiveDrafts/.test(mainSrc) && /呢個分頁有未儲存嘅改動/.test(mainSrc));
+  /* ★ 2026-09-24 團長：「如果分頁走嗰時無 SAVE 就唔得了，定係我哋當佢自動遊覽器儲存晒？」
+     → 當佢自動瀏覽器儲存咗。寫瀏覽器唔等如寫後端，所以轉分頁**唔彈框**、
+       **唔放棄**：只係 flush 落瀏覽器 ＋ toast 話你知返嚟可以「還原」。
+       真正要彈框問嘅得「未寫入後端」（登出／閂頁）。
+       所以呢度要釘死**相反**方向：轉分頁唔可以再彈「呢個分頁有未儲存嘅改動」。 */
+  ok('★ 轉分頁**唔會**彈「未儲存改動」框（草稿當自動暫存咗喺瀏覽器）',
+    !/呢個分頁有未儲存嘅改動/.test(mainSrc) && !/discardActiveDrafts/.test(mainSrc),
+    'main.js 仲有離開分頁閘');
+  ok('★ 轉分頁會先 flush 草稿落瀏覽器（stashActiveDrafts），先至 render',
+    /stashActiveDrafts/.test(mainSrc) && /hashchange/.test(mainSrc));
+  ok('★ guard.js 有 stashActiveDrafts（flush ＋ 保留，唔放棄）',
+    /export function stashActiveDrafts/.test(guardSrc) && /pendingFlushes/.test(guardSrc));
   ok('store.js 有跨分頁併入（storage event ＋ 三方比對）',
     /export function mergeFromOtherTab/.test(storeSrc) && /addEventListener\('storage'/.test(storeSrc));
   ok('store.js 帳戶級寫入即刻通知後端（members／accounts／accountApps）',
@@ -1153,9 +1164,14 @@ section('舊系統遷移（一鍵搬公開網址）');
   store.load().settings.publicLinks['borrow.html'] = 'https://82venture.vercel.app/borrow.html';
   store.commit();
   const links = await import('../assets/js/views/links.js');
+  /* ★ 2026-09-24 團長：「公開資料其實唔係要填嘢嘅，係方便了解有乜嘢而家正喺度公開」
+     → 預設嗰版係只讀一覽表；舊站警告要兩個分頁都見到（擺咗喺 render() 頂）。 */
   const html = links.render();
   ok('★ 公開資料頁有舊站警告＋一鍵搬掣', /舊系統/.test(html) && /data-act="migrate-urls"/.test(html));
-  ok('受影響嘅連結卡有警告', /退役之後會死/.test(html));
+  /* 逐條連結卡嘅警告喺「團員入口（分享）」分頁（嗰度先係派得出去嗰啲連結） */
+  const htmlHub = links.render({ id: 'hub' });
+  ok('受影響嘅連結卡有警告', /退役之後會死/.test(htmlHub));
+  ok('★ 兩個分頁都有舊站警告（一覽表版唔會漏）', /舊系統/.test(htmlHub));
 
   /* 通告分享連結都係同一個來源（搬完就啱） */
   const notices = await import('../assets/js/views/notices.js');

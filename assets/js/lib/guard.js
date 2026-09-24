@@ -122,8 +122,13 @@ export function bindDraftAutosave(root, section, id, opts = {}) {
     el.addEventListener('input', schedule);
     el.addEventListener('change', schedule);
   });
-  return () => clearTimeout(timer);
+  pendingFlushes.add(flush);
+  return () => { clearTimeout(timer); pendingFlushes.delete(flush); };
 }
+
+/* 所有仲未落筆（debounce 未到）嘅 flush —— 離開分頁前要即刻寫落瀏覽器，
+   否則「打完最後一個字 0.7 秒內就轉頁」會蝕咗嗰下。 */
+const pendingFlushes = new Set();
 
 /* ---------- 而家呢個分頁有邊啲未儲存草稿（離開分頁閘用） ----------
    ★ 2026-09-24 團長：「每個分頁有他的儲存按鈕，如果離開分頁前有未儲的東西…
@@ -131,6 +136,26 @@ export function bindDraftAutosave(root, section, id, opts = {}) {
    bindDraftAutosave() 每次真係寫咗草稿就登記一個 key；
    main.js 轉分頁之前問 activeDrafts()，有嘢就彈提示。 */
 const activeKeys = new Set();
+
+/**
+ * ★ 離開分頁（2026-09-24 團長定案，再修訂）：
+ *   草稿一律**當佢自動暫存咗喺瀏覽器** —— 寫瀏覽器唔等如寫後端，
+ *   所以離開分頁**唔使彈框問**，亦**永遠唔會放棄**任何嘢。
+ *
+ *   呢度做兩件事：
+ *     ① 即刻 flush 所有未落筆嘅草稿（debounce 未到嗰啲）→ 寫落 localStorage；
+ *     ② 清走「呢個分頁」嘅追蹤（草稿本身**留低**，返嚟可以撳「還原」）。
+ *
+ *   真正要問嘅係「未寫入**後端**」—— 嗰個只喺登出／閂頁問（main.js confirmLogout）。
+ * @returns {number} 呢個分頁有幾多份未完成草稿（0 ＝ 冇）
+ */
+export function stashActiveDrafts() {
+  pendingFlushes.forEach(fn => { try { fn(); } catch { /* 一個失敗唔好拖累其他 */ } });
+  const n = activeDrafts().length;
+  activeKeys.clear();
+  return n;
+}
+
 export function activeDrafts() {
   const all = readAll();
   return [...activeKeys].filter(k => all[k]).map(k => {
@@ -139,7 +164,8 @@ export function activeDrafts() {
   });
 }
 export function clearActiveDrafts() { activeKeys.clear(); }
-/** 放棄呢個分頁所有未儲存草稿（用家揀咗「離開並放棄」） */
+/** 放棄呢個分頁所有未儲存草稿（**只**喺用家明確撳「放棄」嗰陣先用 ——
+ *  轉分頁唔會再自動放棄，見 stashActiveDrafts()） */
 export function discardActiveDrafts() {
   const map = readAll();
   activeKeys.forEach(k => { delete map[k]; });

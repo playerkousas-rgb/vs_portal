@@ -124,18 +124,24 @@ try {
       albums: [{ id: 'pp_al', title: '2026 夏季營相簿', url: 'https://photos.example.org/summer', desc: '夏季營', vis: 'member' }],
       links: [{ id: 'pp_l1', title: '香港童軍總會', url: 'https://www.scout.org.hk', desc: '總會通告', vis: 'member' }]
     } },
+    /* ★ APP 內內容（行事曆／通告／試卷）嘅「邊個睇到」—— 喺各自編輯器設，
+       團員入口要跟住過濾（團長 2026-09-24：「公開資料我係指行事曆、通告、試卷
+       呢類有機會想告知非團員嘅內容」） */
     { op: 'put', coll: 'events', rows: [
-      { id: 'ev_future', title: '秋季露營', date: '2026-12-19', dateEnd: '2026-12-20', time: '09:00', venue: '營地', visibility: 'all', status: 'confirmed', rsvp: {} },
-      { id: 'ev_past', title: '舊年活動', date: '2026-01-05', dateEnd: '', time: '', venue: '', visibility: 'all', status: 'confirmed', rsvp: {} }
-    ] },
-    { op: 'put', coll: 'notices', rows: [
-      { id: 'n_open', title: { zh: '開放報名通告' }, status: 'published', needSignup: true, deadline: '2026-12-01', eventDate: '2026-12-19', signups: [] },
-      { id: 'n_closed', title: { zh: '已截止報名通告' }, status: 'published', needSignup: true, deadline: '2026-09-01', eventDate: '2026-09-20', signups: [] },
-      { id: 'n_plain', title: { zh: '普通通告' }, status: 'published', needSignup: false, signups: [] },
-      { id: 'n_draft', title: { zh: '草稿通告' }, status: 'draft', needSignup: true, signups: [] }
+      { id: 'ev_future', title: '秋季露營', date: '2026-12-19', dateEnd: '2026-12-20', time: '09:00', venue: '營地', visibility: 'members', vis: 'member', status: 'confirmed', rsvp: {} },
+      { id: 'ev_leader', title: '領袖內部會議', date: '2026-12-22', dateEnd: '', time: '20:00', venue: '團址', visibility: 'members', vis: 'leader', status: 'confirmed', rsvp: {} },
+      { id: 'ev_past', title: '舊年活動', date: '2026-01-05', dateEnd: '', time: '', venue: '', visibility: 'members', vis: 'member', status: 'confirmed', rsvp: {} }
     ] },
     { op: 'put', coll: 'quizzes', rows: [
-      { id: 'qz1', title: '測驗卷', status: 'open', questions: [{ id: 'qq1', prompt: '1+1=', type: 'single', options: ['1', '2'], required: false }], responses: {} }
+      { id: 'qz1', title: '測驗卷', status: 'open', vis: 'member', questions: [{ id: 'qq1', prompt: '1+1=', type: 'single', options: ['1', '2'], required: false }], responses: {} },
+      { id: 'qz_leader', title: '領袖評核卷', status: 'open', vis: 'leader', questions: [{ id: 'qq2', prompt: '評語', type: 'short', required: false }], responses: {} }
+    ] },
+    { op: 'put', coll: 'notices', rows: [
+      { id: 'n_open', title: { zh: '開放報名通告' }, status: 'published', vis: 'other', needSignup: true, deadline: '2026-12-01', eventDate: '2026-12-19', signups: [] },
+      { id: 'n_closed', title: { zh: '已截止報名通告' }, status: 'published', vis: 'other', needSignup: true, deadline: '2026-09-01', eventDate: '2026-09-20', signups: [] },
+      { id: 'n_plain', title: { zh: '普通通告' }, status: 'published', vis: 'member', needSignup: false, signups: [] },
+      { id: 'n_leader', title: { zh: '領袖內部通告' }, status: 'published', vis: 'leader', needSignup: false, signups: [] },
+      { id: 'n_draft', title: { zh: '草稿通告' }, status: 'draft', vis: 'other', needSignup: true, signups: [] }
     ] },
     { op: 'setConstitution', obj: { version: '3.1', status: 'published', title: { zh: '團章', en: 'Constitution' },
       chapters: [{ heading: { zh: '第一章 總則', en: 'Chapter 1' }, articles: [{ zh: '第 1 條 本團名為測試旅深資童軍團。', en: 'Article 1.', items: [] }] }], appendices: [], history: [] } },
@@ -220,6 +226,12 @@ try {
   ok('★ 可見範圍：團員睇唔到「只限領袖」嘅 WhatsApp 群組',
     !hrefs().some(h => h.includes('chat.whatsapp.com/leaders')), hrefs().join(' | '));
   ok('★ 可見範圍：團員連「只限領袖」嘅名都唔會見到', !pageTxt().includes('領袖群組'));
+  ok('★ APP 內內容：團員睇到「團員級」嘅活動（秋季露營）', pageTxt().includes('秋季露營'));
+  ok('★ APP 內內容：團員**睇唔到**「領袖級」嘅活動', !pageTxt().includes('領袖內部會議'));
+  ok('★ APP 內內容：團員睇到「團員級」嘅試卷', pageTxt().includes('測驗卷'));
+  ok('★ APP 內內容：團員**睇唔到**「領袖級」嘅試卷', !pageTxt().includes('領袖評核卷'));
+  ok('★ APP 內內容：團員睇到「團員級」嘅通告（普通通告）', pageTxt().includes('普通通告'));
+  ok('★ APP 內內容：團員**睇唔到**「領袖級」嘅通告', !pageTxt().includes('領袖內部通告'));
   ok('活動行事曆：顯示未來活動（秋季露營）', pageTxt().includes('秋季露營'));
   ok('活動行事曆：過去嘅活動唔會排先做提醒',
     pageTxt().indexOf('舊年活動') > pageTxt().indexOf('過往活動'), '');
@@ -415,13 +427,19 @@ try {
     hrefs().join(' | '));
   ok('領袖都見到「關於我團」', pageTxt().includes('我團 1982 年成立'));
   ok('領袖見到自己嘅身份標籤', pageTxt().includes('領袖'));
+  ok('★ APP 內內容：領袖見到「領袖級」嘅活動（團員見唔到）', pageTxt().includes('領袖內部會議'));
+  ok('★ APP 內內容：領袖見到「領袖級」嘅試卷（團員見唔到）', pageTxt().includes('領袖評核卷'));
+  ok('★ APP 內內容：領袖見到「領袖級」嘅通告（團員見唔到）', pageTxt().includes('領袖內部通告'));
+  ok('★ 上層必定睇到下層：領袖一樣見到團員級嘅嘢', pageTxt().includes('秋季露營') && pageTxt().includes('普通通告'));
 
   /* ============ 公開頁：通告（後端正本）＋ 團章（後端 constitution） ============ */
   section('公開頁：通告由後端正本讀（新發布即刻見到）');
   {
     const r = await proxyCall({ action: 'notices', unit: '0082' });
     const ids = (r.notices || []).map(n => n.id).sort();
-    ok('免登入讀到已發布通告（只有 published）', JSON.stringify(ids) === JSON.stringify(['n_closed', 'n_open', 'n_plain']), JSON.stringify(ids));
+    /* ★ 免登入公開接口要過濾「邊個睇到」—— 淨係出「對外公開」嗰啲。
+       n_plain 係團員級、n_leader 係領袖級，兩個都**唔可以**喺免登入接口出。 */
+    ok('免登入讀到已發布通告（只有 published ＋ 對外公開）', JSON.stringify(ids) === JSON.stringify(['n_closed', 'n_open']), JSON.stringify(ids));
   }
 
   section('公開頁：團章由後端讀（發布＋同步即刻見到）');

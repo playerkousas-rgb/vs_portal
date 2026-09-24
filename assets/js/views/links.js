@@ -1,234 +1,119 @@
 /* ============================================================
-   links.js — 公開資料
+   links.js — 公開資料（**只讀一覽表**）
    ------------------------------------------------------------
-   ★ 2026-09-24 團長：「『成員連結』改名為『公開資料』，授權人員喺呢分頁
-      可以編輯公開乜嘢俾邊個睇」「加入我團的社交媒體帳戶、相簿、網站等等」。
-   四類內容：
-     ① 團員入口 + 系統連結（原有）
-     ② 社交媒體帳戶
-     ③ 相簿
-     ④ 網站與其他有用連結
-   每一項都可以設「邊個睇到」：其他團 → 團員 → 執委 → 領袖 → 團長。
-   規則：設成 N ＝ 權限 N 或以上先見到（見 lib/public-profile.js）。
+   ★ 2026-09-24 團長（重要定位修正）：
+     「公開資料其實**唔係要填嘢嘅**，係方便了解有乜嘢而家正喺度公開。」
+
+   所以呢頁**冇任何輸入位** —— 佢淨係答一個問題：
+     「我團而家公開緊啲乜？每樣嘢邊個睇到？」
+
+   聚合範圍（lib/public-profile.js 嘅 publicOverview()）：
+     ① 關於我團      ② 旅團網站    ③ 社交媒體   ④ 相簿
+     ⑤ 其他連結      ⑥ 行事曆      ⑦ 通告       ⑧ 試卷
+   每項一個「邊個睇到」標籤 ＋ 一個「去改」掣 → 跳去真正填嘢嗰個位：
+     · ①②③④⑤ → 旅團設定（#/admin/settings，見 public-links-editor.js）
+     · ⑥ → 行事曆（#/calendar）　⑦ → 通告（#/notices）　⑧ → 試卷（#/quizzes）
+     「邊個睇到」係喺**各自嘅編輯器**設（團長揀咗 in_editor），唔喺呢度設。
+
+   另一個分頁「團員入口」＝ 派得出去嗰條連結／QR（分享用，一樣唔係填嘢位）。
    ============================================================ */
 
 import { load, commit } from '../lib/store.js';
 import { esc, icon, modal, toast, copyText, qrSvg, confirmDlg } from '../lib/util.js';
 import { toWord, printDoc, downloadQrSvg, stamp } from '../lib/exporter.js';
 import { profile, settings, memberLinks, publicPageUrl, findLegacyPublicUrls, migrateLegacyPublicUrls, isLegacyUrl, publicLinkRoute } from '../lib/model.js';
-import { pageHead, tabs, empty, noteBox } from './ui.js';
+import { pageHead, tabs, stat, empty, noteBox, visBadge } from './ui.js';
 import { can, currentRole } from '../lib/auth.js';
-import {
-  VIS_LEVELS, visName, viewerRank, visibleTo,
-  publicProfile, savePublicProfile,
-  SOCIAL_KINDS, socialName, socialIcon, SUGGESTED_LINKS,
-  socials, albums, otherLinks,
-  saveSocial, removeSocial, saveAlbum, removeAlbum, saveLink, removeLink, addSuggestedLinks
-} from '../lib/public-profile.js';
+import { VIS_LEVELS, visibleTo, publicOverview, overviewCounts, visOf, publicPageHtml, publicGroupsFor } from '../lib/public-profile.js';
 
-let tab = 'hub';
+let tab = 'overview';
 
 export function title() { return '公開資料'; }
 
 export function render(params = {}) {
-  /* 冇帶分頁（純 #/links）＝返「團員入口」呢個主頁。
-     唔可以「留返上次嗰個分頁」—— tab 係模組級變數，去過 #/links/link 之後
-     再撳側邊欄「公開資料」就會跌入連結頁，用家會以為成頁壞咗。 */
-  if (['hub', 'social', 'album', 'link'].includes(params.id)) tab = params.id;
-  else if (!params.id) tab = 'hub';
+  /* 冇帶分頁（純 #/links）＝ 返「一覽」呢個主頁（★ 團長：公開資料係睇嘢嘅位）。
+     唔可以「留返上次嗰個分頁」—— tab 係模組級變數，去過 #/links/hub 之後
+     再撳側邊欄「公開資料」就會跌入第二個分頁，用家會以為成頁壞咗。 */
+  if (['overview', 'hub'].includes(params.id)) tab = params.id;
+  else if (!params.id) tab = 'overview';
   return `
   ${pageHead({
     title: '公開資料',
-    sub: '公開乜嘢俾邊個睇 —— 團員入口、社交媒體、相簿、網站',
-    actions: `<button class="btn btn-sm" data-act="settings">${icon('settings', 15)} 公開頁網址</button>`
+    sub: '而家公開緊啲乜 —— 邊個睇得到，一覽就知（要改去「旅團設定」或各自嘅頁）',
+    actions: `<button class="btn btn-sm" data-act="settings">${icon('settings', 15)} 公開頁網址</button>
+      <button class="btn btn-sm btn-primary" data-act="preview">${icon('external', 15)} 預覽對外專頁</button>`
   })}
+  ${legacyBanner()}
   ${tabs([
-    ['hub', '團員入口'],
-    ['social', '社交媒體', socials().length],
-    ['album', '相簿', albums().length],
-    ['link', '網站與連結', otherLinks().length]
+    ['overview', '一覽'],
+    ['hub', '團員入口（分享）']
   ], tab)}
-  ${tab === 'social' ? socialView()
-    : tab === 'album' ? albumView()
-    : tab === 'link' ? linkView()
-    : hubView()}`;
+  ${tab === 'hub' ? hubView() : overviewView()}`;
 }
 
 /* ============================================================
-   可見範圍選擇器
+   一覽：而家公開緊啲乜？（只讀）
    ============================================================ */
-function visSelect(name, cur, extra = '') {
-  return `<select class="input input-sm" data-vis="${name}" ${extra} style="min-width:120px">
-    ${VIS_LEVELS.map(v => `<option value="${v.id}"${v.id === (cur || 'member') ? ' selected' : ''}>${icon(v.icon, 12)} ${v.name}以上</option>`).join('')}
-  </select>`;
-}
-function visBadge(vis) {
-  const v = VIS_LEVELS.find(x => x.id === (vis || 'member')) || VIS_LEVELS[1];
-  const mine = viewerRank(currentRole());
-  const blind = v.rank > mine;
-  return `<span class="badge ${blind ? 'b-danger' : 'b-info'}" title="${esc(v.desc)}">${icon(v.icon, 12)} ${v.name}以上${blind ? '（你睇唔到）' : ''}</span>`;
-}
-/** 編輯一項公開資料（社交／相簿／連結共用） */
-async function editDialog(kind, item) {
-  const kinds = {
-    social: { title: '社交媒體帳戶', fields: true },
-    album: { title: '相簿' },
-    link: { title: '連結' }
-  }[kind];
-  const it = item || {};
-  const r = await modal({
-    title: (item ? '編輯' : '新增') + kinds.title, wide: true,
-    body: `
-      <div class="grid g-2" style="gap:12px">
-        ${kind === 'social' ? `<div class="field" style="grid-column:1/-1"><label class="label">平台</label>
-          <select class="input" id="pp-kind">${SOCIAL_KINDS.map(k => `<option value="${k.id}"${k.id === (it.kind || 'instagram') ? ' selected' : ''}>${k.name}</option>`).join('')}</select></div>` : ''}
-        <div class="field"><label class="label">名稱</label>
-          <input class="input" id="pp-title" value="${esc(it.title || it.label || '')}" placeholder="${kind === 'social' ? '例：82 旅 Instagram' : '例：2026 夏季營相簿'}"></div>
-        <div class="field"><label class="label">網址</label>
-          <input class="input" id="pp-url" value="${esc(it.url || '')}" placeholder="https://…"></div>
-        <div class="field" style="grid-column:1/-1"><label class="label">說明（可留空）</label>
-          <input class="input" id="pp-desc" value="${esc(it.desc || '')}" placeholder="一句話講呢個係乜"></div>
-        <div class="field" style="grid-column:1/-1"><label class="label">邊個睇到？</label>
-          ${visSelect('dlg', it.vis || 'member', 'id="pp-vis"')}
-          <div class="hint mt-4">${VIS_LEVELS.map(v => `${v.name}(${v.rank})`).join(' < ')} —— 設成某一級，<b>該級同更高權限</b>先見到。</div></div>
-      </div>`,
-    actions: [{ label: '取消', class: 'btn', value: null },
-      { label: '儲存', class: 'btn-primary', onClick: el => ({
-        kind: el.querySelector('#pp-kind')?.value || it.kind || 'other',
-        title: el.querySelector('#pp-title').value.trim(),
-        label: el.querySelector('#pp-title').value.trim(),
-        url: el.querySelector('#pp-url').value.trim(),
-        desc: el.querySelector('#pp-desc').value.trim(),
-        vis: el.querySelector('#pp-vis').value,
-        ...(it.id ? { id: it.id } : {})
-      }) }]
-  });
-  if (!r) return;
-  if (!r.title || !r.url) { toast('名稱同網址都要填', 'err'); return; }
-  const fn = kind === 'social' ? saveSocial : kind === 'album' ? saveAlbum : saveLink;
-  fn(r);
-  toast('已儲存（暫存喺呢部機 —— 撳頂部「儲存到後端」先至會寫入）', 'ok');
-  refresh();
-}
+function overviewView() {
+  const groups = publicOverview();
+  const c = overviewCounts(groups);
+  const mine = currentRole();
 
-/* ============================================================
-   ② 社交媒體
-   ============================================================ */
-function socialView() {
-  const list = socials();
-  const mine = viewerRank(currentRole());
   return `
-  ${noteBox(`<b>公開乜嘢俾邊個睇。</b>
-    每一項都可以設可見範圍：${VIS_LEVELS.map(v => `<b>${v.name}</b>(${v.rank})`).join(' &lt; ')}。
-    <div class="xs mt-4">規則：設成某一級 ＝ <b>該級同更高權限</b>先見到。例如設「執委」，團員就睇唔到，領袖／團長就見到。</div>
-    <div class="xs mt-4">「其他團」係最外一層 —— 之後有<b>旅系統</b>包圍住呢個團時，其他分團嘅登記用戶就係呢一層。</div>`, 'brand')}
-  <div class="card">
-    <div class="card-head"><div><div class="card-title">社交媒體帳戶</div>
-      <div class="card-sub">Instagram、Facebook、YouTube、WhatsApp 頻道…</div></div>
-      <button class="btn btn-sm btn-primary" data-act="add-social">${icon('plus', 15)} 新增</button></div>
-    <div style="padding:14px 16px" class="col gap-10">
-      ${list.length ? list.map(x => `<div class="link-card">
-        <span class="ic">${icon(socialIcon(x.kind), 18)}</span>
-        <div class="grow" style="min-width:0">
-          <div class="semibold sm">${esc(x.title || socialName(x.kind))} ${visBadge(x.vis)}</div>
-          <div class="xs muted mt-4">${esc(x.desc || socialName(x.kind))}</div>
-          <div class="u mt-6">${esc(x.url)}</div>
-        </div>
-        <div class="row gap-6 wrap no-print" style="justify-content:flex-end">
-          <button class="btn btn-xs" data-copy="${esc(x.url)}">${icon('copy', 13)} 複製</button>
-          <button class="btn btn-xs" data-qr="${esc(x.url)}" data-qrt="${esc(x.title || socialName(x.kind))}">${icon('qr', 13)} QR</button>
-          <button class="btn btn-xs" data-open="${esc(x.url)}">${icon('external', 13)}</button>
-          <button class="btn btn-xs" data-edit-social="${esc(x.id)}">${icon('edit', 13)}</button>
-          <button class="btn btn-xs btn-ghost" data-del-social="${esc(x.id)}">${icon('trash', 13)}</button>
-        </div>
-      </div>`).join('') : empty('share', '未有社交媒體帳戶', '撳右上「新增」加入你團嘅 Instagram / Facebook / YouTube 等等')}
-    </div>
+  ${noteBox(`<b>呢頁係一覽表 —— 只係話你知「而家公開緊啲乜」。</b>
+    要<b>改</b>：①②③④⑤ 去 <b>「帳號與系統 → 旅團設定」</b>；
+    行事曆／通告／試卷嘅「邊個睇到」喺<b>各自嘅編輯器</b>設（撳下面每組右上「去改」就得）。
+    <div class="xs mt-4">層級：${VIS_LEVELS.map(v => `<b>${esc(v.name)}</b>(${v.rank})`).join(' &lt; ')} —— 設成 N ＝ <b>N 同更高權限</b>先見到。</div>`, 'brand')}
+
+  <div class="stat-grid mb-16">
+    ${stat('公開緊', c.total, '總共幾多項')}
+    ${stat('對外公開（免登入）', c.public, '登入頁／對外專頁睇到', c.public ? 'ok' : '')}
+    ${stat('要團員登入', c.byLevel.member || 0, '團員同以上')}
+    ${stat('執委以上', (c.byLevel.exco || 0) + (c.byLevel.leader || 0) + (c.byLevel.chief || 0), '收窄咗嘅內容')}
   </div>
-  <div class="xs faint mt-8">你而家嘅身份可見到 rank ${mine} 或以下嘅項目。</div>`;
+
+  ${groups.length ? groups.map(overviewGroup).join('')
+    : empty('globe', '而家乜都未公開', '去「帳號與系統 → 旅團設定」加入旅團網站／社交媒體／相簿，或者去「通告」開一張通告')}
+
+  <div class="xs faint mt-12">你而家嘅身份：<b>${esc(mine || '—')}</b> —— 上面標紅「（你睇唔到）」嘅，即係權限高過你，你自己都睇唔到。</div>`;
 }
 
-/* ============================================================
-   ③ 相簿
-   ============================================================ */
-function albumView() {
-  const list = albums();
+function overviewGroup(g) {
+  const vis = currentRole();
   return `
-  ${noteBox(`<b>活動相簿。</b>Google Photos、相簿網址、或者任何可以睇相嘅連結。
-    <div class="xs mt-4">每本相簿可以設「邊個睇到」—— 例如內部活動相片設「團員」，公開宣傳相設「其他團」。</div>`, 'brand')}
-  <div class="card">
-    <div class="card-head"><div><div class="card-title">相簿</div>
-      <div class="card-sub">活動相片、營火晚會、旅行…</div></div>
-      <button class="btn btn-sm btn-primary" data-act="add-album">${icon('plus', 15)} 新增相簿</button></div>
-    <div style="padding:14px 16px" class="col gap-10">
-      ${list.length ? list.map(x => `<div class="link-card">
-        <span class="ic">${icon('image', 18)}</span>
-        <div class="grow" style="min-width:0">
-          <div class="semibold sm">${esc(x.title)} ${visBadge(x.vis)}</div>
-          <div class="xs muted mt-4">${esc(x.desc || '')}</div>
-          <div class="u mt-6">${esc(x.url)}</div>
-        </div>
-        <div class="row gap-6 wrap no-print" style="justify-content:flex-end">
-          <button class="btn btn-xs" data-copy="${esc(x.url)}">${icon('copy', 13)} 複製</button>
-          <button class="btn btn-xs" data-qr="${esc(x.url)}" data-qrt="${esc(x.title)}">${icon('qr', 13)} QR</button>
-          <button class="btn btn-xs" data-open="${esc(x.url)}">${icon('external', 13)}</button>
-          <button class="btn btn-xs" data-edit-album="${esc(x.id)}">${icon('edit', 13)}</button>
-          <button class="btn btn-xs btn-ghost" data-del-album="${esc(x.id)}">${icon('trash', 13)}</button>
-        </div>
-      </div>`).join('') : empty('image', '未有相簿', '撳右上「新增相簿」，貼 Google Photos / 相簿網址')}
+  <div class="card mb-16">
+    <div class="card-head"><div>
+      <div class="card-title">${icon(g.icon, 16)} ${esc(g.title)} <span class="faint">· ${g.items.length}</span></div>
+      <div class="card-sub">${esc(GROUP_HINT[g.kind] || '')}</div></div>
+      <button class="btn btn-sm" data-go="${esc(g.editHash)}">${icon('edit', 14)} 去改</button></div>
+    <div>
+      ${g.items.map(it => {
+        const see = visibleTo(it.vis, vis);
+        return `<div class="list-item">
+          <span class="stat-ic">${icon(g.icon, 15)}</span>
+          <div class="li-main">
+            <div class="li-t">${esc(it.title)} ${visBadge(it.vis)}</div>
+            <div class="li-s xs faint">${esc(it.desc || '')}${it.url ? ` · ${esc(it.url)}` : ''}</div>
+          </div>
+          ${it.url ? `<button class="btn btn-xs" data-open="${esc(it.url)}">${icon('external', 13)}</button>` : ''}
+          ${!see ? `<span class="badge b-grey">你睇唔到</span>` : ''}
+          ${it.url && isLegacyUrl(it.url) ? `<span class="badge b-danger">⚠ 指去舊系統（退役之後會死）</span>` : ''}
+        </div>`;
+      }).join('')}
     </div>
   </div>`;
 }
 
-/* ============================================================
-   ④ 網站與其他連結
-   ============================================================ */
-function linkView() {
-  const p = publicProfile();
-  const list = otherLinks();
-  return `
-  <div class="card mb-16">
-    <div class="card-head"><div><div class="card-title">旅團網站</div>
-      <div class="card-sub">你團自己嘅網頁（學校網頁空間 / 自訂網域）</div></div></div>
-    <div style="padding:14px 16px" class="row gap-8 wrap" >
-      <input class="input grow" id="pp-site" value="${esc(p.site?.url || '')}" placeholder="https://…" style="min-width:240px">
-      ${visSelect('site', p.site?.vis || 'member')}
-      <button class="btn btn-sm btn-primary" data-act="save-site">${icon('save', 15)} 儲存</button>
-    </div>
-  </div>
-  <div class="card mb-16">
-    <div class="card-head"><div><div class="card-title">旅團簡介（公開）</div>
-      <div class="card-sub">一段文字，會出現喺團員入口</div></div></div>
-    <div style="padding:14px 16px" class="col gap-8">
-      <textarea class="input" id="pp-about" rows="3" placeholder="例：82 旅成立於 1978 年，每周五晚七時喺…">${esc(p.about?.text || '')}</textarea>
-      <div class="row gap-8 wrap">${visSelect('about', p.about?.vis || 'member')}
-        <button class="btn btn-sm btn-primary" data-act="save-about">${icon('save', 15)} 儲存簡介</button></div>
-    </div>
-  </div>
-  <div class="card">
-    <div class="card-head"><div><div class="card-title">其他有用連結</div>
-      <div class="card-sub">總會、YMIS、物品供應社…或者任何你覺得團員用得到嘅</div></div>
-      <div class="row gap-6">
-        <button class="btn btn-sm" data-act="add-suggested" title="一次過加入 ${SUGGESTED_LINKS.length} 條常用連結">${icon('plus', 15)} 加入常用連結</button>
-        <button class="btn btn-sm btn-primary" data-act="add-link">${icon('plus', 15)} 新增</button></div></div>
-    <div style="padding:14px 16px" class="col gap-10">
-      ${list.length ? list.map(x => `<div class="link-card">
-        <span class="ic">${icon('link', 18)}</span>
-        <div class="grow" style="min-width:0">
-          <div class="semibold sm">${esc(x.title)} ${visBadge(x.vis)}</div>
-          <div class="xs muted mt-4">${esc(x.desc || '')}</div>
-          <div class="u mt-6">${esc(x.url)}</div>
-        </div>
-        <div class="row gap-6 wrap no-print" style="justify-content:flex-end">
-          <button class="btn btn-xs" data-copy="${esc(x.url)}">${icon('copy', 13)} 複製</button>
-          <button class="btn btn-xs" data-qr="${esc(x.url)}" data-qrt="${esc(x.title)}">${icon('qr', 13)} QR</button>
-          <button class="btn btn-xs" data-open="${esc(x.url)}">${icon('external', 13)}</button>
-          <button class="btn btn-xs" data-edit-link="${esc(x.id)}">${icon('edit', 13)}</button>
-          <button class="btn btn-xs btn-ghost" data-del-link="${esc(x.id)}">${icon('trash', 13)}</button>
-        </div>
-      </div>`).join('') : empty('link', '未有其他連結', '撳「加入常用連結」一次過加入總會／YMIS／物品供應社')}
-    </div>
-  </div>`;
-}
+const GROUP_HINT = {
+  about: '一段文字，出喺團員入口同對外專頁',
+  site: '旅團自己嘅網頁',
+  social: 'IG／FB／YouTube／WhatsApp 頻道…',
+  album: '活動相、宣傳相',
+  link: '總會、YMIS、物品供應社…',
+  event: '行事曆 —— 設「對外公開」就可以畀非團員睇活動',
+  notice: '通告 —— 預設「對外公開」（同而家 notice.html 一樣，免登入睇到）',
+  quiz: '試卷 —— 團員登入先填到'
+};
 
 /* ============================================================
    ① 團員入口（原有內容）
@@ -277,8 +162,6 @@ function hubView() {
     </div>
   </div>` : ''}
   <div class="mb-16"></div>
-
-  ${legacyBanner()}
 
   <div class="card mb-16">
     <div class="card-head"><div><div class="card-title">已包喺團員入口入面</div>
@@ -396,44 +279,8 @@ ${hubUrl}`)) toast('已複製團員入口', 'ok');
   root.querySelectorAll('[data-act="print-hub"], [data-act="print-poster"]').forEach(b =>
     b.addEventListener('click', () => hubUrl && poster(hubUrl, '團員入口（掃一次齊晒）')));
   root.querySelector('[data-act="settings"]')?.addEventListener('click', () => settingsDialog());
+  root.querySelector('[data-act="preview"]')?.addEventListener('click', () => previewPublicPage());
 
-  /* ---- 公開資料：社交媒體 / 相簿 / 連結 ---- */
-  const findIn = (arr, id) => arr.find(x => x.id === id);
-  root.querySelector('[data-act="add-social"]')?.addEventListener('click', () => editDialog('social', null));
-  root.querySelector('[data-act="add-album"]')?.addEventListener('click', () => editDialog('album', null));
-  root.querySelector('[data-act="add-link"]')?.addEventListener('click', () => editDialog('link', null));
-  root.querySelectorAll('[data-edit-social]').forEach(b => b.addEventListener('click', () => editDialog('social', findIn(socials(), b.dataset.editSocial))));
-  root.querySelectorAll('[data-edit-album]').forEach(b => b.addEventListener('click', () => editDialog('album', findIn(albums(), b.dataset.editAlbum))));
-  root.querySelectorAll('[data-edit-link]').forEach(b => b.addEventListener('click', () => editDialog('link', findIn(otherLinks(), b.dataset.editLink))));
-  root.querySelectorAll('[data-del-social]').forEach(b => b.addEventListener('click', async () => {
-    if (!(await confirmDlg({ title: '刪除社交媒體帳戶', okText: '確定刪除', danger: true, message: '確定刪除呢個帳戶連結？' }))) return;
-    removeSocial(b.dataset.delSocial); toast('已刪除', 'ok'); refresh();
-  }));
-  root.querySelectorAll('[data-del-album]').forEach(b => b.addEventListener('click', async () => {
-    if (!(await confirmDlg({ title: '刪除相簿', okText: '確定刪除', danger: true, message: '確定刪除呢本相簿？' }))) return;
-    removeAlbum(b.dataset.delAlbum); toast('已刪除', 'ok'); refresh();
-  }));
-  root.querySelectorAll('[data-del-link]').forEach(b => b.addEventListener('click', async () => {
-    if (!(await confirmDlg({ title: '刪除連結', okText: '確定刪除', danger: true, message: '確定刪除呢條連結？' }))) return;
-    removeLink(b.dataset.delLink); toast('已刪除', 'ok'); refresh();
-  }));
-  root.querySelector('[data-act="add-suggested"]')?.addEventListener('click', () => {
-    const r = addSuggestedLinks('member');
-    toast(r.added ? `已加入 ${r.added} 條常用連結` : '常用連結已經全部加咗', r.added ? 'ok' : 'info');
-    refresh();
-  });
-  root.querySelector('[data-act="save-site"]')?.addEventListener('click', () => {
-    const url = root.querySelector('#pp-site')?.value.trim() || '';
-    const vis = root.querySelector('[data-vis="site"]')?.value || 'member';
-    savePublicProfile({ site: { url, vis } });
-    toast('已儲存旅團網站', 'ok'); refresh();
-  });
-  root.querySelector('[data-act="save-about"]')?.addEventListener('click', () => {
-    const text = root.querySelector('#pp-about')?.value.trim() || '';
-    const vis = root.querySelector('[data-vis="about"]')?.value || 'member';
-    savePublicProfile({ about: { text, vis } });
-    toast('已儲存旅團簡介', 'ok'); refresh();
-  });
   root.querySelector('[data-act="migrate-urls"]')?.addEventListener('click', () => {
     const n = migrateLegacyPublicUrls();
     if (n > 0) {
@@ -508,6 +355,17 @@ async function settingsDialog() {
   commit();
   toast('已儲存公開頁網址', 'ok');
   window.dispatchEvent(new CustomEvent('v82:refresh'));
+}
+
+/** 「預覽對外專頁」—— 免登入嗰份（淨係 show「對外公開」嘅嘢） */
+function previewPublicPage() {
+  const g = publicGroupsFor('other');
+  modal({
+    title: '對外專頁（免登入）', wide: true,
+    sub: g.length ? '呢度就係未登入嘅人喺登入頁會見到嘅嘢' : '仲未有對外公開嘅內容',
+    body: publicPageHtml({ unitName: profile().name }),
+    actions: [{ label: '關閉', class: 'btn-primary', value: null }]
+  });
 }
 
 export function refresh() { window.dispatchEvent(new CustomEvent('v82:refresh')); }

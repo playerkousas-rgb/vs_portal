@@ -19,7 +19,7 @@
 import { loadRegistry, defaultUnitCode } from './lib/units.js';
 import { init, load, update } from './lib/store.js';
 import { profile, publicEvents, RSVP, quizzes, activeMembers, publicPageUrl, troopPublicLinks, identityOf, IDENTITIES } from './lib/model.js';
-import { publicProfile, visibleTo, socialName, socialIcon } from './lib/public-profile.js';
+import { publicProfile, visibleTo, socialName, socialIcon, contentVis } from './lib/public-profile.js';
 import { loadMe, saveMe } from './lib/member-me.js';
 import { loadHubAuth, saveHubAuth, clearHubAuth } from './lib/hub-session.js';
 import { loginMember, changeMemberOwnPassword, TEMP_PASSWORD } from './lib/auth.js';
@@ -246,6 +246,10 @@ function viewerIdentity(auth) {
   const m = activeMembers().find(x => x.id === auth?.id) || null;
   return m ? identityOf(m) : '';
 }
+/** 行事曆／通告／試卷：呢位團員睇唔睇到？（各自嘅編輯器設「邊個睇到」） */
+function canSeeContent(rec, kind, role) {
+  return visibleTo(contentVis(rec, kind), role);
+}
 function safeHref(u) {
   const s = String(u || '').trim();
   if (!s) return '';
@@ -333,7 +337,9 @@ function home(auth) {
   /* ① 活動：分「即將舉行」同「過往」—— 過往嘅唔會排先做提醒，
      但**內容照留得住**：報咗名嘅團員想睇返詳情、遲咗想參加嘅可以
      搵領袖／執委跟進，都唔會搵唔返。 */
-  const evAll = publicEvents();
+  const role = viewerIdentity(auth);
+  /* ★ 行事曆都有「邊個睇到」（喺活動編輯器設）—— 睇唔到嘅唔會出 */
+  const evAll = publicEvents().filter(e => canSeeContent(e, 'event', role));
   const isPast = e => {
     const end = String(e.dateEnd || e.date || '').slice(0, 10);
     return !!end && end < today;
@@ -341,10 +347,12 @@ function home(auth) {
   const evs = evAll.filter(e => !isPast(e));
   const pastEvs = evAll.filter(isPast).sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
   /* ② 試卷：closed 嘅唔顯示（同以前一樣） */
-  const qz = quizzes().filter(q => q.status !== 'closed');
+  /* ★ 試卷都有「邊個睇到」（喺試卷編輯器設） */
+  const qz = quizzes().filter(q => q.status !== 'closed' && canSeeContent(q, 'quiz', role));
   /* ③ 通告：已發布嘅全部顯示 —— 截止咗報名嘅會擺後＋標「已截止」，
      內容照開得到（成員遲咗想報就問領袖／執委）；草稿先係完全唔出街。 */
-  const notices = (load().notices || []).filter(n => n.status === 'published')
+  /* ★ 通告都有「邊個睇到」（喺通告編輯器設，預設「對外公開」＝免登入都睇到） */
+  const notices = (load().notices || []).filter(n => n.status === 'published' && canSeeContent(n, 'notice', role))
     .sort((a, b) => Number(closedN(a, today)) - Number(closedN(b, today)));
   const media = hubPublic(auth);
   const u = code();

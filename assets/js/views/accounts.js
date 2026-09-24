@@ -23,6 +23,7 @@ import { esc, icon, modal, confirmDlg, toast, download, copyText, fmtDate, avata
 import { download as dlFile, toCSV, stamp } from '../lib/exporter.js';
 import { go } from '../lib/router.js';
 import { pageHead, tabs, empty, kv, stat, noteBox } from './ui.js';
+import { renderPublicLinksEditor, mountPublicLinksEditor } from './public-links-editor.js';
 
 let tab = 'accounts';
 
@@ -35,6 +36,16 @@ const PASSWORD_RULES = [
   ['執委', '只可以改自己嘅密碼，可以改資料。', '唔可以改身份（＝唔可以改權限）。'],
   ['團員', '只可以改自己嘅密碼。', '只入團員入口（members.html）。']
 ];
+
+/** 舊「團員睇到嘅公開連結」6 個槽已經自動搬入公開資料 —— 話聲領袖知 */
+function legacyTroopLinksNote() {
+  const L = settings()?.troopLinks || {};
+  const n = Object.values(L).filter(v => String(v || '').trim()).length;
+  if (!n) return '';
+  return noteBox(`<b>舊嗰 ${n} 條「團員睇到嘅公開連結」已經自動搬咗落下面。</b>
+    以後統一喺「公開資料」一欄度改（每一項仲可以設「邊個睇到」）。
+    去<b>側邊欄「公開資料」</b>可以一眼睇晒而家公開緊啲乜。`);
+}
 
 export function render(params) {
   /* ★ 2026-09-24 團長：「權限總表由身份與帳號 移去 用戶與身份」→ 呢度唔再有 perms 分頁 */
@@ -201,15 +212,14 @@ function unitView() {
         </div>
       </div>
 
+      ${legacyTroopLinksNote()}
+
       <div class="card">
-        <div class="card-head"><div><div class="card-title">團員睇到嘅公開連結</div>
-          <div class="card-sub">團員用 YMIS＋密碼入入口之後先見到（Drive、相簿、IG、FB、網頁）</div></div></div>
-        <div style="padding:18px">
-          ${[['drive', 'Google Drive'], ['album', '相簿'], ['instagram', 'Instagram'], ['facebook', 'Facebook'], ['website', '網頁'], ['whatsapp', 'WhatsApp']].map(([k, l]) => `
-            <div class="field mt-8"><label class="label">${esc(l)}</label>
-              <input class="input" id="tl-${k}" value="${esc((s.troopLinks || {})[k] || '')}" placeholder="https://…"></div>`).join('')}
-          <button class="btn btn-primary mt-16" data-act="save-links">${icon('save', 16)} 儲存公開連結</button>
-          <div class="hint mt-8">留空就唔顯示嗰項。連結只喺團員登入後出現，外人掃 QR 未入密碼睇唔到。</div>
+        <div class="card-head"><div><div class="card-title">公開資料（填嘢嘅位）</div>
+          <div class="card-sub">旅團網站、關於我團、社交媒體、相簿、其他連結 —— 每項可以設「邊個睇到」</div></div>
+          <button class="btn btn-sm" data-go="#/links">${icon('globe', 14)} 去睇一覽表</button></div>
+        <div style="padding:16px 18px">
+          ${renderPublicLinksEditor()}
         </div>
       </div>
 
@@ -358,6 +368,11 @@ function auditView() {
 export function mount(root) {
   root.querySelectorAll('[data-go]').forEach(el => el.addEventListener('click', () => go(el.dataset.go)));
 
+  /* 公開資料**填嘢嘅位**（社交媒體／相簿／網站／關於我團／其他連結）。
+     ★ 團長 2026-09-24：「公開資料其實唔係要填嘢嘅，係方便了解有乜嘢而家正喺度公開」
+     —— 所以填嘢放喺「旅團設定」，睇嘢（只讀一覽表）喺側邊欄「公開資料」。 */
+  mountPublicLinksEditor(root);
+
   /* ★ 名冊個人操作（身份與帳號分頁）：密碼 / 編輯 / 設為團長 */
   root.querySelectorAll('[data-mpw]').forEach(b => b.addEventListener('click', async () => {
     const m = members().find(x => x.id === b.dataset.mpw);
@@ -445,19 +460,6 @@ export function mount(root) {
       } catch { /* 年度 tag 計唔到都唔阻住儲存 */ }
       commit();
       toast('已儲存旅團資料', 'ok'); refresh(); return;
-    }
-    if (act === 'save-links') {
-      const v = k => root.querySelector(k)?.value.trim() || '';
-      const db = load();
-      db.settings = {
-        ...(db.settings || {}),
-        troopLinks: {
-          drive: v('#tl-drive'), album: v('#tl-album'), instagram: v('#tl-instagram'),
-          facebook: v('#tl-facebook'), website: v('#tl-website'), whatsapp: v('#tl-whatsapp')
-        }
-      };
-      commit();
-      toast('已儲存團員公開連結', 'ok'); refresh(); return;
     }
     if (act === 'env-template') {
       if (!isSuper()) { toast('只有超級管理員可以開新旅團（要改 Vercel 設定）', 'err'); return; }

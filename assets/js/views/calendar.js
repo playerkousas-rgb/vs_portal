@@ -4,7 +4,8 @@ import { memberName, RSVP, rsvpCounts, attendanceStats, activeMembers } from '..
 import { esc, icon, uid, todayISO, toast, modal, confirmDlg } from '../lib/util.js';
 import { go } from '../lib/router.js';
 import { can } from '../lib/auth.js';
-import { pageHead, tabs, stat, empty, noteBox } from './ui.js';
+import { pageHead, tabs, stat, empty, noteBox, visSelect } from './ui.js';
+import { contentVis } from '../lib/public-profile.js';
 
 let tab = 'cal';
 let cursor = todayISO().slice(0, 7);
@@ -293,10 +294,8 @@ function editor(e, query = {}) {
       <div class="field"><label class="label">種類</label>
         <select class="select" id="e-kind">${Object.entries(KINDS).map(([k, v]) => `<option value="${k}" ${d.kind === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
       <div class="field" style="grid-column:1/-1"><label class="label">邊個睇到</label>
-        <select class="select" id="e-vis">
-          <option value="members" ${d.visibility !== 'exco' ? 'selected' : ''}>團員可見（集會／活動）</option>
-          <option value="exco" ${d.visibility === 'exco' ? 'selected' : ''}>只限執委＋領袖（例：EC 會議）</option>
-        </select></div>
+        ${visSelect('event', contentVis(d, 'event'), 'id="e-vis"')}
+        <div class="hint mt-4">設「對外公開」＝ <b>免登入</b>都睇到（會出現喺登入頁「公開資料」／對外專頁）。去側邊欄<b>公開資料</b>可以一眼睇晒而家公開緊啲乜。</div></div>
       <div class="field"><label class="label">費用（可空）</label><input class="input" id="e-fee" value="${esc(d.fee || '')}"></div>
       <div class="field"><label class="label">回覆截止</label><input class="input" type="date" id="e-dead" value="${esc(d.deadline || '')}"></div>
       <div class="field" style="grid-column:1/-1"><label class="label">內容／資訊</label>
@@ -364,7 +363,12 @@ export function mount(root, params) {
     else if (!dateEnd || dateEnd < date) dateEnd = date;
     const payload = {
       title, date, dateEnd, time: v('#e-time'), venue: v('#e-venue'),
-      kind: v('#e-kind') || 'activity', visibility: v('#e-vis') || 'members',
+      kind: v('#e-kind') || 'activity',
+      /* ★「邊個睇到」升級做五級（對外公開／團員／執委／領袖／團長）。
+         visibility 係舊欄（得 members／exco 兩級），繼續寫住等舊代碼（團員入口
+         嘅 `visibility !== 'exco'` 過濾、Code.gs 報表）唔使改都照行。 */
+      vis: v('#e-vis') || 'member',
+      visibility: v('#e-vis') === 'exco' ? 'exco' : 'members',
       detail: v('#e-detail'), fee: v('#e-fee'), deadline: v('#e-dead'), status: 'ok'
     };
     if (params.id && params.id !== 'new') {

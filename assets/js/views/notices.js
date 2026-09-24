@@ -739,7 +739,10 @@ export function mount(root, params) {
           ...theInfoPatch(root),
           needSignup: root.querySelector('#n-need').checked,
           fields: draftFields,
-          attachments: draftPhotos.photos
+          attachments: draftPhotos.photos,
+          /* ★「邊個睇到」（五級）—— 通告預設對外公開（免登入睇到，同而家一樣）。
+             去側邊欄「公開資料」可以一眼睇晒而家公開緊啲乜。 */
+          vis: root.querySelector('#n-vis')?.value || 'other'
         };
         if (act === 'save-publish' || b.dataset.publish === '1') {
           patch.status = 'published';

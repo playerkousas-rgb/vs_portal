@@ -308,8 +308,10 @@ http.createServer((req, res) => {
     /* v2.5.0 公開通告：由「資料庫」讀（同真 Code.gs 一樣） */
     else if (a === 'notices') {
       const r = loadDb(String(body.unit || ''));
+      /* ★ 同真 Code.gs（gastemplate.js loadPublicNotices）一致：
+         免登入公開接口淨係出「對外公開」（vis ＝ 'other'，冇設當對外公開）嗰啲通告。 */
       const fromDb = (r.found && Array.isArray(r.db.notices))
-        ? r.db.notices.filter(n => n && n.status === 'published' && n.id) : [];
+        ? r.db.notices.filter(n => n && n.status === 'published' && n.id && String(n.vis || 'other') === 'other') : [];
       out = { ok: true, success: true, notices: fromDb };
     }
     /* v2.5.0 公開頁報名：寫入資料庫（同真 Code.gs 一樣，同名防重複） */

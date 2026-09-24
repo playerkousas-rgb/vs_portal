@@ -89,33 +89,20 @@ async function boot() {
     bootError = e;
     return renderFatal(e);
   }
-  /* ★ 2026-09-24 團長：「每個分頁有他的儲存按鈕，如果離開分頁前有未儲的東西…
-     會提示用戶有未暫存遊覽器的改動」。
-     · 未撳分頁「儲存」嘅表單改動 ＝ 草稿（guard.js）→ 離開前問，揀「放棄」就清走
-     · 已經撳咗「儲存」（寫入瀏覽器 db）嘅改動 ＝ 保留，等頂部「儲存到後端」寫入 */
-  let guardHash = location.hash;
-  let guardBypass = false;
+  /* ★ 離開分頁（2026-09-24 團長定案，再修訂）：
+     團長問：「如果分頁走嗰時無 SAVE 就唔得了，定係我哋當佢自動遊覽器儲存晒？」
+     → **當佢自動瀏覽器儲存咗。** 因為「暫存喺瀏覽器」同「寫入後端」係兩件事：
+       團長嘅鐵律只係「**寫入後端得一個掣**」，寫瀏覽器點自動都唔犯規。
+     所以轉分頁：
+       · 未撳分頁「儲存」嘅表單改動 ＝ 草稿 → **即刻 flush 落瀏覽器並保留**
+         （唔會彈框問、唔會放棄），只係用 toast 話你知返嚟可以撳「還原」；
+       · 已經撳咗「儲存」嘅改動 ＝ 冚唪唥留喺瀏覽器 db，等頂部「儲存到後端」。
+     ★ 要彈框問嘅得一樣：**未寫入後端**（尤其帳戶級）—— 嗰個喺登出／閂頁問
+       （confirmLogout ／ beforeunload），因為嗰啲先係會「第二部機登唔到」嘅嘢。 */
   window.addEventListener('hashchange', async () => {
-    if (guardBypass) { guardBypass = false; guardHash = location.hash; render(); return; }
-    const { activeDrafts, discardActiveDrafts } = await import('./lib/guard.js');
-    const drafts = activeDrafts();
-    if (!drafts.length || guardHash === location.hash) { guardHash = location.hash; render(); return; }
-    const pendAcc = remoteApi?.pendingAccounts?.() || 0;
-    const r = await modal({
-      title: '呢個分頁有未儲存嘅改動',
-      body: `<div class="note-box warn">${icon('alert', 15)}<div>
-          你喺呢個分頁改咗嘢但<b>未撳「儲存」</b>（${drafts.length} 份草稿）。
-          <div class="xs mt-4">已經撳咗「儲存」嘅改動<b>唔受影響</b> —— 佢哋已寫入呢部機，等頂部「儲存到後端」寫入後端。</div>
-          ${pendAcc ? `<div class="xs mt-4" style="color:var(--danger)">⚠ 另外有 <b>${pendAcc}</b> 個帳戶改動未寫入後端 —— 未寫入，佢哋喺其他裝置登唔到。</div>` : ''}
-        </div></div>`,
-      actions: [
-        { label: '留低繼續改', class: 'btn-primary', value: 'stay' },
-        { label: '離開（放棄未儲存改動）', class: 'btn-accent', value: 'drop' }
-      ]
-    });
-    if (r === 'stay') { guardBypass = true; location.hash = guardHash; return; }
-    discardActiveDrafts();
-    guardHash = location.hash;
+    const { stashActiveDrafts } = await import('./lib/guard.js');
+    const n = stashActiveDrafts();
+    if (n) toast(`呢個分頁有 ${n} 份未完成草稿 —— 已自動暫存喺呢部機，返嚟撳「還原」就攞得返`, 'info');
     render();
   });
   window.addEventListener('v82:refresh', render);
@@ -1071,6 +1058,30 @@ let pickedUnit = null;
    改權限＝改身份（「用戶」頁），所以門口只需要一個：
    打自己嘅電郵（團長／領袖）／YMIS（執委／團員）＋ 密碼。
    ============================================================ */
+/**
+ * ★ 登入頁「公開資料」（免登入）—— 團長 2026-09-24：
+ *   「各團嘅公開資料，應該係喺登入帳戶嗰個版面睇到；未來就係登入咗旅系統之後，
+ *     喺選擇支部進入前應該會睇到。」
+ *
+ * 所以未登入都睇得。淨係 show 可見範圍 ＝ 「對外公開」（rank 1）嘅嘢 ——
+ * 團員級／執委級／領袖級嘅內容一律唔會喺呢度出現（未登入冇身份＝睇唔到）。
+ *
+ * 資料由邊度嚟：開機 syncBoot() 已經由後端拉咗成份資料庫落嚟（登入核對要用），
+ * 所以呢度直接讀本機就得，唔使再問後端、亦唔會洩露任何團員資料。
+ */
+function showPublicInfo() {
+  const u = unitEntry(currentUnit() || defaultUnitCode()) || {};
+  import('./lib/public-profile.js').then(({ publicPageHtml, publicGroupsFor }) => {
+    const g = publicGroupsFor('other');
+    modal({
+      title: '公開資料', wide: true,
+      sub: `${u.name || '呢個旅團'} · 免登入睇到嘅嘢（${g.reduce((n, x) => n + x.items.length, 0)} 項）`,
+      body: publicPageHtml({ unitName: u.name }),
+      actions: [{ label: '關閉', class: 'btn-primary', value: null }]
+    });
+  }).catch(() => toast('讀唔到公開資料', 'err'));
+}
+
 function renderLogin() {
   document.body.classList.add('login-body');
   const units = unitList();
@@ -1131,6 +1142,7 @@ function renderLogin() {
         </form>
         <div class="hint mt-8">名冊有個名但未設密碼？首次用 <code>${TEMP_PASSWORD}</code> 入，入去即刻要改。</div>
 
+        <button class="btn btn-block mt-8" type="button" id="btnPublicInfo">${icon('globe', 16)} 睇吓${esc(u.name || '呢個旅團')}嘅公開資料（免登入）</button>
         <button class="btn btn-ghost btn-block mt-8" type="button" id="btnForgotPassword">忘記密碼？用 EMAIL 重設</button>
         <button class="btn btn-block mt-8" type="button" id="btnApply">${icon('plus', 16)} 未開戶？申請開戶</button>
 
@@ -1173,6 +1185,7 @@ function renderLogin() {
   app.querySelector('#loginGuide')?.addEventListener('click', openDeployGuideModal);
   app.querySelector('#btnGate')?.addEventListener('click', () => forgetChoice());
   app.querySelector('#btnGate2')?.addEventListener('click', () => forgetChoice());
+  app.querySelector('#btnPublicInfo')?.addEventListener('click', () => showPublicInfo());
 
   app.querySelector('#btnApply')?.addEventListener('click', async () => {
     const r = await modal({

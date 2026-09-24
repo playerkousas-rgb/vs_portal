@@ -1489,13 +1489,49 @@ section('公開資料（免登入公開頁）');
   ok('borrow.html 存在', fs.existsSync(path.join(ROOT, 'borrow.html')));
   ok('public-borrow.js 存在', fs.existsSync(path.join(ROOT, 'assets/js/public-borrow.js')));
 
+  /* ★ 2026-09-24 團長（定位修正）：
+     「公開資料其實**唔係要填嘢嘅**，係方便了解有乜嘢而家正喺度公開。」
+     → 預設嗰版係**只讀一覽表**（冇輸入位），填嘢要去「旅團設定」；
+       QR／海報嗰啲分享掣喺另一個分頁「團員入口（分享）」。 */
+  /* 種啲公開資料落去，先至驗到一覽表有聚合晒「連結 ＋ APP 內內容」 */
+  {
+    const db = store.load();
+    db.publicProfile = {
+      socials: [{ id: 'pp_test_ig', kind: 'instagram', title: '82 旅 IG', url: 'https://instagram.com/test82', desc: '活動相', vis: 'other' }],
+      albums: [{ id: 'pp_test_al', title: '2026 夏季營', url: 'https://photos.example/summer', desc: '', vis: 'member' }],
+      links: [{ id: 'pp_test_l', title: '香港童軍總會', url: 'https://www.scout.org.hk', desc: '', vis: 'other' }],
+      site: { url: 'https://troop82.example.org', title: '82 旅網站', desc: '', vis: 'other' },
+      about: { text: '我團 1982 年成立。', vis: 'member' }
+    };
+    store.commit();
+  }
+
   window.location.hash = '#/links';
   window.dispatchEvent(new window.HashChangeEvent('hashchange'));
   await new Promise(r => setTimeout(r, 60));
   const v3 = doc.getElementById('view');
   ok('「公開資料」頁可以渲染', (v3.innerHTML || '').length > 400, String((v3.innerHTML || '').length));
-  ok('頁上有 QR 掣', v3.querySelectorAll('[data-qr]').length >= 3, String(v3.querySelectorAll('[data-qr]').length));
-  ok('頁上有列印海報掣', v3.querySelectorAll('[data-poster]').length >= 3);
+  ok('★ 一覽表版：冇任何輸入位（唔係填嘢嘅位）',
+    v3.querySelectorAll('input:not([type=checkbox]):not([type=radio]), textarea, select').length === 0,
+    String(v3.querySelectorAll('input, textarea, select').length));
+  ok('★ 一覽表有「公開緊／對外公開」統計', /公開緊/.test(v3.textContent) && /對外公開/.test(v3.textContent));
+  ok('★ 一覽表聚合埋 APP 內內容（行事曆／通告／試卷）',
+    /行事曆/.test(v3.textContent) && /通告/.test(v3.textContent) && /試卷/.test(v3.textContent),
+    v3.textContent.slice(0, 160));
+  ok('★ 一覽表出齊 5 類連結內容', ['關於我團', '旅團網站', '社交媒體', '相簿', '其他連結']
+    .every(t => v3.textContent.includes(t)), v3.textContent.slice(0, 200));
+  ok('★ 每項都標明「邊個睇到」', v3.textContent.includes('對外公開以上') && v3.textContent.includes('團員以上'));
+  ok('★ 每組都有「去改」掣（跳去真正填嘢嗰個位）', v3.querySelectorAll('[data-go]').length >= 3,
+    String(v3.querySelectorAll('[data-go]').length));
+  ok('★ 有「預覽對外專頁」掣（免登入嗰份）', !!v3.querySelector('[data-act="preview"]'));
+
+  window.location.hash = '#/links/hub';
+  window.dispatchEvent(new window.HashChangeEvent('hashchange'));
+  await new Promise(r => setTimeout(r, 60));
+  const v3b = doc.getElementById('view');
+  ok('「團員入口（分享）」分頁可以渲染', (v3b.innerHTML || '').length > 400, String((v3b.innerHTML || '').length));
+  ok('分享分頁有 QR 掣', v3b.querySelectorAll('[data-qr]').length >= 3, String(v3b.querySelectorAll('[data-qr]').length));
+  ok('分享分頁有列印海報掣', v3b.querySelectorAll('[data-poster]').length >= 3);
   ok('側邊欄有「公開資料」（已由「成員連結」改名）', /公開資料/.test(doc.querySelector('.sidebar')?.textContent || ''));
   /* ★ 2026-09-24 團長：「進入旅團後,旁邊選單第二行『選擇旅團』沒有用，都進入了還選什麼？
      只須要下方登出」—— 呢度係 DOM 級驗證（gate-env 嗰邊開唔到完整殼，只做源碼級檢查）。 */

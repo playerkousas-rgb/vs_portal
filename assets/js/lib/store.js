@@ -53,6 +53,46 @@ export const LEGACY_SHARED_ACCOUNTS = ['acc_leader', 'acc_exco'];
 export const LEGACY_SHARED_USERNAMES = ['leader', 'exco'];
 
 /** 清走舊版種落嘅共用帳戶（領袖／執行委員會）。@returns {boolean} 有冇改動 */
+/**
+ * 一次過把舊「旅團設定 → 團員睇到嘅公開連結」6 個槽搬入 `db.publicProfile`。
+ * 放喺 store.js（而唔係 public-profile.js）係為咗唔好整個循環 import
+ * （public-profile.js 要 import store.js 嘅 load／commit）。
+ * @returns {boolean} 有冇搬過嘢（有就要 persistLocalOnly）
+ */
+export function migrateTroopLinks(db) {
+  if (!db || db._troopLinksMigrated) return false;
+  const L = db.settings?.troopLinks || {};
+  db._troopLinksMigrated = true;
+  const urls = Object.values(L).map(v => String(v || '').trim()).filter(Boolean);
+  if (!urls.length) return true;                    // 冇嘢要搬，但記低已經搬過
+  const pp = db.publicProfile || (db.publicProfile = {});
+  ['socials', 'albums', 'links'].forEach(k => { if (!Array.isArray(pp[k])) pp[k] = []; });
+  pp.site = pp.site || { url: '', vis: 'member' };
+  const have = new Set([...pp.socials, ...pp.albums, ...pp.links]
+    .map(x => String(x.url || '').trim().replace(/\/+$/, '')));
+  const norm = u => String(u).trim().replace(/\/+$/, '');
+  const mk = () => `pp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+  const put = (arr, rec) => {
+    if (have.has(norm(rec.url))) return;
+    have.add(norm(rec.url));
+    arr.push({ id: mk(), ...rec });
+  };
+  const SOCIAL = { instagram: 'Instagram', facebook: 'Facebook', whatsapp: 'WhatsApp' };
+  let n = 0;
+  Object.keys(SOCIAL).forEach(k => {
+    const u = String(L[k] || '').trim();
+    if (!u) return;
+    put(pp.socials, { kind: k, title: `旅團${SOCIAL[k]}`, url: u, desc: SOCIAL[k], vis: 'member' }); n++;
+  });
+  if (String(L.album || '').trim()) { put(pp.albums, { title: '活動相簿', url: String(L.album).trim(), desc: '活動相', vis: 'member' }); n++; }
+  if (String(L.drive || '').trim()) { put(pp.links, { title: 'Google Drive', url: String(L.drive).trim(), desc: '雲端硬碟／共用資料夾', vis: 'member' }); n++; }
+  if (String(L.website || '').trim() && !String(pp.site?.url || '').trim()) {
+    pp.site = { url: String(L.website).trim(), title: '旅團網頁', desc: '', vis: pp.site?.vis || 'member' }; n++;
+  }
+  if (n) console.info(`[store] 已把 ${n} 條舊「旅團設定」公開連結搬入公開資料`);
+  return true;
+}
+
 export function migrateSharedAccounts(db) {
   if (!db || !Array.isArray(db.accounts) || !db.accounts.length) return false;
   const before = db.accounts.length;
@@ -345,6 +385,16 @@ export async function init(opts = {}) {
   if (migrateMemberKeys(state.db)) persistLocalOnly();
   // 期初結餘：舊嘅全域數字如果係上年度嘅期初，自動搬返去對應年度（見 migrateOpeningBalances）
   if (migrateOpeningBalances(state.db)) persistLocalOnly();
+  /* ★ 公開資料統一（2026-09-24 團長）：
+     「旅團設定嗰啲 LINK 都會放埋係公開資料度，理論上所有公開嘅資料都會喺公開資料睇到
+      —— 旅團設定嗰啲料基本上都係一啲公開資料而已。」
+
+     所以舊「旅團設定 → 團員睇到嘅公開連結」嗰 6 個槽（Drive／相簿／IG／FB／網頁／
+     WhatsApp）**一次過搬入 `db.publicProfile`**，之後：
+       · 填嘢嘅位 ＝ 旅團設定（`#/admin/settings`）
+       · 睇嘢嘅位 ＝ 公開資料（`#/links`，只讀一覽表）
+     搬完舊資料一條都唔會唔見。 */
+  if (migrateTroopLinks(state.db)) persistLocalOnly();
   // 後端設定升級：舊資料庫（未有 sync 設定）自動補上 Registry / unit.json 嘅 Apps Script 網址
   {
     const before = JSON.stringify([state.db.sync?.url || '', state.db.settings?.notice?.submitUrl || '', state.db.settings?.publicEntry?.submitUrl || '', state.db.settings?.publicBorrow?.submitUrl || '']);

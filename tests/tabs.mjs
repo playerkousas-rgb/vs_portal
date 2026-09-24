@@ -113,7 +113,9 @@ const SUITES = [
   { name: '帳號與系統', home: '#/admin', tabs: ['unit', 'data', 'audit'] },
   { name: '通告', home: '#/notices', tabs: ['signups', 'settings'] },
   { name: '資料管理（原表格與同步）', home: '#/tables', tabs: ['source', 'sync', 'data'] },
-  { name: '公開資料（原成員連結）', home: '#/links', tabs: ['social', 'album', 'link'] },
+  /* ★ 2026-09-24 團長：「公開資料其實唔係要填嘢嘅，係方便了解有乜嘢而家正喺度公開」
+     → 分頁由「社交／相簿／連結（三個填嘢位）」變成「一覽 ／ 團員入口（分享）」。 */
+  { name: '公開資料（原成員連結）', home: '#/links', tabs: ['overview', 'hub'] },
   { name: '財政', home: '#/finance', tabs: ['reports', 'fees', 'claims', 'budgets', 'import'] },
   { name: '物資', home: '#/inventory', tabs: ['loans', 'audits'] }
 ];
@@ -137,8 +139,8 @@ const RENDER = [
   ['#/admin', 'unit', '旅團'],
   ['#/admin', 'data', '備份'],
   ['#/tables', 'sync', '總表同步'],
-  ['#/links', 'social', '社交媒體'],
-  ['#/links', 'album', '相簿'],
+  ['#/links', 'overview', '公開緊'],
+  ['#/links', 'hub', '團員入口'],
   ['#/notices', 'signups', '報名']
 ];
 for (const [home, tab, needle] of RENDER) {

@@ -51,6 +51,13 @@ try {
   /* 同 main.js 一樣：改動會自動排一次寫入（critical＝即刻）。
      舊劇本想測「未撳掣之前後端應該冇嘢」嘅，加 { bootAutoSave:false }。 */
   store.setSaveHook((info) => remote.scheduleSave(info));
+  /* ★ 2026-09-24：模擬「status 通、但讀寫被拒」（最常見嘅死因：API Key 唔啱）。
+     呢個情況正正係「以為同步到，其實一個字都寫唔入」，所以一定要測得到。 */
+  if (PLAN.badKey) {
+    const db = store.tryLoad();
+    db.sync = { ...(db.sync || {}), apiKey: 'definitely_wrong_key' };
+    store.commitMeta();
+  }
   if (PLAN.bootLoad) await remote.loadFromBackend();
 
   out.configured = remote.remoteConfigured();
@@ -347,6 +354,41 @@ try {
       out.steps.push({
         op: 'backendPeek', http: r.status, found: !!j.found,
         members: Number(j.counts?.members || 0), version: String(j.version || '')
+      });
+    }
+    /* ★ 2026-09-24：「後端實況」—— 只讀核對（本機 vs 後端） */
+    if (step.op === 'reality') {
+      const r = await remote.backendReality();
+      out.steps.push({
+        op: 'reality', ok: !!r.ok, found: !!r.found, route: r.route || '', sheet: r.sheet || '',
+        backendVersion: r.backendVersion || '', version: String(r.version || ''), bytes: Number(r.bytes || 0),
+        counts: r.counts || null, local: r.local || null, rows: r.rows || [],
+        pending: Number(r.pending || 0), pendingAccounts: Number(r.pendingAccounts || 0),
+        level: r.verdict?.level || '', title: r.verdict?.title || '', detail: r.verdict?.detail || '',
+        error: r.error || '', hint: (r.hint || '').slice(0, 400)
+      });
+    }
+    /* ★ 2026-09-24：儲存之後即刻核對（寫咗去邊、後端有冇） */
+    if (step.op === 'verify') {
+      /* 冇指定就用「後端上次寫入畀嘅版本」—— 同 saveWithDialog 傳 r.version 一樣 */
+      const r = await remote.verifyAgainstBackend(step.version || (store.tryLoad()?.sync?.lastSyncedVersion || ''));
+      out.steps.push({
+        op: 'verify', ok: !!r.ok, matched: !!r.matched, version: String(r.version || ''),
+        expectedVersion: String(r.expectedVersion || ''), versionOk: !!r.versionOk, countsOk: !!r.countsOk,
+        sheet: r.sheet || '', bytes: Number(r.bytes || 0), rows: r.rows || [],
+        backend: r.backend || null, local: r.local || null, error: r.error || ''
+      });
+    }
+    /* ★ 2026-09-24：一寫一讀驗證（寫個記號落後端再讀返出嚟對） */
+    if (step.op === 'probe') {
+      const r = await remote.syncProbe({ cleanup: step.cleanup !== false });
+      out.steps.push({
+        op: 'probe', ok: !!r.ok, matched: !!r.matched, nonce: String(r.nonce || ''), seen: String(r.seen || ''),
+        savedVersion: String(r.savedVersion || ''), readVersion: String(r.readVersion || ''),
+        cleanedUp: !!r.cleanedUp, cleanupError: String(r.cleanupError || ''),
+        writeMs: Number(r.writeMs || 0), readMs: Number(r.readMs || 0),
+        wroteButCannotRead: !!r.wroteButCannotRead, error: r.error || '', hint: (r.hint || '').slice(0, 400),
+        pending: pendingN()
       });
     }
     /* 「公開資料」頁會派出去嘅公開連結（驗 ?be= 自助後端附埋入 link） */

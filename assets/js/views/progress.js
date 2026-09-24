@@ -86,7 +86,7 @@ function needSetup() {
         + '唔會連去任何其他網站。', 'brand')}
       <ol style="padding-left:18px;line-height:1.95" class="mt-8">
         <li>打開旅團嘅 Google Sheet → 擴充功能 → Apps Script</li>
-        <li>如果未有後端：貼上「帳號與系統 → 資料管理 → 總表同步」下載嘅 <code>Code.gs</code>，執行 <code>initializeSheets</code>
+        <li>如果未有後端：貼上「系統 → 資料管理 → 總表同步」下載嘅 <code>Code.gs</code>，執行 <code>initializeSheets</code>
           （會建好 進度追蹤／其他獎章／活動履歷 等分頁）</li>
         <li>複製 <b>API Key</b>（執行 <code>showApiKey()</code>）同 <b>網頁應用程式 /exec 網址</b></li>
         <li>返嚟喺「<b>設定</b>」填入（或者叫管理員登記喺 <code>data/units.json</code>，就唔使每次填）</li>
@@ -284,7 +284,7 @@ function tickView() {
   if (!remote) return empty('check', '未讀取後端', '按右上「重新讀取」');
   const data = remote.data || {};
   const list = data.members || [];
-  if (!list.length) return empty('users', '後端冇成員名單', '喺後端執行 initializeSheets，或者喺「帳號與系統 → 總表同步」同步一次團員名冊。');
+  if (!list.length) return empty('users', '後端冇成員名單', '喺後端執行 initializeSheets，或者喺「系統 → 總表同步」同步一次團員名冊。');
   if (!selYmis || !list.some(m => String(m.ymis) === String(selYmis))) selYmis = list[0].ymis;
   const progress = data.progress || {};
   const done = progress[selYmis] || {};

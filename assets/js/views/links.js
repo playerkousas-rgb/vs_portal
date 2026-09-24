@@ -61,7 +61,7 @@ function overviewView() {
 
   return `
   ${noteBox(`<b>呢頁係一覽表 —— 只係話你知「而家公開緊啲乜」。</b>
-    要<b>改</b>：①②③④⑤ 去 <b>「帳號與系統 → 旅團設定」</b>；
+    要<b>改</b>：①②③④⑤ 去 <b>「系統 → 旅團設定」</b>；
     行事曆／通告／試卷嘅「邊個睇到」喺<b>各自嘅編輯器</b>設（撳下面每組右上「去改」就得）。
     <div class="xs mt-4">層級：${VIS_LEVELS.map(v => `<b>${esc(v.name)}</b>(${v.rank})`).join(' &lt; ')} —— 設成 N ＝ <b>N 同更高權限</b>先見到。</div>`, 'brand')}
 
@@ -73,7 +73,7 @@ function overviewView() {
   </div>
 
   ${groups.length ? groups.map(overviewGroup).join('')
-    : empty('globe', '而家乜都未公開', '去「帳號與系統 → 旅團設定」加入旅團網站／社交媒體／相簿，或者去「通告」開一張通告')}
+    : empty('globe', '而家乜都未公開', '去「系統 → 旅團設定」加入旅團網站／社交媒體／相簿，或者去「通告」開一張通告')}
 
   <div class="xs faint mt-12">你而家嘅身份：<b>${esc(mine || '—')}</b> —— 上面標紅「（你睇唔到）」嘅，即係權限高過你，你自己都睇唔到。</div>`;
 }

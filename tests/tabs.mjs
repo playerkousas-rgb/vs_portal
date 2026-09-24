@@ -110,7 +110,13 @@ async function clickTab(tabId) {
 const SUITES = [
   /* 「mock」分頁係 super 限定（下面特登驗：leader 見唔到、super 見到）
      ★ 2026-09-24 團長：「權限總表由身份與帳號 移去 用戶與身份」→ perms 唔再喺 #/admin */
-  { name: '帳號與系統', home: '#/admin', tabs: ['unit', 'data', 'audit'] },
+  /* ★ 2026-09-24 團長：「身份與帳號」搬去「用戶與身份」（#/members/accounts），
+     「身份與系統」改名「系統」→ 呢度淨係剩返 旅團設定／資料管理／操作紀錄 */
+  { name: '系統', home: '#/admin', tabs: ['unit', 'data', 'audit'] },
+  /* ★ 2026-09-24 團長：「身份與系統內的身份與帳號 移去 用戶與身份」
+     → 「用戶與身份」要有 名冊／身份與帳號／權限總表／生日表 四個分頁。
+     'list' 唔入嚟：TAB_AT_ROOT 令「用戶名冊」就係 #/members 本身（唔係 #/members/list）。 */
+  { name: '用戶與身份', home: '#/members', tabs: ['accounts', 'perms', 'birthdays'] },
   { name: '通告', home: '#/notices', tabs: ['signups', 'settings'] },
   { name: '資料管理（原表格與同步）', home: '#/tables', tabs: ['source', 'sync', 'data'] },
   /* ★ 2026-09-24 團長：「公開資料其實唔係要填嘢嘅，係方便了解有乜嘢而家正喺度公開」
@@ -152,6 +158,35 @@ for (const [home, tab, needle] of RENDER) {
 }
 
 /* ============================================================
+   ②a ★ 2026-09-24 團長：「身份與系統改名為系統」＋「身份與帳號移去用戶與身份」
+   ============================================================ */
+section('★ 側邊欄改名 ＋ 身份與帳號搬位');
+{
+  await goTo('#/members');
+  const sb = doc.querySelector('.sidebar')?.textContent || '';
+  ok('側邊欄有「系統」，冇咗「身份與系統」',
+    sb.includes('系統') && !sb.includes('身份與系統'), sb.replace(/\s+/g, ' ').slice(0, 120));
+  ok('側邊欄有「用戶與身份」', sb.includes('用戶與身份'));
+
+  await goTo('#/members');
+  ok('★「用戶與身份」有「身份與帳號」分頁',
+    !!doc.querySelector('#view [data-tab="accounts"]'));
+  ok('★ 四個分頁：名冊／身份與帳號／權限總表／生日表',
+    ['list', 'accounts', 'perms', 'birthdays'].every(t => !!doc.querySelector(`#view [data-tab="${t}"]`)));
+
+  await clickTab('accounts');
+  ok('撳「身份與帳號」→ #/members/accounts', window.location.hash === '#/members/accounts', window.location.hash);
+  ok('「身份與帳號」版有密碼規則表',
+    /密碼規則/.test(doc.getElementById('view')?.textContent || ''));
+
+  /* 舊書籤 #/admin/accounts 要自動導去新址，唔可以變空白頁 */
+  await goTo('#/admin/accounts');
+  await wait(150);
+  ok('★ 舊連結 #/admin/accounts 自動導去 #/members/accounts',
+    window.location.hash === '#/members/accounts', window.location.hash);
+}
+
+/* ============================================================
    ②b 冇咗「示範資料（MOCK）」分頁
       ★ 2026-09-24 團長：「刪除示範資料 (MOCK) 我都在用要MOCK 幹什麼」
       → 連 super 都唔應該再見到呢個分頁，#/admin/mock 亦唔可以 render 到嘢。
@@ -167,8 +202,9 @@ section('★ MOCK 分頁已經拆走');
   await goTo('#/');
   await goTo('#/admin');
   ok('★ super 都見唔到 mock 分頁（已經拆走）', !doc.querySelector('#view [data-tab="mock"]'));
-  ok('★ 分頁列得返身份與帳號／旅團設定／資料管理／操作紀錄',
-    ['accounts', 'unit', 'data', 'audit'].every(t => !!doc.querySelector(`#view [data-tab="${t}"]`))
+  ok('★ 分頁列得返 旅團設定／資料管理／操作紀錄（身份與帳號已搬去「用戶與身份」）',
+    ['unit', 'data', 'audit'].every(t => !!doc.querySelector(`#view [data-tab="${t}"]`))
+    && !doc.querySelector('#view [data-tab="accounts"]')
     && !doc.querySelector('#view [data-tab="mock"]'));
   auth.logout();
   await auth.login('leader', 'leader', '8202');
@@ -260,8 +296,8 @@ section('唔好搶：meetings 詳情頁嘅 local 分頁');
 /* ============================================================
    ④ 分頁入面啲掣冇 runtime error
    ============================================================ */
-section('帳號與系統：每版嘅掣都撳得，冇 runtime error');
-for (const [hash, label] of [['#/admin/accounts', '帳戶'], ['#/admin/unit', '旅團設定'], ['#/admin/data', '資料管理']]) {
+section('系統（＋用戶與身份 → 身份與帳號）：每版嘅掣都撳得，冇 runtime error');
+for (const [hash, label] of [['#/members/accounts', '身份與帳號'], ['#/admin/unit', '旅團設定'], ['#/admin/data', '資料管理']]) {
   await goTo(hash);
   const before = errors.length;
   const btns = [...doc.querySelectorAll('#view [data-act]')]

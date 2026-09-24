@@ -24,7 +24,7 @@ export function money(n) {
    borrow.html     物資借用申請
    notice.html     通告 + 回覆出席與否
    constitution.html 團章
-   全部都可以喺「帳號與系統 → 旅團設定」或者「成員連結」頁改做自己嘅網址。 */
+   全部都可以喺「系統 → 旅團設定」或者「成員連結」頁改做自己嘅網址。 */
 /** 旅團公開連結（Drive／相簿／IG／FB／網頁），團員登入後先見到 */
 export function troopPublicLinks() {
   const L = settings().troopLinks || {};
@@ -99,7 +99,7 @@ export function publicLinkRoute() {
   }
   return { route: 'none', label: '未接後端', ok: false,
     detail: '平台未登記呢個旅團，你自己都未貼 /exec —— 公開頁會讀唔到後端資料。'
-      + '去「帳號與系統 → 資料管理 → 總表同步 → 同步設定」貼 /exec（＋API Key）就會即刻修好。' };
+      + '去「系統 → 資料管理 → 總表同步 → 同步設定」貼 /exec（＋API Key）就會即刻修好。' };
 }
 /** 成員用嘅公開連結清單（「成員連結」頁同 QR 都用呢個） */
 export function memberLinks() {

@@ -80,7 +80,7 @@ ok('第一步係旅團選擇畫面（唔係登入畫面）',
   appText().replace(/\s+/g, ' ').slice(0, 120));
 ok('列出註冊咗嘅旅團 TEST9', !!doc.querySelector('[data-pick="TEST9"]'),
   Array.from(doc.querySelectorAll('[data-pick]')).map(b => b.dataset.pick).join(','));
-/* ★ 2026-09-25 團長：「刪除示範資料 (MOCK) 我都在用要MOCK 幹什麼」
+/* ★ 2026-09-24 團長：「刪除示範資料 (MOCK) 我都在用要MOCK 幹什麼」
    → 旅團閘唔應該再有「試用示範（MOCK）」選項。 */
 ok('★ 已經冇「試用示範（MOCK）」選項', !doc.querySelector('[data-pick="MOCK"]'));
 ok('旅團卡顯示旅團名', /測試旅深資童軍團/.test(appText()));
@@ -199,7 +199,7 @@ ok('記住咗選擇之後 unitChosen 條件成立',
   window.localStorage.getItem('venture82.unitChosen.v2') === 'TEST9');
 
 /* ---------- ④ 登出／「返回旅團選擇」唔可以困死用家 ----------
-   ★ 2026-09-25：呢度以前係「離開 MOCK 唔可以困死用家」。示範模式拆走咗，
+   ★ 2026-09-24：呢度以前係「離開 MOCK 唔可以困死用家」。示範模式拆走咗，
      但同一個 bug 形態仲喺度：**清晒痕跡**先至返得到旅團選擇閘。
      如果 resetToGate() 漏清任何一個 key，下次開網站又會自動入返同一個旅團，
      用家想轉旅團就永遠出唔到（＝同一個「被困住」嘅感覺）。 */

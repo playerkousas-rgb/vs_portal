@@ -325,7 +325,7 @@ section('端到端：換機／清 cache 都唔會冇咗資料（真 HTTP）');
     ok('裝置 C 登入之後只有後端嗰 1 個團員（種子資料唔會撈返轉頭）',
       snapC?.members === 1, JSON.stringify(snapC?.names));
     const auto = (C.steps || []).find(s => s.op === 'autosave');
-    /* ★ 2026-09-25 團長：「我只想要頂部1個儲到後端的制,其他任何時候都是暫儲在遊覽器」。
+    /* ★ 2026-09-24 團長：「我只想要頂部1個儲到後端的制,其他任何時候都是暫儲在遊覽器」。
        所以呢度釘死嘅係**相反**嘅保證：等足 4 秒都唔會自動寫 —— 改動一定仲係 pending。 */
     ok('★ 改完嘢等足 4 秒都**唔會**自動寫入後端（淨係暫存喺瀏覽器）',
       auto?.pending === 1 && auto?.state === 'pending', JSON.stringify(auto));
@@ -482,7 +482,7 @@ section('衝突復原：兩部機都改過，同步要合併唔可以盲蓋（�
       (stepOf(D2, 'pull')?.adopted?.members || 0) >= 3, JSON.stringify(stepOf(D2, 'pull')?.adopted));
 
     /* ---- 開機時本機有未存改動，隊友已儲存 → 開機三方比對保留兩邊 ----
-       ★ 2026-09-25 起根本唔使關自動儲存 —— 自動寫入成條路都拆咗，
+       ★ 2026-09-24 起根本唔使關自動儲存 —— 自動寫入成條路都拆咗，
        「有未存改動」而家係預設狀態（改完就 pending，要撳頂部掣先寫）。 */
     const E1 = await runDevice({ steps: [
       { op: 'load' },                                   // E 登入（三個人）
@@ -578,7 +578,7 @@ section('只有一個儲存方式（原始碼守門：冇自動寫、冇 poll、
     /action: 'dbInfo'/.test(remoteSrc) && /threeWay\(/.test(remoteSrc) && /remoteChanged/.test(remoteSrc));
   ok('saveToBackend：撞嘅格交 resolver 問用家，確認咗先再寫一次',
     /resolver\(/.test(remoteSrc) && /applyChangesLocal\(ov\)/.test(remoteSrc));
-  /* ★ 2026-09-25 團長第五輪：「我只想要頂部1個儲到後端的制,其他任何時候都是暫儲在遊覽器」。
+  /* ★ 2026-09-24 團長第五輪：「我只想要頂部1個儲到後端的制,其他任何時候都是暫儲在遊覽器」。
      2026-09-24 曾經加過自動寫入（為咗救「帳戶寫唔入後端」），但團長明確唔要 ——
      自動儲存成條路已經拆走。而家釘死嘅係：
        ① remote.js 完全冇自動寫入（冇 autoSave／冇 debounce timer／冇 setAutoSave）

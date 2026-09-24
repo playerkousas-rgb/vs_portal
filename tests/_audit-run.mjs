@@ -14,7 +14,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const [,, MODE, ROLE, SECTION] = process.argv;
 if (!MODE || !ROLE || !SECTION) { console.error('用法：node tests/_audit-run.mjs <real> <role> <section>'); process.exit(2); }
 
-/* ★ 2026-09-25：示範（MOCK）模式已經拆走 → 審計只跑真實模式 */
+/* ★ 2026-09-24：示範（MOCK）模式已經拆走 → 審計只跑真實模式 */
 const URL_BASE = 'http://localhost:8080/?u=0082';
 const wait = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -99,7 +99,7 @@ await wait(350);
 /* ---------- 登入目標角色 ----------
    ★ 2026-09-24：冇共用帳戶 —— 角色由名冊身份決定（見 tests/_roles.mjs）。
    種個人帳號（loginId：chief／leader／exco）。
-   ★ 2026-09-25：以前「示範模式用示範團員改身份」嗰條路已經隨 MOCK 拆走。 */
+   ★ 2026-09-24：以前「示範模式用示範團員改身份」嗰條路已經隨 MOCK 拆走。 */
 const needSeed = ROLE !== 'super';
 const { seedRosterRoles, ROLE_PW } = await import('./_roles.mjs');
 if (needSeed) await seedRosterRoles(store, auth);

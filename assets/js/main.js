@@ -57,7 +57,7 @@ const NAV = [
   { id: 'inventory', label: '物資', icon: 'grid', badge: () => pendingLoans().length },
   { id: 'progress', label: '進度', icon: 'chart' },
   { id: 'notices', label: '通告', icon: 'megaphone', badge: () => (load()?.notices || []).filter(n => n.status === 'published').length },
-  { id: 'links', label: '公開資料', icon: 'share' },   /* ★ 2026-09-25 團長：「成員連結」改名「公開資料」 */
+  { id: 'links', label: '公開資料', icon: 'share' },   /* ★ 2026-09-24 團長：「成員連結」改名「公開資料」 */
   { id: 'constitution', label: '團章', icon: 'book' },
   { id: 'docs', label: '教學', icon: 'note' },
   { id: 'admin', label: '身份與系統', icon: 'shield' }
@@ -89,7 +89,7 @@ async function boot() {
     bootError = e;
     return renderFatal(e);
   }
-  /* ★ 2026-09-25 團長：「每個分頁有他的儲存按鈕，如果離開分頁前有未儲的東西…
+  /* ★ 2026-09-24 團長：「每個分頁有他的儲存按鈕，如果離開分頁前有未儲的東西…
      會提示用戶有未暫存遊覽器的改動」。
      · 未撳分頁「儲存」嘅表單改動 ＝ 草稿（guard.js）→ 離開前問，揀「放棄」就清走
      · 已經撳咗「儲存」（寫入瀏覽器 db）嘅改動 ＝ 保留，等頂部「儲存到後端」寫入 */
@@ -169,7 +169,7 @@ async function syncBoot() {
   }
   const store = await import('./lib/store.js');
   /* 本機一有改動 → 淨係更新頂部狀態（「儲存到後端（N）」）。
-     ★ 2026-09-25 團長定案：頂部一粒掣係**唯一**寫入路，其他一律暫存瀏覽器。 */
+     ★ 2026-09-24 團長定案：頂部一粒掣係**唯一**寫入路，其他一律暫存瀏覽器。 */
   store.setSaveHook((info) => remoteApi.scheduleSave(info));
   /* 同一個瀏覽器另一個分頁改咗嘢 → 併入本機 ＋ 重畫（唔使重新整理） */
   store.bindCrossTabSync((info) => {
@@ -185,8 +185,8 @@ async function syncBoot() {
 
   if (!unloadGuardOn) {
     unloadGuardOn = true;
-    /* 離開頁面前提醒有嘢未存。自動儲存通常已經寫咗，
-       呢個 net 只係擋「改完 1 秒內就閂」嗰種情況。 */
+    /* 離開頁面前提醒有嘢未存。**冇自動寫入**，所以呢個 net 係唯一一道
+       擋「改完嘢就閂頁」嘅門（同 confirmLogout 一樣：只係問，唔會代你寫）。 */
     window.addEventListener('beforeunload', (e) => {
       if (remoteApi?.hasPending?.()) {
         e.preventDefault();
@@ -301,7 +301,7 @@ function paintSyncChip() {
 
   const s = remoteApi.syncState();
   const pending = Number(tryLoad()?.sync?.pending || 0);
-  /* ★ 2026-09-25：帳戶級改動（開人／設密碼／改身份）未寫入後端之前，
+  /* ★ 2026-09-24：帳戶級改動（開人／設密碼／改身份）未寫入後端之前，
      其他裝置用嗰個 email／YMIS **登唔到**。呢個數要独立顯示，唔好溝埋入「N 項」入面。 */
   const pendAcc = remoteApi.pendingAccounts?.() || 0;
   const map = {
@@ -321,7 +321,7 @@ function paintSyncChip() {
   if (pendAcc > 0) { cls = 'b-danger'; ic = 'alert'; label = `${pendAcc} 個帳戶未寫入後端`; }
   const needSave = pending > 0;
   const unreachable = state === 'unreachable';
-  /* ★ 2026-09-25 團長定案：呢粒係**全系統唯一**寫入後端嘅掣。其他一切都係暫存瀏覽器。 */
+  /* ★ 2026-09-24 團長定案：呢粒係**全系統唯一**寫入後端嘅掣。其他一切都係暫存瀏覽器。 */
   const actLabel = needSave ? `儲存到後端${pending > 1 ? `（${pending}）` : ''}` : unreachable ? '重試' : '重新載入';
   const actTitle = needSave
     ? (pendAcc
@@ -536,7 +536,7 @@ function renderUnitGate() {
 
 /* ============================================================
    去某個旅團
-   ★ 2026-09-25：示範（MOCK）模式已經拆走 —— 呢度淨係處理真實旅團。
+   ★ 2026-09-24：示範（MOCK）模式已經拆走 —— 呢度淨係處理真實旅團。
    ============================================================ */
 function gotoUnit(code, { remember = true } = {}) {
   /* ★ 一律用 Registry 登記咗嗰個編號入去（82 → 0082）。
@@ -1382,15 +1382,53 @@ function gateMessage(g) {
   return `登入已封鎖 —— ${why}`;
 }
 
-/** 登出確認：有未儲存改動一定要講明（改動會留喺呢部機，下次登入再三方比對） */
+/* ============================================================
+   登出確認（團長 2026-09-24 定案 · 第五輪之後再確認一次）
+   ------------------------------------------------------------
+   團長原話：「而家咁做 —— 提示多次等用戶 CONFIRM，確定登出＝唔寫入；
+             如果唔係就係返回，等佢自己 CONFIRM 多次資料，要寫入就用返
+             右上角大掣寫，唔係就再登出時都會再問佢。」
+
+   所以登出嘅鐵律：
+     · **永遠唔會自動寫入** —— 登出就係登出，系統唔會偷偷代你寫後端。
+       寫入後端得一個方法：右上角「儲存到後端（N）」。
+     · 有未寫入嘅改動 → 彈框攞用戶 confirm，講清楚：
+         - 撳「照登出（唔寫入）」＝ 放棄呢次寫入機會；
+           改動留喺呢部機（localStorage），下次登入會同後端三方比對。
+         - 撳「取消」＝ 返返去 app；要寫就自己撳右上角大掣。
+     · 未寫入嘅嘢唔會因為登出而消失 —— **下次登出會再問多次**
+       （pending 一直數住，直至你撳掣寫入或者由後端重新載入）。
+     · 特別係**帳戶級改動**（開人／設密碼／改身份）：未寫入後端＝
+       嗰啲人喺其他裝置登唔到，所以要用紅色最狠嗰個框。
+   ============================================================ */
 async function confirmLogout() {
   const pending = Number(tryLoad()?.sync?.pending || 0);
-  const warn = pending > 0
-    ? `<div class="note-box warn mt-8">${icon('alert', 14)}<div>仲有 <b>${pending}</b> 項改動未寫入後端（自動儲存未完成）。登出唔會等佢；改動會留喺呢部機，下次開機再同後端比對。<br>想而家就寫，撳「取消」再撳右上角「即刻儲存」。</div></div>`
-    : '';
+  const acc = Number(remoteApi?.pendingAccounts?.() || tryLoad()?.sync?.pendingAccounts || 0);
+  let warn = '';
+  if (acc > 0) {
+    warn = `<div class="note-box danger mt-8">${icon('alert', 14)}<div>
+      <b>有 ${acc} 個帳戶改動仲未寫入後端</b> —— 開咗人／改咗密碼／改咗身份。
+      <div class="mt-8">未寫入，<b>呢啲人喺其他裝置登唔到</b>（登入核對讀嘅係後端嗰份名冊）。</div>
+      <div class="mt-8">登出<b>唔會</b>幫你寫。要寫：撳「<b>取消</b>」，再撳右上角
+      <b>「儲存到後端」</b>呢個大掣。</div>
+      <div class="xs faint mt-4">照登出嘅話，改動會留喺呢部機；下次登入會同後端比對，
+      下次登出<b>會再問多次</b>。</div>
+    </div></div>`;
+  } else if (pending > 0) {
+    warn = `<div class="note-box warn mt-8">${icon('alert', 14)}<div>
+      仲有 <b>${pending}</b> 項改動未寫入後端（暫存喺呢部機）。
+      <div class="mt-8">登出<b>唔會</b>幫你寫。要寫：撳「<b>取消</b>」，再撳右上角
+      <b>「儲存到後端」</b>呢個大掣。</div>
+      <div class="xs faint mt-4">照登出嘅話，改動會留喺呢部機；下次登入會同後端比對，
+      下次登出<b>會再問多次</b>。</div>
+    </div></div>`;
+  }
   return modal({
     title: '登出', body: `<p class="sm">確定登出系統？</p>${warn}`,
-    actions: [{ label: '取消', class: 'btn', value: false }, { label: pending > 0 ? '照登出（暫不儲存）' : '登出', class: 'btn-primary', value: true }]
+    actions: [
+      { label: '取消（返返去）', class: 'btn', value: false },
+      { label: pending > 0 ? '照登出（唔寫入）' : '登出', class: 'btn-primary', value: true }
+    ]
   });
 }
 
@@ -1575,8 +1613,8 @@ function moreSheet() {
         const id = b.dataset.more;
         const { closeModal } = await import('./lib/util.js');
         closeModal(null);
-        /* 示範模式冇「登出」呢回事 —— 以前呢度 logout() + renderLogin() 會將用家
-           留喺一個示範模式嘅登入畫面，又冇橫額又冇掣，睇落好似走唔到。 */
+        /* 登出一律經 confirmLogout()：有未寫入改動（尤其帳戶級）會先問，
+           但**永遠唔會代你寫後端** —— 要寫就撳右上角「儲存到後端」。 */
         if (id === 'logout') {
           if (await confirmLogout()) doLogout();
           return;

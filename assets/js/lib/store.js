@@ -1,7 +1,7 @@
 /* ============================================================
    store.js — 資料層（多旅團）
 
-   ★ 2026-09-25 團長：「刪除示範資料 (MOCK) 我都在用要MOCK 幹什麼」
+   ★ 2026-09-24 團長：「刪除示範資料 (MOCK) 我都在用要MOCK 幹什麼」
      → 示範模式成個拆走：冇再分「真實／示範」兩個命名空間，
        只有一個旅團資料庫。唔會有「改咗示範資料」呢回事。
 
@@ -301,7 +301,7 @@ function seedBackend(db, code) {
  *   3. localStorage 記錄
  *   4. Registry 預設旅團
  *
- * ★ 2026-09-25：以前呢度仲有「真實／示範（MOCK）」兩個模式，團長話
+ * ★ 2026-09-24：以前呢度仲有「真實／示範（MOCK）」兩個模式，團長話
  *   「我都在用要MOCK 幹什麼」→ 拆走。而家只有一個旅團資料庫，
  *   唔會再出現「入錯示範空間、資料冇同步」呢類 bug。 */
 function resolveTarget(opts = {}, url = new URLSearchParams(location.search)) {
@@ -525,7 +525,7 @@ export function setUnitProfile(patch) {
 export function audit(action, detail = '', who = null) {
   const db = load();
   db.auditLog = db.auditLog || [];
-  /* ★ 2026-09-25 團長：「操作紀錄不顯示超級管理員的紀錄」。
+  /* ★ 2026-09-24 團長：「操作紀錄不顯示超級管理員的紀錄」。
      要濾得到就要記低操作者身份 —— 由 session 攞（audit() 唔可以 import auth.js，會循環）。 */
   const sess = getSession();
   db.auditLog.unshift({

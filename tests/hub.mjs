@@ -103,8 +103,26 @@ try {
     { op: 'wipe' },
     { op: 'addMember', name: '陳大文', ymis: '2026000001', identity: 'member' },
     { op: 'addMember', name: '李小美', ymis: '2026000002', identity: 'member' },
+    /* 王領袖（leader）—— 用嚟驗「邊個睇到」：佢要見到團員見唔到嘅公開資料。
+       ★ 成年人（團長／領袖）**唔可以**用首次密碼 1234 自出自入（security），
+         一定要由執委喺「用戶與身份」幫佢設密碼 —— 所以要用 addStaff + setHubPw。 */
+    { op: 'addStaff', name: '王領袖', ymis: '2026000004', identity: 'leader' },
+    { op: 'setHubPw', id: '@last', pw: 'leader123' },
     { op: 'patchSettings', patch: {
       troopLinks: { instagram: 'https://instagram.com/test82', facebook: 'https://facebook.com/test82', website: 'https://example.com' }
+    } },
+    /* 公開資料（2026-09-24 團長第 3／4 點）—— 團員入口要讀呢度 show 社交媒體／相簿／網站／連結
+       注意：instagram 同 website 兩個槽呢度「管緊」咗 → 旅團設定嗰兩條要讓位。 */
+    { op: 'setPublicProfile', obj: {
+      about: { text: '我團 1982 年成立，逢星期六集會。', vis: 'member' },
+      site: { url: 'https://troop82.example.org', title: '82 旅網站', desc: '旅團官方網站', vis: 'member' },
+      socials: [
+        { id: 'pp_ig', kind: 'instagram', title: '82 旅 IG', url: 'https://instagram.com/pp82', desc: '活動相', vis: 'member' },
+        { id: 'pp_yt', kind: 'youtube', title: '82 旅頻道', url: 'https://youtube.com/@pp82', desc: '影片', vis: 'member' },
+        { id: 'pp_wa', kind: 'whatsapp', title: '領袖群組', url: 'https://chat.whatsapp.com/leaders', desc: '只限領袖', vis: 'leader' }
+      ],
+      albums: [{ id: 'pp_al', title: '2026 夏季營相簿', url: 'https://photos.example.org/summer', desc: '夏季營', vis: 'member' }],
+      links: [{ id: 'pp_l1', title: '香港童軍總會', url: 'https://www.scout.org.hk', desc: '總會通告', vis: 'member' }]
     } },
     { op: 'put', coll: 'events', rows: [
       { id: 'ev_future', title: '秋季露營', date: '2026-12-19', dateEnd: '2026-12-20', time: '09:00', venue: '營地', visibility: 'all', status: 'confirmed', rsvp: {} },
@@ -183,10 +201,25 @@ try {
 
   section('主頁內容（全部嚟自後端資料）');
   ok('顯示登入團員名（陳大文）', pageTxt().includes('陳大文'));
-  ok('旅團連結：IG 有得撳（後台填嘅資料經後端同步過嚟）',
-    !!doc.querySelector('a[href*="instagram.com/test82"]'), pageTxt().slice(0, 120));
-  ok('旅團連結：FB 有得撳', !!doc.querySelector('a[href*="facebook.com/test82"]'));
-  ok('旅團連結：網頁有得撳', !!doc.querySelector('a[href*="example.com"]'));
+  ok('旅團連結：FB 有得撳（後台填嘅資料經後端同步過嚟）', !!doc.querySelector('a[href*="facebook.com/test82"]'));
+
+  /* ============ 公開資料（團長第 3／4 點）喺團員入口渲染 ============ */
+  section('公開資料：團員入口讀「公開資料」＋「旅團設定」兩個來源');
+  const hrefs = () => [...doc.querySelectorAll('a.hub-card')].map(a => a.getAttribute('href') || '');
+  ok('★ 公開資料：IG 出到（社交媒體）', hrefs().some(h => h.includes('instagram.com/pp82')), hrefs().join(' | '));
+  ok('★ 公開資料：YouTube 出到（公開資料先有嘅平台）', hrefs().some(h => h.includes('youtube.com/@pp82')));
+  ok('★ 公開資料：相簿出到', hrefs().some(h => h.includes('photos.example.org/summer')));
+  ok('★ 公開資料：網站出到', hrefs().some(h => h.includes('troop82.example.org')));
+  ok('★ 公開資料：其他連結出到（香港童軍總會）', hrefs().some(h => h.includes('scout.org.hk')));
+  ok('★ 公開資料：「關於我團」文字出到（APP 內嘅內容）', pageTxt().includes('我團 1982 年成立'));
+  ok('★ 合併：IG 唔會出兩條（公開資料管緊嗰個槽 → 旅團設定嗰條讓位）',
+    !hrefs().some(h => h.includes('instagram.com/test82')), hrefs().join(' | '));
+  ok('★ 合併：網頁一樣唔會出兩條（公開資料 site 管緊 website 槽）',
+    !hrefs().some(h => h.includes('https://example.com')), hrefs().join(' | '));
+  ok('★ 合併：公開資料冇管嘅槽照用旅團設定（FB 出到）', hrefs().some(h => h.includes('facebook.com/test82')));
+  ok('★ 可見範圍：團員睇唔到「只限領袖」嘅 WhatsApp 群組',
+    !hrefs().some(h => h.includes('chat.whatsapp.com/leaders')), hrefs().join(' | '));
+  ok('★ 可見範圍：團員連「只限領袖」嘅名都唔會見到', !pageTxt().includes('領袖群組'));
   ok('活動行事曆：顯示未來活動（秋季露營）', pageTxt().includes('秋季露營'));
   ok('活動行事曆：過去嘅活動唔會排先做提醒',
     pageTxt().indexOf('舊年活動') > pageTxt().indexOf('過往活動'), '');
@@ -360,6 +393,28 @@ try {
   await wait(150);
   ok('登出後返登入閘', !!doc.querySelector('#hubLogin'));
   ok('登出後 localStorage 狀態清走', window.localStorage.getItem(authKey) === null);
+
+  /* ===== 可見範圍升級：換個高權限嘅人登入，要見到團員見唔到嘅公開資料 ===== */
+  section('可見範圍：領袖登入見到團員見唔到嘅公開資料（上層必定睇到下層）');
+  doc.querySelector('#hYmis').value = '2026000004';
+  doc.querySelector('#hPass').value = 'leader123';   // 領袖一定要執委設密碼，冇 1234 呢條路
+  doc.querySelector('#hubLogin').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
+  let leaderIn = false;
+  for (let i = 0; i < 100 && !leaderIn; i++) { await wait(100); leaderIn = !!doc.querySelector('#hubLogout'); }
+  ok('領袖（王領袖）登入成功', leaderIn, pageTxt().slice(0, 120));
+  [...doc.querySelectorAll('.overlay button')].find(b => /稍後/.test(b.textContent || ''))?.click();
+  await wait(200);
+  /* 登入後會返返去上次睇緊嗰版（#/progress）—— 要撳「返回」去主頁先睇到公開資料 */
+  [...doc.querySelectorAll('[data-open="#/home"]')][0]?.click();
+  await wait(250);
+  ok('領袖登入後去到主頁（要睇「我要做」嗰幾張卡）', pageTxt().includes('我要做'), pageTxt().slice(0, 120));
+  ok('★ 領袖見到「只限領袖」嘅 WhatsApp 群組（團員見唔到）',
+    hrefs().some(h => h.includes('chat.whatsapp.com/leaders')), hrefs().join(' | '));
+  ok('★ 領袖一樣見到「團員級」嘅公開資料（低層俾到，上層必定睇到）',
+    hrefs().some(h => h.includes('instagram.com/pp82')) && hrefs().some(h => h.includes('photos.example.org/summer')),
+    hrefs().join(' | '));
+  ok('領袖都見到「關於我團」', pageTxt().includes('我團 1982 年成立'));
+  ok('領袖見到自己嘅身份標籤', pageTxt().includes('領袖'));
 
   /* ============ 公開頁：通告（後端正本）＋ 團章（後端 constitution） ============ */
   section('公開頁：通告由後端正本讀（新發布即刻見到）');

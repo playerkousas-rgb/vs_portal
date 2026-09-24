@@ -80,8 +80,17 @@ try {
       out.steps.push({ op: 'wipe', members: store.load().members.length });
     }
     if (step.op === 'addMember') {
-      store.add('members', { name: step.name, ymis: step.ymis, identity: 'member' });
-      out.steps.push({ op: 'addMember', name: step.name, total: store.load().members.length });
+      /* identity 可以指定（2026-09-24 團員入口要測「邊個睇到」——
+         要一個 leader 身份嘅團員先至驗到權限升高見到更多公開資料）。 */
+      store.add('members', { name: step.name, ymis: step.ymis, identity: step.identity || 'member' });
+      out.steps.push({ op: 'addMember', name: step.name, identity: step.identity || 'member', total: store.load().members.length });
+    }
+    /* 公開資料（db.publicProfile）—— 團員入口要讀佢 show 社交媒體／相簿／網站／連結 */
+    if (step.op === 'setPublicProfile') {
+      const db = store.load();
+      db.publicProfile = step.obj;
+      store.commit();
+      out.steps.push({ op: 'setPublicProfile', keys: Object.keys(step.obj || {}) });
     }
     if (step.op === 'bulkMembers') {
       /* 灌大量團員把 db 谷大過分件閾值 —— 測 v2.4.0 分件儲存。
@@ -118,7 +127,7 @@ try {
       store.commit();
       out.steps.push({ op: 'setConstitution', version: step.obj?.version || '' });
     }
-    /* ★ 2026-09-25 團長：「我只想要頂部1個儲到後端的制,其他任何時候都是暫儲在遊覽器」
+    /* ★ 2026-09-24 團長：「我只想要頂部1個儲到後端的制,其他任何時候都是暫儲在遊覽器」
        → 自動儲存成條路都拆咗，setAutoSave 呢個 op 亦都冇嘢可以調（remote.setAutoSave 已刪）。
        保留 op 名稱只係為咗舊 plan 唔會爆 —— 佢而家乜都唔做，只係報告而家嘅狀態。 */
     if (step.op === 'setAutoSave') {

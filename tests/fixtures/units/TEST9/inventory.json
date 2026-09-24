@@ -1,7 +1,7 @@
 {
   "schema": 2,
   "unitCode": "0082",
-  "_comment": "測試用物資（tests/public.mjs 物資借用公開頁）。唔係示範資料 —— 示範模式已經拆走（2026-09-25）。",
+  "_comment": "測試用物資（tests/public.mjs 物資借用公開頁）。唔係示範資料 —— 示範模式已經拆走（2026-09-24）。",
   "nextCode": "G-001",
   "items": [
     {

@@ -16,7 +16,7 @@ import { fileURLToPath } from 'url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const WORKER = path.join(ROOT, 'tests', '_audit-run.mjs');
-/* ★ 2026-09-25：示範（MOCK）模式已經拆走 → 審計只跑真實模式（44 個組合） */
+/* ★ 2026-09-24：示範（MOCK）模式已經拆走 → 審計只跑真實模式（44 個組合） */
 const MODES = ['real'];
 /* ★ 2026-09-24：加埋團長（最高權限，每個旅團一位）一齊審 */
 const ROLES = ['leader', 'exco', 'chief', 'super'];

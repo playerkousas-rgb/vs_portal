@@ -14,7 +14,7 @@ import { fileURLToPath } from 'url';
 import vm from 'vm';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-/* ★ 2026-09-25 團長：「刪除示範資料 (MOCK) 我都在用要MOCK 幹什麼」
+/* ★ 2026-09-24 團長：「刪除示範資料 (MOCK) 我都在用要MOCK 幹什麼」
    → 示範模式拆走，smoke 只淨低「真實」一個模式（以前跑 real ＋ mock 兩轉）。 */
 const MODE = 'real';
 const t0 = Date.now();
@@ -147,7 +147,7 @@ store.commit();
 
 
 /* ---------- 資料隔離 ----------
-   ★ 2026-09-25：示範（MOCK）模式已經拆走 —— 以前呢度驗「真實／示範兩個 key 完全隔離」，
+   ★ 2026-09-24：示範（MOCK）模式已經拆走 —— 以前呢度驗「真實／示範兩個 key 完全隔離」，
      而家淨低一個旅團資料庫 key，改為驗「資料真係寫喺自己旅團嗰個 key」同「入面有 schema」。 */
 section('旅團資料存放位置');
 {
@@ -272,7 +272,7 @@ const pages = ['#/dashboard', '#/meetings', '#/finance', '#/finance/reports', '#
   '#/finance/budgets', '#/finance/import', '#/members', '#/members/birthdays', '#/inventory', '#/inventory/loans',
   '#/inventory/audits', '#/progress', '#/constitution', '#/docs',
   '#/notices', '#/notices/new',
-  /* ★ 2026-09-25：「表格與同步」簡化成三樣嘢，逐個表嘅欄位設計改由 openFieldDesigner modal 負責，
+  /* ★ 2026-09-24：「表格與同步」簡化成三樣嘢，逐個表嘅欄位設計改由 openFieldDesigner modal 負責，
      所以 #/tables/<table> 呢啲路已經唔存在（會 fallback 去 source）。 */
   '#/tables', '#/tables/source', '#/tables/sync', '#/tables/data',
   /* ★ 權限總表由「帳號與系統」搬去「用戶與身份」（#/members/perms） */
@@ -887,7 +887,7 @@ section('通告詳情頁（同步到公開頁 ＝ 行同一條「儲存到後端
 }
 
 /* ---------- v3：表格設計（改名／加欄位） ----------
-   ★ 2026-09-25 團長：「總表同步／表格與同步 太複雜」→ 逐個表嘅欄位設計已經唔再係
+   ★ 2026-09-24 團長：「總表同步／表格與同步 太複雜」→ 逐個表嘅欄位設計已經唔再係
    「表格與同步」嘅分頁（嗰頁而家淨係三樣嘢），改為由各分頁嘅「欄位」掣開同一個
    欄位設計器 modal（openFieldDesigner）。呢段測試跟住改行 modal 嗰條路。 */
 section('欄位設計器（欄位改名・加欄位・還原）');
@@ -1470,14 +1470,14 @@ section('旅團選擇閘（先揀旅團再登入）');
   ok('main.js 先顯示旅團閘，之後先 init + 登入',
     /if \(!unitChosen\(\)\) return renderUnitGate\(\);/.test(mainSrc)
     && mainSrc.indexOf('renderUnitGate();') < mainSrc.indexOf('await init();'));
-  /* ★ 2026-09-25 團長：「示範資料 (MOCK) 我都在用要MOCK 幹什麼」
+  /* ★ 2026-09-24 團長：「示範資料 (MOCK) 我都在用要MOCK 幹什麼」
      → 旅團閘唔應該再有「試用示範（MOCK）」嗰張卡。 */
   ok('★ 旅團閘已經冇 MOCK 選項', !/data-pick="MOCK"/.test(mainSrc));
   ok('登入頁有「更換旅團」掣', /btnGate/.test(mainSrc));
 }
 
 /* ---------- 6. 公開資料（申報 / 物資 / 通告報名 / 社交媒體 / 相簿） ----------
-   ★ 2026-09-25 團長：「『成員連結』改名為『公開資料』」 */
+   ★ 2026-09-24 團長：「『成員連結』改名為『公開資料』」 */
 section('公開資料（免登入公開頁）');
 {
   const links = model.memberLinks();
@@ -1497,7 +1497,7 @@ section('公開資料（免登入公開頁）');
   ok('頁上有 QR 掣', v3.querySelectorAll('[data-qr]').length >= 3, String(v3.querySelectorAll('[data-qr]').length));
   ok('頁上有列印海報掣', v3.querySelectorAll('[data-poster]').length >= 3);
   ok('側邊欄有「公開資料」（已由「成員連結」改名）', /公開資料/.test(doc.querySelector('.sidebar')?.textContent || ''));
-  /* ★ 2026-09-25 團長：「進入旅團後,旁邊選單第二行『選擇旅團』沒有用，都進入了還選什麼？
+  /* ★ 2026-09-24 團長：「進入旅團後,旁邊選單第二行『選擇旅團』沒有用，都進入了還選什麼？
      只須要下方登出」—— 呢度係 DOM 級驗證（gate-env 嗰邊開唔到完整殼，只做源碼級檢查）。 */
   ok('★ 側邊欄已經冇「選擇旅團」掣', !doc.getElementById('unitSwitch')
     && !/選擇旅團/.test(doc.querySelector('.sidebar')?.textContent || ''));
@@ -2326,6 +2326,69 @@ section('進度紀錄（讀 ＋ 勾 ＋ 寫，同一個後端）');
     window.dispatchEvent(new window.HashChangeEvent('hashchange'));
     await new Promise(r => setTimeout(r, 80));
   }
+}
+
+/* ---------- 登出確認：問，但永遠唔代你寫（團長 2026-09-24 定案） ----------
+   團長原話：「而家咁做 —— 提示多次等用戶 CONFIRM，確定登出＝唔寫入；
+             如果唔係就係返回，等佢自己 CONFIRM 多次資料，要寫入就用返
+             右上角大掣寫，唔係就再登出時都會再問佢。」
+   所以呢度釘死三件事：
+     ① 登出**唔會**自動寫入後端（pendingAccounts 一個都唔會少）
+     ② 有帳戶級改動 → 紅色警告框，講明「呢啲人喺其他裝置登唔到」
+     ③ 撳「取消」返返去 → **下次登出會再問多次**（唔會因為問過一次就唔問） */
+section('登出確認：問，但永遠唔代你寫（要寫就撳右上角大掣）');
+{
+  const overlayTxt = () => doc.querySelector('.overlay')?.textContent || '';
+  const closeOverlay = () => doc.querySelector('.overlay')?.remove();
+
+  /* 製造一個帳戶級改動（開人＝名冊紀錄本身係登入帳戶） */
+  store.add('members', { name: '登出測試員', ymis: '2026000999', identity: 'member' });
+  const acc0 = Number(store.load().sync?.pendingAccounts || 0);
+  ok('★ 開人後 pendingAccounts 有數（呢啲人未寫入後端＝其他裝置登唔到）', acc0 >= 1, String(acc0));
+
+  doc.getElementById('btnLogout')?.click();
+  await new Promise(r => setTimeout(r, 120));
+  ok('★ 撳登出會彈確認框（唔會直接登走）', !!doc.querySelector('.overlay'), overlayTxt().slice(0, 80));
+  ok('★ 紅色警告講「N 個帳戶改動仲未寫入後端」',
+    /個帳戶改動仲未寫入後端/.test(overlayTxt()), overlayTxt().slice(0, 200));
+  ok('★ 警告框係紅色（note-box danger）', !!doc.querySelector('.overlay .note-box.danger'));
+  ok('★ 警告講清後果：未寫入＝其他裝置登唔到',
+    /其他裝置登唔到/.test(overlayTxt()), overlayTxt().slice(0, 200));
+  ok('★ 警告教人點寫：撳取消再撳右上角「儲存到後端」',
+    /儲存到後端/.test(overlayTxt()) && /取消/.test(overlayTxt()), overlayTxt().slice(0, 200));
+  ok('★ 確定掣寫明「照登出（唔寫入）」—— 用戶撳落去＝同意唔寫',
+    /照登出（唔寫入）/.test(overlayTxt()), overlayTxt().slice(0, 200));
+  ok('★ 警告講明下次登出會再問多次', /再問多次/.test(overlayTxt()), overlayTxt().slice(0, 200));
+
+  /* 撳「取消（返返去）」 */
+  const cancelBtn = [...doc.querySelectorAll('.overlay .modal-foot button')].find(b => /取消/.test(b.textContent || ''));
+  ok('有「取消（返返去）」掣', !!cancelBtn);
+  cancelBtn?.click();
+  await new Promise(r => setTimeout(r, 150));
+  ok('★ 撳取消之後彈框閂咗', !doc.querySelector('.overlay'));
+  ok('★ 撳取消**仲未登出**（session 仲喺度）', !!auth.current());
+  ok('★ 撳取消唔會幫你寫（pendingAccounts 一個都冇少）',
+    Number(store.load().sync?.pendingAccounts || 0) === acc0,
+    `${store.load().sync?.pendingAccounts} vs ${acc0}`);
+
+  /* 再撳一次登出 —— 要再問多次（團長：「唔係就再登出時都會再問佢」） */
+  doc.getElementById('btnLogout')?.click();
+  await new Promise(r => setTimeout(r, 120));
+  ok('★ 再撳登出：**會再問多次**（唔會因為問過一次就唔問）',
+    !!doc.querySelector('.overlay') && /個帳戶改動仲未寫入後端/.test(overlayTxt()), overlayTxt().slice(0, 120));
+
+  /* 今次撳「照登出（唔寫入）」 */
+  const goBtn = [...doc.querySelectorAll('.overlay .modal-foot button')].find(b => /照登出/.test(b.textContent || ''));
+  ok('有「照登出（唔寫入）」掣', !!goBtn);
+  goBtn?.click();
+  await new Promise(r => setTimeout(r, 400));
+  ok('★ 撳「照登出」之後真係登咗出', !auth.current());
+  ok('★ 登出**冇代你寫** —— pendingAccounts 原封不動喺本機',
+    Number(store.load().sync?.pendingAccounts || 0) === acc0,
+    `${store.load().sync?.pendingAccounts} vs ${acc0}`);
+  ok('★ 改動冇蝕到（下次登入會同後端三方比對）',
+    Number(store.load().sync?.pending || 0) >= 1, String(store.load().sync?.pending));
+  closeOverlay();
 }
 
 /* ---------- 總結 ---------- */

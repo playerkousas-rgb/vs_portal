@@ -40,7 +40,7 @@ function ok(name, cond, extra = '') {
 const section = t => console.log('\n▌' + t);
 
 /* ---------- 開機 ----------
-   ★ 2026-09-25：示範（MOCK）模式已經拆走。呢個測試自己會 store.add('members', …)
+   ★ 2026-09-24：示範（MOCK）模式已經拆走。呢個測試自己會 store.add('members', …)
      建測試用嘅人，唔需要任何種子資料 —— 所以用一個真實旅團編號（0082）就得。 */
 const store = await import('../assets/js/lib/store.js');
 const auth = await import('../assets/js/lib/auth.js');

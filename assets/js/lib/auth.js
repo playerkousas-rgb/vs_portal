@@ -613,7 +613,7 @@ export function logout() { setSession(null); }
 export function current() { return getSession(); }
 export function currentRole() { return getSession()?.role || null; }
 export function isSuper() { return currentRole() === 'super'; }
-/* ★ 2026-09-25 團長：「刪除示範資料 (MOCK) 我都在用要MOCK 幹什麼」
+/* ★ 2026-09-24 團長：「刪除示範資料 (MOCK) 我都在用要MOCK 幹什麼」
    → 示範模式成個拆走，isMockSession() 亦都冇存在意義。 */
 export function roleInfo(role = currentRole()) { return ROLES[role] || null; }
 
@@ -632,7 +632,7 @@ export function displaySub() {
 }
 
 /* ============================================================
-   權限總表（可編輯）—— 2026-09-25 團長：「權限總表要能編輯」
+   權限總表（可編輯）—— 2026-09-24 團長：「權限總表要能編輯」
    ------------------------------------------------------------
    PERMS 係**出廠預設**（寫死喺呢個檔，跟版本走）。
    旅團自己改過嘅放喺 db.permOverrides —— 跟資料庫一齊同步、跟 JSON 備份走。

@@ -109,7 +109,7 @@ async function clickTab(tabId) {
    ============================================================ */
 const SUITES = [
   /* 「mock」分頁係 super 限定（下面特登驗：leader 見唔到、super 見到）
-     ★ 2026-09-25 團長：「權限總表由身份與帳號 移去 用戶與身份」→ perms 唔再喺 #/admin */
+     ★ 2026-09-24 團長：「權限總表由身份與帳號 移去 用戶與身份」→ perms 唔再喺 #/admin */
   { name: '帳號與系統', home: '#/admin', tabs: ['unit', 'data', 'audit'] },
   { name: '通告', home: '#/notices', tabs: ['signups', 'settings'] },
   { name: '資料管理（原表格與同步）', home: '#/tables', tabs: ['source', 'sync', 'data'] },
@@ -151,7 +151,7 @@ for (const [home, tab, needle] of RENDER) {
 
 /* ============================================================
    ②b 冇咗「示範資料（MOCK）」分頁
-      ★ 2026-09-25 團長：「刪除示範資料 (MOCK) 我都在用要MOCK 幹什麼」
+      ★ 2026-09-24 團長：「刪除示範資料 (MOCK) 我都在用要MOCK 幹什麼」
       → 連 super 都唔應該再見到呢個分頁，#/admin/mock 亦唔可以 render 到嘢。
    ============================================================ */
 section('★ MOCK 分頁已經拆走');

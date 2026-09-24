@@ -57,7 +57,7 @@ export function render(params) {
   if (id === 'new') return editor(null);
   if (id === 'edit') return editor(params.action);        // #/members/edit/<id>
   if (id === 'birthdays') return birthdayView();
-  if (id === 'perms') return permsView();          // ★ 權限總表由「帳號與系統」搬過嚟（2026-09-25）
+  if (id === 'perms') return permsView();          // ★ 權限總表由「帳號與系統」搬過嚟（2026-09-24）
   if (id) return detail(id);
   return listView();
 }
@@ -566,7 +566,7 @@ function exportBirthdayIcs() {
 /* ============================================================
    權限總表（可編輯）
    ------------------------------------------------------------
-   ★ 2026-09-25 團長兩點：
+   ★ 2026-09-24 團長兩點：
    ①「權限總表由身份與帳號 移去 用戶與身份」
    ②「權限總表要能編輯，而家TICK 很直觀，多點一下就變X」
    → 每一格都係掣：撳一下就換下一種狀態（✓ 可以 → 自己 → ✗ 不可以 → 返返 ✓）。

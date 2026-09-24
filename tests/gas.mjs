@@ -92,7 +92,8 @@ section('支部帳戶 PBKDF2 密碼基礎');
 
   g.sandbox.initializeSheets();
   const account = g.sandbox.makePasswordRecord('abcd');
-  const seeded = { unitCode: '0082', accounts: [{ id: 'a1', username: 'leader@example.com', email: 'leader@example.com', role: 'leader', active: true, pw: account.pw, mustChangePw: false }], members: [{ id: 'm1', ymis: '1000000001', name: '成員一', identity: 'member', status: 'active' }], transactions: [] };
+  const exco = g.sandbox.makePasswordRecord('exco-pass');
+  const seeded = { unitCode: '0082', accounts: [{ id: 'a1', username: 'leader@example.com', email: 'leader@example.com', role: 'leader', active: true, pw: account.pw, mustChangePw: false }, { id: 'a2', username: 'exco@example.com', email: 'exco@example.com', role: 'exco', active: true, pw: exco.pw, mustChangePw: false }], members: [{ id: 'm1', ymis: '1000000001', name: '成員一', identity: 'member', status: 'active' }], transactions: [] };
   g.post({ action: 'saveDb', unit: '0082', db: seeded });
   const login = g.post({ action: 'authLogin', unit: '0082', username: 'leader@example.com', password: 'abcd' });
   ok('authLogin 由 GAS 核對 PBKDF2，不回傳 hash', login.ok === true && login.account?.role === 'leader' && !JSON.stringify(login).includes(account.pw.hash));
@@ -107,6 +108,10 @@ section('支部帳戶 PBKDF2 密碼基礎');
   ok('領袖可由 server-side 重設成員密碼', reset.ok === true, JSON.stringify(reset));
   const memberLogin = g.post({ action: 'authLogin', unit: '0082', ymis: '1000000001', password: '1234' });
   ok('被重設成員首次登入要改密碼', memberLogin.ok === true && memberLogin.mustChangePw === true);
+  const deleted = g.post({ action: 'authDeleteAccount', unit: '0082', actorUsername: 'leader@example.com', actorPassword: '1234', targetUsername: 'exco@example.com' });
+  ok('團長可由 server-side 刪除執委帳戶', deleted.ok === true, JSON.stringify(deleted));
+  const excoLogin = g.post({ action: 'authLogin', unit: '0082', username: 'exco@example.com', password: 'exco-pass' });
+  ok('已刪除帳戶不能再登入', excoLogin.ok === false);
 }
 
 /* ============================================================

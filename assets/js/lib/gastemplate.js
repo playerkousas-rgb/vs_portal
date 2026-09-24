@@ -325,7 +325,7 @@ function initializeSheets() {
      （2026-09-20 之前呢句係手寫死嘅字串，一直漏咗 constitution，
        加咗 loadDbPart 之後更加唔可以再靠人手記得改。） */
 var SUPPORTED_ACTIONS = ['ping', 'test', 'status', 'sync', 'claim', 'noticeSignup', 'loan',
-  'authLogin', 'authChangePassword', 'authResetPassword', 'saveDb', 'loadDb', 'loadDbPart', 'dbInfo', 'saveDbPart', 'saveDbCommit', 'verifySetupKey',
+  'authLogin', 'authChangePassword', 'authResetPassword', 'authDeleteAccount', 'saveDb', 'loadDb', 'loadDbPart', 'dbInfo', 'saveDbPart', 'saveDbCommit', 'verifySetupKey',
   'uploadPhotos', 'constitution', 'notices',
   'save', 'saveOtherBadge', 'reviewRequest', 'reviewLogRequest', 'addRequest', 'myRequests'];
 
@@ -390,7 +390,7 @@ function doPost(e) {
         return false;
       });
       if (!loginRec) (loginDb.db && loginDb.db.members || []).some(function (m) {
-        if (m && m.status !== 'alumni' && (textOf(m.ymis).toLowerCase() === loginName || textOf(m.email).toLowerCase() === loginName)) {
+        if (m && m.status !== 'alumni' && !m.accountDeletedAt && (textOf(m.ymis).toLowerCase() === loginName || textOf(m.email).toLowerCase() === loginName)) {
           loginRec = m; loginKind = 'member'; return true;
         }
         return false;
@@ -494,6 +494,47 @@ function doPost(e) {
         return savedReset.success === true ? { success: true, version: savedReset.version || '' } : savedReset;
       });
       return json({ ok: reset.success === true, success: reset.success === true, version: reset.version || '', error: reset.error || '' });
+    }
+
+    /* ---- 管理員／團長刪除帳戶：只刪 accounts row，不刪成員資料 ---- */
+    if (body.action === 'authDeleteAccount') {
+      var deleteAuth = requireAuth(expectedKey, key);
+      if (!deleteAuth.ok) return json(deleteAuth);
+      var deleted = withLock(function () {
+        var deleteDb = loadDb(textOf(body.unit));
+        var actorName3 = textOf(body.actorUsername || body.actorEmail).toLowerCase();
+        var targetName3 = textOf(body.targetUsername || body.targetEmail).toLowerCase();
+        var actor3 = null, target3 = null, targetIndex = -1;
+        (deleteDb.db && deleteDb.db.accounts || []).some(function (a) {
+          if (a && a.active !== false && (textOf(a.username).toLowerCase() === actorName3 || textOf(a.email).toLowerCase() === actorName3)) { actor3 = a; return true; }
+          return false;
+        });
+        if (!actor3) return { success: false, error: '管理員帳戶不存在' };
+        var actorPw3 = actor3.pw || actor3.hubPw;
+        var actorOk3 = actorPw3 && actorPw3.algo === 'pbkdf2-sha256'
+          ? verifyPasswordRecord(actorPw3, textOf(body.actorPassword))
+          : actorPw3 && actorPw3.algo === 'sha256'
+            ? sha256HexGs(actorPw3.salt + '::' + textOf(body.actorPassword)) === textOf(actorPw3.hash)
+            : textOf(body.actorPassword) === '1234';
+        if (!actorOk3) return { success: false, error: '管理員帳戶或密碼不正確' };
+        var actorRole3 = textOf(actor3.role || actor3.identity).toLowerCase();
+        if (actorRole3 !== 'leader' && actorRole3 !== 'admin' && actorRole3 !== 'super') return { success: false, error: '你沒有權限刪除帳戶' };
+        (deleteDb.db && deleteDb.db.accounts || []).some(function (a, i) {
+          if (a && (textOf(a.username).toLowerCase() === targetName3 || textOf(a.email).toLowerCase() === targetName3)) { target3 = a; targetIndex = i; return true; }
+          return false;
+        });
+        if (!target3) return { success: false, error: '搵唔到要刪除嘅帳戶' };
+        if (textOf(target3.id) === textOf(actor3.id)) return { success: false, error: '不能刪除自己目前登入嘅帳戶' };
+        var linkedMember = textOf(target3.memberId);
+        deleteDb.db.accounts.splice(targetIndex, 1);
+        /* 成員 row 保留；只標記其管理登入已撤銷，避免資料與歷史被刪掉。 */
+        (deleteDb.db.members || []).forEach(function (m) {
+          if (linkedMember && textOf(m.id) === linkedMember) m.accountDeletedAt = new Date().toISOString();
+        });
+        var savedDelete = saveDb({ unit: textOf(body.unit), db: deleteDb.db, baseVersion: deleteDb.version, refreshReports: false });
+        return savedDelete.success === true ? { success: true, version: savedDelete.version || '' } : savedDelete;
+      });
+      return json({ ok: deleted.success === true, success: deleted.success === true, version: deleted.version || '', error: deleted.error || '' });
     }
 
     /* ---- 整份資料庫讀／寫（app 嘅真正儲存；一定要 API Key）---- */

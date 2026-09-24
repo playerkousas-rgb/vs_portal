@@ -500,6 +500,7 @@ function doPost(e) {
         if (actor && actorPw && actorPw.algo === 'pbkdf2-sha256') actorOk = verifyPasswordRecord(actorPw, textOf(body.actorPassword));
         else if (actor && actorPw && actorPw.algo === 'sha256') actorOk = sha256HexGs(actorPw.salt + '::' + textOf(body.actorPassword)) === textOf(actorPw.hash);
         else if (actor && !actorPw && textOf(body.actorPassword) === '1234') actorOk = true;
+        if (resetSession.id === textOf(actor.id)) actorOk = true;
         if (!actorOk) return { success: false, error: '管理員帳戶或密碼不正確' };
         var actorRole = textOf(actor.role || actor.identity).toLowerCase();
         if (actorRole !== 'leader' && actorRole !== 'admin' && actorRole !== 'super') return { success: false, error: '你沒有權限重設其他帳戶密碼' };
@@ -550,6 +551,7 @@ function doPost(e) {
           : actorPw3 && actorPw3.algo === 'sha256'
             ? sha256HexGs(actorPw3.salt + '::' + textOf(body.actorPassword)) === textOf(actorPw3.hash)
             : textOf(body.actorPassword) === '1234';
+        if (deleteSession.id === textOf(actor3.id)) actorOk3 = true;
         if (!actorOk3) return { success: false, error: '管理員帳戶或密碼不正確' };
         var actorRole3 = textOf(actor3.role || actor3.identity).toLowerCase();
         if (actorRole3 !== 'leader' && actorRole3 !== 'admin' && actorRole3 !== 'super') return { success: false, error: '你沒有權限刪除帳戶' };
@@ -604,6 +606,7 @@ function doPost(e) {
           : actorPw4 && actorPw4.algo === 'sha256'
             ? sha256HexGs(actorPw4.salt + '::' + textOf(body.actorPassword)) === textOf(actorPw4.hash)
             : textOf(body.actorPassword) === '1234';
+        if (restoreSession.id === textOf(actor4.id)) actorOk4 = true;
         if (!actorOk4) return { success: false, error: '管理員帳戶或密碼不正確' };
         var actorRole4 = textOf(actor4.role || actor4.identity).toLowerCase();
         if (actorRole4 !== 'leader' && actorRole4 !== 'admin' && actorRole4 !== 'super') return { success: false, error: '你沒有權限復原帳戶' };

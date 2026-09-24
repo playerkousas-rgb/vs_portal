@@ -374,6 +374,15 @@ function doPost(e) {
       return json({ ok: false, success: false, error: 'API key 唔正確' });
     }
 
+    /* server-side session：登入成功後由 GAS 發出短期 token；hash 留喺 ScriptProperties。 */
+    function issueAuthSession(unit, record, kind) {
+      var token = Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '');
+      var tokenHash = sha256HexGs(token);
+      var key = 'AUTH_SESSION_' + textOf(unit) + '_' + tokenHash;
+      PropertiesService.getScriptProperties().setProperty(key, JSON.stringify({ id: textOf(record.id), kind: kind, exp: Date.now() + 8 * 3600 * 1000, pv: Number(record.pv || 1) }));
+      return { token: token, expiresAt: Date.now() + 8 * 3600 * 1000 };
+    }
+
     /* ---- 支部帳戶登入：密碼核對留喺 GAS，前端只收安全身份資料 ---- */
     if (body.action === 'authLogin') {
       var loginAuth = requireAuth(expectedKey, key);
@@ -407,7 +416,8 @@ function doPost(e) {
       if (!loginRec) return json({ ok: false, success: false, code: 'AUTH_ACCOUNT_NOT_FOUND', error: '帳號或密碼不正確' });
       if (!loginOk) return json({ ok: false, success: false, code: 'AUTH_INVALID', error: '帳號或密碼不正確' });
       var loginRole = loginRec.role || loginRec.identity || 'member';
-      return json({ ok: true, success: true, account: {
+      var session = issueAuthSession(textOf(body.unit), loginRec, loginKind);
+      return json({ ok: true, success: true, sessionToken: session.token, sessionExpiresAt: session.expiresAt, account: {
         id: textOf(loginRec.id), username: textOf(loginRec.username || loginRec.email || loginRec.ymis),
         email: textOf(loginRec.email), name: textOf(loginRec.name), role: loginRole, kind: loginKind
       }, mustChangePw: !!(loginRec.mustChangePw || loginRec.hubMustChangePw || !loginPassword || loginPw === '1234') });

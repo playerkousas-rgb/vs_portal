@@ -420,7 +420,7 @@ export async function loginServer(role, username, password) {
   const a = data.account || {};
   const accountRole = a.role || (role === 'member' ? 'member' : 'leader');
   const dest = accountRole === 'member' ? 'hub' : 'staff';
-  setSession({ role: accountRole, accountId: a.id, username: a.username, email: a.email || '', name: a.name, at: Date.now(), mustChangePw: !!data.mustChangePw, via: 'server' });
+  setSession({ role: accountRole, accountId: a.id, username: a.username, email: a.email || '', name: a.name, at: Date.now(), mustChangePw: !!data.mustChangePw, sessionToken: data.sessionToken || '', sessionExpiresAt: data.sessionExpiresAt || 0, via: 'server' });
   auditLogin(a.username || username, 'GAS server-side 登入');
   return { ok: true, role: accountRole, mustChangePw: !!data.mustChangePw, dest, member: { id: a.id, name: a.name, ymis: a.username, email: a.email, identity: accountRole } };
 }

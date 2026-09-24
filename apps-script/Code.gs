@@ -315,7 +315,7 @@ function initializeSheets() {
      （2026-09-20 之前呢句係手寫死嘅字串，一直漏咗 constitution，
        加咗 loadDbPart 之後更加唔可以再靠人手記得改。） */
 var SUPPORTED_ACTIONS = ['ping', 'test', 'status', 'sync', 'claim', 'noticeSignup', 'loan',
-  'saveDb', 'loadDb', 'loadDbPart', 'dbInfo', 'saveDbPart', 'saveDbCommit', 'verifySetupKey',
+  'authLogin', 'saveDb', 'loadDb', 'loadDbPart', 'dbInfo', 'saveDbPart', 'saveDbCommit', 'verifySetupKey',
   'uploadPhotos', 'constitution', 'notices',
   'save', 'saveOtherBadge', 'reviewRequest', 'reviewLogRequest', 'addRequest', 'myRequests'];
 
@@ -362,6 +362,44 @@ function doPost(e) {
     // 若伺服器端有設定 API_KEY，且請求有傳入 key，進行核對
     if (expectedKey && key && key !== expectedKey) {
       return json({ ok: false, success: false, error: 'API key 唔正確' });
+    }
+
+    /* ---- 支部帳戶登入：密碼核對留喺 GAS，前端只收安全身份資料 ---- */
+    if (body.action === 'authLogin') {
+      var loginAuth = requireAuth(expectedKey, key);
+      if (!loginAuth.ok) return json(loginAuth);
+      var loginDb = loadDb(textOf(body.unit));
+      var loginName = textOf(body.username || body.email || body.ymis).toLowerCase();
+      var loginPw = textOf(body.password);
+      var loginRec = null;
+      var loginKind = '';
+      (loginDb.db && loginDb.db.accounts || []).some(function (a) {
+        if (a && a.active !== false && (textOf(a.username).toLowerCase() === loginName || textOf(a.email).toLowerCase() === loginName)) {
+          loginRec = a; loginKind = 'account'; return true;
+        }
+        return false;
+      });
+      if (!loginRec) (loginDb.db && loginDb.db.members || []).some(function (m) {
+        if (m && m.status !== 'alumni' && (textOf(m.ymis).toLowerCase() === loginName || textOf(m.email).toLowerCase() === loginName)) {
+          loginRec = m; loginKind = 'member'; return true;
+        }
+        return false;
+      });
+      var loginPassword = loginRec && (loginRec.pw || loginRec.hubPw);
+      var loginOk = false;
+      if (loginRec && loginPassword && loginPassword.algo === 'pbkdf2-sha256') {
+        loginOk = verifyPasswordRecord(loginPassword, loginPw);
+      } else if (loginRec && loginPassword && loginPassword.algo === 'sha256') {
+        loginOk = sha256HexGs(loginPassword.salt + '::' + loginPw) === textOf(loginPassword.hash);
+      } else if (loginRec && !loginPassword && loginPw === '1234') {
+        loginOk = true;
+      }
+      if (!loginOk) return json({ ok: false, success: false, error: '帳號或密碼不正確' });
+      var loginRole = loginRec.role || loginRec.identity || 'member';
+      return json({ ok: true, success: true, account: {
+        id: textOf(loginRec.id), username: textOf(loginRec.username || loginRec.email || loginRec.ymis),
+        email: textOf(loginRec.email), name: textOf(loginRec.name), role: loginRole, kind: loginKind
+      }, mustChangePw: !!(loginRec.mustChangePw || loginRec.hubMustChangePw || !loginPassword || loginPw === '1234') });
     }
 
     /* ---- 整份資料庫讀／寫（app 嘅真正儲存；一定要 API Key）---- */

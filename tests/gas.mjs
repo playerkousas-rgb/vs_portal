@@ -89,6 +89,15 @@ section('支部帳戶 PBKDF2 密碼基礎');
   ok('PBKDF2 password record 可以驗證及拒絕錯密碼',
     g.sandbox.verifyPasswordRecord(temporary.pw, '1234') === true &&
     g.sandbox.verifyPasswordRecord(temporary.pw, 'wrong') === false);
+
+  g.sandbox.initializeSheets();
+  const account = g.sandbox.makePasswordRecord('abcd');
+  const seeded = { unitCode: '0082', accounts: [{ id: 'a1', username: 'leader@example.com', email: 'leader@example.com', role: 'leader', active: true, pw: account.pw, mustChangePw: false }], members: [], transactions: [] };
+  g.post({ action: 'saveDb', unit: '0082', db: seeded });
+  const login = g.post({ action: 'authLogin', unit: '0082', username: 'leader@example.com', password: 'abcd' });
+  ok('authLogin 由 GAS 核對 PBKDF2，不回傳 hash', login.ok === true && login.account?.role === 'leader' && !JSON.stringify(login).includes(account.pw.hash));
+  const denied = g.post({ action: 'authLogin', unit: '0082', username: 'leader@example.com', password: 'wrong' });
+  ok('authLogin 錯密碼拒絕', denied.ok === false);
 }
 
 /* ============================================================

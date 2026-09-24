@@ -10,7 +10,7 @@
 import { load, commit, collection, add, update, remove, exportAll, importAll, resetToSeed, wipe, clearMockData, audit, isMock, currentUnit, enterMock, exitMock, switchUnit, setUnitCode } from '../lib/store.js';
 import {
   ROLES, PERMS, PERM_GROUPS, accounts, accountById, can, canChangePasswordOf, canManageRole,
-  createAccount, createAccountServer, changePassword, changeUsername, changeOwnPassword, setAccountActive, deleteAccount, deleteAccountServer, resetAccountPasswordServer,
+  createAccount, createAccountServer, changePassword, changeUsername, changeOwnPassword, setAccountActive, deleteAccount, deleteAccountServer, resetAccountPasswordServer, restoreAccountServer,
   current, currentRole, isSuper, isMe, displayName, RESERVED_USERNAMES, TEMP_PASSWORD
 } from '../lib/auth.js';
 import { profile, settings, members, memberName, money, balance, tx, invItems } from '../lib/model.js';
@@ -97,6 +97,8 @@ function accountsView() {
         </div>
       </div>`).join('')}
   </div>
+
+  ${(load()?.db?.deletedAccounts || []).length && can('admin.accounts') ? `<div class="card mt-16"><div class="card-head"><div><div class="card-title">可復原的已刪除帳戶</div><div class="card-sub">只保留帳戶復原資料，不包含舊密碼</div></div></div>${(load()?.db?.deletedAccounts || []).map(d => `<div class="row-between py-8"><span>${esc(d.name || d.email || d.username)}</span><button class="btn btn-xs" data-restore="${esc(d.email || d.username)}">復原（1234）</button></div>`).join('')}</div>` : ''}
 
   <div class="card">
     <div class="card-head"><div><div class="card-title">密碼規則</div>
@@ -645,6 +647,13 @@ export function mount(root) {
       if (!r2.ok) return toast(r2.msg, 'err');
       toast('已刪除帳戶', 'ok'); refresh();
     }
+  }));
+
+  root.querySelectorAll('[data-restore]').forEach(b => b.addEventListener('click', async () => {
+    if (isMock()) return;
+    const r2 = await restoreAccountServer({ email: b.dataset.restore }, '1234');
+    if (!r2.ok) return toast(r2.msg, 'err');
+    toast('帳戶已復原，預設密碼 1234，首次登入要改密碼', 'ok'); refresh();
   }));
 
   root.querySelectorAll('[data-switch]').forEach(b => b.addEventListener('click', () => switchUnit(b.dataset.switch)));

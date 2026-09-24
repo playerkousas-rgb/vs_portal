@@ -412,6 +412,14 @@ export async function createAccountServer(payload) {
   return r.ok && data.success !== false ? { ok:true } : { ok:false, msg:data.error || '新增帳戶失敗' };
 }
 
+export async function restoreAccountServer(target, newPassword = '1234') {
+  const s = getSession();
+  if (!s?.sessionToken) return { ok: false, msg: '登入狀態已失效，請重新登入' };
+  const r = await fetch('./api/proxy', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ action:'authRestoreAccount', unit:currentUnit(), targetEmail:target?.email || target?.username || '', newPassword, sessionToken:s.sessionToken }) });
+  const data = await r.json().catch(() => ({}));
+  return r.ok && data.success !== false ? { ok:true } : { ok:false, msg:data.error || '復原帳戶失敗' };
+}
+
 export async function resetAccountPasswordServer(target, newPassword) {
   const s = getSession();
   if (!s?.sessionToken) return { ok: false, msg: '登入狀態已失效，請重新登入' };

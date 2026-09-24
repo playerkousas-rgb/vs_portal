@@ -315,7 +315,7 @@ function initializeSheets() {
      （2026-09-20 之前呢句係手寫死嘅字串，一直漏咗 constitution，
        加咗 loadDbPart 之後更加唔可以再靠人手記得改。） */
 var SUPPORTED_ACTIONS = ['ping', 'test', 'status', 'sync', 'claim', 'noticeSignup', 'loan',
-  'authLogin', 'authChangePassword', 'authResetPassword', 'authDeleteAccount', 'authRestoreAccount', 'saveDb', 'loadDb', 'loadDbPart', 'dbInfo', 'saveDbPart', 'saveDbCommit', 'verifySetupKey',
+  'authLogin', 'authChangePassword', 'authResetPassword', 'authDeleteAccount', 'authRestoreAccount', 'authForgotPassword', 'authResetByToken', 'saveDb', 'loadDb', 'loadDbPart', 'dbInfo', 'saveDbPart', 'saveDbCommit', 'verifySetupKey',
   'uploadPhotos', 'constitution', 'notices',
   'save', 'saveOtherBadge', 'reviewRequest', 'reviewLogRequest', 'addRequest', 'myRequests'];
 
@@ -587,6 +587,63 @@ function doPost(e) {
         return savedRestore.success === true ? { success: true, version: savedRestore.version || '' } : savedRestore;
       });
       return json({ ok: restored.success === true, success: restored.success === true, version: restored.version || '', error: restored.error || '' });
+    }
+
+    /* ---- EMAIL 忘記密碼：一次性 token，回應永遠不透露帳戶是否存在 ---- */
+    if (body.action === 'authForgotPassword') {
+      var forgotAuth = requireAuth(expectedKey, key);
+      if (!forgotAuth.ok) return json(forgotAuth);
+      var forgotDb = loadDb(textOf(body.unit));
+      var forgotEmail = textOf(body.email).trim().toLowerCase();
+      var forgotTarget = null;
+      (forgotDb.db && forgotDb.db.accounts || []).some(function (a) {
+        if (a && a.active !== false && textOf(a.email).toLowerCase() === forgotEmail) { forgotTarget = { id: textOf(a.id), kind: 'account', email: textOf(a.email) }; return true; }
+        return false;
+      });
+      if (!forgotTarget) (forgotDb.db && forgotDb.db.members || []).some(function (m) {
+        if (m && m.status !== 'alumni' && textOf(m.email).toLowerCase() === forgotEmail) { forgotTarget = { id: textOf(m.id), kind: 'member', email: textOf(m.email) }; return true; }
+        return false;
+      });
+      if (forgotTarget) {
+        var rawToken = Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '');
+        var tokenHash = sha256HexGs(rawToken);
+        var tokenKey = 'PWD_RESET_' + textOf(body.unit) + '_' + tokenHash;
+        PropertiesService.getScriptProperties().setProperty(tokenKey, JSON.stringify({ id: forgotTarget.id, kind: forgotTarget.kind, exp: Date.now() + 30 * 60 * 1000 }));
+        var origin = textOf(body.resetUrl || body.origin);
+        if (origin.slice(-1) === '/') origin = origin.slice(0, -1);
+        var link = (origin || 'https://scout-system.example/reset-password') + '?unit=' + encodeURIComponent(textOf(body.unit)) + '&token=' + encodeURIComponent(rawToken);
+        var lineBreak = String.fromCharCode(10);
+        try { MailApp.sendEmail(forgotTarget.email, 'Scout System 重設密碼', '請在 30 分鐘內開啟以下連結重設密碼：' + lineBreak + lineBreak + link); } catch (mailErr) { /* 不向外洩漏寄信錯誤 */ }
+      }
+      return json({ ok: true, success: true, message: '如果電郵已登記，重設連結會寄出。' });
+    }
+
+    if (body.action === 'authResetByToken') {
+      var tokenAuth = requireAuth(expectedKey, key);
+      if (!tokenAuth.ok) return json(tokenAuth);
+      var token = textOf(body.token);
+      var tokenHash2 = sha256HexGs(token);
+      var tokenKey2 = 'PWD_RESET_' + textOf(body.unit) + '_' + tokenHash2;
+      var tokenRaw = PropertiesService.getScriptProperties().getProperty(tokenKey2);
+      var tokenInfo = null;
+      try { tokenInfo = tokenRaw ? JSON.parse(tokenRaw) : null; } catch (tokenErr) { tokenInfo = null; }
+      if (!tokenInfo || Number(tokenInfo.exp || 0) < Date.now()) {
+        if (tokenRaw) PropertiesService.getScriptProperties().deleteProperty(tokenKey2);
+        return json({ ok: false, success: false, error: '重設連結無效或已過期' });
+      }
+      var tokenDb = loadDb(textOf(body.unit));
+      var tokenTarget = null;
+      var tokenList = tokenInfo.kind === 'member' ? (tokenDb.db && tokenDb.db.members || []) : (tokenDb.db && tokenDb.db.accounts || []);
+      tokenList.some(function (r) { if (r && textOf(r.id) === textOf(tokenInfo.id)) { tokenTarget = r; return true; } return false; });
+      var tokenPw = makePasswordRecord(textOf(body.newPassword), true);
+      if (!tokenTarget) return json({ ok: false, success: false, error: '帳戶不存在' });
+      if (!tokenPw.ok) return json({ ok: false, success: false, error: tokenPw.error });
+      if (tokenInfo.kind === 'member') { tokenTarget.hubPw = tokenPw.pw; tokenTarget.hubMustChangePw = true; delete tokenTarget.hubPassword; }
+      else { tokenTarget.pw = tokenPw.pw; tokenTarget.mustChangePw = true; tokenTarget.defaultPw = textOf(body.newPassword) === '1234'; delete tokenTarget.password; }
+      var tokenSaved = saveDb({ unit: textOf(body.unit), db: tokenDb.db, baseVersion: tokenDb.version, refreshReports: false });
+      if (tokenSaved.success !== true) return json({ ok: false, success: false, error: tokenSaved.error || '重設失敗，請重新申請' });
+      PropertiesService.getScriptProperties().deleteProperty(tokenKey2);
+      return json({ ok: true, success: true, mustChangePw: true });
     }
 
     /* ---- 整份資料庫讀／寫（app 嘅真正儲存；一定要 API Key）---- */

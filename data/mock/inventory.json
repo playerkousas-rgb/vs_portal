@@ -1,0 +1,26 @@
+{
+  "schema": 2,
+  "unitCode": "MOCK",
+  "_comment": "示範物資。可用數量＝總數量 − 未歸還／未歸還嘅借用。",
+  "nextCode": "G-001",
+  "items": [
+    { "id": "gi01", "code": "G-001", "name": "4 人營幕", "category": "露營裝備", "total": 6, "unit": "個", "location": "旅部倉 A 架", "condition": "良好", "note": "示範資料" },
+    { "id": "gi02", "code": "G-002", "name": "天幕 3x3", "category": "露營裝備", "total": 3, "unit": "張", "location": "旅部倉 A 架", "condition": "良好", "note": "" },
+    { "id": "gi03", "code": "G-003", "name": "營燈（充電式）", "category": "露營裝備", "total": 4, "unit": "個", "location": "旅部倉 B 箱", "condition": "一般", "note": "其中一個電池老化" },
+    { "id": "gi04", "code": "G-004", "name": "氣爐連轉接頭", "category": "煮食器材", "total": 4, "unit": "套", "location": "旅部倉 B 箱", "condition": "良好", "note": "" },
+    { "id": "gi05", "code": "G-005", "name": "煮食鍋具套裝", "category": "煮食器材", "total": 5, "unit": "套", "location": "旅部倉 B 箱", "condition": "良好", "note": "" },
+    { "id": "gi06", "code": "G-006", "name": "先鋒工程竹 3 米", "category": "繩索與先鋒工程", "total": 24, "unit": "支", "location": "旅部倉 C 架", "condition": "一般", "note": "" },
+    { "id": "gi07", "code": "G-007", "name": "麻繩（30 米）", "category": "繩索與先鋒工程", "total": 10, "unit": "捲", "location": "旅部倉 C 架", "condition": "良好", "note": "" },
+    { "id": "gi08", "code": "G-008", "name": "急救包", "category": "急救用品", "total": 3, "unit": "個", "location": "旅部辦公室", "condition": "良好", "note": "每季檢查及補充" },
+    { "id": "gi09", "code": "G-009", "name": "對講機", "category": "電子器材", "total": 6, "unit": "部", "location": "旅部辦公室", "condition": "良好", "note": "" },
+    { "id": "gi10", "code": "G-010", "name": "深資童軍領巾（後備）", "category": "制服及布章", "total": 8, "unit": "條", "location": "旅部辦公室", "condition": "全新", "note": "" }
+  ],
+  "loans": [
+    { "id": "ln01", "itemId": "gi01", "qty": 2, "borrowerId": "dm01", "borrowerName": "陳大文", "purpose": "10 月露營（小隊 A）", "outDate": "2026-09-20", "dueDate": "2026-10-04", "returnDate": "", "status": "requested", "requestedBy": "dm01", "requestedAt": "2026-09-13 20:10", "approvedBy": "", "note": "示範：待批核" },
+    { "id": "ln02", "itemId": "gi04", "qty": 1, "borrowerId": "dm04", "borrowerName": "張家俊", "purpose": "小隊烹飪練習", "outDate": "2026-09-12", "dueDate": "2026-09-19", "returnDate": "", "status": "out", "requestedBy": "dm04", "requestedAt": "2026-09-10 18:00", "approvedBy": "leader", "approvedAt": "2026-09-10 19:05", "note": "示範：已借出，庫存自動 -1" },
+    { "id": "ln03", "itemId": "gi08", "qty": 1, "borrowerId": "dm02", "borrowerName": "李小明", "purpose": "遠足活動急救員", "outDate": "2026-08-15", "dueDate": "2026-08-17", "returnDate": "2026-08-17", "status": "returned", "requestedBy": "dm02", "requestedAt": "2026-08-13 09:00", "approvedBy": "exco", "approvedAt": "2026-08-13 10:00", "returnedTo": "旅部辦公室", "note": "示範：已歸還，庫存自動 +1" }
+  ],
+  "audits": [
+    { "id": "au01", "date": "2026-09-01", "itemId": "gi03", "delta": -1, "reason": "盤點：電池損壞報廢", "by": "leader", "note": "示範資料" }
+  ]
+}

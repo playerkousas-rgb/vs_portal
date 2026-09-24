@@ -1,0 +1,387 @@
+{
+  "version": "2024.09",
+  "updated": "2024-09-12",
+  "chapters": [
+    {
+      "no": "1",
+      "heading": {
+        "zh": "1. 名稱",
+        "en": "1. Name"
+      },
+      "articles": [
+        {
+          "no": "1.1",
+          "zh": "本團名稱為「香港童軍總會測試地域測試旅深資童軍團」（下稱本團）。",
+          "en": "The title of the Unit shall be “The Test Group Venture Scout Unit” (hereinafter referred to as the Unit).",
+          "id": "a01-01"
+        },
+        {
+          "id": "a01-02",
+          "zh": "本團由測試主辦機構主辦，團址設於測試地址 123 號。",
+          "en": "The Unit is sponsored by Test Sponsor Centre, with its address at 123 Test Road."
+        }
+      ],
+      "id": "c01"
+    },
+    {
+      "no": "2",
+      "heading": {
+        "zh": "第 2 章 測試章節",
+        "en": "Chapter 2 Test"
+      },
+      "articles": [
+        {
+          "no": "2.1",
+          "zh": "第 2 章測試條文內容。",
+          "en": "Test article text for chapter 2.",
+          "id": "a02-01"
+        }
+      ],
+      "id": "c02"
+    },
+    {
+      "no": "3",
+      "heading": {
+        "zh": "第 3 章 測試章節",
+        "en": "Chapter 3 Test"
+      },
+      "articles": [
+        {
+          "no": "3.1",
+          "zh": "第 3 章測試條文內容。",
+          "en": "Test article text for chapter 3.",
+          "id": "a03-01"
+        }
+      ],
+      "id": "c03"
+    },
+    {
+      "no": "4",
+      "heading": {
+        "zh": "第 4 章 測試章節",
+        "en": "Chapter 4 Test"
+      },
+      "articles": [
+        {
+          "no": "4.1",
+          "zh": "第 4 章測試條文內容。",
+          "en": "Test article text for chapter 4.",
+          "items": [
+            {
+              "zh": "（甲）測試項目",
+              "en": "(甲) test item"
+            },
+            {
+              "zh": "（乙）測試項目",
+              "en": "(乙) test item"
+            },
+            {
+              "zh": "（丙）測試項目",
+              "en": "(丙) test item"
+            },
+            {
+              "zh": "（丁）測試項目",
+              "en": "(丁) test item"
+            },
+            {
+              "zh": "（戊）測試項目",
+              "en": "(戊) test item"
+            }
+          ],
+          "id": "a04-01"
+        }
+      ],
+      "id": "c04"
+    },
+    {
+      "no": "5",
+      "heading": {
+        "zh": "第 5 章 測試章節",
+        "en": "Chapter 5 Test"
+      },
+      "articles": [
+        {
+          "no": "5.1",
+          "zh": "第 5 章測試條文內容。",
+          "en": "Test article text for chapter 5.",
+          "id": "a05-01"
+        }
+      ],
+      "id": "c05"
+    },
+    {
+      "no": "6",
+      "heading": {
+        "zh": "第 6 章 測試章節",
+        "en": "Chapter 6 Test"
+      },
+      "articles": [
+        {
+          "no": "6.1",
+          "zh": "第 6 章測試條文內容。",
+          "en": "Test article text for chapter 6.",
+          "id": "a06-01"
+        }
+      ],
+      "id": "c06"
+    },
+    {
+      "no": "7",
+      "heading": {
+        "zh": "第 7 章 測試章節",
+        "en": "Chapter 7 Test"
+      },
+      "articles": [
+        {
+          "no": "7.1",
+          "zh": "第 7 章測試條文內容。",
+          "en": "Test article text for chapter 7.",
+          "id": "a07-01"
+        }
+      ],
+      "id": "c07"
+    },
+    {
+      "no": "8",
+      "heading": {
+        "zh": "第 8 章 測試章節",
+        "en": "Chapter 8 Test"
+      },
+      "articles": [
+        {
+          "no": "8.1",
+          "zh": "第 8 章測試條文內容。",
+          "en": "Test article text for chapter 8.",
+          "id": "a08-01"
+        }
+      ],
+      "id": "c08"
+    },
+    {
+      "no": "9",
+      "heading": {
+        "zh": "第 9 章 測試章節",
+        "en": "Chapter 9 Test"
+      },
+      "articles": [
+        {
+          "no": "9.1",
+          "zh": "第 9 章測試條文內容。",
+          "en": "Test article text for chapter 9.",
+          "id": "a09-01"
+        }
+      ],
+      "id": "c09"
+    },
+    {
+      "no": "10",
+      "heading": {
+        "zh": "第 10 章 測試章節",
+        "en": "Chapter 10 Test"
+      },
+      "articles": [
+        {
+          "no": "10.1",
+          "zh": "第 10 章測試條文內容。",
+          "en": "Test article text for chapter 10.",
+          "id": "a10-01"
+        }
+      ],
+      "id": "c10"
+    },
+    {
+      "no": "11",
+      "heading": {
+        "zh": "第 11 章 測試章節",
+        "en": "Chapter 11 Test"
+      },
+      "articles": [
+        {
+          "no": "11.1",
+          "zh": "第 11 章測試條文內容。",
+          "en": "Test article text for chapter 11.",
+          "id": "a11-01"
+        }
+      ],
+      "id": "c11"
+    },
+    {
+      "no": "12",
+      "heading": {
+        "zh": "第 12 章 團費",
+        "en": "Chapter 12 Subscription"
+      },
+      "articles": [
+        {
+          "no": "12.1",
+          "zh": "團員須繳交團費，金額由執行委員會決定。",
+          "en": "Members shall pay the subscription determined by the Executive Committee.",
+          "id": "a12-01"
+        }
+      ],
+      "id": "c12"
+    },
+    {
+      "no": "13",
+      "heading": {
+        "zh": "第 13 章 測試章節",
+        "en": "Chapter 13 Test"
+      },
+      "articles": [
+        {
+          "no": "13.1",
+          "zh": "第 13 章測試條文內容。",
+          "en": "Test article text for chapter 13.",
+          "id": "a13-01"
+        }
+      ],
+      "id": "c13"
+    },
+    {
+      "no": "14",
+      "heading": {
+        "zh": "第 14 章 測試章節",
+        "en": "Chapter 14 Test"
+      },
+      "articles": [
+        {
+          "no": "14.1",
+          "zh": "第 14 章測試條文內容。",
+          "en": "Test article text for chapter 14.",
+          "id": "a14-01"
+        }
+      ],
+      "id": "c14"
+    },
+    {
+      "no": "15",
+      "heading": {
+        "zh": "第 15 章 測試章節",
+        "en": "Chapter 15 Test"
+      },
+      "articles": [
+        {
+          "no": "15.1",
+          "zh": "第 15 章測試條文內容。",
+          "en": "Test article text for chapter 15.",
+          "id": "a15-01"
+        }
+      ],
+      "id": "c15"
+    },
+    {
+      "no": "16",
+      "heading": {
+        "zh": "第 16 章 測試章節",
+        "en": "Chapter 16 Test"
+      },
+      "articles": [
+        {
+          "no": "16.1",
+          "zh": "第 16 章測試條文內容。",
+          "en": "Test article text for chapter 16.",
+          "id": "a16-01"
+        }
+      ],
+      "id": "c16"
+    },
+    {
+      "no": "17",
+      "heading": {
+        "zh": "第 17 章 測試章節",
+        "en": "Chapter 17 Test"
+      },
+      "articles": [
+        {
+          "no": "17.1",
+          "zh": "第 17 章測試條文內容。",
+          "en": "Test article text for chapter 17.",
+          "id": "a17-01"
+        }
+      ],
+      "id": "c17"
+    },
+    {
+      "no": "18",
+      "heading": {
+        "zh": "第 18 章 測試章節",
+        "en": "Chapter 18 Test"
+      },
+      "articles": [
+        {
+          "no": "18.1",
+          "zh": "第 18 章測試條文內容。",
+          "en": "Test article text for chapter 18.",
+          "id": "a18-01"
+        }
+      ],
+      "id": "c18"
+    },
+    {
+      "no": "19",
+      "heading": {
+        "zh": "第 19 章 測試章節",
+        "en": "Chapter 19 Test"
+      },
+      "articles": [
+        {
+          "no": "19.1",
+          "zh": "第 19 章測試條文內容。",
+          "en": "Test article text for chapter 19.",
+          "id": "a19-01"
+        }
+      ],
+      "id": "c19"
+    }
+  ],
+  "appendices": [
+    {
+      "heading": {
+        "zh": "附件一 測試",
+        "en": "Appendix 1 Test"
+      },
+      "zh": "測試附件內容。",
+      "en": "Test appendix body.",
+      "id": "ap01"
+    }
+  ],
+  "footer": {
+    "zh": "測試旅深資童軍團團章（版本 v1.0-test，更新日期：2024 年 9 月 12 日）",
+    "en": "Test Group Venture Scout Unit Constitution (version v1.0-test, Updated 12/09/2024)"
+  },
+  "schema": 2,
+  "unitCode": "TEST9",
+  "status": "published",
+  "translated": "2025-08-22",
+  "_comment": "虛構測試團章。0082 真實團章已移除（搬去後端）。",
+  "title": {
+    "zh": "團章",
+    "en": "Constitution"
+  },
+  "header": {
+    "zh": [
+      "香港童軍總會",
+      "測試地域",
+      "測試旅深資童軍團",
+      "測試主辦機構"
+    ],
+    "en": [
+      "Scout Association of Hong Kong",
+      "Test Region",
+      "Test Group Venture Scout Unit",
+      "Test Sponsor Centre"
+    ]
+  },
+  "preamble": {
+    "zh": "本章程為測試用虛構文本，用以驗證團章公開頁之渲染、語言切換及匯出功能。",
+    "en": "This Constitution is a fictional test document used to verify rendering of the public page."
+  },
+  "history": [
+    {
+      "version": "2024.09",
+      "date": "2024-09-12",
+      "by": "test9",
+      "note": "測試 fixture"
+    }
+  ]
+}

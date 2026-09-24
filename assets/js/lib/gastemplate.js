@@ -379,7 +379,7 @@ function doPost(e) {
       var token = Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '');
       var tokenHash = sha256HexGs(token);
       var key = 'AUTH_SESSION_' + textOf(unit) + '_' + tokenHash;
-      PropertiesService.getScriptProperties().setProperty(key, JSON.stringify({ id: textOf(record.id), kind: kind, exp: Date.now() + 8 * 3600 * 1000, pv: Number(record.pv || 1) }));
+      PropertiesService.getScriptProperties().setProperty(key, JSON.stringify({ id: textOf(record.id), kind: kind, iat: Date.now(), exp: Date.now() + 8 * 3600 * 1000, pv: Number(record.pv || 1) }));
       return { token: token, expiresAt: Date.now() + 8 * 3600 * 1000 };
     }
 
@@ -390,7 +390,8 @@ function doPost(e) {
       var saved = PropertiesService.getScriptProperties().getProperty(key);
       var info = null;
       try { info = saved ? JSON.parse(saved) : null; } catch (sessionErr) { info = null; }
-      if (!info || Number(info.exp || 0) <= Date.now()) {
+      var revokedAt = Number(PropertiesService.getScriptProperties().getProperty('AUTH_REVOKE_' + textOf(unit) + '_' + textOf(info && info.id)) || 0);
+      if (!info || Number(info.exp || 0) <= Date.now() || (revokedAt && revokedAt >= Number(info.iat || 0))) {
         if (saved) PropertiesService.getScriptProperties().deleteProperty(key);
         return { ok: false, error: '登入狀態已失效，請重新登入' };
       }
@@ -399,6 +400,10 @@ function doPost(e) {
 
     function requireAuthSession(body) {
       return verifyAuthSession(body.unit, body.sessionToken);
+    }
+
+    function revokeAuthSessions(unit, id) {
+      if (id) PropertiesService.getScriptProperties().setProperty('AUTH_REVOKE_' + textOf(unit) + '_' + textOf(id), String(Date.now()));
     }
 
     /* ---- 支部帳戶登入：密碼核對留喺 GAS，前端只收安全身份資料 ---- */
@@ -473,6 +478,7 @@ function doPost(e) {
           rec2.pw = next.pw; rec2.mustChangePw = false; rec2.defaultPw = false; delete rec2.password;
         }
         var saved2 = saveDb({ unit: textOf(body.unit), db: current.db, baseVersion: current.version, refreshReports: false });
+        if (saved2.success === true) revokeAuthSessions(body.unit, rec2.id);
         return saved2.success === true ? { success: true, version: saved2.version || '' } : saved2;
       });
       return json({ ok: changed.success === true, success: changed.success === true, version: changed.version || '', error: changed.error || '' });
@@ -524,6 +530,7 @@ function doPost(e) {
           target.pw = nextReset.pw; target.mustChangePw = true; target.defaultPw = textOf(body.newPassword) === '1234'; delete target.password;
         }
         var savedReset = saveDb({ unit: textOf(body.unit), db: resetDb.db, baseVersion: resetDb.version, refreshReports: false });
+        if (savedReset.success === true) revokeAuthSessions(body.unit, target.id);
         return savedReset.success === true ? { success: true, version: savedReset.version || '' } : savedReset;
       });
       return json({ ok: reset.success === true, success: reset.success === true, version: reset.version || '', error: reset.error || '' });
@@ -578,6 +585,7 @@ function doPost(e) {
           if (linkedMember && textOf(m.id) === linkedMember) m.accountDeletedAt = new Date().toISOString();
         });
         var savedDelete = saveDb({ unit: textOf(body.unit), db: deleteDb.db, baseVersion: deleteDb.version, refreshReports: false });
+        if (savedDelete.success === true) revokeAuthSessions(body.unit, target3.id);
         return savedDelete.success === true ? { success: true, version: savedDelete.version || '' } : savedDelete;
       });
       return json({ ok: deleted.success === true, success: deleted.success === true, version: deleted.version || '', error: deleted.error || '' });

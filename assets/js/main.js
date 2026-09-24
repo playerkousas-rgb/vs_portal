@@ -1293,7 +1293,6 @@ async function maybeForceChangePw() {
         <input class="input" id="fp2" type="password" autocomplete="new-password"></div>
       <div id="fpErr" class="err mt-8"></div>`,
     actions: [
-      { label: '稍後', class: 'btn', value: null },
       { label: '儲存新密碼', class: 'btn-primary', onClick: el => {
         const p1 = el.querySelector('#fp1').value, p2 = el.querySelector('#fp2').value;
         const err = el.querySelector('#fpErr');
@@ -1304,7 +1303,7 @@ async function maybeForceChangePw() {
       } }
     ]
   });
-  if (!r) return;
+  if (!r) return maybeForceChangePw();
   const res = await changeOwnPassword('', r);
   toast(res.ok ? '密碼已更改，下次請用新密碼登入' : (res.msg || '改唔到'), res.ok ? 'ok' : 'err');
 }

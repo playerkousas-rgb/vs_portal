@@ -315,7 +315,7 @@ function initializeSheets() {
      （2026-09-20 之前呢句係手寫死嘅字串，一直漏咗 constitution，
        加咗 loadDbPart 之後更加唔可以再靠人手記得改。） */
 var SUPPORTED_ACTIONS = ['ping', 'test', 'status', 'sync', 'claim', 'noticeSignup', 'loan',
-  'authLogin', 'authChangePassword', 'authResetPassword', 'authDeleteAccount', 'saveDb', 'loadDb', 'loadDbPart', 'dbInfo', 'saveDbPart', 'saveDbCommit', 'verifySetupKey',
+  'authLogin', 'authChangePassword', 'authResetPassword', 'authDeleteAccount', 'authRestoreAccount', 'saveDb', 'loadDb', 'loadDbPart', 'dbInfo', 'saveDbPart', 'saveDbCommit', 'verifySetupKey',
   'uploadPhotos', 'constitution', 'notices',
   'save', 'saveOtherBadge', 'reviewRequest', 'reviewLogRequest', 'addRequest', 'myRequests'];
 
@@ -525,6 +525,49 @@ function doPost(e) {
         return savedDelete.success === true ? { success: true, version: savedDelete.version || '' } : savedDelete;
       });
       return json({ ok: deleted.success === true, success: deleted.success === true, version: deleted.version || '', error: deleted.error || '' });
+    }
+
+    /* ---- 復原已刪除登入：保留成員資料，重新建立帳戶 row ---- */
+    if (body.action === 'authRestoreAccount') {
+      var restoreAuth = requireAuth(expectedKey, key);
+      if (!restoreAuth.ok) return json(restoreAuth);
+      var restored = withLock(function () {
+        var restoreDb = loadDb(textOf(body.unit));
+        var actorName4 = textOf(body.actorUsername || body.actorEmail).toLowerCase();
+        var actor4 = null, member4 = null;
+        (restoreDb.db && restoreDb.db.accounts || []).some(function (a) {
+          if (a && a.active !== false && (textOf(a.username).toLowerCase() === actorName4 || textOf(a.email).toLowerCase() === actorName4)) { actor4 = a; return true; }
+          return false;
+        });
+        if (!actor4) return { success: false, error: '管理員帳戶不存在' };
+        var actorPw4 = actor4.pw || actor4.hubPw;
+        var actorOk4 = actorPw4 && actorPw4.algo === 'pbkdf2-sha256'
+          ? verifyPasswordRecord(actorPw4, textOf(body.actorPassword))
+          : actorPw4 && actorPw4.algo === 'sha256'
+            ? sha256HexGs(actorPw4.salt + '::' + textOf(body.actorPassword)) === textOf(actorPw4.hash)
+            : textOf(body.actorPassword) === '1234';
+        if (!actorOk4) return { success: false, error: '管理員帳戶或密碼不正確' };
+        var actorRole4 = textOf(actor4.role || actor4.identity).toLowerCase();
+        if (actorRole4 !== 'leader' && actorRole4 !== 'admin' && actorRole4 !== 'super') return { success: false, error: '你沒有權限復原帳戶' };
+        var restoreTarget = textOf(body.targetEmail || body.targetYmis).toLowerCase();
+        (restoreDb.db && restoreDb.db.members || []).some(function (m) {
+          if (m && m.accountDeletedAt && (textOf(m.email).toLowerCase() === restoreTarget || textOf(m.ymis).toLowerCase() === restoreTarget)) { member4 = m; return true; }
+          return false;
+        });
+        if (!member4) return { success: false, error: '搵唔到可復原嘅已刪除帳戶' };
+        var restorePw = makePasswordRecord(textOf(body.newPassword || '1234'), true);
+        if (!restorePw.ok) return { success: false, error: restorePw.error };
+        var role4 = textOf(member4.identity || 'member');
+        restoreDb.db.accounts = restoreDb.db.accounts || [];
+        restoreDb.db.accounts.push({ id: 'acc_' + Utilities.getUuid().replace(/-/g, '').slice(0, 12),
+          role: role4, username: textOf(member4.email || member4.ymis), email: textOf(member4.email),
+          name: textOf(member4.name), memberId: textOf(member4.id), active: true,
+          pw: restorePw.pw, mustChangePw: true, defaultPw: textOf(body.newPassword || '1234') === '1234' });
+        delete member4.accountDeletedAt;
+        var savedRestore = saveDb({ unit: textOf(body.unit), db: restoreDb.db, baseVersion: restoreDb.version, refreshReports: false });
+        return savedRestore.success === true ? { success: true, version: savedRestore.version || '' } : savedRestore;
+      });
+      return json({ ok: restored.success === true, success: restored.success === true, version: restored.version || '', error: restored.error || '' });
     }
 
     /* ---- 整份資料庫讀／寫（app 嘅真正儲存；一定要 API Key）---- */

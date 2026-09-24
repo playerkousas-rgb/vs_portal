@@ -112,6 +112,10 @@ section('支部帳戶 PBKDF2 密碼基礎');
   ok('團長可由 server-side 刪除執委帳戶', deleted.ok === true, JSON.stringify(deleted));
   const excoLogin = g.post({ action: 'authLogin', unit: '0082', username: 'exco@example.com', password: 'exco-pass' });
   ok('已刪除帳戶不能再登入', excoLogin.ok === false);
+  const restored = g.post({ action: 'authRestoreAccount', unit: '0082', actorUsername: 'leader@example.com', actorPassword: '1234', targetEmail: 'exco@example.com' });
+  ok('管理員可以由保留嘅成員資料復原帳戶', restored.ok === true, JSON.stringify(restored));
+  const restoredLogin = g.post({ action: 'authLogin', unit: '0082', username: 'exco@example.com', password: '1234' });
+  ok('復原帳戶使用 1234 並強制改密碼', restoredLogin.ok === true && restoredLogin.mustChangePw === true);
 }
 
 /* ============================================================

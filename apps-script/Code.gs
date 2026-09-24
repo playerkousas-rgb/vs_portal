@@ -454,6 +454,7 @@ function doPost(e) {
           if (m && m.status !== 'alumni' && (textOf(m.ymis).toLowerCase() === loginName2 || textOf(m.email).toLowerCase() === loginName2)) { rec2 = m; return true; }
           return false;
         });
+        if (!rec2 || changeSession.id !== textOf(rec2.id)) return { success: false, error: '登入帳戶與操作帳戶不一致' };
         var oldRecord = rec2 && (rec2.pw || rec2.hubPw);
         var oldOk = false;
         if (rec2 && oldRecord && oldRecord.algo === 'pbkdf2-sha256') oldOk = verifyPasswordRecord(oldRecord, textOf(body.oldPassword));
@@ -493,6 +494,7 @@ function doPost(e) {
           if (m && m.status !== 'alumni' && (textOf(m.email).toLowerCase() === actorName || textOf(m.ymis).toLowerCase() === actorName)) { actor = m; return true; }
           return false;
         });
+        if (!actor || resetSession.id !== textOf(actor.id)) return { success: false, error: '登入帳戶與操作帳戶不一致' };
         var actorPw = actor && (actor.pw || actor.hubPw);
         var actorOk = false;
         if (actor && actorPw && actorPw.algo === 'pbkdf2-sha256') actorOk = verifyPasswordRecord(actorPw, textOf(body.actorPassword));
@@ -541,7 +543,7 @@ function doPost(e) {
           if (a && a.active !== false && (textOf(a.username).toLowerCase() === actorName3 || textOf(a.email).toLowerCase() === actorName3)) { actor3 = a; return true; }
           return false;
         });
-        if (!actor3) return { success: false, error: '管理員帳戶不存在' };
+        if (!actor3 || deleteSession.id !== textOf(actor3.id)) return { success: false, error: '登入帳戶與操作帳戶不一致' };
         var actorPw3 = actor3.pw || actor3.hubPw;
         var actorOk3 = actorPw3 && actorPw3.algo === 'pbkdf2-sha256'
           ? verifyPasswordRecord(actorPw3, textOf(body.actorPassword))
@@ -595,7 +597,7 @@ function doPost(e) {
           if (a && a.active !== false && (textOf(a.username).toLowerCase() === actorName4 || textOf(a.email).toLowerCase() === actorName4)) { actor4 = a; return true; }
           return false;
         });
-        if (!actor4) return { success: false, error: '管理員帳戶不存在' };
+        if (!actor4 || restoreSession.id !== textOf(actor4.id)) return { success: false, error: '登入帳戶與操作帳戶不一致' };
         var actorPw4 = actor4.pw || actor4.hubPw;
         var actorOk4 = actorPw4 && actorPw4.algo === 'pbkdf2-sha256'
           ? verifyPasswordRecord(actorPw4, textOf(body.actorPassword))

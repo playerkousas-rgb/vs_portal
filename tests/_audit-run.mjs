@@ -278,30 +278,51 @@ async function auditScope(scopeSel, ctx, opts = {}) {
       || el.getAttribute('aria-current') === 'page'
       || el.classList.contains('active');
 
-    const base = snap();
-    const t0 = Date.now();
-    errors.length = 0;
-    let threw = null;
-    try { el.click(); } catch (e) { threw = String(e?.message || e); }
-    await wait(160);
-    const after = snap();
-    const errs = errorsSince(t0).map(e => e.msg);
-    const realErrs = errs.filter(m => !ENV_RE.test(m));
+    /* 撳一次、等 160ms、睇有冇反應；反應分類抽成函數，因為「dead」會 retry 一次（見下）。 */
+    async function clickAndClassify(target, waitMs) {
+      const base = snap();
+      const t0 = Date.now();
+      errors.length = 0;
+      let threw = null;
+      try { target.click(); } catch (e) { threw = String(e?.message || e); }
+      await wait(waitMs);
+      const after = snap();
+      const errs = errorsSince(t0).map(e => e.msg);
+      const realErrs = errs.filter(m => !ENV_RE.test(m));
+      let eff;
+      if (threw) eff = 'exception';
+      else if (realErrs.length) eff = 'exception';
+      else if (after.fx.nav > base.fx.nav) eff = 'navigate';
+      else if (after.overlays > base.overlays) eff = 'modal';
+      else if (hasNewToast(base, after)) eff = 'toast';
+      else if (after.app !== base.app) eff = 'dom';
+      else if (after.ls !== base.ls) eff = 'state';
+      else if (after.fx.dl > base.fx.dl) eff = 'download';
+      else if (after.fx.print > base.fx.print) eff = 'print';
+      else if (after.fx.clip > base.fx.clip) eff = 'clipboard';
+      else if (after.iframes > base.iframes) eff = 'printdoc';
+      else if (errs.length) eff = 'env-ok';
+      else eff = 'dead';
+      return { eff, after, errs, threw, base };
+    }
 
-    let effect;
-    if (threw) effect = 'exception';
-    else if (realErrs.length) effect = 'exception';
-    else if (after.fx.nav > base.fx.nav) effect = 'navigate';
-    else if (after.overlays > base.overlays) effect = 'modal';
-    else if (hasNewToast(base, after)) effect = 'toast';
-    else if (after.app !== base.app) effect = 'dom';
-    else if (after.ls !== base.ls) effect = 'state';
-    else if (after.fx.dl > base.fx.dl) effect = 'download';
-    else if (after.fx.print > base.fx.print) effect = 'print';
-    else if (after.fx.clip > base.fx.clip) effect = 'clipboard';
-    else if (after.iframes > base.iframes) effect = 'printdoc';
-    else if (errs.length) effect = 'env-ok';
-    else effect = 'dead';
+    const first = await clickAndClassify(el, 160);
+    let effect = first.eff;
+    const after = first.after, errs = first.errs, threw = first.threw, base = first.base;
+
+    /* ★ 假 dead 防護：jsdom 有時遲過 160ms 先報「Not implemented: window.open」
+       （公開頁預覽就係咁：第一次撳落去好似冇反應），又或者上一輪嘅重排打斷咗 render。
+       真 dead 掣撳兩次都應該冇反應，所以「dead」一律再撳一次（重新 query，
+       因為 render() 可能已經換咗個元素），第二次都話 dead 先算數。 */
+    if (effect === 'dead') {
+      const scopeNow = typeof scopeSel === 'string' ? doc.querySelector(scopeSel) : scopeSel;
+      const again = scopeNow ? [...scopeNow.querySelectorAll('button:not([disabled]), input[type=submit], input[type=button], a[href]')]
+        .find(x => x.isConnected && btnKey(x) === btnKey(el)) : null;
+      if (again) {
+        const second = await clickAndClassify(again, 320);
+        if (second.eff !== 'dead') effect = second.eff;
+      }
+    }
 
     if (effect === 'modal') {
       const fresh = [...doc.querySelectorAll('.overlay')][doc.querySelectorAll('.overlay').length - 1];

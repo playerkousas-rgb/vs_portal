@@ -1,7 +1,7 @@
 /**
  * ============================================================
- *  82venture · 總表同步與多旅團後端 Apps Script（Code.gs）
- *  版本：v2.6.3
+ *  深資童軍管理系統 · 總表同步與多旅團後端 Apps Script（Code.gs）
+ *  版本：v2.7.1
  *
  *  ★ v2.6.3 修正（2026-09-21，團長回報「佢話已寫入但張 Sheet 完全冇嘢；
  *    唔好搞咁多掣要人按，存入後端就資料庫同分頁都 SAVE 曬」）：
@@ -131,7 +131,7 @@ var MODE = 'per-unit-sheet';   // 'per-unit-sheet' = 每個旅團獨立工作表
 var DRIVE_FOLDER_ID = '';
 
 /** 後端版本（status 會回報；APP 用嚟檢查「你張 Sheet 係咪仲行舊 code」） */
-var BACKEND_VERSION = 'v2.6.3';
+var BACKEND_VERSION = 'v2.7.1';
 
 /* ============================================================
    初始化與 API KEY 管理
@@ -306,7 +306,7 @@ function initializeSheets() {
       ui.ButtonSet.OK
     );
   }
-  Logger.log('82venture initialized successfully. API Key: ' + apiKey);
+  Logger.log('深資童軍管理系統 initialized successfully. API Key: ' + apiKey);
   return { ok: true, apiKey: apiKey };
 }
 
@@ -322,7 +322,9 @@ function initializeSheets() {
 var SUPPORTED_ACTIONS = ['ping', 'test', 'status', 'sync', 'claim', 'claimDecision', 'noticeSignup', 'noticeSubscribe', 'noticeSubscriptions', 'loan', 'loanDecision',
   'authLogin', 'authChangePassword', 'authResetPassword', 'authDeleteAccount', 'authRestoreAccount', 'authCreateAccount', 'authForgotPassword', 'authResetByToken', 'saveDb', 'loadDb', 'loadDbPart', 'dbInfo', 'saveDbPart', 'saveDbCommit', 'verifySetupKey',
   'uploadPhotos', 'constitution', 'notices',
-  'save', 'saveOtherBadge', 'reviewRequest', 'reviewLogRequest', 'addRequest', 'myRequests'];
+  'save', 'saveOtherBadge', 'reviewRequest', 'reviewLogRequest', 'addRequest', 'myRequests',
+  /* ★ v2.7.1：「人讀到、進度全空」自查（見 diagnoseBackendTabs） */
+  'diag'];
 
 /**
  * BUILD §1／§2：敏感 action 必須由 server-side API_KEY 明確授權。
@@ -961,7 +963,15 @@ function doPost(e) {
       return json(loadMyRequests(textOf(body.ymis)));
     }
     if (body.action === 'status' || body.action === 'test') {
-      return json({ ok: true, msg: '82venture 後端正常', spreadsheet: SpreadsheetApp.getActiveSpreadsheet().getName(), tabs: SHEET_TABS, backendVersion: BACKEND_VERSION, at: new Date() });
+      return json({ ok: true, msg: '深資童軍管理系統 後端正常', spreadsheet: SpreadsheetApp.getActiveSpreadsheet().getName(), tabs: SHEET_TABS, backendVersion: BACKEND_VERSION, at: new Date() });
+    }
+    /* ★ v2.7.1：後端自查（GET 同 POST 兩條路都通；見 diagnoseBackendTabs） */
+    if (body.action === 'diag') {
+      var diagAuth = requireAuth(expectedKey, key);
+      if (!diagAuth.ok) return json(diagAuth);
+      var dg2 = diagnoseBackendTabs(textOf(body.unit));
+      dg2.success = true; dg2.ok = true;
+      return json(dg2);
     }
     // 兼容：冇 action 但係 82venture 嘅資料（當 sync）
     if (!body.action && body.tables) {
@@ -998,6 +1008,15 @@ function doGet(e) {
     var data = loadProgressData();
     data.success = true; data.ok = true;
     return json(data);
+  }
+  /* ★ v2.7.1：後端現況自查 —— 答「點解人讀到、進度一條都冇？」。
+     要 API Key（有設就一定核對；比 load 嚴，因為會報分頁名同行數）： */
+  if (action === 'diag') {
+    var expectedDiag = PropertiesService.getScriptProperties().getProperty('API_KEY');
+    if (expectedDiag && supplied !== expectedDiag) return json({ success: false, ok: false, error: '未授權：API Key 唔正確' });
+    var dg = diagnoseBackendTabs(textOf((e.parameter && e.parameter.unit) || ''));
+    dg.success = true; dg.ok = true;
+    return json(dg);
   }
   if (action === 'loadDb' || action === 'dbInfo') {
     var expectedDb = PropertiesService.getScriptProperties().getProperty('API_KEY');
@@ -1788,6 +1807,117 @@ function dateOf(v) {
 }
 
 /** 成員名單：以「成員名單」為主，補上「團員」分頁（執委系統同步過嚟嘅） */
+/* ============================================================
+   ★ v2.7.1（2026-09-24 團長回報：「人係讀到，但係個個都冇進度」）
+   ------------------------------------------------------------
+   load 只回資料，唔回「呢啲資料係邊張 Sheet 嘅」。同一個 /exec 可以係
+   （甲）呢個管理系統嘅後端 —— 進度追蹤／成員名單分頁喺同一張 Sheet；
+   （乙）另一支腳本／另一張 Sheet（例如淨係進度嗰張）。
+   症狀一樣（人讀到、進度全空），但原因同做法完全唔同，所以要有辦法睇
+   清楚：邊張 Sheet、有邊啲分頁、每張幾多行、進度同名冊對唔對得上。
+   要 API Key（會報分頁名同行數，唔應該公開）。
+   ============================================================ */
+function diagnoseBackendTabs(unit) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var tabs = [], i;
+  var all = ss.getSheets();
+  for (i = 0; i < all.length; i++) {
+    var nm = all[i].getName();
+    var n = -1;
+    try { n = Math.max(0, all[i].getLastRow() - 1); } catch (e0) { n = -1; }
+    tabs.push({ name: nm, rows: n });
+  }
+  function rowsOf(tab) {
+    var sh = ss.getSheetByName(tab);
+    if (!sh) return -1;
+    try { return Math.max(0, sh.getLastRow() - 1); } catch (e1) { return -1; }
+  }
+  var progress = { rows: rowsOf('進度追蹤'), ymis: 0, items: 0, blank: 0, sample: [] };
+  var pSheet = ss.getSheetByName('進度追蹤');
+  if (pSheet) {
+    var pr = pSheet.getDataRange().getValues();
+    var seenY = {}, seenI = {};
+    for (i = 1; i < pr.length; i++) {
+      var y = textOf(pr[i][0]), it = textOf(pr[i][1]);
+      if (!y || !it) { progress.blank++; continue; }
+      seenY[y] = 1; seenI[it] = 1;
+      if (progress.sample.length < 5) {
+        progress.sample.push({ ymis: y, item: it, date: dateOf(pr[i][2]), confirmer: textOf(pr[i][4]) });
+      }
+    }
+    progress.ymis = Object.keys(seenY).length;
+    progress.items = Object.keys(seenI).length;
+  }
+  var memberList = { rows: rowsOf('成員名單'), ymis: 0, sample: [] };
+  var mSheet = ss.getSheetByName('成員名單');
+  if (mSheet) {
+    var mr = mSheet.getDataRange().getValues();
+    var seenM = {};
+    for (i = 1; i < mr.length; i++) {
+      var my = textOf(mr[i][0]);
+      if (!my) continue;
+      seenM[my] = 1;
+      if (memberList.sample.length < 5) memberList.sample.push({ ymis: my, name: textOf(mr[i][1]) });
+    }
+    memberList.ymis = Object.keys(seenM).length;
+  }
+  /* 進度同名冊對唔對得上（另一個「讀到人、但睇落冇進度」嘅成因係 YMIS 唔一致） */
+  progress.matchedWithMemberList = 0;
+  progress.notInMemberList = 0;
+  if (pSheet) {
+    var listY = {};
+    if (mSheet) {
+      var mr2 = mSheet.getDataRange().getValues();
+      for (i = 1; i < mr2.length; i++) {
+        var ly = textOf(mr2[i][0]);
+        if (ly) listY[ly] = 1;
+      }
+    }
+    var pr2 = pSheet.getDataRange().getValues();
+    var counted = {};
+    for (i = 1; i < pr2.length; i++) {
+      var y2 = textOf(pr2[i][0]);
+      if (!y2 || counted[y2]) continue;
+      counted[y2] = 1;
+      if (listY[y2]) progress.matchedWithMemberList++; else progress.notInMemberList++;
+    }
+  }
+
+  var loaded = loadProgressData();
+  /* 缺咗就真係會有症狀嘅分頁（'設定' 呢類唔係 initializeSheets 建嘅，唔算缺） */
+  var requiredTabs = ['資料庫', '團員', '成員名單', '進度追蹤', '其他獎章', '待批完成', '活動履歷', '待批履歷'];
+  var missingTabs = [];
+  for (i = 0; i < requiredTabs.length; i++) {
+    if (!ss.getSheetByName(requiredTabs[i])) missingTabs.push(requiredTabs[i]);
+  }
+  return {
+    version: 'v2.7.1',
+    spreadsheet: ss.getName(),
+    unit: textOf(unit),
+    tabs: tabs,
+    missingTabs: missingTabs,
+    progress: progress,
+    memberList: memberList,
+    dbRows: rowsOf('資料庫'),
+    pendingRows: rowsOf('待批完成'),
+    otherBadgeRows: rowsOf('其他獎章'),
+    logRows: rowsOf('活動履歷'),
+    logRequestRows: rowsOf('待批履歷'),
+    loadSummary: {
+      members: (loaded.members || []).length,
+      withProgress: Object.keys(loaded.progress || {}).length,
+      ticks: (function () {
+        var n = 0, pp = loaded.progress || {};
+        for (var k in pp) { if (pp.hasOwnProperty(k)) n += Object.keys(pp[k] || {}).length; }
+        return n;
+      })(),
+      pendingRequests: (loaded.pendingRequests || []).length,
+      otherBadges: Object.keys(loaded.otherBadges || {}).length,
+      logs: (loaded.logs || []).length
+    }
+  };
+}
+
 function progressMembers() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var out = [];

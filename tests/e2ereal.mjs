@@ -307,5 +307,79 @@ section('⑦ 逃生門：舊版留低嘅垃圾行清得走（正式資料唔會�
     truth1.stagingRows === 0, JSON.stringify(truth1));
 }
 
+/* ============================================================
+   ⑧ ★ 進度讀寫 + 後端自查（真 /api/progress → 真 Code.gs）
+   ------------------------------------------------------------
+   團長 2026-09-24 第二輪：「無痕讀取不了後端／入咗 URL API Key
+   都睇唔到進度，人係讀到但係個個都冇進度」。
+   呢一節釘死：真後端收到進度之後，/api/progress 讀得返，
+   而且 diag（＝app「後端資料檢查」）答得出邊張 Sheet、有幾多行、
+   進度同名冊對唔對得上 —— 唔使再靠人自己開張 Sheet 逐格睇。
+   ============================================================ */
+section('⑧ ★ 進度讀寫 ＋ 後端自查（/api/progress diag）');
+{
+  const post = (payload) => fetch(`${BASE}/api/progress`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+  }).then(r => r.json());
+
+  /* 先確保名冊有 YMIS（成員名單由 saveDb 嘅報表刷新寫入）。
+     留意：呢個後端已經有資料，saveDb 行樂觀鎖 —— 要先讀返現行版本做 baseVersion。 */
+  const info = await (await fetch(`${BASE}/api/proxy`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'dbInfo', unit: UNIT })
+  })).json();
+  const push = await (await fetch(`${BASE}/api/proxy`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'saveDb', unit: UNIT, baseVersion: String(info.version || ''), db: {
+      profile: { name: '第八十二旅' },
+      members: [
+        { id: 'pm1', name: '進度團員甲', ymis: '8202000001', identity: 'member', status: 'active' },
+        { id: 'pm2', name: '進度團員乙', ymis: '8202000002', identity: 'member', status: 'active' }
+      ], transactions: []
+    } })
+  })).json();
+  ok('前提：真後端收到資料庫（成員名單會跟住寫）', push.ok === true, JSON.stringify(push).slice(0, 160));
+
+  /* 用進度前端一樣嘅路徑寫入兩格進度（API Key＝執委身份） */
+  const save = await post({ action: 'save', unit: UNIT, backend: REAL_EXEC, apikey: KEY,
+    data: { changes: [
+      { ymis: '8202000001', itemId: 'L1-ACT-01', date: '2026-09-10', note: '' },
+      { ymis: '8202000001', itemId: 'L1-UND-02', date: '2026-09-11', note: '' }
+    ], confirmer: '團長' } });
+  ok('經 /api/progress 寫入進度成功（真 Code.gs 收貨）', save.ok === true && Number(save.data?.processed) === 2,
+    JSON.stringify(save).slice(0, 200));
+
+  const load = await post({ action: 'load', unit: UNIT, backend: REAL_EXEC, apikey: KEY });
+  ok('讀返：2 位成員、1 位有進度、2 格項目（另一個前端見到同一份）',
+    Array.isArray(load.data?.members) && Object.keys(load.data?.progress || {}).length === 1
+      && Object.keys(load.data.progress['8202000001'] || {}).length === 2,
+    JSON.stringify({ members: (load.data?.members || []).length, p: load.data?.progress }));
+
+  const diag = await post({ action: 'diag', unit: UNIT, backend: REAL_EXEC, apikey: KEY });
+  ok('diag：認得係管理系統嘅後端（recognized:true）', diag.ok === true && diag.data?.recognized === true,
+    JSON.stringify(diag).slice(0, 200));
+  ok('diag：報邊張 Sheet 同名（唔使人自己猜邊張）',
+    !!diag.data?.detail?.spreadsheet && diag.data.detail.spreadsheet === diag.data?.self?.spreadsheet,
+    JSON.stringify({ sheet: diag.data?.detail?.spreadsheet }));
+  ok('diag：「進度追蹤」2 行、1 個 YMIS、2 個項目',
+    diag.data?.detail?.progress?.rows === 2 && diag.data?.detail?.progress?.ymis === 1
+      && diag.data?.detail?.progress?.items === 2, JSON.stringify(diag.data?.detail?.progress));
+  ok('diag：進度同名冊對得上（matchedWithMemberList:1、notInMemberList:0）',
+    diag.data?.detail?.progress?.matchedWithMemberList === 1 && diag.data?.detail?.progress?.notInMemberList === 0,
+    JSON.stringify(diag.data?.detail?.progress));
+  ok('diag：分頁齊（missingTabs 空）同行數報得返「成員名單」',
+    (diag.data?.detail?.missingTabs || []).length === 0 && Number(diag.data?.detail?.memberList?.rows || 0) >= 2,
+    JSON.stringify({ missing: diag.data?.detail?.missingTabs, ml: diag.data?.detail?.memberList }));
+
+  /* 錯 Key 唔可以幫你睇到嘢（喺呢個部署，伺服器端 Key 會蓋過前端填嘅） */
+  const badKey = await post({ action: 'diag', unit: UNIT, backend: REAL_EXEC, apikey: 'wrong_key_xxx' });
+
+  /* 呢個部署有設伺服器端 Key（TROOP_0082_APIKEY）→ 前端填乜都唔會蓋過佢：
+     diag 一樣由伺服器 key 認證（錯 key 唔會漏資料出去）。 */
+  ok('伺服器端有 Key：前端亂填都唔會用（serverSideKey:true）',
+    badKey.ok === true && badKey.data?.recognized === true && badKey.serverSideKey === true,
+    JSON.stringify({ ok: badKey.ok, srv: badKey.serverSideKey }));
+}
+
 console.log(`\n${fail ? '❌' : '✅'} 端到端（真 Code.gs）：${pass} 過 / ${fail} 唔過（${Date.now() - START}ms）`);
 process.exit(fail ? 1 : 0);

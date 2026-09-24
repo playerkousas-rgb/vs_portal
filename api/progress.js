@@ -37,7 +37,9 @@ const MAX_ITEMS_BYTES = 2 * 1024 * 1024;   // items.json 上限 2MB
 // 旅團後端（Code.gs）支援嘅 action（唔會放寬）
 const ACTIONS = new Set(['load', 'save', 'saveOtherBadge', 'catalog', 'reviewRequest', 'reviewLogRequest',
   /* 團員入口自助進度：申報完成（寫入「待批完成」）／查自己嘅申報狀態（v2.2.0） */
-  'addRequest', 'myRequests']);
+  'addRequest', 'myRequests',
+  /* ★ 2026-09-24：「人讀到、但個個都冇進度」自查 —— 見下面 diag 分支 */
+  'diag']);
 
 function sendJson(res, status, obj) {
   res.setHeader('Cache-Control', 'no-store');
@@ -166,6 +168,42 @@ export default async function handler(req, res) {
     safeLog({ result: 'bad_backend', unit: unit.slice(0, 32), ms: Date.now() - t0 });
     return sendJson(res, 400, { ok: false, reason: 'backend_not_allowed',
       error: '後端網址格式唔正確（要係 https://script.google.com/macros/s/…/exec）' });
+  }
+
+  /* ★ 2026-09-24：後端自查（diag）——
+     症狀「人係讀到，但係個個都冇進度」有幾個完全唔同嘅成因（見下面註解），
+     所以一次過問後端三件事，等 app 可以直情講出係邊一個：
+       ① GET 根網址（唔使 Key）：呢支 /exec 係邊個、係邊張 Sheet
+       ② GET ?action=diag（要 Key）：認唔認得 diag（＝係唔係呢個管理系統嘅後端）
+       ③ diag 內容：有邊啲分頁、每張幾多行、進度追蹤有幾個 YMIS／項目
+     （冇一個問題係可以喺前端解決嘅 —— 資料係喺旅團自己張 Sheet。） */
+  if (action === 'diag') {
+    try {
+      const self = await upstream(backend, { method: 'GET' });
+      const qs = new URLSearchParams({ action: 'diag' });
+      if (apiKey) qs.set('apikey', apiKey);
+      if (unit) qs.set('unit', unit);
+      const d = await upstream(backend + (backend.includes('?') ? '&' : '?') + qs.toString(), { method: 'GET' });
+      const detail = (d.json && typeof d.json === 'object') ? d.json : null;
+      const recognized = !!(detail && detail.ok === true && detail.progress);
+      const selfJson = (self.json && typeof self.json === 'object') ? self.json : null;
+      safeLog({ result: 'diag', recognized: recognized, ms: Date.now() - t0 });
+      return sendJson(res, 200, {
+        ok: true, action: 'diag', serverSideKey: usingServerSide,
+        data: {
+          recognized: recognized,
+          self: selfJson, selfStatus: self.status,
+          detail: detail, detailStatus: d.status,
+          apiKeyUsed: !!apiKey
+        }
+      });
+    } catch (e) {
+      const timeout = e && (e.name === 'TimeoutError' || e.name === 'AbortError');
+      safeLog({ result: timeout ? 'diag_timeout' : 'diag_fetch_error', ms: Date.now() - t0 });
+      return sendJson(res, timeout ? 504 : 502, {
+        ok: false, error: timeout ? '後端自查逾時' : '連接唔到後端（自查失敗）'
+      });
+    }
   }
 
   try {

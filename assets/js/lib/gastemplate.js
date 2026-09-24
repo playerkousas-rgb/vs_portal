@@ -325,7 +325,7 @@ function initializeSheets() {
      （2026-09-20 之前呢句係手寫死嘅字串，一直漏咗 constitution，
        加咗 loadDbPart 之後更加唔可以再靠人手記得改。） */
 var SUPPORTED_ACTIONS = ['ping', 'test', 'status', 'sync', 'claim', 'noticeSignup', 'loan',
-  'authLogin', 'authChangePassword', 'saveDb', 'loadDb', 'loadDbPart', 'dbInfo', 'saveDbPart', 'saveDbCommit', 'verifySetupKey',
+  'authLogin', 'authChangePassword', 'authResetPassword', 'saveDb', 'loadDb', 'loadDbPart', 'dbInfo', 'saveDbPart', 'saveDbCommit', 'verifySetupKey',
   'uploadPhotos', 'constitution', 'notices',
   'save', 'saveOtherBadge', 'reviewRequest', 'reviewLogRequest', 'addRequest', 'myRequests'];
 
@@ -445,6 +445,55 @@ function doPost(e) {
         return saved2.success === true ? { success: true, version: saved2.version || '' } : saved2;
       });
       return json({ ok: changed.success === true, success: changed.success === true, version: changed.version || '', error: changed.error || '' });
+    }
+
+    /* ---- 領袖替成員重設密碼：由 server-side 重新核對領袖身份 ---- */
+    if (body.action === 'authResetPassword') {
+      var resetAuth = requireAuth(expectedKey, key);
+      if (!resetAuth.ok) return json(resetAuth);
+      var reset = withLock(function () {
+        var resetDb = loadDb(textOf(body.unit));
+        var actorName = textOf(body.actorUsername || body.actorEmail).toLowerCase();
+        var targetName = textOf(body.targetUsername || body.targetEmail || body.targetYmis).toLowerCase();
+        var actor = null, target = null;
+        (resetDb.db && resetDb.db.accounts || []).some(function (a) {
+          if (a && a.active !== false && (textOf(a.username).toLowerCase() === actorName || textOf(a.email).toLowerCase() === actorName)) { actor = a; return true; }
+          return false;
+        });
+        if (!actor) (resetDb.db && resetDb.db.members || []).some(function (m) {
+          if (m && m.status !== 'alumni' && (textOf(m.email).toLowerCase() === actorName || textOf(m.ymis).toLowerCase() === actorName)) { actor = m; return true; }
+          return false;
+        });
+        var actorPw = actor && (actor.pw || actor.hubPw);
+        var actorOk = false;
+        if (actor && actorPw && actorPw.algo === 'pbkdf2-sha256') actorOk = verifyPasswordRecord(actorPw, textOf(body.actorPassword));
+        else if (actor && actorPw && actorPw.algo === 'sha256') actorOk = sha256HexGs(actorPw.salt + '::' + textOf(body.actorPassword)) === textOf(actorPw.hash);
+        else if (actor && !actorPw && textOf(body.actorPassword) === '1234') actorOk = true;
+        if (!actorOk) return { success: false, error: '管理員帳戶或密碼不正確' };
+        var actorRole = textOf(actor.role || actor.identity).toLowerCase();
+        if (actorRole !== 'leader' && actorRole !== 'admin' && actorRole !== 'super') return { success: false, error: '你沒有權限重設其他帳戶密碼' };
+        (resetDb.db && resetDb.db.accounts || []).some(function (a) {
+          if (a && a.active !== false && (textOf(a.username).toLowerCase() === targetName || textOf(a.email).toLowerCase() === targetName)) { target = a; return true; }
+          return false;
+        });
+        if (!target) (resetDb.db && resetDb.db.members || []).some(function (m) {
+          if (m && m.status !== 'alumni' && (textOf(m.ymis).toLowerCase() === targetName || textOf(m.email).toLowerCase() === targetName)) { target = m; return true; }
+          return false;
+        });
+        if (!target) return { success: false, error: '搵唔到要重設嘅帳戶' };
+        var targetRole = textOf(target.role || target.identity).toLowerCase();
+        if (targetRole === 'leader' || targetRole === 'admin') return { success: false, error: '不能由支部領袖重設另一個領袖帳戶' };
+        var nextReset = makePasswordRecord(textOf(body.newPassword), true);
+        if (!nextReset.ok) return { success: false, error: nextReset.error };
+        if (target.hubPw !== undefined || target.ymis !== undefined) {
+          target.hubPw = nextReset.pw; target.hubMustChangePw = true; delete target.hubPassword;
+        } else {
+          target.pw = nextReset.pw; target.mustChangePw = true; target.defaultPw = textOf(body.newPassword) === '1234'; delete target.password;
+        }
+        var savedReset = saveDb({ unit: textOf(body.unit), db: resetDb.db, baseVersion: resetDb.version, refreshReports: false });
+        return savedReset.success === true ? { success: true, version: savedReset.version || '' } : savedReset;
+      });
+      return json({ ok: reset.success === true, success: reset.success === true, version: reset.version || '', error: reset.error || '' });
     }
 
     /* ---- 整份資料庫讀／寫（app 嘅真正儲存；一定要 API Key）---- */

@@ -10,7 +10,7 @@
 import { load, commit, collection, add, update, remove, exportAll, importAll, resetToSeed, wipe, clearMockData, audit, isMock, currentUnit, enterMock, exitMock, switchUnit, setUnitCode } from '../lib/store.js';
 import {
   ROLES, PERMS, PERM_GROUPS, accounts, accountById, can, canChangePasswordOf, canManageRole,
-  createAccount, changePassword, changeUsername, changeOwnPassword, setAccountActive, deleteAccount,
+  createAccount, changePassword, changeUsername, changeOwnPassword, setAccountActive, deleteAccount, deleteAccountServer,
   current, currentRole, isSuper, isMe, displayName, RESERVED_USERNAMES, TEMP_PASSWORD
 } from '../lib/auth.js';
 import { profile, settings, members, memberName, money, balance, tx, invItems } from '../lib/model.js';
@@ -637,6 +637,10 @@ export function mount(root) {
       title: '刪除帳戶', danger: true, okText: '確定刪除',
       message: `確定刪除 <b>${esc(acc?.name || '')}</b>（${esc(acc?.username || '')}）？佢將唔可以再登入。`
     })) {
+      if (!isMock()) {
+        const serverResult = await deleteAccountServer(acc);
+        if (!serverResult.ok) return toast(serverResult.msg, 'err');
+      }
       const r2 = deleteAccount(b.dataset.del);
       if (!r2.ok) return toast(r2.msg, 'err');
       toast('已刪除帳戶', 'ok'); refresh();

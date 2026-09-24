@@ -314,7 +314,7 @@ function initializeSheets() {
      scripts/lint.mjs 會逐個比對，漏咗／多咗都會紅燈。
      （2026-09-20 之前呢句係手寫死嘅字串，一直漏咗 constitution，
        加咗 loadDbPart 之後更加唔可以再靠人手記得改。） */
-var SUPPORTED_ACTIONS = ['ping', 'test', 'status', 'sync', 'claim', 'noticeSignup', 'loan',
+var SUPPORTED_ACTIONS = ['ping', 'test', 'status', 'sync', 'claim', 'noticeSignup', 'noticeSubscribe', 'noticeSubscriptions', 'loan',
   'authLogin', 'authChangePassword', 'authResetPassword', 'authDeleteAccount', 'authRestoreAccount', 'authCreateAccount', 'authForgotPassword', 'authResetByToken', 'saveDb', 'loadDb', 'loadDbPart', 'dbInfo', 'saveDbPart', 'saveDbCommit', 'verifySetupKey',
   'uploadPhotos', 'constitution', 'notices',
   'save', 'saveOtherBadge', 'reviewRequest', 'reviewLogRequest', 'addRequest', 'myRequests'];
@@ -839,6 +839,32 @@ function doPost(e) {
       return json(verifySetupKey(body.key || body.setupKey || ''));
     }
     if (body.action === 'ping') return json({ ok: true, msg: 'pong', unit: body.unit, at: body.at });
+    /* ---- 個人化通告訂閱：只保存帳戶自己的訂閱偏好，不接受前端 memberId 冒認 ---- */
+    if (body.action === 'noticeSubscribe' || body.action === 'noticeSubscriptions') {
+      var subAuth = requireAuth(expectedKey, key);
+      if (!subAuth.ok) return json(subAuth);
+      var subSession = requireAuthSession(body);
+      if (!subSession.ok) return json({ ok:false, success:false, error:subSession.error, code:'SESSION_REQUIRED' });
+      var subResult = withLock(function () {
+        var subDb = loadDb(textOf(body.unit));
+        subDb.db.noticeSubscriptions = subDb.db.noticeSubscriptions || [];
+        var owner = textOf(subSession.id || body.actorUsername);
+        if (!owner) return { success:false, error:'登入身份無效' };
+        if (body.action === 'noticeSubscriptions') return { success:true, subscriptions:subDb.db.noticeSubscriptions.filter(function(x){ return x && textOf(x.ownerId) === owner; }) };
+        var noticeId = textOf(body.noticeId);
+        var notice = (subDb.db.notices || []).filter(function(n){ return n && textOf(n.id) === noticeId && textOf(n.status) === 'published'; })[0];
+        if (!notice) return { success:false, error:'通告不存在或未公開' };
+        var rows = subDb.db.noticeSubscriptions;
+        var found = rows.filter(function(x){ return x && textOf(x.ownerId) === owner && textOf(x.noticeId) === noticeId; })[0];
+        if (body.enabled === false) { subDb.db.noticeSubscriptions = rows.filter(function(x){ return !(x && textOf(x.ownerId) === owner && textOf(x.noticeId) === noticeId); }); }
+        else if (found) { found.enabled = true; found.updatedAt = new Date().toISOString(); }
+        else rows.push({ id:'ns_' + Utilities.getUuid().replace(/-/g,'').slice(0,12), ownerId:owner, noticeId:noticeId, channel:textOf(body.channel || 'inapp'), enabled:true, createdAt:new Date().toISOString(), updatedAt:new Date().toISOString() });
+        var saved = saveDb({ unit:textOf(body.unit), db:subDb.db, baseVersion:subDb.version, refreshReports:false });
+        return saved.success === true ? { success:true, version:saved.version || '' } : saved;
+      });
+      return json({ ok:subResult.success === true, success:subResult.success === true, subscriptions:subResult.subscriptions || [], version:subResult.version || '', error:subResult.error || '' });
+    }
+
     if (body.action === 'noticeSignup') {
       /* v2.5.0：報名除咗寫「報名」分頁，仲會寫入資料庫（APP 執委端先至睇得到） */
       var sgn = withLock(function () { return appendSignup(body); });
@@ -942,7 +968,7 @@ function doGet(e) {
     msg: '執委管理系統 後端已啟動',
     spreadsheet: (function () { try { return SpreadsheetApp.getActiveSpreadsheet().getName(); } catch (err) { return '(未綁定試算表)'; } })(),
     tabs: SHEET_TABS,
-    api: ['ping', 'status', 'sync', 'saveDb', 'loadDb', 'dbInfo', 'claim', 'noticeSignup', 'loan', 'load', 'save', 'saveOtherBadge'],
+    api: ['ping', 'status', 'sync', 'saveDb', 'loadDb', 'dbInfo', 'claim', 'noticeSignup', 'noticeSubscribe', 'noticeSubscriptions', 'loan', 'load', 'save', 'saveOtherBadge'],
     usage: 'APP 內「帳號與系統 → 資料管理 → 總表同步」填呢個 /exec 網址即可'
   });
 }

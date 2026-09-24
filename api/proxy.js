@@ -128,7 +128,7 @@ export default async function handler(req, res) {
       scriptUrl: String(body.scriptUrl || '').substring(0, 300),
       apiKey: String(body.apiKey || '').substring(0, 120),
       appType: '82venture',
-      appName: '執委管理系統',
+      appName: '深資童軍管理系統',
       contact: String(body.contact || '').substring(0, 120),
       mainSystemUrl: String(body.mainSystemUrl || '').substring(0, 300),
       note: String(body.note || '').substring(0, 500),

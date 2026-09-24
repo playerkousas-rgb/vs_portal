@@ -162,7 +162,7 @@ function render() {
       <div id="pe-local" class="sm muted">…</div>
     </div>
 
-    <div class="center xs faint mt-16">公開收集頁 · 由 ${esc(meta.name || '')} 執委管理系統提供</div>
+    <div class="center xs faint mt-16">公開收集頁 · 由 ${esc(meta.name || '')} 深資童軍管理系統提供</div>
   </div>`;
 
   bindPhotoPicker(app, 'pe-photos', state, { max: 6 });

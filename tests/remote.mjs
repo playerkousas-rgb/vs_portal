@@ -109,10 +109,16 @@ section('Apps Script 範本（Code.gs）');
   ok('有 loadDbPart（v2.6.0 分段讀取：大過 Vercel 4.5MB 都讀得返）', /function loadDbPart\(unit, partIdx\)/.test(code));
   /* 兩條讀法一定要共用同一個 dbRawText —— 否則「大資料庫分段讀返」
      可能同「一次過讀返」唔同，咁樣靜靜地讀到另一份資料，比讀唔到更危險。 */
-  ok('有 dbRawText（loadDb／loadDbPart 共用嘅唯一讀法）', /function dbRawText\(unit\)/.test(code));
+  ok('有 dbRawText（loadDb／loadDbPart 共用嘅唯一讀法）', /function dbRawText\(unit, strict\)/.test(code));
   ok('loadDb 同 loadDbPart 都經 dbRawText（啱啱兩處呼叫）',
     (code.match(/= dbRawText\(unit\)/g) || []).length === 2,
     'count=' + (code.match(/= dbRawText\(unit\)/g) || []).length);
+  /* ★ v2.7.0：寫入路嘅版本檢查一定要同讀取路同一套判斷 ——
+     否則「最後一套段寫到一半死咗」會令 baseVersion 永遠對唔上，
+     變成「永遠儲存唔到」（同「新儲嘅讀唔到」係同一個死法）。 */
+  ok('★ 寫入路（saveDb／saveDbCommit）版本檢查用返 dbRawText（同讀取路一致）',
+    (code.match(/var curVersion = dbRawText\(unit, true\)\.version/g) || []).length === 2,
+    'count=' + (code.match(/dbRawText\(unit, true\)/g) || []).length);
   const loadDbBody = code.slice(code.indexOf('function loadDb(unit)'), code.indexOf('function loadDbPart'));
   ok('loadDb 唔再自己讀「資料庫」分頁（一定經 dbRawText）', !/getDataRange/.test(loadDbBody));
   ok('每段大小留足水位（1MB ≪ Vercel 4.5MB 回應上限）', /var LOAD_PART_CHARS = 1000000;/.test(code));
@@ -1585,7 +1591,7 @@ section('★ 登入硬閘：後端答唔到就唔准入主控頁');
         ok: true, status: 200,
         text: async () => JSON.stringify({
           ok: true, found: true, version: 'V-GATE', at: '2026-09-20T00:00:00.000Z', bytes: 200,
-          db: { schema: 2, unitCode: '0082', members: [], transactions: [], accounts: [{ id: 'a1', username: 'leader', role: 'leader', name: '團領袖' }] }
+          db: { schema: 2, unitCode: '0082', members: [], transactions: [], accounts: [{ id: 'a1', username: 'chan@example.com', email: 'chan@example.com', role: 'leader', name: '陳領袖', memberId: 'm1' }] }
         })
       };
     }
@@ -1634,8 +1640,8 @@ section('★ 登入硬閘：後端答唔到就唔准入主控頁');
   globalThis.fetch = memFetch2;
 
   /* main.js 真係把硬閘接咗入兩個登入表單 */
-  ok('★ main.js 執委／領袖登入表單有行硬閘', /gateLoginOnBackend\(\)/.test(mainSrc)
-    && (mainSrc.match(/gateLoginOnBackend\(\)/g) || []).length >= 3,
+  ok('★ main.js 登入表單有行硬閘（一個入口，唔再分領袖／執委門）', /gateLoginOnBackend\(\)/.test(mainSrc)
+    && (mainSrc.match(/gateLoginOnBackend\(\)/g) || []).length >= 2,
     'count=' + (mainSrc.match(/gateLoginOnBackend\(\)/g) || []).length);
   ok('★ 硬閘失敗會 return（唔會繼續行 login()）',
     /if \(!gate\.ok\) \{[\s\S]{0,400}?return;/.test(mainSrc));

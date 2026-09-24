@@ -256,6 +256,74 @@ section('v2.6.1 團長回報：同步生分身分頁＋成員進度重複');
 }
 
 /* ============================================================
+   ③b ★ v2.7.0 團長回報（2026-09-24）：
+   「不停存資料庫 → 加一項多一行 → 最後永遠只讀到之前儲嘅，
+     新儲嘅完全讀唔到」
+   ------------------------------------------------------------
+   死因：以前 dbRawText 會把同一旅團**所有**段一齊拼。分頁一旦有
+   兩套以上版本（舊版漏刪／手動加行／兩個部署同時寫），
+   拼出嚟一係 JSON 壞咗（＝讀唔到），一係舊版本行排前面
+   （＝用家見到永遠係以前嗰份，新儲嘅好似冇咗）。
+   而家：按**版本分組**，只讀砌得返 JSON 嘅最新一套 → 新儲嘅一定讀得到。
+   ============================================================ */
+section('★ v2.7.0：同一旅團兩套版本段（「新儲嘅讀唔到」死因）');
+{
+  const g = makeGas({ apiKey: 'test_key' });
+  g.sandbox.initializeSheets();
+  const ss = g.sandbox.SpreadsheetApp.getActiveSpreadsheet();
+  const dbTab = ss.getSheetByName('資料庫');
+  const KEY = g.props.get('API_KEY');
+  const CHUNK = 45000;
+  const push = (ver, at, obj) => {
+    const text = typeof obj === 'string' ? obj : JSON.stringify(obj);
+    let i = 1;
+    for (let p = 0; p < text.length; p += CHUNK, i++) dbTab.appendRow(['0082', i, text.substring(p, p + CHUNK), at, ver]);
+  };
+  const OLD_AT = new Date(Date.now() - 3600e3);
+  push('2026-09-24T00:00:00.000Z-11111', OLD_AT, { members: [{ id: 'old', name: '舊資料' }], transactions: [] });
+  push('2026-09-24T01:00:00.000Z-22222', new Date(), { members: [{ id: 'new', name: '新資料' }], transactions: [{ id: 't1' }] });
+
+  const ld = g.post({ action: 'loadDb', unit: '0082', apiKey: KEY });
+  ok('★ 讀返最新一套（新儲嘅一定讀得到）',
+    ld.db?.members?.[0]?.name === '新資料', JSON.stringify(ld.db || ld).slice(0, 140));
+  ok('★ 舊版本段完全唔會混入（唔會「永遠只讀到之前儲嘅」）',
+    (ld.db?.members || []).length === 1 && !(ld.db?.members || []).some(m => m.name === '舊資料'));
+
+  const info = g.post({ action: 'dbInfo', unit: '0082', apiKey: KEY });
+  ok('dbInfo 報有幾多行舊版本段（app 嘅「同步診斷」靠佢提你清）',
+    Number(info.staleRows) >= 1 && Number(info.versions) === 2,
+    JSON.stringify({ staleRows: info.staleRows, versions: info.versions }));
+
+  const pr = g.sandbox.pruneOldDbVersions();
+  ok('pruneOldDbVersions() 清走舊版本段（逃生門）', pr.removed >= 1, JSON.stringify(pr));
+  const after = g.post({ action: 'dbInfo', unit: '0082', apiKey: KEY });
+  ok('清完之後 dbInfo 報 0 行舊段', Number(after.staleRows) === 0, String(after.staleRows));
+  const ld2 = g.post({ action: 'loadDb', unit: '0082', apiKey: KEY });
+  ok('清完之後讀返嘅仍然係最新一套（正式資料一行都冇少）',
+    ld2.db?.members?.[0]?.name === '新資料' && (ld2.db?.transactions || []).length === 1);
+
+  /* 最新一套寫到一半就斷（GAS timeout）→ 唔可以拼出垃圾；
+     要退返上一個完整版本，並且老實報有幾多套壞咗。 */
+  dbTab.appendRow(['0082', 1, '{"members":[{"id":"half"', new Date(), '2026-09-24T02:00:00.000Z-33333']);
+  const ld3 = g.post({ action: 'loadDb', unit: '0082', apiKey: KEY });
+  ok('★ 最新一套壞咗（寫入中斷）→ 退返上一個完整版本，唔會拼出垃圾',
+    ld3.ok !== false && ld3.db?.members?.[0]?.name === '新資料', JSON.stringify(ld3).slice(0, 160));
+  ok('★ 老實報「有幾多套較新但壞咗」（唔會靜靜哋當冇事）',
+    Number(ld3.brokenNewer) >= 1, String(ld3.brokenNewer));
+
+  /* 下一次正常儲存：舊段＋壞段要成梳清走（saveDb 先刪晒該旅團所有行） */
+  const sv = g.post({ action: 'saveDb', unit: '0082', apiKey: KEY, baseVersion: String(ld3.version || ''),
+    db: { members: [{ id: 'm1', name: '儲存後' }], transactions: [] } });
+  ok('正常儲存成功（baseVersion 用返讀到嗰個）', sv.ok === true, JSON.stringify(sv).slice(0, 140));
+  const info2 = g.post({ action: 'dbInfo', unit: '0082', apiKey: KEY });
+  ok('★ 儲存之後冇殘留舊版本段（唔會再「加一項多一行」）',
+    Number(info2.staleRows) === 0 && Number(info2.versions) === 1,
+    JSON.stringify({ staleRows: info2.staleRows, versions: info2.versions }));
+  const ld4 = g.post({ action: 'loadDb', unit: '0082', apiKey: KEY });
+  ok('★ 儲存之後即刻讀得返新內容', ld4.db?.members?.[0]?.name === '儲存後');
+}
+
+/* ============================================================
    ④ 讀返嚟嘅資料要同寫出去嗰份一模一樣（唔可以走樣）
    ============================================================ */
 section('round-trip：資料唔可以走樣');

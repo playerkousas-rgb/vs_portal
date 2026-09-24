@@ -44,7 +44,7 @@ if (unit.apiKey && !payload.apiKey) payload.apiKey = unit.apiKey;
 2. 函數下拉選單揀 **`showApiKey`** → 撳 **▶ 執行**
 3. 下面「執行記錄」會出：
    ```
-   執委管理系統 API Key: v82_xxxxxxxxxxxxxxxxxxxxxxxx
+   深資童軍管理系統 API Key: v82_xxxxxxxxxxxxxxxxxxxxxxxx
    ```
 
 ### 第 2 步：入 Vercel 環境變數

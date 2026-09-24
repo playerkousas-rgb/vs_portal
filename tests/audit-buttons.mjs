@@ -17,7 +17,8 @@ import { fileURLToPath } from 'url';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const WORKER = path.join(ROOT, 'tests', '_audit-run.mjs');
 const MODES = ['mock', 'real'];
-const ROLES = ['leader', 'exco', 'super'];
+/* ★ 2026-09-24：加埋團長（最高權限，每個旅團一位）一齊審 */
+const ROLES = ['leader', 'exco', 'chief', 'super'];
 const SECTIONS = ['dashboard', 'meetings', 'finance', 'members', 'inventory',
   'progress', 'notices', 'links', 'constitution', 'docs', 'admin'];
 const CONCURRENCY = 3;

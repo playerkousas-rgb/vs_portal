@@ -2,10 +2,10 @@
    progress.js — 進度紀錄（一個後端、兩個前端）
    ------------------------------------------------------------
    團長 2026-09-16 更正設計：
-     · 執委管理系統**唔需要連去任何其他系統**（唔開分頁、唔用 portal）
+     · 深資童軍管理系統**唔需要連去任何其他系統**（唔開分頁、唔用 portal）
      · 重點係：進度資料本來就係寫入**旅團自己嘅後端**（一個 Google Sheet
        ＋ 一支 Apps Script /exec）——後端只有一個，前端有兩個：
-          ① 執委管理系統（呢度）   ② 進度前端（團員／領袖用）
+          ① 深資童軍管理系統（呢度）   ② 進度前端（團員／領袖用）
      · 所以呢邊只做兩件事：讀後端、寫後端。API Key 對得上就等於執委身份。
 
    讀：POST /api/progress { action:'load' }           → GET 後端 ?action=load
@@ -81,7 +81,7 @@ function needSetup() {
       <div class="card-sub">一個後端、兩個前端 —— 進度資料就喺旅團自己嘅 Google Sheet，唔使去其他系統</div></div></div>
     <div style="padding:16px 18px" class="sm muted">
       ${noteBox('<b>設計係咁：</b>旅團只有<b>一個後端</b>（Google Sheet ＋ Apps Script）——'
-        + '執委管理系統同進度前端係<big>兩個前端</big>，共用同一份資料。所以呢度只係「讀／寫你嘅後端」，'
+        + '深資童軍管理系統同進度前端係<big>兩個前端</big>，共用同一份資料。所以呢度只係「讀／寫你嘅後端」，'
         + '唔會連去任何其他網站。', 'brand')}
       <ol style="padding-left:18px;line-height:1.95" class="mt-8">
         <li>打開旅團嘅 Google Sheet → 擴充功能 → Apps Script</li>
@@ -596,7 +596,7 @@ export function mount(root, params) {
     if (!changes.length) return;
     const onCount = changes.filter(c => !c.uncomplete).length;
     const offCount = changes.length - onCount;
-    const r = await saveTicks(changes, current()?.name || '執委管理系統');
+    const r = await saveTicks(changes, current()?.name || '深資童軍管理系統');
     if (!r.ok) { toast(r.error || '儲存失敗', 'err'); return; }
     const processed = r.data?.processed ?? changes.length;
     toast(`已寫入後端：新增 ${onCount} 項、取消 ${offCount} 項（後端處理 ${processed} 項）`, 'ok');
@@ -634,7 +634,7 @@ export function mount(root, params) {
     });
     if (!yes) return;
     reviewing = true; refresh();
-    const reviewer = current()?.name || '執委管理系統';
+    const reviewer = current()?.name || '深資童軍管理系統';
     const r = kind === 'log'
       ? await reviewLogRequest(id, { decision, reviewer })
       : await reviewRequest(id, { decision, reviewer, confirmedDate: reviewDate });

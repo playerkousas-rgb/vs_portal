@@ -2,16 +2,16 @@
 
 > ⛔ **2026-09-16：呢個設計已經停用。**
 > 團長指正：唔需要「連入」任何其他系統 —— 進度資料本身就係寫入旅團自己嘅後端，
-> 所以係**一個後端、兩個前端**（執委管理系統 ＋ 進度前端）。執委系統只讀／寫後端
+> 所以係**一個後端、兩個前端**（深資童軍管理系統 ＋ 進度前端）。執委系統只讀／寫後端
 > （`?action=load` / `action=save`），冇外連、冇 portal、冇 `referer_mismatch`。
 > 下面係舊 portal 方案嘅交接記錄，純粹留底。
 
-# 進度系統 Portal 交接（執委管理系統 → VSBADGE）
+# 進度系統 Portal 交接（深資童軍管理系統 → VSBADGE）
 
 最後核實：2026-09-15，對 `vsbadge` repo（v8.7）＋ `https://vsbadge.vercel.app` 實測。
 
 > ⚠️ **2026-09-16 更新：主要做法已改為「直接接駁」。**
-> 執委管理系統唔再靠 Portal 外連顯示進度 —— 旅團喺「進度 → 設定」填自己嘅 VSBADGE `/exec` 網址同 API Key，
+> 深資童軍管理系統唔再靠 Portal 外連顯示進度 —— 旅團喺「進度 → 設定」填自己嘅 VSBADGE `/exec` 網址同 API Key，
 > 由 `api/progress.js` 直接讀寫（`load` / `save` / `saveOtherBadge` / `items`）。
 > 本文檔保留做 **舊入口（portal）** 嘅設計與安全交接記錄；VSBADGE v3.1 已經加咗本文檔建議嘅
 > `api/portal.js` 驗證（`portalOrigin` / `portalRoles`），所以而家未登記就直接開連結會出 `referer_mismatch`。

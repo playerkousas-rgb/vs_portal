@@ -74,7 +74,7 @@ export const DEFAULT_TABLES = {
     fields: [
       { key: 'name', label: '姓名', type: 'text', required: true, core: true, show: true },
       { key: 'eng', label: '英文名', type: 'text', show: false },
-      { key: 'identity', label: '身份', type: 'select', options: ['leader', 'exco', 'member'], optionLabels: ['領袖', '執委', '團員'], core: true, show: true },
+      { key: 'identity', label: '身份', type: 'select', options: ['chief', 'leader', 'exco', 'member'], optionLabels: ['團長', '領袖', '執委', '團員'], core: true, show: true },
       { key: 'birthday', label: '出生日期', type: 'date', core: true, show: true },
       { key: 'role', label: '職位', type: 'text', show: true },
       { key: 'status', label: '狀態', type: 'select', options: ['active', 'inactive', 'alumni'], optionLabels: ['現役', '休假', '舊團員'], show: true },
@@ -518,7 +518,7 @@ function diagCard() {
 export function diagText(d) {
   if (!d) return '';
   const tag = { ok: '[正常]', warn: '[留意]', bad: '[斷咗]' };
-  return [`執委管理系統 同步診斷（旅團 ${d.unit}）`, `結論：${d.summary}`, '']
+  return [`深資童軍管理系統 同步診斷（旅團 ${d.unit}）`, `結論：${d.summary}`, '']
     .concat(d.stages.map(s => `${tag[s.state] || ''} ${s.label}：${s.detail}${s.fix ? `\n      → ${s.fix}` : ''}`))
     .join('\n');
 }

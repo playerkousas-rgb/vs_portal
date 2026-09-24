@@ -3,17 +3,218 @@
   "unitCode": "MOCK",
   "_comment": "示範團員（全部假名假資料）。團員／執委用 YMIS＋首次密碼 1234 登入；領袖用電郵。生日分佈方便試提示。",
   "members": [
-    { "id": "dm00", "name": "示範領袖", "eng": "Demo Leader", "birthday": "1988-04-01", "identity": "leader", "role": "團領袖", "status": "active", "tags": ["領袖"], "phone": "9000 0000", "email": "leader@mock.example", "join": "2020-09-01", "ymis": "", "note": "示範：領袖用電郵登入，唔使 YMIS" },
-    { "id": "dm01", "name": "陳大文", "eng": "Chan Tai Man", "birthday": "2008-09-16", "identity": "exco", "role": "執委會主席", "status": "active", "tags": ["執委會"], "phone": "9000 0001", "email": "taiman@example.org", "join": "2024-09-01", "ymis": "1000000001", "hubOpened": true, "note": "示範執委：YMIS 1000000001／密碼 1234 → 入管理系統" },
-    { "id": "dm02", "name": "李小明", "eng": "Lee Siu Ming", "birthday": "2009-09-18", "identity": "exco", "role": "秘書", "status": "active", "tags": ["執委會"], "phone": "9000 0002", "email": "siuming@example.org", "join": "2024-09-01", "ymis": "1000000002", "hubOpened": true, "note": "示範執委：YMIS 1000000002／密碼 1234" },
-    { "id": "dm03", "name": "黃美儀", "eng": "Wong Mei Yee", "birthday": "2009-09-05", "identity": "exco", "role": "司庫", "status": "active", "tags": ["執委會"], "phone": "9000 0003", "email": "meiyee@example.org", "join": "2024-09-01", "ymis": "1000000003", "hubOpened": true, "note": "示範執委：YMIS 1000000003／密碼 1234" },
-    { "id": "dm04", "name": "張家俊", "eng": "Cheung Ka Chun", "birthday": "2009-09-30", "identity": "exco", "role": "活動統籌", "status": "active", "tags": ["執委會"], "phone": "9000 0004", "email": "kachun@example.org", "join": "2025-03-15", "ymis": "1000000004", "hubOpened": true, "note": "示範執委" },
-    { "id": "dm05", "name": "何嘉欣", "eng": "Ho Ka Yan", "birthday": "2010-10-03", "identity": "exco", "role": "文書", "status": "active", "tags": ["執委會"], "phone": "9000 0005", "email": "kayan@example.org", "join": "2025-03-15", "ymis": "1000000005", "hubOpened": true, "note": "示範執委" },
-    { "id": "dm06", "name": "林志強", "eng": "Lam Chi Keung", "birthday": "2010-11-20", "identity": "member", "role": "隊長", "status": "active", "tags": ["小隊"], "phone": "9000 0006", "email": "chikeung@example.org", "join": "2025-09-06", "ymis": "1000000006", "hubOpened": true, "note": "示範團員：YMIS 1000000006／密碼 1234 → 團員頁" },
-    { "id": "dm07", "name": "吳淑儀", "eng": "Ng Suk Yee", "birthday": "2011-01-08", "identity": "member", "role": "隊員", "status": "active", "tags": ["小隊"], "phone": "9000 0007", "email": "sukyee@example.org", "join": "2025-09-06", "ymis": "1000000007", "hubOpened": true, "note": "示範團員" },
-    { "id": "dm08", "name": "周文輝", "eng": "Chow Man Fai", "birthday": "2011-03-26", "identity": "member", "role": "隊員", "status": "active", "tags": ["新團員"], "phone": "9000 0008", "email": "manfai@example.org", "join": "2026-03-14", "ymis": "1000000008", "hubOpened": true, "note": "示範團員" },
-    { "id": "dm09", "name": "鄭少玲", "eng": "Cheng Siu Ling", "birthday": "07-28", "identity": "member", "role": "隊員", "status": "active", "tags": ["新團員"], "phone": "9000 0009", "email": "siuling@example.org", "join": "2026-03-14", "ymis": "1000000009", "hubOpened": false, "note": "示範：未開戶，登入頁可申請" },
-    { "id": "dm10", "name": "羅浩然", "eng": "Law Ho Yin", "birthday": "12-01", "identity": "member", "role": "隊員", "status": "leave", "tags": [], "phone": "9000 0010", "email": "hoyin@example.org", "join": "2025-09-06", "ymis": "1000000010", "hubOpened": true, "note": "示範資料：休假中" },
-    { "id": "dm11", "name": "馬穎彤", "eng": "Ma Wing Tung", "birthday": "2004-05-12", "identity": "member", "role": "舊團員", "status": "alumni", "tags": ["舊團員"], "phone": "9000 0011", "email": "wingtung@example.org", "join": "2019-09-01", "ymis": "1000000011", "note": "示範資料：已離團，唔可以登入" }
+    {
+      "id": "dm00",
+      "name": "示範領袖",
+      "eng": "Demo Leader",
+      "birthday": "1988-04-01",
+      "identity": "chief",
+      "role": "團長",
+      "status": "active",
+      "tags": [
+        "領袖"
+      ],
+      "phone": "9000 0000",
+      "email": "leader@mock.example",
+      "join": "2020-09-01",
+      "ymis": "",
+      "note": "示範：團長（每團一位）—— 用電郵 leader@mock.example 或自訂帳號登入",
+      "loginId": "mock-chief"
+    },
+    {
+      "id": "dm01",
+      "name": "陳大文",
+      "eng": "Chan Tai Man",
+      "birthday": "2008-09-16",
+      "identity": "exco",
+      "role": "執委會主席",
+      "status": "active",
+      "tags": [
+        "執委會"
+      ],
+      "phone": "9000 0001",
+      "email": "taiman@example.org",
+      "join": "2024-09-01",
+      "ymis": "1000000001",
+      "hubOpened": true,
+      "note": "示範執委：YMIS 1000000001／密碼 1234 → 入管理系統"
+    },
+    {
+      "id": "dm02",
+      "name": "李小明",
+      "eng": "Lee Siu Ming",
+      "birthday": "2009-09-18",
+      "identity": "exco",
+      "role": "秘書",
+      "status": "active",
+      "tags": [
+        "執委會"
+      ],
+      "phone": "9000 0002",
+      "email": "siuming@example.org",
+      "join": "2024-09-01",
+      "ymis": "1000000002",
+      "hubOpened": true,
+      "note": "示範執委：YMIS 1000000002／密碼 1234"
+    },
+    {
+      "id": "dm03",
+      "name": "黃美儀",
+      "eng": "Wong Mei Yee",
+      "birthday": "2009-09-05",
+      "identity": "exco",
+      "role": "司庫",
+      "status": "active",
+      "tags": [
+        "執委會"
+      ],
+      "phone": "9000 0003",
+      "email": "meiyee@example.org",
+      "join": "2024-09-01",
+      "ymis": "1000000003",
+      "hubOpened": true,
+      "note": "示範執委：YMIS 1000000003／密碼 1234"
+    },
+    {
+      "id": "dm04",
+      "name": "張家俊",
+      "eng": "Cheung Ka Chun",
+      "birthday": "2009-09-30",
+      "identity": "exco",
+      "role": "活動統籌",
+      "status": "active",
+      "tags": [
+        "執委會"
+      ],
+      "phone": "9000 0004",
+      "email": "kachun@example.org",
+      "join": "2025-03-15",
+      "ymis": "1000000004",
+      "hubOpened": true,
+      "note": "示範執委"
+    },
+    {
+      "id": "dm05",
+      "name": "何嘉欣",
+      "eng": "Ho Ka Yan",
+      "birthday": "2010-10-03",
+      "identity": "exco",
+      "role": "文書",
+      "status": "active",
+      "tags": [
+        "執委會"
+      ],
+      "phone": "9000 0005",
+      "email": "kayan@example.org",
+      "join": "2025-03-15",
+      "ymis": "1000000005",
+      "hubOpened": true,
+      "note": "示範執委"
+    },
+    {
+      "id": "dm06",
+      "name": "林志強",
+      "eng": "Lam Chi Keung",
+      "birthday": "2010-11-20",
+      "identity": "member",
+      "role": "隊長",
+      "status": "active",
+      "tags": [
+        "小隊"
+      ],
+      "phone": "9000 0006",
+      "email": "chikeung@example.org",
+      "join": "2025-09-06",
+      "ymis": "1000000006",
+      "hubOpened": true,
+      "note": "示範團員：YMIS 1000000006／密碼 1234 → 團員頁"
+    },
+    {
+      "id": "dm07",
+      "name": "吳淑儀",
+      "eng": "Ng Suk Yee",
+      "birthday": "2011-01-08",
+      "identity": "member",
+      "role": "隊員",
+      "status": "active",
+      "tags": [
+        "小隊"
+      ],
+      "phone": "9000 0007",
+      "email": "sukyee@example.org",
+      "join": "2025-09-06",
+      "ymis": "1000000007",
+      "hubOpened": true,
+      "note": "示範團員"
+    },
+    {
+      "id": "dm08",
+      "name": "周文輝",
+      "eng": "Chow Man Fai",
+      "birthday": "2011-03-26",
+      "identity": "member",
+      "role": "隊員",
+      "status": "active",
+      "tags": [
+        "新團員"
+      ],
+      "phone": "9000 0008",
+      "email": "manfai@example.org",
+      "join": "2026-03-14",
+      "ymis": "1000000008",
+      "hubOpened": true,
+      "note": "示範團員"
+    },
+    {
+      "id": "dm09",
+      "name": "鄭少玲",
+      "eng": "Cheng Siu Ling",
+      "birthday": "07-28",
+      "identity": "member",
+      "role": "隊員",
+      "status": "active",
+      "tags": [
+        "新團員"
+      ],
+      "phone": "9000 0009",
+      "email": "siuling@example.org",
+      "join": "2026-03-14",
+      "ymis": "1000000009",
+      "hubOpened": false,
+      "note": "示範：未開戶，登入頁可申請"
+    },
+    {
+      "id": "dm10",
+      "name": "羅浩然",
+      "eng": "Law Ho Yin",
+      "birthday": "12-01",
+      "identity": "member",
+      "role": "隊員",
+      "status": "leave",
+      "tags": [],
+      "phone": "9000 0010",
+      "email": "hoyin@example.org",
+      "join": "2025-09-06",
+      "ymis": "1000000010",
+      "hubOpened": true,
+      "note": "示範資料：休假中"
+    },
+    {
+      "id": "dm11",
+      "name": "馬穎彤",
+      "eng": "Ma Wing Tung",
+      "birthday": "2004-05-12",
+      "identity": "member",
+      "role": "舊團員",
+      "status": "alumni",
+      "tags": [
+        "舊團員"
+      ],
+      "phone": "9000 0011",
+      "email": "wingtung@example.org",
+      "join": "2019-09-01",
+      "ymis": "1000000011",
+      "note": "示範資料：已離團，唔可以登入"
+    }
   ]
 }

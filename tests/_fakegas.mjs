@@ -169,15 +169,56 @@ function saveDbCommit(body) {
   return { ok: true, success: true, bytes: text.length, at: now, version };
 }
 
+/* ★ 2026-09-24：同真 Code.gs 睇齊 —— 按**版本分組**讀，只讀砌得返 JSON 嘅最新一套。
+   以前係「同一旅團所有段一齊拼」：有兩套以上（舊版漏刪／手動加行）就會
+   拼壞或者永遠讀到舊嗰套（團長回報：「新儲嘅完全讀唔到」）。 */
+function dbRawText(unit, strict) {
+  const groups = new Map(), order = [];
+  let legacy = [], stagingRows = 0, staleRows = 0;
+  for (const r of sheet) {
+    if (r[0] === '__staging__') { stagingRows++; continue; }
+    if (strict) { if (String(r[0] || '') !== String(unit || '')) continue; }
+    else if (unit && r[0] && r[0] !== unit) continue;
+    const ver = String(r[4] || '');
+    const part = { seq: Number(r[1]) || 0, text: String(r[2] == null ? '' : r[2]) };
+    if (!ver) { legacy.push(part); continue; }
+    if (!groups.has(ver)) { groups.set(ver, { parts: [], at: r[3] || '' }); order.push(ver); }
+    groups.get(ver).parts.push(part);
+    if (r[3]) groups.get(ver).at = r[3];
+  }
+  const cands = order.map(v => ({
+    version: v, at: groups.get(v).at, rowsN: groups.get(v).parts.length,
+    text: groups.get(v).parts.slice().sort((a, b) => a.seq - b.seq).map(p => p.text).join('')
+  })).reverse();                                  // 寫入永遠喺最底 → 反轉就係新→舊
+  let picked = -1, brokenNewer = 0;
+  for (let i = 0; i < cands.length; i++) {
+    try { JSON.parse(cands[i].text); picked = i; break; }
+    catch { /* 壞咗（寫入中斷）→ 試舊一套 */ }
+  }
+  if (picked < 0 && !cands.length && legacy.length) {
+    return { found: true, text: legacy.slice().sort((a, b) => a.seq - b.seq).map(p => p.text).join(''),
+      version: '', at: '', stagingRows, staleRows: 0, versions: 0, brokenNewer: 0 };
+  }
+  const pick = picked >= 0 ? cands[picked] : cands[0];
+  brokenNewer = picked > 0 ? picked : 0;
+  if (pick) for (let i = 0; i < cands.length; i++) if (cands[i] !== pick) staleRows += cands[i].rowsN;
+  return {
+    found: !!(pick && pick.text), text: pick ? pick.text : '', version: pick ? pick.version : (pick?.at || ''),
+    at: pick ? pick.at : '', stagingRows, staleRows, versions: cands.length, brokenNewer
+  };
+}
+
 function loadDb(unit) {
-  const parts = sheet.filter(r => r[0] !== '__staging__' && (!unit || r[0] === unit)).sort((a, b) => a[1] - b[1]);
-  if (!parts.length) return { ok: true, success: true, found: false, db: null };
-  const text = parts.map(r => r[2]).join('');
+  const raw = dbRawText(unit);
+  if (!raw.found) return { ok: true, success: true, found: false, db: null, at: '', version: '',
+    stagingRows: raw.stagingRows, staleRows: raw.staleRows, versions: raw.versions };
   try {
-    const db = JSON.parse(text);
-    return { ok: true, success: true, found: true, db, at: parts[0][3], version: parts[0][4], bytes: text.length };
+    const db = JSON.parse(raw.text);
+    return { ok: true, success: true, found: true, db, at: raw.at, version: raw.version, bytes: raw.text.length,
+      stagingRows: raw.stagingRows, staleRows: raw.staleRows, versions: raw.versions, brokenNewer: raw.brokenNewer };
   } catch (e) {
-    return { ok: false, success: false, found: true, db: null, error: '資料庫內容壞咗' };
+    return { ok: false, success: false, found: true, db: null, error: '資料庫內容壞咗',
+      stagingRows: raw.stagingRows, staleRows: raw.staleRows, versions: raw.versions };
   }
 }
 

@@ -79,8 +79,12 @@ window.URL.revokeObjectURL = () => {};
 window.addEventListener('error', e => errors.push('window.onerror: ' + e.message));
 
 const auth = await import('../assets/js/lib/auth.js');
+const store = await import('../assets/js/lib/store.js');
 await import('../assets/js/main.js');
 await wait(400);
+/* ★ 2026-09-24：冇共用帳戶 —— 用測試 helper 種「個人身份」再做登入 */
+const { seedRosterRoles } = await import('./_roles.mjs');
+await seedRosterRoles(store, auth);
 await auth.login('leader', 'leader', '8202');
 await wait(300);
 

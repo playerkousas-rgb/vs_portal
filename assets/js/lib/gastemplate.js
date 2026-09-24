@@ -15,6 +15,11 @@ export function gasTemplate() {
  *
  *  ★ v2.6.3 修正（2026-09-21，團長回報「佢話已寫入但張 Sheet 完全冇嘢；
  *    唔好搞咁多掣要人按，存入後端就資料庫同分頁都 SAVE 曬」）：
+ * ★ 2026-09-24（v2.7.0）：「加一項多一行，最後永遠只讀到以前儲嗰份，
+ *    新儲嘅完全讀唔到」—— 死因係讀取時把同一旅團**所有**段一齊拼，
+ *    兩套以上（舊版漏刪／手動加行／兩個部署同時寫）就會拼壞或者永遠讀舊。
+ *    而家 dbRawText 按**版本分組**，只讀最新嗰一套完整段；
+ *    舊段唔會再混入（dbInfo 會報 staleRows），另附 pruneOldDbVersions() 執靚分頁。
  *    一次儲存＝兩處都寫。以前「儲存到後端」（saveDb）淨係寫「資料庫」分頁
  *    （分段 JSON，人喺 Sheet 度睇唔明），團員／帳目／物資…嗰啲**睇得明嘅報表分頁**
  *    要另外撳「更新報表分頁」（action:sync）先會填 —— 團長撳完儲存再開 Google Sheet，
@@ -159,10 +164,10 @@ function showApiKey() {
   var ui = null;
   try { ui = SpreadsheetApp.getUi(); } catch (e) { /* headless */ }
   if (ui) {
-    ui.alert('執委管理系統 API Key', '你嘅旅團 API Key 為：\\n\\n' + apiKey + '\\n\\n請複製並交由 Git/Vercel 管理員作登記。', ui.ButtonSet.OK);
+    ui.alert('深資童軍管理系統 API Key', '你嘅旅團 API Key 為：\\n\\n' + apiKey + '\\n\\n請複製並交由 Git/Vercel 管理員作登記。', ui.ButtonSet.OK);
   }
   Logger.log('==============================');
-  Logger.log('執委管理系統 API Key: ' + apiKey);
+  Logger.log('深資童軍管理系統 API Key: ' + apiKey);
   Logger.log('==============================');
   return apiKey;
 }
@@ -302,7 +307,7 @@ function initializeSheets() {
   if (ui) {
     ui.alert(
       '初始化完成！',
-      '執委管理系統 所有分頁已建立成功（包括進度追蹤／其他獎章／活動履歷 —— 同進度前端共用同一個後端）！\\n\\n' +
+      '深資童軍管理系統 所有分頁已建立成功（包括進度追蹤／其他獎章／活動履歷 —— 同進度前端共用同一個後端）！\\n\\n' +
       '你嘅 API Key 為：\\n' + apiKey + '\\n\\n' +
       '下一步：\\n' +
       '1. 點擊「部署」→「新增部署作業」\\n' +
@@ -480,7 +485,7 @@ function doPost(e) {
           return false;
         });
         if (!rec2) (current.db && current.db.members || []).some(function (m) {
-          if (m && m.status !== 'alumni' && (textOf(m.ymis).toLowerCase() === loginName2 || textOf(m.email).toLowerCase() === loginName2)) { rec2 = m; return true; }
+          if (m && m.status !== 'alumni' && (textOf(m.ymis).toLowerCase() === loginName2 || textOf(m.email).toLowerCase() === loginName2 || textOf(m.loginId).toLowerCase() === loginName2)) { rec2 = m; return true; }
           return false;
         });
         if (!rec2 || (!changeSession.portal && changeSession.id !== textOf(rec2.id))) return { success: false, error: '登入帳戶與操作帳戶不一致' };
@@ -532,7 +537,7 @@ function doPost(e) {
         if (resetSession.portal || resetSession.id === textOf(actor && actor.id)) actorOk = true;
         if (!actorOk) return { success: false, error: '管理員帳戶或密碼不正確' };
         var actorRole = resetSession.portal ? textOf(resetSession.role).toLowerCase() : textOf(actor.role || actor.identity).toLowerCase();
-        if (actorRole !== 'leader' && actorRole !== 'admin' && actorRole !== 'super') return { success: false, error: '你沒有權限重設其他帳戶密碼' };
+        if (actorRole !== 'chief' && actorRole !== 'leader' && actorRole !== 'admin' && actorRole !== 'super') return { success: false, error: '你沒有權限重設其他帳戶密碼' };
         (resetDb.db && resetDb.db.accounts || []).some(function (a) {
           if (a && a.active !== false && (textOf(a.username).toLowerCase() === targetName || textOf(a.email).toLowerCase() === targetName)) { target = a; return true; }
           return false;
@@ -584,7 +589,7 @@ function doPost(e) {
         if (deleteSession.portal || deleteSession.id === textOf(actor3 && actor3.id)) actorOk3 = true;
         if (!actorOk3) return { success: false, error: '管理員帳戶或密碼不正確' };
         var actorRole3 = deleteSession.portal ? textOf(deleteSession.role).toLowerCase() : textOf(actor3.role || actor3.identity).toLowerCase();
-        if (actorRole3 !== 'leader' && actorRole3 !== 'admin' && actorRole3 !== 'super') return { success: false, error: '你沒有權限刪除帳戶' };
+        if (actorRole3 !== 'chief' && actorRole3 !== 'leader' && actorRole3 !== 'admin' && actorRole3 !== 'super') return { success: false, error: '你沒有權限刪除帳戶' };
         (deleteDb.db && deleteDb.db.accounts || []).some(function (a, i) {
           if (a && (textOf(a.username).toLowerCase() === targetName3 || textOf(a.email).toLowerCase() === targetName3)) { target3 = a; targetIndex = i; return true; }
           return false;
@@ -640,7 +645,7 @@ function doPost(e) {
         if (restoreSession.portal || restoreSession.id === textOf(actor4 && actor4.id)) actorOk4 = true;
         if (!actorOk4) return { success: false, error: '管理員帳戶或密碼不正確' };
         var actorRole4 = restoreSession.portal ? textOf(restoreSession.role).toLowerCase() : textOf(actor4.role || actor4.identity).toLowerCase();
-        if (actorRole4 !== 'leader' && actorRole4 !== 'admin' && actorRole4 !== 'super') return { success: false, error: '你沒有權限復原帳戶' };
+        if (actorRole4 !== 'chief' && actorRole4 !== 'leader' && actorRole4 !== 'admin' && actorRole4 !== 'super') return { success: false, error: '你沒有權限復原帳戶' };
         var restoreTarget = textOf(body.targetEmail || body.targetYmis).toLowerCase();
         var tombstone = null;
         (restoreDb.db && restoreDb.db.deletedAccounts || []).some(function (d) {
@@ -738,8 +743,10 @@ function doPost(e) {
         if (!actorC) return { success:false, error:'管理員帳戶不存在' };
         var actorRoleC = createSession.portal ? textOf(createSession.role).toLowerCase() : textOf(actorC.role || actorC.identity).toLowerCase();
         var wantedRole = textOf(body.role || 'exco').toLowerCase();
-        if (actorRoleC !== 'leader' && actorRoleC !== 'admin' && actorRoleC !== 'super') return { success:false, error:'你沒有權限新增帳戶' };
-        if (actorRoleC === 'leader' && wantedRole !== 'exco') return { success:false, error:'團長只可以新增執委帳戶' };
+        if (actorRoleC !== 'chief' && actorRoleC !== 'leader' && actorRoleC !== 'admin' && actorRoleC !== 'super') return { success:false, error:'你沒有權限新增帳戶' };
+        /* ★ 2026-09-24：唔再開「共用帳戶」。團長／領袖只可以幫人開**個人**帳戶
+           （要綁名冊 memberId）—— 純「執委帳戶」呢回事已經取消，改身份就得。 */
+        if (actorRoleC !== 'super' && !textOf(body.memberId)) return { success:false, error:'由 2026-09-24 起唔再開共用帳戶 —— 請喺「用戶與身份」加人、改身份（系統會自動開個人帳號）' };
         var usernameC = textOf(body.username || body.email).trim();
         if (!usernameC) return { success:false, error:'請填帳號或 EMAIL' };
         if ((createDb.db.accounts || []).some(function(a){ return a && (textOf(a.username).toLowerCase() === usernameC.toLowerCase() || (textOf(a.email) && textOf(a.email).toLowerCase() === usernameC.toLowerCase())); })) return { success:false, error:'帳戶已存在' };
@@ -781,7 +788,8 @@ function doPost(e) {
         return json({ ok: nfo.success === true, success: nfo.success === true, found: !!nfo.found,
           at: nfo.at || '', version: nfo.version || '', bytes: nfo.bytes || 0,
           sizes: nfo.sizes || null, photoBytes: nfo.photoBytes || 0, counts: nfo.counts || null,
-          stagingRows: nfo.stagingRows || 0, stagingBytes: nfo.stagingBytes || 0, error: nfo.error || '' });
+          stagingRows: nfo.stagingRows || 0, stagingBytes: nfo.stagingBytes || 0,
+          staleRows: nfo.staleRows || 0, versions: nfo.versions || 0, error: nfo.error || '' });
       }
       /* v2.6.0：分段讀取 —— 每次淨係回一段純文字，唔會撞代理 4.5MB 回應上限 */
       if (body.action === 'loadDbPart') {
@@ -793,7 +801,9 @@ function doPost(e) {
       var ld = loadDb(textOf(body.unit));
       return json({ ok: ld.success === true, success: ld.success === true, found: !!ld.found,
         db: ld.db || null, at: ld.at || '', version: ld.version || '', bytes: ld.bytes || 0,
-        stagingRows: ld.stagingRows || 0, stagingBytes: ld.stagingBytes || 0, error: ld.error || '' });
+        stagingRows: ld.stagingRows || 0, stagingBytes: ld.stagingBytes || 0,
+        staleRows: ld.staleRows || 0, versions: ld.versions || 0, brokenNewer: ld.brokenNewer || 0,
+        error: ld.error || '' });
     }
 
     /* ---- 進度追蹤（同進度前端共用同一個後端；API Key＝執委身份）---- */
@@ -815,13 +825,13 @@ function doPost(e) {
       if (body.action === 'reviewRequest') {
         var rq = withLock(function () {
           return reviewProgressRequest(body.request_id, body.decision, body.review_note,
-            body.reviewer || '執委管理系統', body.confirmed_date);
+            body.reviewer || '深資童軍管理系統', body.confirmed_date);
         });
         return json({ ok: rq.success === true, success: rq.success === true,
           message: rq.message || '', error: rq.error || '' });
       }
       var lq = withLock(function () {
-        return reviewLogRequest(body.request_id, body.decision, body.review_note, body.reviewer || '執委管理系統');
+        return reviewLogRequest(body.request_id, body.decision, body.review_note, body.reviewer || '深資童軍管理系統');
       });
       return json({ ok: lq.success === true, success: lq.success === true,
         message: lq.message || '', record_id: lq.record_id || '', error: lq.error || '' });
@@ -889,7 +899,7 @@ function doPost(e) {
         var actor = (claimDb.db.accounts || []).filter(function(a){ return a && a.active !== false && textOf(a.id) === textOf(claimSession.id); })[0];
         var role = claimSession.portal ? textOf(claimSession.role).toLowerCase() : textOf(actor && (actor.role || actor.identity)).toLowerCase();
         if (!claimSession.portal && !actor) return { success:false, error:'管理員帳戶不存在' };
-        if (['leader','admin','exco'].indexOf(role) < 0) return { success:false, error:'你沒有權限批核財務申報' };
+        if (['chief','leader','admin','exco'].indexOf(role) < 0) return { success:false, error:'你沒有權限批核財務申報' };
         var claim = (claimDb.db.claims || []).filter(function(c){ return c && textOf(c.id) === textOf(body.claimId); })[0];
         if (!claim) return { success:false, error:'搵唔到財務申報' };
         var decision = textOf(body.decision).toLowerCase();
@@ -920,7 +930,7 @@ function doPost(e) {
         var actor = (loanDb.db.accounts || []).filter(function(a){ return a && a.active !== false && textOf(a.id) === textOf(loanSession.id); })[0];
         var role = loanSession.portal ? textOf(loanSession.role).toLowerCase() : textOf(actor && (actor.role || actor.identity)).toLowerCase();
         if (!loanSession.portal && !actor) return { success:false, error:'管理員帳戶不存在' };
-        if (['leader','admin','exco'].indexOf(role) < 0) return { success:false, error:'你沒有權限批核物資借用' };
+        if (['chief','leader','admin','exco'].indexOf(role) < 0) return { success:false, error:'你沒有權限批核物資借用' };
         var loan = (loanDb.db.invLoans || []).filter(function(l){ return l && textOf(l.id) === textOf(body.loanId); })[0];
         if (!loan) return { success:false, error:'搵唔到借用申請' };
         var decision = textOf(body.decision).toLowerCase();
@@ -1011,11 +1021,12 @@ function doGet(e) {
     }
     var gd = loadDb(unitParam);
     return json({ ok: gd.success === true, success: gd.success === true, found: !!gd.found,
-      db: gd.db || null, at: gd.at || '', version: gd.version || '', bytes: gd.bytes || 0, error: gd.error || '' });
+      db: gd.db || null, at: gd.at || '', version: gd.version || '', bytes: gd.bytes || 0,
+      staleRows: gd.staleRows || 0, versions: gd.versions || 0, error: gd.error || '' });
   }
   return json({
     ok: true,
-    msg: '執委管理系統 後端已啟動',
+    msg: '深資童軍管理系統 後端已啟動',
     spreadsheet: (function () { try { return SpreadsheetApp.getActiveSpreadsheet().getName(); } catch (err) { return '(未綁定試算表)'; } })(),
     tabs: SHEET_TABS,
     api: ['ping', 'status', 'sync', 'saveDb', 'loadDb', 'dbInfo', 'claim', 'claimDecision', 'noticeSignup', 'noticeSubscribe', 'noticeSubscriptions', 'loan', 'loanDecision', 'load', 'save', 'saveOtherBadge'],
@@ -1068,11 +1079,13 @@ function saveDb(body) {
   var sh = dbSheet();
   var rows = sh.getDataRange().getValues();
 
-  /* 先睇而家後端有咩版本（呢個旅團最後一段嘅「版本」欄） */
-  var curVersion = '';
-  for (var v = rows.length - 1; v >= 1; v--) {
-    if (textOf(rows[v][0]) === unit) { curVersion = textOf(rows[v][4]); break; }
-  }
+  /* 先睇而家後端有咩版本。
+     ★ v2.7.0：要同讀取路（loadDb）用**同一套判斷** —— 如果最後一套段係
+     寫到一半死咗（parse 唔到），以前會攞佢做「現行版本」，於是 app 拉返
+     嘅係上一個完整版本，baseVersion 永遠對唔上 → 每次儲存都話「後端有較新版本」
+     → 用家永遠儲存唔到（同「新儲嘅完全讀唔到」係同一個死法）。
+     而家：攞「讀得到」嗰套嘅版本。 */
+  var curVersion = dbRawText(unit, true).version || '';
   var baseVersion = textOf(body.baseVersion);
   if (curVersion && baseVersion !== curVersion) {
     return { success: false, conflict: true, version: curVersion,
@@ -1113,19 +1126,30 @@ function saveDb(body) {
  *  v2.6.0 抽出嚟做共用：loadDb（一次過回成份）同 loadDbPart（分段回）
  *  一定要用**同一套**讀法，否則分段讀返嘅同整份讀返嘅會唔同 —— 咁樣
  *  「大資料庫分段讀」就會靜靜地讀到另一份資料，比讀唔到更危險。 */
-function dbRawText(unit) {
+function dbRawText(unit, strict) {
   unit = textOf(unit);
   var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(DB_TAB);
-  if (!sh) return { found: false, text: '', at: '', version: '', stagingRows: 0, stagingBytes: 0 };
+  if (!sh) return { found: false, text: '', at: '', version: '', stagingRows: 0, stagingBytes: 0, staleRows: 0, versions: 0, brokenNewer: 0 };
   var rows = sh.getDataRange().getValues();
-  var parts = [];
-  var at = '', version = '';
   /* v2.6.2：順手數一數「暫存垃圾行」—— 舊版 cleanStaging 漏刪留低嘅行
      （每行 45000 字）會令分頁越嚟越大，最後 saveDb／loadDb 撞 GAS
      執行時間／記憶體上限（症狀：儲存同讀取一齊死，但 status 話正常）。
      呢度本來就要讀成份分頁，所以順手数數係零成本；dbInfo 會報上去，
      app 嘅「同步診斷」見到就會叫人更新 Code.gs ＋ 執行 cleanStaleStaging()。 */
   var stagingRows = 0, stagingBytes = 0;
+
+  /* ★ v2.7.0（2026-09-24 團長回報「加一項多一行…永遠只讀到之前儲嘅，
+     新儲嘅完全讀唔到」）：**一定要按版本分組讀**。
+     死因：同一個旅團嘅段（seq 1..N）如果因為任何原因出現兩套以上
+     （舊版漏刪、手動貼上、同時寫入），以前就會將兩套**一齊**拼落去 ——
+     拼出嚟嘅 JSON 一係 parse 唔到（= 讀唔到），一係「舊版本嘅行」先出現
+     令用家見到永遠係以前嗰份。而家：每行都帶住寫入時嘅 version，
+     同一版本 ＝ 同一套完整段，所以**只讀最新嗰一套**，
+     舊嘅一套完全唔會混入。新儲嘅嘢因此一定讀得到。 */
+  var groups = {};        // version → { parts:[], at:'' }
+  var order = [];         // 版本出現次序（保存格仔由上而下：最新版本喺最底）
+  var legacy = [];        // 冇版本欄嘅舊資料（v2.2.0 之前寫落嘅）
+  var staleRows = 0;
   for (var i = 1; i < rows.length; i++) {
     var u = textOf(rows[i][0]);
     if (u === '__staging__') {           // v2.4.0：分件暫存唔係正式資料
@@ -1133,17 +1157,61 @@ function dbRawText(unit) {
       stagingBytes += String(rows[i][2] == null ? '' : rows[i][2]).length;
       continue;
     }
-    if (unit && u && u !== unit) continue;
-    if (!unit && !u) continue;
-    parts.push({ seq: Number(rows[i][1]) || 0, text: String(rows[i][2] == null ? '' : rows[i][2]) });
-    if (rows[i][3]) at = rows[i][3];
-    if (rows[i][4]) version = textOf(rows[i][4]);
+    /* strict：只認同一個旅團（寫入路嘅版本檢查用）；否則舊行為（空旅團欄都算）。 */
+    if (strict) { if (u !== unit) continue; }
+    else { if (unit && u && u !== unit) continue; if (!unit && !u) continue; }
+    var ver = textOf(rows[i][4]);
+    var part = { seq: Number(rows[i][1]) || 0, text: String(rows[i][2] == null ? '' : rows[i][2]) };
+    if (!ver) { legacy.push(part); continue; }
+    if (!groups[ver]) { groups[ver] = { parts: [], at: '', atMs: 0 }; order.push(ver); }
+    groups[ver].parts.push(part);
+    if (rows[i][3]) {
+      groups[ver].at = rows[i][3];
+      var t = new Date(rows[i][3]).getTime();
+      if (!isNaN(t)) groups[ver].atMs = t;
+    }
   }
-  if (!parts.length) return { found: false, text: '', at: at, version: version, stagingRows: stagingRows, stagingBytes: stagingBytes };
-  parts.sort(function (a, b) { return a.seq - b.seq; });
+
+  /* 逐套版本砌返條文字（每套嘅段按 seq 排） */
+  function textOfGroup(g) {
+    var ps = g.parts.slice().sort(function (a, b) { return a.seq - b.seq; });
+    return ps.map(function (p) { return p.text; }).join('');
+  }
+  var candidates = order.map(function (v) {
+    return { version: v, at: groups[v].at, atMs: groups[v].atMs, rowsN: groups[v].parts.length, text: textOfGroup(groups[v]) };
+  });
+  /* 新→舊：先按寫入時間（有嘅話），再按分頁先後次序（新版本永遠喺最底） */
+  candidates.sort(function (a, b) {
+    if (a.atMs && b.atMs && a.atMs !== b.atMs) return b.atMs - a.atMs;
+    return order.indexOf(b.version) - order.indexOf(a.version);
+  });
+
+  var at = '', version = '', text = '', brokenNewer = 0, picked = -1;
+  for (var c = 0; c < candidates.length; c++) {
+    try { JSON.parse(candidates[c].text); picked = c; break; }
+    catch (e) { brokenNewer++; }         // 呢套讀唔到（寫入中斷／手動改壞）→ 試舊一套
+  }
+  if (picked >= 0) {
+    version = candidates[picked].version;
+    at = candidates[picked].at;
+    text = candidates[picked].text;
+    brokenNewer = picked;                // 放棄咗幾多套「較新但壞咗」嘅
+    for (var c2 = 0; c2 < candidates.length; c2++) if (c2 !== picked) staleRows += candidates[c2].rowsN;
+  } else if (candidates.length) {
+    /* 每一套都 parse 唔到：照回最新嗰套（loadDb 會照樣報「內容壞咗），
+       唔會靜靜哋當冇資料 —— 用家要用 JSON 備份還原。 */
+    version = candidates[0].version;
+    at = candidates[0].at;
+    text = candidates[0].text;
+  } else if (legacy.length) {
+    text = legacy.slice().sort(function (a, b) { return a.seq - b.seq; })
+      .map(function (p) { return p.text; }).join('');   // 未升級嘅舊資料：照舊讀
+  }
+
   return {
-    found: true, text: parts.map(function (p) { return p.text; }).join(''), at: at, version: version,
-    stagingRows: stagingRows, stagingBytes: stagingBytes
+    found: !!text, text: text, at: at, version: version,
+    stagingRows: stagingRows, stagingBytes: stagingBytes,
+    staleRows: staleRows, versions: candidates.length, brokenNewer: brokenNewer
   };
 }
 
@@ -1152,14 +1220,17 @@ function loadDb(unit) {
   var raw = dbRawText(unit);
   if (!raw.found) {
     return { success: true, found: false, db: null, at: raw.at, version: raw.version, bytes: 0,
-      stagingRows: raw.stagingRows, stagingBytes: raw.stagingBytes, error: '' };
+      stagingRows: raw.stagingRows, stagingBytes: raw.stagingBytes, staleRows: raw.staleRows,
+      versions: raw.versions || 0, brokenNewer: raw.brokenNewer || 0, error: '' };
   }
   try {
     return { success: true, found: true, db: JSON.parse(raw.text), at: raw.at, version: raw.version,
-      bytes: raw.text.length, stagingRows: raw.stagingRows, stagingBytes: raw.stagingBytes };
+      bytes: raw.text.length, stagingRows: raw.stagingRows, stagingBytes: raw.stagingBytes,
+      staleRows: raw.staleRows, versions: raw.versions || 0, brokenNewer: raw.brokenNewer || 0 };
   } catch (e) {
     return { success: false, found: true, db: null, error: '資料庫內容壞咗（JSON 解析失敗），請用 app 嘅 JSON 備份還原',
-      stagingRows: raw.stagingRows, stagingBytes: raw.stagingBytes };
+      stagingRows: raw.stagingRows, stagingBytes: raw.stagingBytes, staleRows: raw.staleRows,
+      versions: raw.versions || 0, brokenNewer: raw.brokenNewer || 0 };
   }
 }
 
@@ -1264,11 +1335,8 @@ function saveDbCommit(body) {
   var sh = dbSheet();
   var rows = sh.getDataRange().getValues();
 
-  /* commit 前最後一次版本檢查 */
-  var curVersion = '';
-  for (var v = rows.length - 1; v >= 1; v--) {
-    if (textOf(rows[v][0]) === unit) { curVersion = textOf(rows[v][4]); break; }
-  }
+  /* commit 前最後一次版本檢查（v2.7.0：同讀取路一致 —— 用讀得到嗰套嘅版本） */
+  var curVersion = dbRawText(unit, true).version || '';
   var baseVersion = textOf(body.baseVersion);
   if (curVersion && baseVersion !== curVersion) {
     return { success: false, conflict: true, version: curVersion, error: '後端已有較新版本（另一部機剛剛同步過）' };
@@ -1387,6 +1455,47 @@ function cleanStaleStaging() {
   return { ok: true, removed: n, rowsLeft: left };
 }
 
+/**
+ * ★ v2.7.0 逃生門（2026-09-24 團長回報「加一項多一行…新儲嘅完全讀唔到」）：
+ * 清走「資料庫」分頁入面**同一旅團嘅舊版本段**，只留最新版本嗰一套。
+ *
+ * 點解會有舊版本段：
+ *   正常保存（saveDb／saveDbCommit）會先刪走該旅團所有舊段再寫新段，
+ *   所以永遠只有一套。但如果曾經用過舊版 Code.gs（v2.6.1 之前有刪行 bug）、
+ *   又或者有人手動喺分頁加過行、或者兩個部署同時寫入，就會出現兩套以上。
+ *   以前嘅讀法係「同一個旅團所有段一齊拼」→ 拼出嚟一係壞咗（讀唔到），
+ *   一係永遠讀到舊嗰套（新儲嘅嘢好似冇咗）。而家讀法已經按版本分組
+ *   （只讀最新一套），呢個函數係**額外**幫你執靚個分頁。
+ *
+ * 喺 Apps Script 編輯器執行一次就得；正式資料（最新版本嗰套）一行都唔會掂。
+ */
+function pruneOldDbVersions() {
+  var sh = dbSheet();
+  var rows = sh.getDataRange().getValues();
+  var last = {};          // unit → { ver, at }（最新嗰套）
+  for (var i = 1; i < rows.length; i++) {
+    var u = textOf(rows[i][0]);
+    if (!u || u === '__staging__') continue;
+    var ver = textOf(rows[i][4]);
+    if (!ver) continue;                       // 冇版本欄嘅遠古資料：唔敢判斷新舊，唔刪
+    var when = rows[i][3] ? new Date(rows[i][3]).getTime() : 0;
+    if (isNaN(when)) when = 0;
+    /* 時間較新就是新版；時間一樣（同一秒寫入）就當後出現嗰個係新（寫入永遠喺最底） */
+    if (!last[u] || when >= last[u].at) last[u] = { ver: ver, at: when };
+  }
+  var dead = [];
+  for (var j = 1; j < rows.length; j++) {
+    var u2 = textOf(rows[j][0]);
+    if (!u2 || u2 === '__staging__') continue;
+    var ver2 = textOf(rows[j][4]);
+    if (!ver2 || !last[u2]) continue;
+    if (ver2 !== last[u2].ver) dead.push(j + 1);
+  }
+  var n = deleteRowRuns(sh, dead);
+  Logger.log('pruneOldDbVersions：清走 ' + n + ' 行舊版本段，「資料庫」分頁剩返 ' + Math.max(0, sh.getLastRow() - 1) + ' 行');
+  return { ok: true, removed: n, rowsLeft: Math.max(0, sh.getLastRow() - 1) };
+}
+
 /** 只睇 meta：後端有冇資料、幾時更新（唔會傳成份資料庫落嚟）。
  *  v2.3.0：附帶逐分頁體積（sizes，只計 JSON 字元長度）同相片 bytes ——
  *  app 用嚟畫「體積檢查」，等成團人用嗰陣知道邊個分頁食緊嘢。 */
@@ -1412,6 +1521,10 @@ function dbInfo(unit) {
     /* v2.6.2：舊版留低嘅暫存垃圾行（正常應該係 0）—— app 嘅「同步診斷」
        見到就會話你知要更新 Code.gs ＋ 執行 cleanStaleStaging() 清走。 */
     stagingRows: r.stagingRows || 0, stagingBytes: r.stagingBytes || 0,
+    /* ★ v2.7.0：舊版本段（正常應該係 0）。讀取已經只讀最新一套，所以
+       有舊段都唔會讀錯，但清走佢可以令分頁細啲、快啲。
+       app 嘅「同步診斷」見到 > 0 會提你執行 pruneOldDbVersions()。 */
+    staleRows: r.staleRows || 0, versions: r.versions || 0,
     counts: r.found ? {
       members: (db.members || []).length,
       transactions: (db.transactions || []).length,
@@ -1667,7 +1780,7 @@ function writeSignups(ss, body, notices) {
    一個後端、兩個前端：進度追蹤
    ------------------------------------------------------------
    呢個後端同時餵兩個前端：
-     ① 執委管理系統（呢邊）   ② 進度追蹤前端（團員／領袖用）
+     ① 深資童軍管理系統（呢邊）   ② 進度追蹤前端（團員／領袖用）
    共用分頁：進度追蹤 / 其他獎章 / 待批完成 / 活動履歷 / 待批履歷 / 成員名單
    讀：GET  ?action=load[&apikey=…]
    寫：POST { action:'save' | 'saveOtherBadge', apikey, changes / records }
@@ -1955,7 +2068,7 @@ function loadMyRequests(ymis) {
 }
 
 /* ============================================================
-   審批中心：待批完成（團員申報 → 執委／領袖喺執委管理系統批）
+   審批中心：待批完成（團員申報 → 執委／領袖喺深資童軍管理系統批）
    批准＝寫入「進度追蹤」（同一個後端、兩個前端都即刻見到）
    ============================================================ */
 function reviewProgressRequest(reqId, decision, note, reviewer, confirmedDate) {

@@ -32,25 +32,38 @@ const K = {
 };
 export const dbKey = (mode, code) => mode === 'mock' ? `venture82.mock.db.v${SCHEMA}` : `venture82.unit.${code}.db.v${SCHEMA}`;
 
-/* ---------------- 預設帳戶 ----------------
-   超管係隱藏帳戶（見 auth.js），唔會出現在呢個名單，亦唔會匯出。 */
-export const SEED_ACCOUNTS = [
-  {
-    id: 'acc_leader', role: 'leader', username: 'leader', name: '團領袖', title: '領袖',
-    pw: { algo: 'sha256', salt: 'v82:leader:leader', hash: '1bee77ce443f65f937002876e9b00d2ef2fb5c6fe25fa148c3a32ecebfcad385' },
-    pwUpdatedAt: '2026-09-14', seeded: true, defaultPw: true
-  },
-  {
-    id: 'acc_exco', role: 'exco', username: 'exco', name: '執行委員會', title: '執委會',
-    pw: { algo: 'sha256', salt: 'v82:exco:exco', hash: 'e70573909c932516077cd2b339499e2d93b0232cf15f518b370403b65b800a32' },
-    pwUpdatedAt: '2026-09-14', seeded: true, defaultPw: true
-  }
-];
+/* ---------------- 帳戶名單（**已取消共用帳戶**） ----------------
+   ★ 2026-09-24 團長定案：「唔好再設執行委員會帳號／領袖共用帳戶」。
+     全系統行「**身份即帳號**」：每一個人（團長／領袖／執委／團員）都係
+     名冊（members）入面嘅一條紀錄，密碼擺喺佢自己身上（hubPw），
+     登入代號＝ email → loginId → ymis（見 model.js loginIdOf()）。
+     db.accounts 淨係留返舊資料庫已經開咗嘅**個人**帳戶（向下兼容），
+     唔會再自動生成任何共用帳戶。
 
-export const SEED_ACCOUNTS_MOCK = [
-  { id: 'mock_leader', role: 'leader', username: 'demo-leader', name: '示範領袖', title: '團領袖', pw: null, demo: true },
-  { id: 'mock_exco', role: 'exco', username: 'demo-exco', name: '示範執委', title: '文書', pw: null, demo: true }
-];
+   舊版本喺每個新資料庫塞兩個共用帳戶：
+     acc_leader（leader／密碼 8202）、acc_exco（exco／密碼 8203）
+   —— 呢兩個一定唔可以留：多人共用一個帳號＝冇人知邊個做過乜，
+   而且「改身份」呢個設計根本冇位放佢哋。下面 migrateSharedAccounts()
+   會喺開機／由後端載入嗰陣清走佢哋（只認種子紀錄，唔會誤刪真人帳戶）。 */
+export const LEGACY_SHARED_ACCOUNTS = ['acc_leader', 'acc_exco'];
+export const LEGACY_SHARED_USERNAMES = ['leader', 'exco'];
+
+/** 清走舊版種落嘅共用帳戶（領袖／執行委員會）。@returns {boolean} 有冇改動 */
+export function migrateSharedAccounts(db) {
+  if (!db || !Array.isArray(db.accounts) || !db.accounts.length) return false;
+  const before = db.accounts.length;
+  db.accounts = db.accounts.filter(a => {
+    if (!a) return false;
+    if (LEGACY_SHARED_ACCOUNTS.includes(a.id)) return false;
+    /* 只有「冇綁名冊紀錄」＋「帳號名就係 leader／exco」＋「種子標記」先當共用帳戶，
+       真人自己開嘅個人帳戶（有 memberId／有電郵）一律保留。 */
+    const un = String(a.username || '').toLowerCase();
+    const shared = !a.memberId && LEGACY_SHARED_USERNAMES.includes(un) &&
+      (a.seeded === true || !String(a.email || '').trim());
+    return !shared;
+  });
+  return db.accounts.length !== before;
+}
 
 /* ---------------- 狀態 ---------------- */
 const state = {
@@ -77,7 +90,7 @@ function lsDel(key) {
 /* ---------------- 升級：用戶身份（領袖 / 執委 / 團員） ----------------
    舊資料庫嘅團員紀錄冇 identity 欄。呢度由職位／標籤推算一次，
    之後喺「用戶」頁可以隨時改。回傳 true = 有改動（要 persist）。 */
-const IDENTITY_KEYS = ['leader', 'exco', 'member'];
+const IDENTITY_KEYS = ['chief', 'leader', 'exco', 'member'];
 export function migrateIdentities(db) {
   if (!db || !Array.isArray(db.members)) return false;
   let changed = false;
@@ -173,7 +186,7 @@ function blankDb(mode, code, entry = {}) {
       agmDates: [{ year: new Date().getFullYear(), date: '', note: '未設定' }],
       publicBaseUrl: ''
     },
-    accounts: mode === 'mock' ? SEED_ACCOUNTS_MOCK : SEED_ACCOUNTS,
+    accounts: [],                       // 冇共用帳戶：身份即帳號（見上面 migrateSharedAccounts）
     constitution: { version: '0.1', status: 'draft', title: { zh: '團章', en: 'Constitution' }, preamble: { zh: '', en: '' }, chapters: [], appendices: [], history: [] },
     members: [], meetings: [], notices: [], events: [], quizzes: [],
     tableSchema: {}, tableSources: [], sync: null, backend: null,
@@ -339,10 +352,9 @@ export async function init(opts = {}) {
   }
   /* 開機升級（帳戶名單／身份／systemId／期初結餘／後端設定）全部只寫本機 ——
      佢哋唔係用家嘅改動，唔應該令 pending 由 0 變 1（否則一開機就話「未儲存」）。 */
-  if (!Array.isArray(state.db.accounts) || !state.db.accounts.length) {
-    state.db.accounts = state.mode === 'mock' ? SEED_ACCOUNTS_MOCK : SEED_ACCOUNTS;
-    persistLocalOnly();
-  }
+  if (!Array.isArray(state.db.accounts)) { state.db.accounts = []; persistLocalOnly(); }
+  /* 清走舊版嘅共用帳戶（領袖／執行委員會）—— 2026-09-24「身份即帳號」 */
+  if (migrateSharedAccounts(state.db)) persistLocalOnly();
   // 用戶名冊升級：舊資料冇「身份」欄 → 由職位／標籤推算（領袖 / 執委 / 團員）
   if (migrateIdentities(state.db)) persistLocalOnly();
   // 跨系統身份 key（進度追蹤等外部系統要靠呢個對人）
@@ -577,7 +589,8 @@ export function importAll(jsonText, { allowMockIntoReal = false } = {}) {
   const keepSync = state.db?.sync ? { ...state.db.sync } : null;
   const keepBackend = state.db?.backend ? { ...state.db.backend } : null;
   state.db = obj;
-  state.db.accounts = Array.isArray(obj.accounts) && obj.accounts.length ? obj.accounts : SEED_ACCOUNTS;
+  state.db.accounts = Array.isArray(obj.accounts) ? obj.accounts : [];
+  migrateSharedAccounts(state.db);
   if (keepSync) state.db.sync = { ...keepSync, pending: Number(keepSync.pending || 0) };
   if (keepBackend) state.db.backend = keepBackend;
   state.db.unitCode = state.unitCode;
@@ -645,7 +658,8 @@ export function clearBase() {
     咁基準、本機、後端三份先至係同一個形狀，唔會生出幻影改動。 */
 export function normalizeRemote(remoteDb) {
   const db = _clone(remoteDb || {});
-  if (!Array.isArray(db.accounts) || !db.accounts.length) db.accounts = _clone(SEED_ACCOUNTS);
+  if (!Array.isArray(db.accounts)) db.accounts = [];
+  migrateSharedAccounts(db);
   migrateIdentities(db);
   migrateMemberKeys(db);
   return db;

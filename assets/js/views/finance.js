@@ -1367,7 +1367,7 @@ function currentRanges() {
 
 function reportMeta() {
   const p = profile();
-  return `${p.name || ''} · 列印日期 ${todayISO()} · 由執委管理系統輸出`;
+  return `${p.name || ''} · 列印日期 ${todayISO()} · 由深資童軍管理系統輸出`;
 }
 
 function exportReportWord(both = true, which = 'unit') {

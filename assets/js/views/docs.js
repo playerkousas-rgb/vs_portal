@@ -346,7 +346,7 @@ function tablesDoc() {
   ${noteBox('冇公開連結都可以：喺 Sheet 選取範圍 → Ctrl+C → 按「改為貼上 CSV」照樣讀得到。', 'info')}
 
   ${H('③ 總表同步：旅團獨立專屬 Google Sheet 後端')}
-  ${P('每個旅團使用<b>獨立專屬嘅 Google Sheet</b>（執委管理系統一張，進度追蹤系統另設一張，兩張完全分開獨立維護，互不干擾）。')}
+  ${P('每個旅團使用<b>獨立專屬嘅 Google Sheet</b>（深資童軍管理系統一張，進度追蹤系統另設一張，兩張完全分開獨立維護，互不干擾）。')}
   <div class="steps">
     <div class="step"><div>開你旅團嘅專屬 Google Sheet → <b>擴充功能 → Apps Script</b></div></div>
     <div class="step"><div>APP 內免登入或於「總表同步 → <b>下載 Code.gs</b>」→ 貼上去（全部取代）</div></div>
@@ -357,7 +357,7 @@ function tablesDoc() {
     <div class="step"><div>按「<b>測試連線</b>」→ 成功後撳頂部「<b>儲存到後端</b>」（改動只會喺你撳嗰陣先寫入；唔會自動同步）</div></div>
     <div class="step"><div>專屬 Sheet 會自動建立／更新分頁：帳目、物資、團員、收支申報、通告、報名、會議、同步紀錄</div></div>
   </div>
-  ${noteBox('<b>一個後端、兩個前端。</b>每個旅團一張 Google Sheet ＋ 一支 Apps Script：執委管理系統同進度前端共用同一份資料（進度追蹤／其他獎章／活動履歷等分頁由 <code>initializeSheets</code> 建立）。相片唔會直接塞入 Sheet（只記數量），如果想存相就喺 Code.gs 頂部填 <code>DRIVE_FOLDER_ID</code>，相片會自動上載去 Drive 再貼連結落 Sheet。', 'brand')}
+  ${noteBox('<b>一個後端、兩個前端。</b>每個旅團一張 Google Sheet ＋ 一支 Apps Script：深資童軍管理系統同進度前端共用同一份資料（進度追蹤／其他獎章／活動履歷等分頁由 <code>initializeSheets</code> 建立）。相片唔會直接塞入 Sheet（只記數量），如果想存相就喺 Code.gs 頂部填 <code>DRIVE_FOLDER_ID</code>，相片會自動上載去 Drive 再貼連結落 Sheet。', 'brand')}
 
   ${H('④ 儲存與備份')}
   ${P('所有資料存喺<b>你自己嘅瀏覽器</b>（localStorage，大約 5MB）。相片最佔位，所以：')}
@@ -415,8 +415,8 @@ function progressDoc() {
   return `
   ${H('設計：一個後端、兩個前端')}
   ${P('旅團只有<b>一個後端</b> —— 一張 Google Sheet ＋ 一支 Apps Script（<code>/exec</code>）。'
-    + '<b>執委管理系統</b>同<b>進度前端</b>（團員／領袖用嗰個）係<b>兩個前端</b>，讀寫同一份資料。')}
-  ${noteBox('所以執委管理系統<b>唔需要連去任何其他系統</b>：唔開分頁、唔用 portal、唔會出 <code>referer_mismatch</code>。'
+    + '<b>深資童軍管理系統</b>同<b>進度前端</b>（團員／領袖用嗰個）係<b>兩個前端</b>，讀寫同一份資料。')}
+  ${noteBox('所以深資童軍管理系統<b>唔需要連去任何其他系統</b>：唔開分頁、唔用 portal、唔會出 <code>referer_mismatch</code>。'
     + '進度資料本身就係寫入旅團自己嘅後端。', 'brand')}
   ${P('呢邊做三件事：')}
   <ul style="padding-left:18px;line-height:1.9" class="sm">
@@ -437,7 +437,7 @@ function progressDoc() {
     <li>同一版仲有<b>待批履歷</b>（團員自行申報嘅服務／活動紀錄），批准會寫入「活動履歷」</li>
     <li>要喺有<b>勾選權限</b>嘅帳號先批得（睇得到、但批唔到）</li>
   </ul>
-  ${noteBox('團員嗰邊只需要專心自己嘅紀錄冊（申報、睇進度）；批核、勾選、通告、財務全部喺執委管理系統搞掂，唔使兩個系統跳來跳去。', 'brand')}
+  ${noteBox('團員嗰邊只需要專心自己嘅紀錄冊（申報、睇進度）；批核、勾選、通告、財務全部喺深資童軍管理系統搞掂，唔使兩個系統跳來跳去。', 'brand')}
 
   ${H('點設定（通常唔使填）')}
   <div class="steps">

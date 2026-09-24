@@ -53,14 +53,14 @@ const NAV = [
   { id: 'quizzes', label: '試卷', icon: 'note' },
   { id: 'meetings', label: '會議', icon: 'clock', badge: () => pendingMeetings().length },
   { id: 'finance', label: '財務', icon: 'wallet', badge: () => overdueFees().length + pendingClaims().length },
-  { id: 'members', label: '用戶', icon: 'users' },
+  { id: 'members', label: '用戶與身份', icon: 'users' },
   { id: 'inventory', label: '物資', icon: 'grid', badge: () => pendingLoans().length },
   { id: 'progress', label: '進度', icon: 'chart' },
   { id: 'notices', label: '通告', icon: 'megaphone', badge: () => (load()?.notices || []).filter(n => n.status === 'published').length },
   { id: 'links', label: '成員連結', icon: 'share' },
   { id: 'constitution', label: '團章', icon: 'book' },
   { id: 'docs', label: '教學', icon: 'note' },
-  { id: 'admin', label: '帳號與系統', icon: 'shield' }
+  { id: 'admin', label: '身份與系統', icon: 'shield' }
 ];
 const MOBILE_MAIN = ['dashboard', 'calendar', 'finance', 'inventory'];
 
@@ -375,7 +375,7 @@ function renderUnitGate() {
       <div class="gate-brand">
         <div class="logo">82</div>
         <div>
-          <div class="gate-title">執委管理系統</div>
+          <div class="gate-title">深資童軍管理系統</div>
           <div class="gate-sub">第一步：揀你嘅旅團（或者用示範資料試玩）</div>
         </div>
       </div>
@@ -610,7 +610,7 @@ async function openRegistryDiag() {
    ============================================================ */
 async function openDeployGuideModal() {
   await modal({
-    title: '🗺️ 執委管理系統 · 多旅團後端部署指南',
+    title: '🗺️ 深資童軍管理系統 · 多旅團後端部署指南',
     wide: true,
     body: `
       <div class="note-box info mb-12">
@@ -824,7 +824,7 @@ function renderMoved() {
       <div class="gate-brand">
         <div class="logo">82</div>
         <div>
-          <div class="gate-title">執委管理系統已經搬遷</div>
+          <div class="gate-title">深資童軍管理系統已經搬遷</div>
           <div class="gate-sub">呢個舊網址（82venture.vercel.app）已經退役</div>
         </div>
       </div>
@@ -905,16 +905,21 @@ function renderFatal(e) {
 /* ============================================================
    登入
    ============================================================ */
-let selectedRole = 'staff';
 let pickedUnit = null;
-let loginDoor = 'pick'; /* pick | staff | member */
 
+/* ============================================================
+   登入（★ 2026-09-24：一個入口、身份即帳號）
+   ------------------------------------------------------------
+   以前有兩個門口（領袖／執行委員會）＋兩個共用帳戶 ——
+   團長定案：所有嘢都以個人身份登入，權限跟名冊身份，
+   改權限＝改身份（「用戶」頁），所以門口只需要一個：
+   打自己嘅電郵（團長／領袖）／YMIS（執委／團員）＋ 密碼。
+   ============================================================ */
 function renderLogin() {
   document.body.classList.add('login-body');
   const units = unitList();
   const code = currentUnit() || defaultUnitCode();
   const u = unitEntry(code) || {};
-  const showDefaultHint = accounts().some(a => a.defaultPw);
 
   /* 示範模式嘅登入畫面都要有「離開示範」——
      以前只有 app 入面嗰條黃色橫額有，一旦登出／未登入（例如喺「更多」撳登出）
@@ -940,12 +945,12 @@ function renderLogin() {
       <div class="brandmark">
         <div class="logo">${esc(String(u.code || code || '82').replace(/^0+/, '') || '82')}</div>
         <div>
-          <div style="font-weight:800;font-size:16px;letter-spacing:-.01em">執委管理系統</div>
+          <div style="font-weight:800;font-size:16px;letter-spacing:-.01em">深資童軍管理系統</div>
           <div class="xs" style="color:#F0D3D9">${esc(u.name || '深資童軍團')} · 自務自治</div>
         </div>
       </div>
       <div>
-        <h1 class="hero-title">${esc(u.name || '深資童軍團')}<br>執委管理系統</h1>
+        <h1 class="hero-title">${esc(u.name || '深資童軍團')}<br>深資童軍管理系統</h1>
         <p class="hero-sub">會議、財務、團員、物資、團章 —— 一個地方搞掂。財務仲可以出「兩條數」（AGM 旅年度 ＋ 童軍年度）。</p>
         <div class="hero-list">
           ${[['團章內建，可改可輸出 Word / PDF / QR', 'book'],
@@ -955,74 +960,39 @@ function renderLogin() {
             .map(([t, i]) => `<div class="hero-item"><span class="tick">${icon(i, 11)}</span><span>${t}</span></div>`).join('')}
         </div>
       </div>
-      <div class="xs" style="color:#D3A9B2">© ${new Date().getFullYear()} ${esc(u.name || '執委管理系統')} · 內部使用</div>
+      <div class="xs" style="color:#D3A9B2">© ${new Date().getFullYear()} ${esc(u.name || '深資童軍管理系統')} · 內部使用</div>
     </aside>
 
     <main class="login-panel">
       <div class="login-card">
         ${mockBanner}
         ${loginSyncBanner()}
-        ${false && units.length > 1 ? `
-        <div class="field mb-16">
-          <label class="label">旅團</label>
-          <select class="select" id="loginUnit">
-            ${units.map(x => `<option value="${esc(x.code)}" ${x.code === code ? 'selected' : ''}>${esc(x.code)} · ${esc(x.name || '')}${x.local ? '（本地）' : ''}</option>`).join('')}
-          </select>
-        </div>` : ''}
 
-        <h1>${loginDoor === 'member' ? '團員／執委登入' : loginDoor === 'staff' ? '領袖登入' : '你係邊個？'}</h1>
-        <p class="sub">${loginDoor === 'pick'
-          ? '團員同執委同一個入口（YMIS）。執委身份跟名冊，換屆改名冊就換權限。領袖用電郵。'
-          : loginDoor === 'member'
-            ? `YMIS＋密碼。名冊有個名＝用首次密碼 ${TEMP_PASSWORD} 入（入去要改）。執委入管理系統，團員入團員頁。`
-            : '領袖用電郵＋密碼（「用戶」頁加嘅領袖：填咗電郵＋入口密碼就喺呢度入）。新旅團：喺 Apps Script 執行 issueSetupKey()，貼 72 小時 KEY 入下面。'}</p>
-
-        ${loginDoor === 'pick' ? `
-        <div class="role-grid">
-          <button class="role-card" type="button" id="doorExco">
-            <span class="role-ic">${icon('flag', 19)}</span>
-            <span class="grow"><span class="role-name" style="display:block">領袖</span>
-            <span class="role-desc" style="display:block">電郵＋密碼（或開團 KEY）</span></span>
-            ${icon('chevronR', 17)}
-          </button>
-          <button class="role-card" type="button" id="doorMember">
-            <span class="role-ic">${icon('users', 19)}</span>
-            <span class="grow"><span class="role-name" style="display:block">團員／執委</span>
-            <span class="role-desc" style="display:block">同一個門：YMIS＋密碼</span></span>
-            ${icon('chevronR', 17)}
-          </button>
-        </div>` : loginDoor === 'member' ? `
-        <button class="btn btn-ghost btn-sm mb-12" type="button" id="doorBack">${icon('chevronL', 14)} 返回</button>
-        <form id="memberLoginForm" autocomplete="off">
-          <div class="field mt-8">
-            <label class="label">YMIS 會籍編號</label>
-            <input class="input" id="liYmis" inputmode="numeric" placeholder="10 位數字" autocomplete="username">
-          </div>
-          <div class="field mt-12">
-            <label class="label">密碼</label>
-            <input class="input" id="liMemPass" type="password" placeholder="首次：${TEMP_PASSWORD}" autocomplete="current-password">
-          </div>
-          <div id="liMemErr" class="err mt-8"></div>
-          <button type="submit" class="btn btn-primary btn-lg btn-block mt-16">${icon('key', 17)} 登入</button>
-        </form>
-        <button class="btn btn-block mt-12" type="button" id="btnApply">${icon('plus', 16)} 未開戶？申請開戶</button>
-        ` : `
-        <button class="btn btn-ghost btn-sm mb-12" type="button" id="doorBack">${icon('chevronL', 14)} 返回選擇入口</button>
+        <h1>登入</h1>
+        <p class="sub">
+          <b>一個人一個帳號</b>：用自己嘅電郵（團長／領袖）或者 YMIS 會籍編號（執委／團員）＋ 密碼。<br>
+          入到去嘅權限＝你喺名冊嘅<b>身份</b>（團長／領袖／執委／團員）。
+        </p>
         <form id="loginForm" autocomplete="off">
           <div class="field mt-8">
-            <label class="label">電郵</label>
-            <input class="input" id="liUser" autocomplete="username" placeholder="例：scouter@example.com">
+            <label class="label">電郵 或 YMIS 會籍編號</label>
+            <input class="input" id="liUser" autocomplete="username"
+              placeholder="團長／領袖：電郵　·　執委／團員：10 位 YMIS">
           </div>
           <div class="field mt-12">
             <label class="label">密碼</label>
-            <input class="input" id="liPass" type="password" placeholder="輸入密碼" autocomplete="current-password">
+            <input class="input" id="liPass" type="password" placeholder="首次：${TEMP_PASSWORD}" autocomplete="current-password">
           </div>
           <div id="liErr" class="err mt-8"></div>
           <button type="submit" class="btn btn-primary btn-lg btn-block mt-16">${icon('key', 17)} 進入系統</button>
         </form>
+        <div class="hint mt-8">名冊有個名但未設密碼？首次用 <code>${TEMP_PASSWORD}</code> 入，入去即刻要改。</div>
+
         <button class="btn btn-ghost btn-block mt-8" type="button" id="btnForgotPassword">忘記密碼？用 EMAIL 重設</button>
+        <button class="btn btn-block mt-8" type="button" id="btnApply">${icon('plus', 16)} 未開戶？申請開戶</button>
+
         <form id="setupKeyForm" class="mt-16" autocomplete="off" style="border-top:1px solid var(--line-2);padding-top:14px">
-          <div class="semibold sm mb-8">新旅團開團 KEY</div>
+          <div class="semibold sm mb-8">新旅團開團 KEY（第一個設定嘅人就係「團長」）</div>
           <div class="hint mb-8">喺 Google 試算表 → Apps Script 執行 <code>issueSetupKey()</code>（每次 72 小時；過期再執行一次）。</div>
           <input class="input" id="liSetupKey" placeholder="貼上 EC72-… KEY">
           <div id="liKeyErr" class="err mt-8"></div>
@@ -1037,31 +1007,13 @@ function renderLogin() {
           <div class="xs faint">而家嘅旅團：<b class="mono">${esc(code)}</b>${isMock() ? '（示範模式）' : ''}</div>
           <button class="btn btn-xs mt-8" id="btnGate" type="button">${icon('refresh', 13)} 返回旅團選擇</button>
         </div>
-        `}
-
-        ${loginDoor === 'staff' && showDefaultHint ? `
-        <div class="demo-hint mt-16">
-          <b>首次使用（預設帳戶）</b><br>
-          新帳戶同團員首次密碼都係 <code>${TEMP_PASSWORD}</code>（同進度追蹤一致）。<br>
-          領袖請用電郵開帳戶。登入後系統會要求即刻改密碼。
-        </div>` : ''}
       </div>
     </main>
   </div>`;
 
-  app.querySelector('#doorExco')?.addEventListener('click', () => { loginDoor = 'staff'; renderLogin(); });
-  app.querySelector('#doorMember')?.addEventListener('click', () => { loginDoor = 'member'; renderLogin(); });
-  app.querySelector('#doorBack')?.addEventListener('click', () => { loginDoor = 'pick'; renderLogin(); });
-  const grid = app.querySelector('#roleGrid');
   const userInput = app.querySelector('#liUser');
   const passInput = app.querySelector('#liPass');
   const err = app.querySelector('#liErr');
-
-  grid?.querySelectorAll('[data-role]').forEach(btn => btn.addEventListener('click', () => {
-    selectedRole = btn.dataset.role;
-    renderLogin();
-    app.querySelector('#liPass')?.focus();
-  }));
 
   app.querySelector('#loginUnit')?.addEventListener('change', e => {
     pickedUnit = e.target.value;
@@ -1087,46 +1039,6 @@ function renderLogin() {
   app.querySelector('#btnExitMock')?.addEventListener('click', () => exitMock());
   app.querySelector('#btnBackReal')?.addEventListener('click', () => exitMockToUnit());
 
-  app.querySelector('#memberLoginForm')?.addEventListener('submit', async e => {
-    e.preventDefault();
-    const box = app.querySelector('#liMemErr');
-    if (box) { box.textContent = ''; box.style.display = 'none'; }
-    const btn = app.querySelector('#memberLoginForm button[type=submit]');
-    if (btn) btn.disabled = true;
-    const { saveHubAuth } = await import('./lib/hub-session.js');
-    const { saveMe } = await import('./lib/member-me.js');
-    const { identityOf } = await import('./lib/model.js');
-    /* ★ 同一條硬閘：團員／領袖經名冊電郵登入都一定要後端核對過先入 */
-    const gate = await gateLoginOnBackend();
-    if (!gate.ok) {
-      if (!isMock()) return renderBackendGate(gate);
-      if (btn) btn.disabled = false;
-      if (box) { box.textContent = gateMessage(gate); box.style.display = 'block'; }
-      return;
-    }
-    const res = isMock()
-      ? await loginMember(app.querySelector('#liYmis')?.value, app.querySelector('#liMemPass')?.value)
-      : await loginServer('member', app.querySelector('#liYmis')?.value, app.querySelector('#liMemPass')?.value);
-    if (btn) btn.disabled = false;
-    if (!res.ok) {
-      if (box) { box.textContent = res.msg; box.style.display = 'block'; }
-      return;
-    }
-    const m = res.member;
-    saveHubAuth(code, { id: m.id, name: m.name, ymis: m.ymis, identity: identityOf(m), mustChangePw: !!res.mustChangePw });
-    saveMe({ id: m.id, name: m.name });
-    if (res.dest === 'staff') {
-      document.body.classList.remove('login-body');
-      applyTheme(load()?.unit?.theme);
-      location.hash = '#/dashboard';
-      render();
-      if (res.mustChangePw) maybeForceChangePw();
-      maybeShowLoginConflicts();
-      return;
-    }
-    location.href = `./members.html?u=${encodeURIComponent(code)}${res.mustChangePw ? '#forcepw' : ''}`;
-  });
-
   app.querySelector('#btnApply')?.addEventListener('click', async () => {
     const r = await modal({
       title: '申請開戶',
@@ -1148,7 +1060,7 @@ function renderLogin() {
         } }
       ]
     });
-    if (r) toast('已送出，等執委／領袖批准', 'ok');
+    if (r) toast('已送出，等團長／領袖批准', 'ok');
   });
 
   app.querySelector('#setupKeyForm')?.addEventListener('submit', async e => {
@@ -1166,8 +1078,9 @@ function renderLogin() {
     applyTheme(load()?.unit?.theme);
     location.hash = '#/admin';
     render();
-    toast('已用開團 KEY 進入。請即刻新增領袖電郵帳戶。', 'ok');
     maybeShowLoginConflicts();
+    /* ★ 開戶嗰位 = 團長（每團一位）。仲未有團長 → 即刻問佢係邊個。 */
+    await maybeClaimChief();
   });
 
   app.querySelector('#btnForgotPassword')?.addEventListener('click', async () => {
@@ -1199,7 +1112,7 @@ function renderLogin() {
     const btn = app.querySelector('#loginForm button[type=submit]');
     btn.disabled = true;
     /* ★ 硬閘：登入嗰一刻一定要同後端核對過。核對唔到 → 唔入。
-       （以前呢度係「攞多次，攞唔到都照登」，正正係團長質疑嘅嘢。） */
+       （後端載入成功＝本機呢份名冊密碼就係後端嗰份 → 個人身份登入即係核對過後端。） */
     const gate = await gateLoginOnBackend();
     if (!gate.ok) {
       if (!isMock()) return renderBackendGate(gate);
@@ -1209,9 +1122,12 @@ function renderLogin() {
       toast(gateMessage(gate), 'err');
       return;
     }
-    const res = isMock()
-      ? await login('staff', userInput.value, passInput.value)
-      : await loginServer('staff', userInput.value, passInput.value);
+    let res = await login('staff', userInput.value, passInput.value);
+    /* 舊個人帳戶（開喺後端但本機名冊冇）：最後試一次後端核對 —— 唔會靜靜哋放行。 */
+    if (!res.ok && !isMock() && res.notFound === true) {
+      const srv = await loginServer('staff', userInput.value, passInput.value).catch(() => ({ ok: false }));
+      if (srv?.ok) res = srv;
+    }
     btn.disabled = false;
     if (!res.ok) {
       err.textContent = res.msg;
@@ -1220,20 +1136,92 @@ function renderLogin() {
       passInput.focus();
       return;
     }
+    /* 團員（identity = member）登入 → 去團員入口（members.html），唔係管理系統 */
+    if (res.role === 'member' && res.member) {
+      const { saveHubAuth } = await import('./lib/hub-session.js');
+      const { saveMe } = await import('./lib/member-me.js');
+      saveHubAuth(code, { id: res.member.id, name: res.member.name, ymis: res.member.ymis, identity: 'member', mustChangePw: !!res.mustChangePw });
+      saveMe({ id: res.member.id, name: res.member.name });
+      location.href = `./members.html?u=${encodeURIComponent(code)}${res.mustChangePw ? '#forcepw' : ''}`;
+      return;
+    }
     document.body.classList.remove('login-body');
     applyTheme(load()?.unit?.theme);
     location.hash = '#/dashboard';
     render();
     if (res.mustChangePw) maybeForceChangePw();
     maybeShowLoginConflicts();
+    /* ★ 第一個設定嗰位係團長：仲未有團長 → 入到去即刻問（可以撳「稍後」） */
+    await maybeClaimChief();
   });
+}
+
+/**
+ * ★ 開戶嗰個 = 團長（2026-09-24）。
+ * 仲未有團長嘅話，用開團 KEY／領袖身份入到去嘅第一件事就係認領團長身份；
+ * 唔想即刻設都可以撳「稍後」—— 「用戶」頁同「身份與權限」頁都會再提示。
+ */
+async function maybeClaimChief() {
+  const auth = await import('./lib/auth.js');
+  if (auth.current()?.role === 'super') return;
+  if (!auth.canClaimChief()) return;
+  const s = auth.current() || {};
+  const me = s.memberId ? (await import('./lib/model.js')).member(s.memberId) : null;
+  const r = await modal({
+    title: '設定團長身份',
+    sub: '每個旅團永遠只有一個團長（最高權限，可以轉移）。第一個開戶嘅人就係團長。',
+    body: chiefFormHtml(me),
+    actions: [
+      { label: '稍後再設', class: 'btn', value: null },
+      { label: '確定', class: 'btn-primary', onClick: async el => {
+        const box = el.querySelector('#chiefErr');
+        const info = {
+          name: el.querySelector('#cName')?.value?.trim() || '',
+          email: el.querySelector('#cEmail')?.value?.trim() || '',
+          password: el.querySelector('#cPw')?.value || '',
+          ymis: el.querySelector('#cYmis')?.value?.trim() || ''
+        };
+        if (!me && !info.name) { box.textContent = '請填姓名'; box.style.display = 'block'; return false; }
+        if (!info.password) { box.textContent = '請設定一個密碼（最少 4 個字）'; box.style.display = 'block'; return false; }
+        if (info.password.length < 4) { box.textContent = '密碼最少 4 個字'; box.style.display = 'block'; return false; }
+        const res = await auth.claimChief(info);
+        if (!res.ok) { box.textContent = res.msg; box.style.display = 'block'; return false; }
+        return true;
+      } }
+    ]
+  });
+  if (r) {
+    toast('已設定團長身份（可以隨時轉移畀下一位）', 'ok');
+    render();
+  }
+}
+
+function chiefFormHtml(me) {
+  if (me) {
+    return `<p class="sm mb-12">你而家嘅身份係「<b>${esc(me.name)}</b>」。確定之後你就係團長。</p>
+      <div class="field"><label class="label">電郵（之後用呢個登入；可以留空用 YMIS）</label>
+        <input class="input" id="cEmail" type="email" value="${esc(me.email || '')}"></div>
+      <div class="field mt-12"><label class="label">設定密碼（最少 4 個字）</label>
+        <input class="input" id="cPw" type="password" autocomplete="new-password"></div>
+      <div id="chiefErr" class="err mt-8"></div>`;
+  }
+  return `<div class="field"><label class="label">姓名</label><input class="input" id="cName"></div>
+    <div class="field mt-12"><label class="label">電郵（之後用呢個登入）</label>
+      <input class="input" id="cEmail" type="email" placeholder="scouter@example.com"></div>
+    <div class="field mt-12"><label class="label">YMIS（可留空）</label><input class="input" id="cYmis"></div>
+    <div class="field mt-12"><label class="label">密碼（最少 4 個字）</label>
+      <input class="input" id="cPw" type="password" autocomplete="new-password"></div>
+    <div id="chiefErr" class="err mt-8"></div>`;
 }
 
 /** ★ 登入硬閘（2026-09-20 團長定案）：後端答唔到 → 一律唔准入主控頁。
  *  以前呢度係 `freshenBeforeLogin()`：「連唔到就照登入，橫額會話你知」——
  *  於係出現咗團長講嗰句：「既然都同後端對咗帳戶密碼，點可能入去之後話冇連上後端？」
- *  答案係：根本冇對過。`login()` 係純本機比對，後端由頭到尾冇被問過。
- *  而家：開機／核對唔到就停喺連線閘，唔會顯示帳戶／密碼登入表單。 */
+ *  答案係：根本冇對過（當時 `login()` 係對本機嗰份帳戶名單，後端由頭到尾冇被問過）。
+ *  ★ 2026-09-24：名冊同密碼都係**呢個旅團後端**嗰份（冇共用帳戶之後，
+ *     本機嗰份就係後端拉落嚟嘅名冊）—— 所以呢個閘更加重要：
+ *     先由後端載入成功（`requireBackendForLogin()`），名冊／密碼對得上先算真係核對過。
+ *  而家：開機／核對唔到就停喺連線閘，唔會顯示登入表單。 */
 async function gateLoginOnBackend() {
   if (isMock()) return { ok: true, mock: true };
   if (!remoteApi) {
@@ -1340,7 +1328,7 @@ function render() {
         <div class="logo">${esc(String(u.code || currentUnit() || '82').replace(/^0+/, '') || '82')}</div>
         <div>
           <div class="t truncate">${esc(u.name || '深資童軍團')}</div>
-          <div class="s truncate">執委管理系統</div>
+          <div class="s truncate">深資童軍管理系統</div>
         </div>
       </div>
 
@@ -1358,7 +1346,7 @@ function render() {
       <div class="sb-foot">
         <div class="sb-user">
           <span class="avatar avatar-sm" style="background:${mock ? MAROON.accent : ROLES[currentRole()]?.color || MAROON.brand700}">
-            ${icon(currentRole() === 'super' ? 'shield' : currentRole() === 'leader' ? 'flag' : 'users', 14)}</span>
+            ${icon(currentRole() === 'super' ? 'shield' : currentRole() === 'chief' ? 'sparkle' : currentRole() === 'leader' ? 'flag' : 'users', 14)}</span>
           <div class="grow" style="min-width:0">
             <div class="n truncate">${esc(displayName())}</div>
             <div class="r truncate">${esc(displaySub())}</div>
@@ -1458,7 +1446,7 @@ function mockBar() {
     <span>你而家睇嘅係假資料，所有改動只會寫入示範空間，唔會影響真實資料。</span>
     <div class="btns">
       <select id="mockRole" class="select" style="height:30px;font-size:12.5px;padding:0 8px">
-        ${['leader', 'exco', 'super'].map(r => `<option value="${r}" ${role === r ? 'selected' : ''}>以 ${ROLES[r].name} 身份預覽</option>`).join('')}
+        ${['chief', 'leader', 'exco', 'member', 'super'].map(r => `<option value="${r}" ${role === r ? 'selected' : ''}>以 ${ROLES[r].name} 身份預覽</option>`).join('')}
       </select>
       <button id="mockReset">重設示範</button>
       ${back ? `<button id="mockBackReal">返 ${esc(back)}（真實）</button>` : ''}

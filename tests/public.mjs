@@ -160,7 +160,7 @@ function bootNotice(search) {
   ok('顯示通告內容（團費 $360）', txt().includes('360'));
   ok('有截止日期標示', txt().includes('截止') || txt().includes('2026-09-30'));
   ok('唔需要報名時冇報名表', !d.getElementById('signup-form'));
-  ok('頁尾有「執委管理系統」字樣', txt().includes('執委管理系統'));
+  ok('頁尾有「深資童軍管理系統」字樣', txt().includes('深資童軍管理系統'));
   ok('document.title 用通告標題', /團費/.test(d.title), d.title);
 }
 

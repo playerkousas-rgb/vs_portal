@@ -7,7 +7,7 @@ import {
   members, member, memberName, attendanceStats, fees, memberStatus, memberBirthdayText,
   birthdayList, birthdaysThisMonth, birthdaysWithin, birthdaySummary, money, settings, profile,
   IDENTITIES, identityLabel, identityOf, guessIdentity, keyCoverage, memberKey, expectedKeyKind,
-  feeExempt, feeExemptList
+  feeExempt, feeExemptList, chief
 } from '../lib/model.js';
 import {
   bindDraftAutosave, readDraft, applyDraft, clearDraft, draftBanner, confirmDanger, undoable
@@ -18,7 +18,11 @@ import {
 } from '../lib/util.js';
 import { toCSV, toWord, printDoc, download as dlFile, stamp } from '../lib/exporter.js';
 import { go, parse } from '../lib/router.js';
-import { can, setMemberHubPassword, TEMP_PASSWORD, openMemberAccount, reviewAccountApp } from '../lib/auth.js';
+import {
+  can, setMemberHubPassword, TEMP_PASSWORD, openMemberAccount, reviewAccountApp,
+  setMemberIdentity, canClaimChief, claimChief, canChangePasswordOf,
+  displayName, current
+} from '../lib/auth.js';
 import { pageHead, tabs, empty, kv, chipbar, progressBar, noteBox } from './ui.js';
 
 let kw = '';
@@ -27,7 +31,24 @@ let idFilter = 'all';
 let bdayMonth = new Date().getMonth() + 1;
 let tab = 'list';
 
-export function title() { return '用戶'; }
+export function title() { return '用戶與身份'; }
+
+/** 團長狀態橫額：冇團長 → 提示認領（開戶嗰個 = 團長）；有團長 → 顯示係邊位 */
+function chiefBanner() {
+  const c = chief();
+  if (c) {
+    return `<div class="note-box mb-16">${icon('sparkle', 15)}<div>
+      <b>團長：${esc(c.name)}</b>${c.email ? `（${esc(c.email)}）` : (c.ymis ? `（${esc(c.ymis)}）` : '')}
+      —— 每個旅團永遠只有一位團長（最高權限），可以隨時轉移。
+      <div class="xs faint mt-4">想交棒：去下一位嘅用戶頁撳「設為團長（轉移）」。</div></div></div>`;
+  }
+  const mine = canClaimChief();
+  return `<div class="note-box warn mb-16">${icon('alert', 15)}<div>
+    <b>仲未設定團長</b> —— 第一個設定嘅人（開戶嗰位）就係團長。
+    <div class="xs mt-4">${mine ? '你而家可以認領團長身份（之後可以轉移）。' : '請團長／領袖入去認領。'}</div>
+    ${mine ? `<button class="btn btn-sm btn-primary mt-8" data-act="claim-chief">${icon('sparkle', 14)} 我係團長（認領身份）</button>` : ''}
+  </div></div>`;
+}
 
 export function render(params) {
   const id = params.id;
@@ -57,7 +78,7 @@ function listView() {
   return `
   ${pageHead({
     title: '用戶',
-    sub: `${all.length} 位 · 領袖 ${cnt('leader')} · 執委 ${cnt('exco')} · 團員 ${cnt('member')}`,
+    sub: `${all.length} 位 · 團長 ${cnt('chief')} · 領袖 ${cnt('leader')} · 執委 ${cnt('exco')} · 團員 ${cnt('member')}`,
     actions: `
       ${can('member.export') ? `<button class="btn btn-sm" data-act="exp-csv">${icon('download', 15)} CSV</button>
       <button class="btn btn-sm" data-act="exp-word">${icon('download', 15)} Word</button>
@@ -68,9 +89,11 @@ function listView() {
   })}
 
   <div class="note-box mb-16">${icon('users', 15)}<div>
-    呢度係<b>用戶名冊</b> —— 領袖、執委同團員都會列喺呢度。
-    每一行都可以撳「<b>編輯</b>」改資料同<b>身份</b>（領袖 / 執委 / 團員）。
-    <div class="xs faint mt-4">改動會先暫存喺呢部裝置，撳「儲存」先寫入；撳「同步」先送去總表。執委身份跟名冊，換屆改身份就換權限。</div></div></div>
+    呢度係<b>用戶名冊</b> —— 團長、領袖、執委同團員都會列喺呢度，<b>每人一個帳號</b>（冇共用帳號）。
+    每一行都可以撳「<b>編輯</b>」改資料同<b>身份</b>；<b>改身份就係改權限</b>（換屆唔使開新帳戶）。
+    <div class="xs faint mt-4">登入代號：團長／領袖用<b>電郵</b>，執委／團員用 <b>YMIS</b>（冇都可以設「自訂帳號」）。改動會先暫存喺呢部裝置，撳「儲存」先寫入。</div></div></div>
+
+  ${chiefBanner()}
 
   ${(() => {
     const apps = collection('accountApps').filter(a => a.status === 'pending');
@@ -124,7 +147,7 @@ function listView() {
 
   <div class="row-between mb-16 wrap gap-12 no-print">
     <div class="col gap-8" style="min-width:0">
-      ${chipbar([['all', '全部身份', all.length], ['leader', '領袖', cnt('leader')], ['exco', '執委', cnt('exco')], ['member', '團員', cnt('member')]], idFilter, 'data-ident')}
+      ${chipbar([['all', '全部身份', all.length], ['chief', '團長', cnt('chief')], ['leader', '領袖', cnt('leader')], ['exco', '執委', cnt('exco')], ['member', '團員', cnt('member')]], idFilter, 'data-ident')}
       ${chipbar([['all', '全部狀態', all.length], ['active', '現役', all.filter(m => m.status === 'active').length],
         ['leave', '休假', all.filter(m => m.status === 'leave').length], ['alumni', '舊團員', all.filter(m => m.status === 'alumni').length]], statusFilter, 'data-status')}
     </div>
@@ -264,7 +287,12 @@ function detail(id) {
     sub: `${identityLabel(m)}${m.role ? ' · ' + m.role : ''}${m.eng ? ' · ' + m.eng : ''} · ${memberStatus()[m.status]?.l || ''}`,
     actions: `
       <button class="btn btn-sm" data-go="#/members">${icon('chevronL', 15)} 返回名冊</button>
-      ${can('member.edit') ? `<button class="btn btn-sm btn-primary" data-act="edit" data-id="${m.id}">${icon('edit', 15)} 編輯</button>` : ''}`
+      ${identityOf(m) === 'member'
+        ? (can('member.edit') ? `<button class="btn btn-sm" data-act="open-hub" data-id="${m.id}">${icon('key', 15)} 開戶（首次密碼 ${TEMP_PASSWORD}）</button>` : '')
+        : (canChangePasswordOf('member:' + m.id) ? `<button class="btn btn-sm" data-act="set-pw" data-id="${m.id}">${icon('key', 15)} 設定密碼</button>` : '')}
+      ${can('member.edit') ? `<button class="btn btn-sm btn-primary" data-act="edit" data-id="${m.id}">${icon('edit', 15)} 編輯</button>` : ''}
+      ${can('admin.chief') && identityOf(m) !== 'chief'
+        ? `<button class="btn btn-sm" data-act="make-chief" data-id="${m.id}">${icon('sparkle', 15)} 設為團長（轉移）</button>` : ''}`
   })}
 
   ${dLeft !== null && dLeft <= (settings().birthday?.remindDaysBefore || 7) ? noteBox(
@@ -365,7 +393,7 @@ function editor(id) {
   const ident = m ? identityOf(m) : 'member';
   return `
   ${pageHead({ title: m ? `編輯：${m.name}` : '新增用戶',
-    sub: '身份（領袖 / 執委 / 團員）同資料都可以改；生日可以只填月日（例：03-26）',
+    sub: '身份（團長 / 領袖 / 執委 / 團員）同資料都可以改；改身份＝改權限；生日可以只填月日（例：03-26）',
     actions: `<button class="btn btn-sm" data-act="cancel">${icon('chevronL', 15)} 取消</button>` })}
   ${draftBanner('member', id || 'new', '用戶資料')}
   <div class="card" style="max-width:760px">
@@ -374,10 +402,14 @@ function editor(id) {
         <div class="field"><label class="label">姓名 <span class="req">*</span></label>
           <input class="input" id="f-name" data-draft="name" value="${esc(m?.name || '')}" placeholder="例：陳大文"></div>
         <div class="field"><label class="label">身份 <span class="req">*</span></label>
-          <select class="select" id="f-identity" data-draft="identity">
-            ${Object.entries(IDENTITIES).map(([k, v]) => `<option value="${k}" ${ident === k ? 'selected' : ''}>${v.l}</option>`).join('')}
-          </select>
-          <div class="hint">領袖 / 執委 / 團員 —— 決定佢喺系統入面嘅身份。</div></div>
+          ${can('member.identity') ? `<select class="select" id="f-identity" data-draft="identity" ${ident === 'chief' ? 'disabled' : ''}>
+            ${Object.entries(IDENTITIES).map(([k, v]) => (k === 'chief' && !can('admin.chief') ? '' : `<option value="${k}" ${ident === k ? 'selected' : ''}>${v.l}</option>`)).join('')}
+          </select>` : `<input class="input" value="${esc(identityLabel(m || { identity: 'member' }))}" readonly style="background:var(--bg-2)">`}
+          <div class="hint">${ident === 'chief'
+            ? '團長身份唔可以用下拉改 —— 要交棒：去下一位嘅用戶頁撳「設為團長（轉移）」。'
+            : can('member.identity')
+              ? '身份＝權限：團長（每團一位）／領袖／執委／團員。換屆改身份就得，唔使開新帳戶。'
+              : '你（執委）可以改資料，但改身份要由團長／領袖處理。'}</div></div>
         <div class="field"><label class="label">英文名</label>
           <input class="input" id="f-eng" data-draft="eng" value="${esc(m?.eng || '')}" placeholder="例：Chan Tai Man"></div>
         <div class="field"><label class="label">會籍編號（YMIS）</label>
@@ -385,7 +417,7 @@ function editor(id) {
           <div class="hint">團員入口登入用（YMIS＋密碼）。同進度系統同一個編號。</div></div>
         <div class="field"><label class="label">團員入口密碼</label>
           <input class="input" id="f-hubpw" type="text" autocomplete="new-password" placeholder="${m?.hubPw?.hash || m?.hubPassword ? '已設定 —— 留空＝唔改' : `留空＝預設 ${TEMP_PASSWORD}`}">
-          <div class="hint">${m?.hubPw?.hash || m?.hubPassword ? `已有密碼${m.hubPwUpdatedAt ? `（${esc(m.hubPwUpdatedAt)}）` : ''}。` : `未設就用預設 ${TEMP_PASSWORD}，首次登入要改。`}團員／執委：YMIS＋呢個密碼入入口。<b>領袖：呢個密碼＋上面電郵＝「領袖」入口嘅登入資料（唔使再另開帳戶）。</b></div></div>
+          <div class="hint">${m?.hubPw?.hash || m?.hubPassword ? `已有密碼${m.hubPwUpdatedAt ? `（${esc(m.hubPwUpdatedAt)}）` : ''}。` : `未設就用預設 ${TEMP_PASSWORD}，首次登入要改。`}<b>呢個就係佢本人嘅登入密碼</b>（所有人同一個入口：電郵／YMIS／自訂帳號 ＋ 呢個密碼）。<b>冇共用帳戶</b>。</div></div>
         <div class="field"><label class="label">系統 ID（自動產生，唔好改）</label>
           <input class="input" value="${esc(m?.systemId || '（儲存時自動產生）')}" readonly style="font-family:var(--mono);font-size:12px;background:var(--bg-2)">
           <div class="hint">冇 YMIS 時嘅 fallback；一旦產生就唔會再改。</div></div>
@@ -396,8 +428,11 @@ function editor(id) {
           <div class="hint">用嚟做生日提示同生日表；未確定年份可以只填 MM-DD。</div></div>
         <div class="field"><label class="label">電話</label>
           <input class="input" id="f-phone" data-draft="phone" value="${esc(m?.phone || '')}" placeholder="9xxx xxxx"></div>
-        <div class="field"><label class="label">電郵</label>
+        <div class="field"><label class="label">電郵（團長／領袖用呢個登入）</label>
           <input class="input" id="f-email" data-draft="email" value="${esc(m?.email || '')}"></div>
+        <div class="field"><label class="label">自訂登入帳號（可選）</label>
+          <input class="input" id="f-loginid" data-draft="loginId" value="${esc(m?.loginId || '')}" placeholder="冇電郵／YMIS 時嘅登入代號">
+          <div class="hint">登入代號次序：電郵 → 自訂帳號 → YMIS。呢個係<b>個人</b>帳號，唔係共用帳號。</div></div>
         <div class="field"><label class="label">入團日期</label>
           <input class="input" id="f-join" data-draft="join" value="${esc(m?.join || '')}" placeholder="YYYY-MM-DD"></div>
         <div class="field"><label class="label">狀態</label>
@@ -453,7 +488,7 @@ function rosterWord() {
     title: '用戶名冊',
     org: profile().name,
     bodyHtml: `<div class="doc-head"><div class="doc-title">用戶名冊</div>
-      <div class="doc-sub">${esc(profile().name || '')} · 共 ${all.length} 位（領袖 ${cnt('leader')} · 執委 ${cnt('exco')} · 團員 ${cnt('member')}）· 列印日期 ${todayISO()}</div></div>
+      <div class="doc-sub">${esc(profile().name || '')} · 共 ${all.length} 位（團長 ${cnt('chief')} · 領袖 ${cnt('leader')} · 執委 ${cnt('exco')} · 團員 ${cnt('member')}）· 列印日期 ${todayISO()}</div></div>
       <table><thead><tr><th>姓名</th><th>身份</th><th>職位</th><th>出生日期</th><th class="num">年齡</th><th>電話</th><th>入團</th><th>狀態</th></tr></thead>
       <tbody>${rows}</tbody></table>`
   });
@@ -581,10 +616,12 @@ export function mount(root, params = {}) {
       const err = root.querySelector('#f-err');
       if (!name) { err.textContent = '請填姓名'; err.style.display = 'block'; return; }
       if (!isValidBirthday(birthday)) { err.textContent = '生日格式唔正確（例：2010-03-26 或 03-26）'; err.style.display = 'block'; return; }
-      const identity = root.querySelector('#f-identity')?.value || 'member';
+      const identityField = root.querySelector('#f-identity');
+      const wantIdentity = identityField?.value || (id ? identityOf(member(id)) : 'member');
       const patch = {
-        name, birthday, identity, eng: v('#f-eng'), role: v('#f-role'), phone: v('#f-phone'), email: v('#f-email'),
+        name, birthday, eng: v('#f-eng'), role: v('#f-role'), phone: v('#f-phone'), email: v('#f-email'),
         ymis: v('#f-ymis'),
+        loginId: v('#f-loginid'),
         join: v('#f-join'), status: root.querySelector('#f-status').value,
         tags: v('#f-tags').split(',').map(x => x.trim()).filter(Boolean), note: v('#f-note')
       };
@@ -601,8 +638,16 @@ export function mount(root, params = {}) {
       if (id) {
         const before = { ...member(id) };
         update('members', id, patch);
+        /* ★ 身份＝權限：一律經 setMemberIdentity（佢會守住「團長只有一位」「唔可以改自己」呢啲規則） */
+        if (can('member.identity') && identityField && !identityField.disabled && wantIdentity !== before.identity) {
+          const idRes = await setMemberIdentity(id, wantIdentity);
+          if (!idRes.ok) {
+            update('members', id, { identity: before.identity });
+            err.textContent = idRes.msg; err.style.display = 'block'; return;
+          }
+        }
         clearDraft('member', id);
-        toast(`已儲存 ${name}（${IDENTITIES[identity].l}）`, 'ok');
+        toast(`已儲存 ${name}（${identityLabel(member(id))}）`, 'ok');
         const hubPw = v('#f-hubpw');
         if (hubPw) {
           const pwRes = await setMemberHubPassword(id, hubPw);
@@ -619,9 +664,122 @@ export function mount(root, params = {}) {
           const pwRes = await setMemberHubPassword(rec.id, hubPw);
           if (!pwRes.ok) toast(pwRes.msg, 'err');
         }
-        toast(`已新增 ${name}（${IDENTITIES[identity].l}）`, 'ok');
+        /* 新增：身份唔可以直接落 chief（團長要轉移／認領）—— 如果冇 chief 而設定者
+           有 admin.chief 權，就用 setMemberIdentity 行同一條安全路。 */
+        if (wantIdentity === 'chief') {
+          const cr = await setMemberIdentity(rec.id, 'chief');
+          if (!cr.ok) { update('members', rec.id, { identity: 'member' }); toast(cr.msg, 'err'); }
+        }
+        toast(`已新增 ${name}（${identityLabel(member(rec.id))}）`, 'ok');
         go('#/members/' + rec.id);
       }
+    }
+
+    /* ★ 開戶嗰個 = 團長：冇團長嘅話可以認領（用戶頁橫額） */
+    if (act === 'claim-chief') {
+      const me = current()?.memberId ? member(current().memberId) : null;
+      const r = await modal({
+        title: '認領團長身份',
+        sub: '每個旅團永遠只有一位團長（最高權限，可以轉移）',
+        body: me
+          ? `<p class="sm">你係 <b>${esc(me.name)}</b>。確定之後你就係團長。</p>`
+          : `<div class="field"><label class="label">姓名</label><input class="input" id="ccName"></div>
+             <div class="field mt-12"><label class="label">電郵（之後用呢個登入）</label><input class="input" id="ccEmail" type="email"></div>`,
+        actions: [
+          { label: '取消', class: 'btn', value: null },
+          { label: '確定', class: 'btn-primary', onClick: el => {
+            if (me) return { name: me.name };
+            const name = el.querySelector('#ccName')?.value.trim() || '';
+            if (!name) return false;
+            return { name, email: el.querySelector('#ccEmail')?.value.trim() || '' };
+          } }
+        ]
+      });
+      if (r) {
+        const res = await claimChief(me ? { name: me.name } : r);
+        toast(res.ok ? '已設定團長身份' : res.msg, res.ok ? 'ok' : 'err');
+        refresh();
+      }
+      return;
+    }
+
+    /* ★ 轉移團長身份（現任團長交棒） */
+    if (act === 'make-chief') {
+      const m = member(id);
+      if (!m) return;
+      const cur = chief();
+      const okGo = await confirmDlg({
+        title: '轉移團長身份', okText: '確定轉移',
+        message: `將團長身份轉移畀 <b>${esc(m.name)}</b>？` +
+          (cur ? `<br>${esc(cur.name)} 會變返「領袖」。` : '') +
+          '<br><span class="xs faint">團長係最高權限（可以改任何身份、改任何密碼）。轉移之後你嘅身份即刻改變。</span>'
+      });
+      if (!okGo) return;
+      const res = await setMemberIdentity(id, 'chief');
+      toast(res.ok ? `已將團長身份轉移畀 ${m.name}` : res.msg, res.ok ? 'ok' : 'err');
+      refresh();
+      return;
+    }
+
+    /* 設定入面嗰個入口密碼（團長／領袖可以幫人設） */
+    if (act === 'set-pw') {
+      const m = member(id);
+      if (!m) return;
+      const r = await modal({
+        title: `設定密碼：${m.name}`,
+        sub: '設定之後即刻生效（唔使等儲存到後端）',
+        body: `<div class="field"><label class="label">新密碼（最少 4 個字）</label>
+            <input class="input" id="sp1" type="password" autocomplete="new-password"></div>
+          <div class="field mt-12"><label class="label">再輸入一次</label>
+            <input class="input" id="sp2" type="password" autocomplete="new-password"></div>
+          <div id="spErr" class="err mt-8"></div>
+          <div class="hint mt-8">留空＝維持不變。</div>`,
+        actions: [
+          { label: '取消', class: 'btn', value: null },
+          { label: '儲存', class: 'btn-primary', onClick: el => {
+            const p1 = el.querySelector('#sp1').value, p2 = el.querySelector('#sp2').value;
+            const box = el.querySelector('#spErr');
+            if (!p1) { box.textContent = '請輸入新密碼'; box.style.display = 'block'; return false; }
+            if (p1.length < 4) { box.textContent = '最少 4 個字'; box.style.display = 'block'; return false; }
+            if (p1 !== p2) { box.textContent = '兩次輸入唔一樣'; box.style.display = 'block'; return false; }
+            return p1;
+          } }
+        ]
+      });
+      if (r) {
+        const res = await setMemberHubPassword(id, r);
+        toast(res.ok ? '密碼已設定' : res.msg, res.ok ? 'ok' : 'err');
+      }
+      return;
+    }
+
+    if (act === 'open-hub') {
+      const res = await openMemberAccount(id);
+      toast(res.ok ? `已開戶：首次密碼 ${TEMP_PASSWORD}（登入後要改）` : res.msg, res.ok ? 'ok' : 'err');
+      refresh();
+      return;
+    }
+
+    if (act === 'bulk-open') {
+      const list = members().filter(m => m.status !== 'alumni' && !m.hubPw?.hash && !m.hubPassword);
+      if (!list.length) { toast('全部人都已經開咗戶', 'ok'); return; }
+      const okGo = await confirmDlg({
+        title: '批量開戶', okText: `為 ${list.length} 位開戶`,
+        message: `會為 <b>${list.length}</b> 位未開戶嘅人設首次密碼 <b>${TEMP_PASSWORD}</b>（首次登入要改）。`
+      });
+      if (!okGo) return;
+      let n = 0;
+      for (const m of list) { const r = await openMemberAccount(m.id); if (r.ok) n++; }
+      toast(`已為 ${n} 位開戶（首次密碼 ${TEMP_PASSWORD}）`, 'ok');
+      refresh();
+      return;
+    }
+
+    if (act === 'approve-app' || act === 'reject-app') {
+      const res = await reviewAccountApp(id, { decision: act === 'approve-app' ? 'approved' : 'rejected', reviewer: displayName() });
+      toast(res.ok ? '已處理開戶申請' : res.msg, res.ok ? 'ok' : 'err');
+      refresh();
+      return;
     }
 
     if (act === 'save-note') {

@@ -77,7 +77,9 @@ const FIELD_ALIASES = {
   PROGRESSBACKEND: ['PROGRESSBACKEND', 'PROGRESS_BACKEND', 'PROGRESSURL', 'PROGRESS_URL'],
   PROGRESSAPIKEY: ['PROGRESSAPIKEY', 'PROGRESS_APIKEY', 'PROGRESS_API_KEY', 'PROGRESSKEY'],
   PROGRESSCATALOG: ['PROGRESSCATALOG', 'PROGRESS_CATALOG', 'PROGRESSCATALOGURL'],
-  PORTALORIGIN: ['PORTALORIGIN', 'PORTAL_ORIGIN']
+  PORTALORIGIN: ['PORTALORIGIN', 'PORTAL_ORIGIN'],
+  MODULES: ['MODULES', 'ENABLED_MODULES', 'ENABLED-MODULES'],
+  DISABLEDMODULES: ['DISABLEDMODULES', 'DISABLED_MODULES', 'DISABLED-MODULES']
 };
 const KNOWN_FIELDS = new Set(Object.values(FIELD_ALIASES).flat());
 /* 全部要認嘅 key（用嚟掃 process.env 搵出所有已登記旅團） */
@@ -224,6 +226,8 @@ export function getRegistry() {
     const envName = troopEnv(id, 'NAME') || jsonEntry.name || '';
     const portalOrigin = troopEnv(id, 'PORTALORIGIN') || jsonEntry.portalOrigin || fileEntry.portalOrigin || '';
     const portalRoles = jsonEntry.portalRoles || fileEntry.portalRoles || ['leader', 'admin', 'exco'];
+    const enabledModules = troopEnv(id, 'MODULES') || jsonEntry.modules || fileEntry.modules || '';
+    const disabledModules = troopEnv(id, 'DISABLEDMODULES') || jsonEntry.disabledModules || fileEntry.disabledModules || '';
     const name = fileEntry.name || envName || `第 ${id} 旅`;
     const code = fileEntry.code || jsonEntry.code || id;
     /* 伺服器端已經有進度後端＋Key ＝ 前端唔使填任何嘢（純 env 開團用） */
@@ -250,6 +254,8 @@ export function getRegistry() {
         submitUrl: noticeSubmitUrl
       },
       backendTrusted: isTrustedExecUrl(gasUrl),
+      enabledModules,
+      disabledModules,
       /* 呢個旅團係唔係靠伺服器端 env 開（Git 未加 JSON） */
       fromEnv: fromEnvOnly,
       /* 「一個後端、兩個前端」：進度後端＝旅團後端本身。設咗 PROGRESSBACKEND
@@ -320,7 +326,9 @@ export function getTrustedUnit(id) {
     noticeSubmitUrl: (u.notice?.submitUrl || u.backend.gasUrl).trim(),
       theme: u.theme,
     portalOrigin: u.portalOrigin || '',
-    portalRoles: Array.isArray(u.portalRoles) ? u.portalRoles.slice() : []
+    portalRoles: Array.isArray(u.portalRoles) ? u.portalRoles.slice() : [],
+    enabledModules: u.enabledModules || '',
+    disabledModules: u.disabledModules || ''
   };
 }
 

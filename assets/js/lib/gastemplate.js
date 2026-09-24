@@ -383,6 +383,24 @@ function doPost(e) {
       return { token: token, expiresAt: Date.now() + 8 * 3600 * 1000 };
     }
 
+    function verifyAuthSession(unit, token) {
+      var raw = textOf(token);
+      if (!raw) return { ok: false, error: '登入狀態已失效，請重新登入' };
+      var key = 'AUTH_SESSION_' + textOf(unit) + '_' + sha256HexGs(raw);
+      var saved = PropertiesService.getScriptProperties().getProperty(key);
+      var info = null;
+      try { info = saved ? JSON.parse(saved) : null; } catch (sessionErr) { info = null; }
+      if (!info || Number(info.exp || 0) <= Date.now()) {
+        if (saved) PropertiesService.getScriptProperties().deleteProperty(key);
+        return { ok: false, error: '登入狀態已失效，請重新登入' };
+      }
+      return { ok: true, id: textOf(info.id), kind: textOf(info.kind), pv: Number(info.pv || 1) };
+    }
+
+    function requireAuthSession(body) {
+      return verifyAuthSession(body.unit, body.sessionToken);
+    }
+
     /* ---- 支部帳戶登入：密碼核對留喺 GAS，前端只收安全身份資料 ---- */
     if (body.action === 'authLogin') {
       var loginAuth = requireAuth(expectedKey, key);
@@ -427,6 +445,8 @@ function doPost(e) {
     if (body.action === 'authChangePassword') {
       var changeAuth = requireAuth(expectedKey, key);
       if (!changeAuth.ok) return json(changeAuth);
+      var changeSession = requireAuthSession(body);
+      if (!changeSession.ok) return json({ ok: false, success: false, error: changeSession.error, code: 'SESSION_REQUIRED' });
       var changed = withLock(function () {
         var current = loadDb(textOf(body.unit));
         var loginName2 = textOf(body.username || body.email || body.ymis).toLowerCase();
@@ -462,6 +482,8 @@ function doPost(e) {
     if (body.action === 'authResetPassword') {
       var resetAuth = requireAuth(expectedKey, key);
       if (!resetAuth.ok) return json(resetAuth);
+      var resetSession = requireAuthSession(body);
+      if (!resetSession.ok) return json({ ok: false, success: false, error: resetSession.error, code: 'SESSION_REQUIRED' });
       var reset = withLock(function () {
         var resetDb = loadDb(textOf(body.unit));
         var actorName = textOf(body.actorUsername || body.actorEmail).toLowerCase();
@@ -511,6 +533,8 @@ function doPost(e) {
     if (body.action === 'authDeleteAccount') {
       var deleteAuth = requireAuth(expectedKey, key);
       if (!deleteAuth.ok) return json(deleteAuth);
+      var deleteSession = requireAuthSession(body);
+      if (!deleteSession.ok) return json({ ok: false, success: false, error: deleteSession.error, code: 'SESSION_REQUIRED' });
       var deleted = withLock(function () {
         var deleteDb = loadDb(textOf(body.unit));
         var actorName3 = textOf(body.actorUsername || body.actorEmail).toLowerCase();
@@ -563,6 +587,8 @@ function doPost(e) {
     if (body.action === 'authRestoreAccount') {
       var restoreAuth = requireAuth(expectedKey, key);
       if (!restoreAuth.ok) return json(restoreAuth);
+      var restoreSession = requireAuthSession(body);
+      if (!restoreSession.ok) return json({ ok: false, success: false, error: restoreSession.error, code: 'SESSION_REQUIRED' });
       var restored = withLock(function () {
         var restoreDb = loadDb(textOf(body.unit));
         var actorName4 = textOf(body.actorUsername || body.actorEmail).toLowerCase();

@@ -1,8 +1,19 @@
 // 上游旅系統 → 支部入口驗證；只回公開授權結果，不回 Registry 敏感資料。
+import crypto from 'node:crypto';
 import { getTrustedUnit } from './_registry.js';
 
 function originOf(value) {
   try { return new URL(String(value || '')).origin; } catch { return ''; }
+}
+
+function b64(value) { return Buffer.from(value).toString('base64url'); }
+function portalToken(unit, role, source) {
+  const secret = String(process.env.PORTAL_SESSION_SECRET || '');
+  if (!secret) return '';
+  const payload = { u: unit, role, src: source, exp: Date.now() + 10 * 60 * 1000, jti: crypto.randomUUID() };
+  const body = b64(JSON.stringify(payload));
+  const sig = crypto.createHmac('sha256', secret).update(body).digest('base64url');
+  return body + '.' + sig;
 }
 
 export default function handler(req, res) {
@@ -17,5 +28,7 @@ export default function handler(req, res) {
   const role = String(q.role || '').trim().toLowerCase();
   const allowed = unit.portalRoles?.length ? unit.portalRoles : ['leader', 'admin', 'exco'];
   if (!allowed.includes(role)) return res.status(200).json({ ok: false, reason: 'role_not_allowed' });
-  return res.status(200).json({ ok: true, role, unit: unit.code });
+  const token = portalToken(unit.code, role, source);
+  if (!token) return res.status(200).json({ ok: false, reason: 'portal_secret_not_configured' });
+  return res.status(200).json({ ok: true, role, unit: unit.code, portalToken: token, expiresIn: 600 });
 }

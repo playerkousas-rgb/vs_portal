@@ -81,6 +81,14 @@ section('支部帳戶 PBKDF2 密碼基礎');
   ok('後端提供 PBKDF2-HMAC-SHA256', typeof g.sandbox.pbkdf2Sha256Hex === 'function');
   ok('PBKDF2 使用最低 100,000 iterations 的標準結果',
     g.sandbox.pbkdf2Sha256Hex('password', 'salt', 100000) === expected);
+  ok('密碼最短 4 位', g.sandbox.passwordPolicy('123').ok === false && g.sandbox.passwordPolicy('1234').ok === true);
+  const temporary = g.sandbox.makePasswordRecord('1234');
+  ok('預設 1234 會標記 mustChangePw', temporary.ok === true && temporary.mustChangePw === true);
+  ok('帳戶只保存 PBKDF2 hash／salt，不保存明文密碼',
+    temporary.pw.algo === 'pbkdf2-sha256' && !Object.prototype.hasOwnProperty.call(temporary.pw, 'password'));
+  ok('PBKDF2 password record 可以驗證及拒絕錯密碼',
+    g.sandbox.verifyPasswordRecord(temporary.pw, '1234') === true &&
+    g.sandbox.verifyPasswordRecord(temporary.pw, 'wrong') === false);
 }
 
 /* ============================================================

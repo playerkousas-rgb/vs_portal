@@ -191,6 +191,34 @@ function pbkdf2Sha256Hex(password, salt, iterations) {
   return out.map(function (b) { return ('0' + (b & 255).toString(16)).slice(-2); }).join('');
 }
 
+/** 支部帳戶密碼政策：最短 4 位；1234 只可作首次／重設後密碼。 */
+function passwordPolicy(password) {
+  var value = String(password == null ? '' : password);
+  if (value.length < 4) return { ok: false, error: '密碼最少要 4 位' };
+  return { ok: true, temporary: value === '1234' };
+}
+
+function makePasswordRecord(password, forceChange) {
+  var policy = passwordPolicy(password);
+  if (!policy.ok) return { ok: false, error: policy.error };
+  var salt = Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '');
+  var iterations = 120000;
+  return { ok: true, pw: { algo: 'pbkdf2-sha256', salt: salt, iterations: iterations,
+    hash: pbkdf2Sha256Hex(password, salt, iterations) },
+    mustChangePw: forceChange === undefined ? policy.temporary : !!forceChange };
+}
+
+function verifyPasswordRecord(record, password) {
+  if (!record || record.algo !== 'pbkdf2-sha256' || !record.salt || !record.hash) return false;
+  var policy = passwordPolicy(password);
+  if (!policy.ok) return false;
+  var got = pbkdf2Sha256Hex(password, record.salt, record.iterations);
+  if (got.length !== String(record.hash).length) return false;
+  var same = 0;
+  for (var i = 0; i < got.length; i++) same |= got.charCodeAt(i) ^ String(record.hash).charCodeAt(i);
+  return same === 0;
+}
+
 /**
  * 開團登入 KEY：喺 Apps Script 編輯器執行呢個函數。
  * 每次產生新 KEY，有效 72 小時；過期再執行一次。唔會寫入工作表、唔會喺 App 顯示超管。

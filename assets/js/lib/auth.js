@@ -403,6 +403,28 @@ export async function changeMemberOwnPassword(memberId, oldPw, newPw) {
   return setMemberHubPassword(memberId, newPw, { mustChange: false });
 }
 
+/** 正式支部登入：密碼由 GAS server-side authLogin 核對，瀏覽器只保存安全身份資料。 */
+export async function loginServer(role, username, password) {
+  const unit = currentUnit();
+  const r = await fetch('./api/proxy', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'authLogin', unit, username: String(username || ''), ymis: role === 'member' ? String(username || '') : undefined, password: String(password || '') })
+  });
+  let data = null;
+  try { data = await r.json(); } catch { data = null; }
+  if (!r.ok || !data?.ok) {
+    /* 舊支部尚未把本機帳戶同步到新 auth action：只在「找不到後端帳戶」時保留一次舊資料遷移後備；後端明確拒絕密碼時絕不 fallback。 */
+    if (data?.code === 'AUTH_ACCOUNT_NOT_FOUND') return login(role, username, password);
+    return { ok: false, msg: data?.error || '帳號或密碼不正確' };
+  }
+  const a = data.account || {};
+  const accountRole = a.role || (role === 'member' ? 'member' : 'leader');
+  const dest = accountRole === 'member' ? 'hub' : 'staff';
+  setSession({ role: accountRole, accountId: a.id, username: a.username, email: a.email || '', name: a.name, at: Date.now(), mustChangePw: !!data.mustChangePw, via: 'server' });
+  auditLogin(a.username || username, 'GAS server-side 登入');
+  return { ok: true, role: accountRole, mustChangePw: !!data.mustChangePw, dest, member: { id: a.id, name: a.name, ymis: a.username, email: a.email, identity: accountRole } };
+}
+
 export async function login(role, username, password) {
   const u = String(username || '').trim();
   const p = String(password || '');

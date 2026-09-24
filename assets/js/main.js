@@ -17,7 +17,7 @@ import {
 } from './lib/onboard.js';
 import { applyTheme, MAROON } from './lib/theme.js';
 import {
-  login, loginMember, logout, current, currentRole, ROLES, displayName, displaySub,
+  login, loginServer, loginMember, logout, current, currentRole, ROLES, displayName, displaySub,
   loginAsMock, accounts, isSuper, can, changeOwnPassword, TEMP_PASSWORD,
   loginSetupKey, applyAccount
 } from './lib/auth.js';
@@ -1102,7 +1102,9 @@ function renderLogin() {
       if (box) { box.textContent = gateMessage(gate); box.style.display = 'block'; }
       return;
     }
-    const res = await loginMember(app.querySelector('#liYmis')?.value, app.querySelector('#liMemPass')?.value);
+    const res = isMock()
+      ? await loginMember(app.querySelector('#liYmis')?.value, app.querySelector('#liMemPass')?.value)
+      : await loginServer('member', app.querySelector('#liYmis')?.value, app.querySelector('#liMemPass')?.value);
     if (btn) btn.disabled = false;
     if (!res.ok) {
       if (box) { box.textContent = res.msg; box.style.display = 'block'; }
@@ -1205,7 +1207,9 @@ function renderLogin() {
       toast(gateMessage(gate), 'err');
       return;
     }
-    const res = await login('staff', userInput.value, passInput.value);
+    const res = isMock()
+      ? await login('staff', userInput.value, passInput.value)
+      : await loginServer('staff', userInput.value, passInput.value);
     btn.disabled = false;
     if (!res.ok) {
       err.textContent = res.msg;

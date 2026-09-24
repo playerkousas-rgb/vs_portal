@@ -92,6 +92,8 @@ function makeGas({ apiKey = null } = {}) {
       formatDate: (d) => new Date(d).toISOString(), sleep: () => {},
       base64Decode: () => [],
       newBlob: (value) => ({ getBytes: () => [...Buffer.from(String(value), 'utf8')], setName: () => ({}) }),
+      DigestAlgorithm: { SHA_256: 'sha256' }, Charset: { UTF_8: 'utf8' },
+      computeDigest: (algo, value) => [...crypto.createHash(algo).update(String(value), 'utf8').digest()],
       computeHmacSha256Signature: (value, key) => [...crypto.createHmac('sha256', Buffer.from(key)).update(Buffer.from(value)).digest()],
     }, 
     LockService: { getScriptLock: () => ({ tryLock: () => true, waitLock: () => true, releaseLock: () => {} }) },

@@ -404,7 +404,8 @@ function doPost(e) {
       } else if (loginRec && !loginPassword && loginPw === '1234') {
         loginOk = true;
       }
-      if (!loginOk) return json({ ok: false, success: false, error: '帳號或密碼不正確' });
+      if (!loginRec) return json({ ok: false, success: false, code: 'AUTH_ACCOUNT_NOT_FOUND', error: '帳號或密碼不正確' });
+      if (!loginOk) return json({ ok: false, success: false, code: 'AUTH_INVALID', error: '帳號或密碼不正確' });
       var loginRole = loginRec.role || loginRec.identity || 'member';
       return json({ ok: true, success: true, account: {
         id: textOf(loginRec.id), username: textOf(loginRec.username || loginRec.email || loginRec.ymis),

@@ -386,12 +386,12 @@ section('⑧ 靜態守門（唔會重演「action 漏咗喺白名單」嗰單事
   /* ★ v2.8.1：自證＋真相＋版號（唔會重演「假成功／登入見唔到版號」） */
   ok('★ 逐表寫一定要過自證或讀回驗證（否則唔算成功）',
     /confirmed\s*!==\s*true/.test(remoteSrc));
-  ok('★ gastemplate.js 後端版本係 v2.8.2',
-    fs.readFileSync(path.join(ROOT, 'assets', 'js', 'lib', 'gastemplate.js'), 'utf8').includes("BACKEND_VERSION = 'v2.8.2'"));
-  ok('★ Code.gs 係由 v2.8.2 gastemplate 起出嚟（唔係舊 build）',
-    gasSrc.includes("BACKEND_VERSION = 'v2.8.2'"));
+  ok('★ gastemplate.js 後端版本係 v2.8.3',
+    fs.readFileSync(path.join(ROOT, 'assets', 'js', 'lib', 'gastemplate.js'), 'utf8').includes("BACKEND_VERSION = 'v2.8.3'"));
+  ok('★ Code.gs 係由 v2.8.3 gastemplate 起出嚟（唔係舊 build）',
+    gasSrc.includes("BACKEND_VERSION = 'v2.8.3'"));
   ok('★ 有版本單一來源（version.js）＋登入閘用緊佢',
-    fs.readFileSync(path.join(ROOT, 'assets', 'js', 'lib', 'version.js'), 'utf8').includes("APP_VERSION = 'v2.8.2'")
+    fs.readFileSync(path.join(ROOT, 'assets', 'js', 'lib', 'version.js'), 'utf8').includes("APP_VERSION = 'v2.8.3'")
     && fs.readFileSync(path.join(ROOT, 'assets', 'js', 'main.js'), 'utf8').includes('APP_VERSION'));
 }
 

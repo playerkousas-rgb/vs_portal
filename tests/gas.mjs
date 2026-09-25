@@ -47,6 +47,32 @@ const sampleDb = () => ({
   notices: [], invItems: [], meetings: [], accounts: []
 });
 
+section('真 Sheet 的數字自動轉型：0082 不能被寫成 82');
+{
+  const g = makeGas({ apiKey: 'test-sync-secret', coerceNumericText: true });
+  const check = g.post({ action: 'syncCheck', unit: '0082' });
+  ok('臨時行旅團 0082（前導零）與記號均能讀回', check.ok && check.wrote && check.readBack, JSON.stringify(check));
+  const written = g.post({ action: 'saveTables', unit: '0082', tables: {
+    members: [{ id: 'm1', name: '新團員' }]
+  }, full: true, refreshReports: false, baseVersion: '' });
+  ok('正式資料表的旅團編號不會轉成數字 82', written.success && written.confirmed,
+    JSON.stringify(written).slice(0, 300));
+  const read = g.post({ action: 'loadTables', unit: '0082' });
+  ok('另一裝置以 0082 讀回真正寫入的團員', read.found && read.db?.members?.[0]?.name === '新團員', JSON.stringify(read).slice(0, 300));
+  ok('資料表原始首欄是純文字 0082', g.sheets.get('資料表')?._rows?.[1]?.[0] === '0082');
+  const reportSave = g.post({ action: 'saveTables', unit: '0082', tables: {
+    members: [{ id: 'm1', name: '新團員' }]
+  }, baseVersion: written.version });
+  ok('報表刷新成功並且團員分頁旅團欄保留 0082', reportSave.success && reportSave.reports?.ok !== false
+    && g.sheets.get('團員')?._rows?.[1]?.[0] === '0082', JSON.stringify(reportSave).slice(0, 300));
+  const gBlob = makeGas({ apiKey: 'test-sync-secret', coerceNumericText: true });
+  const blob = gBlob.post({ action: 'saveDb', unit: '0082', db: sampleDb(), baseVersion: '' });
+  ok('整份後備寫入也能驗收及鏡像', blob.success === true, JSON.stringify(blob).slice(0, 300));
+  ok('資料庫原始首欄亦是純文字 0082', gBlob.sheets.get('資料庫')?._rows?.[1]?.[0] === '0082');
+  const blobRead = gBlob.post({ action: 'loadDb', unit: '0082' });
+  ok('另一裝置仍能讀返後備寫入資料', blobRead.found && blobRead.db?.members?.length === 2);
+}
+
 section('API Key 代理式獨立讀寫測試（無資料、無登入也能驗證）');
 {
   const g = makeGas({ apiKey: 'test-sync-secret' });
@@ -56,7 +82,7 @@ section('API Key 代理式獨立讀寫測試（無資料、無登入也能驗證
   ok('第一次測試真的寫入並讀回相同記號', first.ok === true && first.wrote === true && first.readBack === true,
     JSON.stringify(first));
   ok('回應顯示實際試算表、後端版號，不回傳 Key',
-    !!first.spreadsheet && first.backendVersion === 'v2.8.2' && !JSON.stringify(first).includes('test-sync-secret'));
+    !!first.spreadsheet && first.backendVersion === 'v2.8.3' && !JSON.stringify(first).includes('test-sync-secret'));
   ok('測試行已清走，不影響正式資料庫',
     g.sheets.get('連線測試')._rows.length === 1 && !g.sheets.has('資料表') && !g.sheets.has('資料庫'));
   const second = g.post({ action: 'syncCheck', unit: '0099' });
@@ -1183,7 +1209,7 @@ section('★ v2.8.1：自證＋報表合併＋真相欄位＋止血');
     JSON.stringify({ f: info.found, m: info.mode }));
   ok('③ dbInfo 版本對得上寫入版本', info.version === sv2.version, `${info.version} vs ${sv2.version}`);
   ok('③ ★ dbInfo 報分頁原行數＋後端版本',
-    info.simpleRows === 8 && info.blobRows === 0 && info.backendVersion === 'v2.8.2',
+    info.simpleRows === 8 && info.blobRows === 0 && info.backendVersion === 'v2.8.3',
     JSON.stringify({ s: info.simpleRows, b: info.blobRows, v: info.backendVersion }));
 
   /* ④ 全部表壞晒 → found:false，但行數＋壞表如實報（唔再係齋「空」） */
@@ -1217,7 +1243,7 @@ section('★ v2.8.1：自證＋報表合併＋真相欄位＋止血');
   /* ⑦ diag 真相欄位 */
   const dg = g.post({ action: 'diag', unit: '0082', apiKey: KEY });
   ok('⑦ ★ diag 有 backendVersion／mode／simpleRows',
-    dg.backendVersion === 'v2.8.2' && dg.mode === 'simple' && dg.simpleRows === 8,
+    dg.backendVersion === 'v2.8.3' && dg.mode === 'simple' && dg.simpleRows === 8,
     JSON.stringify({ v: dg.backendVersion, m: dg.mode, s: dg.simpleRows }));
 }
 

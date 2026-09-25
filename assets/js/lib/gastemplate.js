@@ -12,7 +12,7 @@ export function gasTemplate() {
   return `/**
  * ============================================================
  *  深資童軍管理系統 · 總表同步與多旅團後端 Apps Script（Code.gs）
- *  版本：v2.8.2
+ *  版本：v2.8.3
  *
  *  ★ v2.8.1（2026-09-25，團長回報 4 項：「登入畫面睇唔到版號」／
  *    「後端分頁明明有資料但 app 話冇」／「有幾頁不停在儲存，會唔會爆量」／
@@ -154,7 +154,7 @@ var MODE = 'per-unit-sheet';   // 'per-unit-sheet' = 每個旅團獨立工作表
 var DRIVE_FOLDER_ID = '';
 
 /** 後端版本（status 會回報；APP 用嚟檢查「你張 Sheet 係咪仲行舊 code」） */
-var BACKEND_VERSION = 'v2.8.2';
+var BACKEND_VERSION = 'v2.8.3';
 
 /* ============================================================
    初始化與 API KEY 管理
@@ -1231,7 +1231,7 @@ function saveDb(body) {
   if (!chunks.length) chunks = ['{}'];
 
   var out = chunks.map(function (c, idx) { return [unit, idx + 1, c, now, version]; });
-  sh.getRange(sh.getLastRow() + 1, 1, out.length, 5).setValues(out);
+  writeUnitRowsAsText(sh, sh.getLastRow() + 1, out);
   var blobCheck = dbRawText(unit, true);
   if (blobCheck.version !== version || blobCheck.text !== text) {
     var rollback = sh.getDataRange().getValues(), undo = [];
@@ -1553,7 +1553,7 @@ function saveDbCommit(body) {
   if (!chunks.length) chunks = ['{}'];
   var out2 = [];
   for (var c3 = 0; c3 < chunks.length; c3++) out2.push([unit, c3 + 1, chunks[c3], now, version]);
-  sh.getRange(sh.getLastRow() + 1, 1, out2.length, 5).setValues(out2);
+  writeUnitRowsAsText(sh, sh.getLastRow() + 1, out2);
   var committedCheck = dbRawText(unit, true);
   if (committedCheck.version !== version || committedCheck.text !== text) {
     var rollback2 = sh.getDataRange().getValues(), undo2 = [];
@@ -1865,6 +1865,15 @@ function simpleSheet() {
   return sh;
 }
 
+/** 旅團編號係識別字串（0082 != 82），必須在寫入之前把第一欄設為純文字。
+ *  Google Sheet「自動」格式會將只含數字的字串轉成數字，令寫入後
+ *  loadTables/dbRawText 用原編號讀唔返；只有 setValues 成功絕不等於同步成功。 */
+function writeUnitRowsAsText(sh, firstRow, values) {
+  if (!values.length) return;
+  sh.getRange(firstRow, 1, values.length, 1).setNumberFormat('@');
+  sh.getRange(firstRow, 1, values.length, values[0].length).setValues(values);
+}
+
 /** 一個細小、獨立的 Sheet 寫入／讀回測試，不碰正式資料或帳戶。
  *  攞 script lock 避免兩個人測試時互相刪除；即使測試失敗也清走臨時行。 */
 function checkSheetWriteRead(unit) {
@@ -1879,14 +1888,18 @@ function checkSheetWriteRead(unit) {
   var row = sh.getLastRow() + 1;
   var wrote = false;
   try {
+    sh.getRange(row, 1, 1, 2).setNumberFormat('@');
     sh.getRange(row, 1, 1, 3).setValues([[unit, marker, new Date()]]);
     wrote = true;
     SpreadsheetApp.flush();
     var back = sh.getRange(row, 1, 1, 2).getValues()[0];
-    var matched = textOf(back[0]) === unit && textOf(back[1]) === marker;
+    var unitMatches = textOf(back[0]) === unit;
+    var markerMatches = textOf(back[1]) === marker;
+    var matched = unitMatches && markerMatches;
     return { ok: matched, success: matched, wrote: true, readBack: matched,
       spreadsheet: ss.getName(), backendVersion: BACKEND_VERSION,
-      error: matched ? '' : '測試行已寫入，但讀回內容不一致' };
+      error: matched ? '' : '測試行已寫入，但讀回內容不一致（' +
+        (!unitMatches ? '旅團編號欄' : '測試記號欄') + '）；請確認該欄位已設為純文字' };
   } catch (err) {
     return { ok: false, success: false, wrote: wrote, readBack: false,
       spreadsheet: ss.getName(), backendVersion: BACKEND_VERSION,
@@ -1939,7 +1952,7 @@ function saveTables(body) {
   if (!out.length) return { success: false, error: '冇一個表寫得入（表名或者內容唔合規格）' };
 
   /* ① 先寫新 —— 寫完呢一步，分頁入面已經有完整嘅新資料 */
-  sh.getRange(sh.getLastRow() + 1, 1, out.length, 6).setValues(out);
+  writeUnitRowsAsText(sh, sh.getLastRow() + 1, out);
   /* 新表即使比舊表短（例如刪除大量團員，由兩段縮成一段），也要先驗收，
      不能用 loadTables 的「較長版本優先」來驗：那會錯誤讀回舊表。 */
   var stagedRows = sh.getDataRange().getValues();
@@ -2348,7 +2361,7 @@ function writeTab(ss, body, baseName, rows, schema, fallbackKeys) {
   if (!sh) sh = ss.insertSheet(name);
   sh.clear();
   sh.getRange(1, 1, 1, header.length).setValues([header]).setFontWeight('bold');
-  if (data.length) sh.getRange(2, 1, data.length, header.length).setValues(data);
+  if (data.length) writeUnitRowsAsText(sh, 2, data);
   sh.setFrozenRows(1);
   return rows.length;
 }
@@ -2373,7 +2386,7 @@ function writeNoticesFull(ss, unit, notices) {
     };
     return [unit, textOf(n.id), textOf(n.status), textOf(n.title && n.title.zh), JSON.stringify(slim), new Date()];
   });
-  if (data.length) sh.getRange(2, 1, data.length, 6).setValues(data);
+  if (data.length) writeUnitRowsAsText(sh, 2, data);
   sh.setFrozenRows(1);
   return data.length;
 }
@@ -2453,7 +2466,7 @@ function writeSignups(ss, body, notices) {
   sh.clear();
   var header = ['旅團', '通告編號', '通告標題', '報名時間', '姓名', '聯絡', '出席與否', '全部欄位(JSON)'];
   sh.getRange(1, 1, 1, header.length).setValues([header]).setFontWeight('bold');
-  if (rows.length) sh.getRange(2, 1, rows.length, header.length).setValues(rows);
+  if (rows.length) writeUnitRowsAsText(sh, 2, rows);
   sh.setFrozenRows(1);
   return rows.length;
 }

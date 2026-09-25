@@ -535,7 +535,8 @@ export async function testReadWrite() {
   if (!cfg.ok) return { ok: false, error: notConfiguredMessage(cfg), stage: 'route' };
   const r = await callBackend({ action: 'syncCheck' }, { timeoutMs: 45000 });
   if (!r.ok) return { ok: false, error: r.error || '讀寫測試失敗',
-    hint: r.hint || '', stage: r.wrote ? 'read' : 'write', via: r.via || '' };
+    hint: r.hint || '', stage: r.wrote ? 'read' : 'write', via: r.via || '',
+    sheet: r.spreadsheet || '', version: r.backendVersion || '' };
   if (r.wrote !== true || r.readBack !== true) {
     return { ok: false, error: '後端未證實寫入與讀回成功', stage: 'read', via: r.via || '' };
   }

@@ -23,23 +23,30 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 /* ============================================================
    迷你 Google Apps Script 模擬器
    ============================================================ */
-function makeSheet(name, headers) {
+function makeSheet(name, headers, { coerceNumericText = false } = {}) {
   const rows = headers ? [headers.slice()] : [];
+  const formats = new Map();
+  /* Sheet「自動」格式可以把 0082 轉成數字 82；只設了純文字格式的格保留前導零。 */
+  const written = (value, r, c) => coerceNumericText && typeof value === 'string'
+    && /^\d+$/.test(value) && formats.get(`${r}:${c}`) !== '@' ? Number(value) : value;
   const chain = {};
   const range = (row, col, nr = 1, nc = 1) => ({
     setValues: (vals) => {
       vals.forEach((v, i) => {
         const ri = row - 1 + i;
         while (rows.length <= ri) rows.push([]);
-        v.forEach((cell, j) => { rows[ri][col - 1 + j] = cell; });
+        v.forEach((cell, j) => { rows[ri][col - 1 + j] = written(cell, row + i, col + j); });
       });
       return chain;
     },
-    setValue: (v) => { const ri = row - 1; while (rows.length <= ri) rows.push([]); rows[ri][col - 1] = v; return chain; },
+    setValue: (v) => { const ri = row - 1; while (rows.length <= ri) rows.push([]); rows[ri][col - 1] = written(v, row, col); return chain; },
     getValues: () => { const out = []; for (let i = 0; i < nr; i++) { const r = rows[row - 1 + i] || []; out.push(r.slice(col - 1, col - 1 + nc)); } return out; },
     getValue: () => (rows[row - 1] || [])[col - 1],
     setFontWeight: () => chain, setBackground: () => chain, setFontColor: () => chain,
-    setNumberFormat: () => chain, setWrap: () => chain, setHorizontalAlignment: () => chain,
+    setNumberFormat: (fmt) => {
+      for (let i = 0; i < nr; i++) for (let j = 0; j < nc; j++) formats.set(`${row + i}:${col + j}`, fmt);
+      return chain;
+    }, setWrap: () => chain, setHorizontalAlignment: () => chain,
     setFontSize: () => chain, setBorder: () => chain, clearContent: () => chain, setFontFamily: () => chain
   });
   Object.assign(chain, range(1, 1));
@@ -47,7 +54,7 @@ function makeSheet(name, headers) {
     _rows: rows,
     getName: () => name,
     /* 真 GAS 嘅 appendRow 會回返個 Sheet（可以連住 .getRange()）—— stub 要一樣 */
-    appendRow: (r) => { rows.push(r.slice()); return sheet; },
+    appendRow: (r) => { rows.push(r.map((v, j) => written(v, rows.length + 1, j + 1))); return sheet; },
     getDataRange: () => ({ getValues: () => rows.map(r => r.slice()), clearContent: () => { rows.length = 0; } }),
     getLastRow: () => rows.length,
     getLastColumn: () => rows.reduce((m, r) => Math.max(m, r.length), 0),
@@ -61,7 +68,7 @@ function makeSheet(name, headers) {
   return sheet;
 }
 
-function makeGas({ apiKey = null } = {}) {
+function makeGas({ apiKey = null, coerceNumericText = false } = {}) {
   const sheets = new Map();
   const props = new Map();
   if (apiKey) props.set('API_KEY', apiKey);
@@ -69,7 +76,7 @@ function makeGas({ apiKey = null } = {}) {
   const ss = {
     getName: () => '測試試算表',
     getSheetByName: (n) => sheets.get(n) || null,
-    insertSheet: (n) => { const s = makeSheet(n); sheets.set(n, s); return s; },
+    insertSheet: (n) => { const s = makeSheet(n, null, { coerceNumericText }); sheets.set(n, s); return s; },
     getSheets: () => [...sheets.values()],
     deleteSheet: (s) => sheets.delete(s.getName()),
     getId: () => 'fake', setSpreadsheetTimeZone: () => {}, getSpreadsheetTimeZone: () => 'Asia/Hong_Kong'

@@ -110,15 +110,36 @@ section('Apps Script 範本（Code.gs）');
   /* 兩條讀法一定要共用同一個 dbRawText —— 否則「大資料庫分段讀返」
      可能同「一次過讀返」唔同，咁樣靜靜地讀到另一份資料，比讀唔到更危險。 */
   ok('有 dbRawText（loadDb／loadDbPart 共用嘅唯一讀法）', /function dbRawText\(unit, strict\)/.test(code));
-  ok('loadDb 同 loadDbPart 都經 dbRawText（啱啱兩處呼叫）',
-    (code.match(/= dbRawText\(unit\)/g) || []).length === 2,
-    'count=' + (code.match(/= dbRawText\(unit\)/g) || []).length);
+  /* ★ v2.8.0：讀取一律經 dbReadRaw（「資料表」優先，冇先至讀舊 blob）。
+     呢個先係「app 同公開頁睇到同一份資料」嘅保證 —— authLogin／claim／loan／
+     notices／constitution 全部都經 loadDb，所以一定同 app 讀到同一份。 */
+  ok('有 dbReadRaw（全後端唯一讀取入口：資料表優先，舊 blob 做後備）',
+    /function dbReadRaw\(unit\)/.test(code));
+  ok('loadDb 同 loadDbPart 都經 dbReadRaw（啱啱兩處呼叫）',
+    (code.match(/= dbReadRaw\(unit\)/g) || []).length === 2,
+    'count=' + (code.match(/= dbReadRaw\(unit\)/g) || []).length);
   /* ★ v2.7.0：寫入路嘅版本檢查一定要同讀取路同一套判斷 ——
      否則「最後一套段寫到一半死咗」會令 baseVersion 永遠對唔上，
      變成「永遠儲存唔到」（同「新儲嘅讀唔到」係同一個死法）。 */
-  ok('★ 寫入路（saveDb／saveDbCommit）版本檢查用返 dbRawText（同讀取路一致）',
-    (code.match(/var curVersion = dbRawText\(unit, true\)\.version/g) || []).length === 2,
+  ok('★ 寫入路（saveDbCommit）版本檢查用返 dbRawText（同讀取路一致）',
+    (code.match(/var curVersion = dbRawText\(unit, true\)\.version/g) || []).length === 1,
     'count=' + (code.match(/dbRawText\(unit, true\)/g) || []).length);
+  /* ★ v2.8.0：saveDb 唔可以再用舊「資料庫」分頁嘅版本鎖死寫入 ——
+     「資料表」有嘢嗰陣佢先係正本，鎖住舊版本就等於「永遠存唔入」。 */
+  /* ★ v2.8.0：版本鎖要對住**正本**。讀取一律以「資料表」为先，所以佢有嘢嗰陣
+     版本就以佢為準 —— 否則一部淨係用新路線寫過嘅機，會令舊路線 saveDb
+     以為「冇衝突」而盲蓋走新資料。 */
+  ok('★ saveDb 嘅版本鎖對住正本（「資料表」有嘢就用佢嘅版本）',
+    /var simpleNow = loadTables\(unit\);/.test(code)
+    && /var curVersion = simpleNow\.found \? \(simpleNow\.version \|\| ''\) : \(dbRawText\(unit, true\)\.version \|\| ''\);/.test(code));
+  ok('★ 舊寫入路（saveDb／saveDbCommit）會鏡像去「資料表」（兩邊唔會各睇各嘅）',
+    (code.match(/saveTables\(\{ unit: unit, tables: (db|merged), full: true, refreshReports: false \}\)/g) || []).length === 2,
+    'count=' + (code.match(/saveTables\(\{ unit: unit, tables:/g) || []).length);
+  /* 回俾前端嘅 version 一定要係讀取路認嗰個，否則下次 baseVersion 永遠對唔上
+     → 每次儲存都話「後端有較新版本」→ 永遠儲存唔到。 */
+  ok('★ saveDb 回嘅 version ＝ 讀取路認嗰個（唔會令 baseVersion 永遠對唔上）',
+    /var outVersion = \(mirrored && mirrored\.success && mirrored\.version\) \? mirrored\.version : version;/.test(code)
+    && /version: outVersion,/.test(code));
   const loadDbBody = code.slice(code.indexOf('function loadDb(unit)'), code.indexOf('function loadDbPart'));
   ok('loadDb 唔再自己讀「資料庫」分頁（一定經 dbRawText）', !/getDataRange/.test(loadDbBody));
   ok('每段大小留足水位（1MB ≪ Vercel 4.5MB 回應上限）', /var LOAD_PART_CHARS = 1000000;/.test(code));
@@ -1277,8 +1298,11 @@ section('分件儲存：真 HTTP（谷大 db → 自動分件 → 另一部機�
     const bulkA = (A.steps || []).find(s2 => s2.op === 'bulkMembers');
     ok('db 已谷大過分件閾值（>2.8MB）', (bulkA?.bytes || 0) > 2800000, String(bulkA?.bytes));
     const pushA = (A.steps || []).find(s2 => s2.op === 'push');
-    ok('★ 大 db 自動分件儲存成功', pushA?.ok === true, JSON.stringify(pushA).slice(0, 200));
-    ok('★ 真係行咗分件路（≥2 件）', (pushA?.parts || 0) >= 2, String(pushA?.parts));
+    ok('★ 大 db 儲存成功', pushA?.ok === true, JSON.stringify(pushA).slice(0, 200));
+    /* ★ v2.8.0：新後端行「逐表寫」—— 一個表一個請求，所以**唔使再分件**。
+       舊嘅分件路（saveDbPart／saveDbCommit）保留做後備，下面另外驗。 */
+    ok('★ 新後端：2.9MB 都係一次逐表寫（唔使分件、唔會撞代理上限）',
+      pushA?.mode === 'simple' && (pushA?.parts || 0) === 0, JSON.stringify({ mode: pushA?.mode, parts: pushA?.parts }));
 
     /* 裝置 B：新機讀返 —— 1400 個團員一個唔少 */
     const B = await runDevice({ steps: [{ op: 'info' }, { op: 'pull' }] });

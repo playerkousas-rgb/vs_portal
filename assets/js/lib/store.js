@@ -633,11 +633,24 @@ export function importAll(jsonText) {
 const baseKey = (code) => `venture82.unit.${code}.base.v${SCHEMA}`;
 let baseMem = undefined;           // localStorage 寫唔入（配額）嗰陣嘅後備
 
+/* ★ v2.8.0：「資料表」分頁係**逐表**寫 —— 某個表未寫過，後端回傳就會冇呢個 key。
+   所以基準／本機／後端三份一定要用**同一套**補底（缺咗嘅集合補返空陣列）。
+   唔對稱嘅話「後端有 []、基準連個 key 都冇」就會被當成一個改動，
+   三方比對會無端端多咗「對方改過」嘅項目 —— 睇落就係「有人喺我之後改過嘢」。 */
+export const COLLECTION_KEYS = ['accounts', 'accountApps', 'members', 'meetings', 'notices', 'events',
+  'quizzes', 'transactions', 'claims', 'fees', 'budgets', 'invItems', 'invLoans', 'invAudits',
+  'auditLog', 'tableSources'];
+
+function fillCollections(db) {
+  COLLECTION_KEYS.forEach(k => { if (!Array.isArray(db[k])) db[k] = []; });
+  return db;
+}
+
 /** 剝走簿記／連線設定 —— 基準快照同比對都用呢個形狀 */
 export function stripForBase(db) {
   const out = {};
   Object.keys(db || {}).forEach(k => { if (!SKIP_TOP.has(k)) out[k] = db[k]; });
-  return _clone(out);
+  return fillCollections(_clone(out));
 }
 
 /** 而家嘅基準快照：{ version, at, db } ；未有就 null */
@@ -674,7 +687,7 @@ export function clearBase() {
 /** 後端拉返嚟嘅 db 先過一次同本機一樣嘅升級（identity／systemId／帳戶），
     咁基準、本機、後端三份先至係同一個形狀，唔會生出幻影改動。 */
 export function normalizeRemote(remoteDb) {
-  const db = _clone(remoteDb || {});
+  const db = fillCollections(_clone(remoteDb || {}));
   if (!Array.isArray(db.accounts)) db.accounts = [];
   migrateSharedAccounts(db);
   migrateIdentities(db);

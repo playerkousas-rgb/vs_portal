@@ -158,6 +158,9 @@ export async function showSaveReceipt(r) {
         <div class="kv-row sm"><span>後端版本</span><span class="mono xs">${esc(v.version || '（未知）')}</span></div>
         <div class="kv-row sm"><span>寫入嗰陣後端畀嘅版本</span><span class="mono xs">${esc(v.expectedVersion || '（未知）')}</span></div>
         <div class="kv-row sm"><span>後端最後更新</span><span>${esc(String(v.at || '').slice(0, 19).replace('T', ' '))}</span></div>
+        <div class="kv-row sm"><span>寫入路線</span><span class="xs">${r?.mode === 'simple'
+          ? '<b>逐表寫</b>（一個表一個請求 —— 壞一個表唔會連累其他表）'
+          : '整份寫入（舊路線；後端 Code.gs 未更新到 v2.8.0）'}</span></div>
         ${v.bytes ? `<div class="kv-row sm"><span>後端資料庫大小</span><span>${esc(remote.fmtBytes(v.bytes))}</span></div>` : ''}
       </div>
       <div class="scroll-x">

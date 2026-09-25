@@ -35,10 +35,28 @@ import {
 } from './store.js';
 import { unitEntry } from './units.js';
 import { postBackend, isExecUrl, shortExec } from './gateway.js';
-import { threeWay, overridesFor, describeConflict, diffDb, applyChanges } from './merge3.js';
+import { threeWay, overridesFor, describeConflict, diffDb, applyChanges, SKIP_TOP } from './merge3.js';
 
 /* ---------------- 狀態 ---------------- */
 let inFlight = false;
+/* ★ v2.8.0「簡單寫入」（學 VSBADGE）：後端識 saveTables／loadTables 就改行「逐表寫」。
+   由後端自報（status／dbInfo 都會帶 simpleWrite:true）—— 舊 Code.gs 冇呢個欄位，
+   simpleMode 就一直係 false，照行舊嘅整份 saveDb，所以升級唔使改設定、唔會斷。
+   ★ 一定要由後端「自報」先開：未問過後端就盲試 loadTables，會令舊後端
+     每次讀寫都白白多一個 400 請求，診斷畫面亦會多出冇意義嘅 action。 */
+let simpleMode = false;
+/* 「舊『資料庫』分頁睇落係空」嗰陣探過一次「資料表」分頁未（一個 session 一次就夠） */
+let simpleProbed = false;
+/** 而家係咪行緊「逐表寫」（界面上要話畀用家知用邊條路） */
+export function simpleWriteMode() { return simpleMode === true; }
+/** 人手切返舊嘅「整份寫入」（後端逐表寫出問題時嘅逃生門；重新載入就會再自動偵測） */
+export function useBlobWriteMode() { simpleMode = false; simpleProbed = true; }
+/* ★ v2.8.0「簡單寫入」（學 VSBADGE：一個請求淨係寫一個表嗰幾行）。
+   null＝未知（未問過後端）／true＝後端識 saveTables／false＝後端唔識（行返舊嘅整份 saveDb）。
+   點解要偵測而唔係硬轉：用家嘅 Code.gs 未必已經更新 —— 偵測唔到就自動跌返舊路，
+   唔會令未升級嘅旅團即刻斷線。 */
+let simpleWrite = null;
+export function simpleWriteSupported() { return simpleWrite === true; }
 let lastState = { state: 'idle', msg: '' };
 let lastLoadAt = 0;                          // 上次成功由後端載入（ms）
 /*
@@ -236,6 +254,12 @@ async function callBackend(payload, { timeoutMs = 60000 } = {}) {
   }
   const out = normalize(r.json);
   out.via = r.via;                       // 界面／診斷用：今次行咗邊條路
+  /* ★ v2.8.0：後端自報識唔識「簡單寫入」（逐表）—— 見過一次就記住 */
+  if (out.simpleWrite === true) simpleMode = true;
+  /* ★ v2.8.0：後端自報「識唔識簡單寫入」。status／dbInfo 都會帶呢個欄位，
+     所以開機第一次問後端就已經知 —— 唔使另外發一個請求。 */
+  if (out.simpleWrite === true) simpleWrite = true;
+  else if (out.simpleWrite === false) simpleWrite = false;
   if (!out.ok) out.hint = hintOf(out.error, r.via);
   noteBackend(out, { version: out.backendVersion, error: out.error });
   return out;
@@ -388,6 +412,26 @@ export async function pullDbSegmented({ onProgress } = {}) {
     error: `讀緊嗰陣不斷有人儲存（試咗 ${SEGMENT_MAX_RETRIES} 次）—— 請稍後再試` };
 }
 
+/** 逐表讀（一個表一個請求）—— 成份資料庫大過代理回應上限嗰陣用 */
+async function pullTablesPart() {
+  const db = {};
+  let at = '', version = '', count = 0;
+  for (let idx = 0; idx < 200; idx++) {
+    const r = await callBackend({ action: 'loadTablesPart', idx }, { timeoutMs: 90000 });
+    if (!r.ok) {
+      if (/未知 action|unknown action/i.test(String(r.error || ''))) { simpleWrite = false; }
+      return { ok: false, reason: r.reason || 'backend', error: r.error || '逐表讀取失敗', hint: r.hint || '', segmented: true };
+    }
+    if (!r.found) return { ok: true, found: false, db: null, bytes: 0, at: r.at || '', version: r.version || '', segmented: true };
+    count = Number(r.count) || 0;
+    if (r.name) db[String(r.name)] = r.value;
+    at = r.at || at; version = r.version || version;
+    if (idx + 1 >= count) break;
+  }
+  const text = JSON.stringify(db);
+  return { ok: true, found: true, db, bytes: text.length, at, version, mode: 'simple', segmented: true };
+}
+
 /** 由後端讀返成個資料庫（唔會自動覆蓋本機 —— 交返畀呼叫者決定）
  *  @param {object} [opts]
  *    - bytes  已經知道嘅資料庫體積（例如啱啱 dbInfo 攞到）：
@@ -400,6 +444,26 @@ export async function pullDb({ bytes: knownBytes } = {}) {
 
   const mb = (n) => `${(Number(n) / 1048576).toFixed(1)} MB`;
 
+  /* ★ v2.8.0 逐表讀（VSBADGE 式）：某個表壞咗淨係唔要嗰個表（broken 會報出嚟），
+     唔會好似舊路線咁「一段壞咗＝成份資料庫讀唔到」。
+     後端仲未有「資料表」分頁（found:false）→ 自動跌返去讀舊嘅「資料庫」整份 blob，
+     所以升級 Code.gs 之後、未做第一次儲存之前，舊資料照樣讀得到。 */
+  if (simpleMode) {
+    const t = await callBackend({ action: 'loadTables' }, { timeoutMs: 90000 });
+    if (t.ok && t.found) {
+      setState('idle');
+      return { ...t, mode: 'simple' };
+    }
+    if (!(t.ok && !t.found)) {
+      /* 讀得到但砌唔返／回應過大 → 一個表一個表攞（呢個先係逐表讀嘅好處） */
+      const per = await pullTablesPart();
+      if (per.ok) { setState('idle'); return per; }
+      setState('error', t.error || '讀取失敗');
+      return { ...t, fallback: { error: per.error || '', reason: per.reason || '' } };
+    }
+    /* t.ok 但 found:false → 後端「資料表」分頁仲未有嘢 → 讀返舊 blob（下面） */
+  }
+
   /* 已經知道太大 → 直接分段（唔好白撞一次 4.5MB 上限） */
   if (Number(knownBytes) > SEGMENT_ABOVE_BYTES) {
     setState('loading', `資料庫 ${mb(knownBytes)} —— 分段讀取緊…`);
@@ -409,6 +473,21 @@ export async function pullDb({ bytes: knownBytes } = {}) {
   }
 
   const r = await callBackend({ action: 'loadDb' });
+  if (r.ok && r.found) { setState('idle'); return r; }
+
+  /* ★ 安全網（v2.8.0）：舊「資料庫」分頁睇落係空 —— 但升級之後嘅資料係寫喺
+     「資料表」分頁。如果後端其實係新版而我哋未問過（simpleMode 仲係 false），
+     呢度探一次。唔探嘅話，「升級咗 Code.gs、資料已經搬去資料表」會被誤判做
+     「後端冇資料」，跟住一次儲存就會用本機嗰份蓋過去 —— 呢個正正係「洗紀錄」。 */
+  if (r.ok && !r.found && !simpleProbed) {
+    simpleProbed = true;
+    const probe = await callBackend({ action: 'loadTables' }, { timeoutMs: 90000 });
+    if (probe.ok && probe.found) {
+      simpleMode = true;
+      setState('idle');
+      return { ...probe, mode: 'simple' };
+    }
+  }
   if (r.ok) { setState('idle'); return r; }
 
   /* 單一讀失敗 —— 好可能就係「回應過大」（代理回 500 純文字）。
@@ -567,6 +646,26 @@ export async function remoteDiagnose() {
       `已連接（後端 ${ver}，經${st.via === 'direct' ? '你自己貼嘅 /exec' : '平台代理'}）`
       + (sheetName ? `　·　寫入緊嘅試算表：「${sheetName}」` : '')
       + (sheetName ? '（如果你開緊嘅 Google Sheet 唔係呢個名，即係平台登記咗另一張表 —— 搵平台管理員改 TROOP_<編號>_BACKEND）' : ''));
+  }
+
+  /* ④b ★ v2.8.0「寫入路線」—— 呢格先至答得到團長嗰句
+     「我完全唔知佢寫唔寫得入後端；寫得入又點解讀唔到」。
+     後端 v2.8.0 起改行**逐表寫**（學 VSBADGE：一個請求淨係寫一個表嗰幾行）；
+     舊版仍然係「成份資料庫一鋪過」：serialize → 分段 → 先刪晒舊段 → 再寫晒新段
+     → 對版本（樂觀鎖）→ 重刷全部報表分頁。任何一格出事（GAS 執行時間／
+     代理 4MB／版本對唔上／寫到一半斷），結果都係同一個：**成份資料庫讀唔到**。 */
+  if (simpleMode) {
+    add('mode', '寫入路線', 'ok', '逐表寫（後端 v2.8.0）—— 一個表一個請求，讀取逐表砌',
+      '呢個就係 VSBADGE 一路用得嗰種寫法：一個表寫唔到，其餘表照樣讀得到，'
+      + '所以唔會再出現「一次失敗＝成份資料讀唔到」。');
+  } else {
+    add('mode', '寫入路線', 'warn',
+      `舊嘅「成份資料庫一鋪過」寫入（後端 ${ver || '版本未知'}，未支援逐表寫）`,
+      '呢個正正係「撳咗儲存話成功、但另一部機／無痕讀唔到」嘅死因。'
+      + '解決：去「系統 → 資料管理 → 總表同步 → 後端 Apps Script 範本」撳「下載 Code.gs」'
+      + ' → 貼入 Apps Script（全部取代）→ 儲存 →「部署 → 管理部署作業 → 編輯（鉛筆）'
+      + ' → 版本：新版本 → 部署」。/exec 網址唔會變、前端設定唔使改；'
+      + '更新完呢格會變做「逐表寫」，跟住撳一次「儲存到後端」就會把資料搬過去。');
   }
 
   /* ⑤ 讀寫權（dbInfo 同 saveDb 一樣要 API Key —— 過到就代表寫得入） */
@@ -1463,7 +1562,16 @@ async function saveToBackendInner({ policy = 'ask', resolver = null, silent = tr
 
     /* ③ 寫入（樂觀鎖 baseVersion ＝ 我啱啱見到嘅後端版本） */
     const payload = exportForBackend({ ...local, ...finalDb });
-    const r = await pushPayload(payload, { baseVersion: String(info.version || ''), unit: cfg.unit, silent });
+    /* ★ v2.8.0 逐表寫用：正常只寫「基準 → 而家」有改過嗰幾個表。
+       ★★ 但後端「資料表」分頁仲未有嘢嗰陣（info.mode 唔係 'simple'）
+       **一定要寫齊所有表** —— 呢個係第一次寫入／由舊「資料庫」blob 搬過嚟嗰一次。
+       如果呢度淨係寫改過嗰幾個表，另一部機讀「資料表」就會讀到一份缺晒嘅 db，
+       缺咗嘅表被當做「空」—— 睇落就係「資料冇咗」。寧願第一次大啲，唔可以缺。 */
+    const firstSimpleWrite = !base || String(info.mode || '') !== 'simple';
+    const r = await pushPayload(payload, {
+      baseVersion: String(info.version || ''), unit: cfg.unit, silent,
+      tables: firstSimpleWrite ? null : changedTableNames(base?.db || null, finalDb)
+    });
     if (r.conflict) {
       /* dbInfo → 寫入之間又有人寫咗（幾秒內撞正）→ 由頭核對多一次（唔會自動蓋） */
       if (_attempt < 2) {
@@ -1499,6 +1607,9 @@ async function saveToBackendInner({ policy = 'ask', resolver = null, silent = tr
     }
     const out = {
       ok: true, pushed: true, version: String(r.version || ''), bytes: r.bytes || 0, parts: r.parts || 0,
+      /* ★ v2.8.0：呢次儲存行咗邊條路 —— 'simple'（逐表寫）／''（舊嘅整份寫）。
+         界面同「同步診斷」要話畀用家知，出事先追得到。 */
+      mode: r.mode || '',
       remoteChanged, remoteAt, mine: mineN, theirs: theirsN, same: sameN, applied: appliedN,
       conflicts, ctx, resolved: 0, kept: conflicts.length,
       /* ★ v2.6.3 Code.gs 會喺寫完「資料庫」分頁之後**顺手刷新晒報表分頁**，
@@ -1532,8 +1643,49 @@ async function saveToBackendInner({ policy = 'ask', resolver = null, silent = tr
   }
 }
 
-/** 實際送出（單件 saveDb／大過閾值自動分件）—— 回 { ok, conflict, version, bytes, parts, error } */
-async function pushPayload(payload, { baseVersion, unit, silent }) {
+/* ============================================================
+   ★ v2.8.0 簡單寫入（學 VSBADGE）
+   ------------------------------------------------------------
+   VSBADGE 一路冇事，vs_portal 就係「寫入成功但讀唔到」—— 兩者最大分別：
+
+     VSBADGE：一個請求淨係寫**一個表嗰幾行**（handleSave 改邊行改邊行）。
+              冇鎖、冇分段暫存、冇「成份 serialize」。
+     vs_portal（舊）：成份資料庫 → 一條大 JSON → 每段 45000 字 → 先刪晒舊段
+              → 再寫晒新段 → 仲要對版本（樂觀鎖）→ 最後重刷全部報表分頁。
+              任何一格出事，結果都係「成份資料庫讀唔到」。
+
+   所以呢度照 VSBADGE 個思路改：**一個表一個表寫**。
+     寫：saveTables  { tables:{ members:[…], transactions:[…] } }  ← 淨係有改過嗰幾個表
+     讀：loadTables  → 逐表砌返；某個表壞咗淨係 skip 嗰個表，其餘照讀
+   後端唔識（Code.gs 未更新）就自動跌返舊嘅整份 saveDb，唔會斷。
+   ============================================================ */
+
+/* 呢幾個一定要跟住每次寫入一齊上（體積細，但少咗讀返嚟就砌唔成一份完整 db） */
+const ALWAYS_TABLES = ['meta', 'schema', 'kind', 'unitCode'];
+/** 今次要寫邊幾個表（base → next 有改過嗰啲；base 冇＝第一次，全部都要寫） */
+export function changedTableNames(baseDb, nextDb) {
+  const names = new Set(ALWAYS_TABLES);
+  try {
+    if (!baseDb || typeof baseDb !== 'object') return null;      // null＝全部
+    diffDb(baseDb, nextDb || {}).forEach(c => {
+      const top = String(c?.path?.[0] || '');
+      if (top && !SKIP_TOP.has(top)) names.add(top);
+    });
+  } catch { return null; }
+  return [...names];
+}
+
+/** 由成份 payload 抽出要寫嘅表 */
+function pickTables(payload, names) {
+  const out = {};
+  (names || Object.keys(payload || {})).forEach(k => { if (payload && k in payload) out[k] = payload[k]; });
+  ALWAYS_TABLES.forEach(k => { if (payload && payload[k] !== undefined) out[k] = payload[k]; });
+  return out;
+}
+
+/** 實際送出（★ v2.8.0 先試逐表寫；後端唔識先跌返單件 saveDb／大過閾值自動分件）
+ *  回 { ok, conflict, version, bytes, parts, error } */
+async function pushPayload(payload, { baseVersion, unit, silent, tables: changedNames }) {
   let text = '';
   try { text = JSON.stringify(payload); } catch { /* ignore */ }
   const bytes = text.length;
@@ -1541,6 +1693,24 @@ async function pushPayload(payload, { baseVersion, unit, silent }) {
     return { ok: false, reason: 'too_big', error: `資料庫太大（${fmtBytes(bytes)}）`, hint: '去「系統 → 資料管理 → 總表同步 → 體積檢查」睇下邊個分頁食緊位。' };
   }
   if (!silent) setState('saving', '寫入緊後端…');
+
+  /* ★ v2.8.0 逐表寫（VSBADGE 式）—— 冇版本鎖、冇分段暫存、冇「成份 serialize」。
+     只送有改過嗰幾個表，一次寫入通常幾 KB，撞唔到代理 4MB 上限；
+     而且**先寫新、後刪舊**（後端嗰邊），中途斷都唔會乜都冇。 */
+  if (simpleMode) {
+    const tables = pickTables(payload, changedNames);
+    /* full＝呢次送晒所有表（第一次寫入）→ 後端可以順手清走「已經冇咗嘅表」 */
+    const sr = await callBackend({ action: 'saveTables', unit, tables, full: !changedNames }, { timeoutMs: 90000 });
+    if (sr.ok) return { ...sr, bytes: sr.bytes || bytes, parts: 0, mode: 'simple' };
+    if (/未知 action|unknown action|不支援的操作/.test(String(sr.error || ''))) {
+      /* 後端 Code.gs 未更新到 v2.8.0 —— 記低，今次跌返舊路，之後唔使再試 */
+      simpleMode = false;
+      logLocal('⚠ 後端未更新到 v2.8.0（唔識 saveTables）—— 今次改用整份寫入');
+    } else {
+      return { ...sr, bytes: 0, parts: 0, mode: 'simple' };
+    }
+  }
+
   if (bytes <= CHUNKED_ABOVE) {
     const r = await callBackend({ action: 'saveDb', db: payload, baseVersion });
     return { ...r, bytes: r.bytes || bytes, parts: 0 };

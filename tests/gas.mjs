@@ -983,5 +983,110 @@ section('寫入衝突模擬：執委 db ＋ 進度前端 ＋ 團員入口三路�
 }
 
 
+/* ============================================================
+   ★ v2.8.0 簡單寫入（逐表寫／逐表讀）—— 用**真 Code.gs** 行
+   ------------------------------------------------------------
+   點解要喺呢度再測一次（tests/simplewrite.mjs 已經測過？）：
+   simplewrite 打嘅係 tests/_fakegas.mjs —— 一份**重寫**嘅假後端。
+   v2.8.0 第一版就係咁漏咗：saveTables／loadTables 兩邊都有，
+   但真 Code.gs 入面 `loadTablesPart` 只有 dispatch、**冇函數本體**，
+   一 call 就 ReferenceError。假後端有、真後端冇 → 測試全綠、真站即刻死。
+   所以呢度直接喺 vm 入面行 Code.gs：函數真係存在、真係回得到嘢。
+   ============================================================ */
+section('★ v2.8.0 簡單寫入（真 Code.gs）：saveTables／loadTables／loadTablesPart');
+{
+  const KEY = 'simple-key';
+  const g = makeGas({ apiKey: KEY });
+  g.sandbox.initializeSheets();
+
+  /* ① 函數真係存在（呢個先係「dispatch 有、本體冇」嗰單事故嘅守門） */
+  ok('★ Code.gs 有 saveTables 函數本體（唔係淨係 dispatch）',
+    typeof g.sandbox.saveTables === 'function', `typeof=${typeof g.sandbox.saveTables}`);
+  ok('★ Code.gs 有 loadTables 函數本體',
+    typeof g.sandbox.loadTables === 'function', `typeof=${typeof g.sandbox.loadTables}`);
+  ok('★ Code.gs 有 loadTablesPart 函數本體（v2.8.0 第一版漏咗呢個）',
+    typeof g.sandbox.loadTablesPart === 'function', `typeof=${typeof g.sandbox.loadTablesPart}`);
+  ok('★ Code.gs 有 dbReadRaw（唯一讀入口）',
+    typeof g.sandbox.dbReadRaw === 'function');
+
+  /* ② 逐表寫：淨係寫有改過嗰幾個表 */
+  const db1 = sampleDb();
+  const w1 = g.post({ action: 'saveTables', unit: '0082', apiKey: KEY, full: true, tables: db1 });
+  ok('② saveTables 寫入成功', w1.ok === true, JSON.stringify(w1).slice(0, 160));
+  ok('② 有「資料表」分頁（同舊「資料庫」分開）', !!g.sheets.get('資料表'));
+  const rows1 = g.sheets.get('資料表')._rows.slice();
+  ok('② 舊「資料庫」分頁一行都冇掂（留底做後備）',
+    (g.sheets.get('資料庫')._rows || []).filter(r => String(r[0] || '') === '0082').length === 0);
+
+  const r1 = g.post({ action: 'loadTables', unit: '0082', apiKey: KEY });
+  ok('② loadTables 讀返齊（2 個團員、2 筆帳）',
+    r1.ok === true && r1.found === true && r1.db?.members?.length === 2 && r1.db?.transactions?.length === 2,
+    JSON.stringify({ ok: r1.ok, found: r1.found, m: r1.db?.members?.length, t: r1.db?.transactions?.length }));
+  const verTx1 = (rows1.find(r => r[1] === 'transactions') || [])[5];
+
+  /* ③ 只改團員 → 帳目表一個字都唔掂 */
+  const members2 = db1.members.concat([{ id: 'm3', name: '新團員', birthday: '2010-06-01', identity: 'member' }]);
+  const w2 = g.post({ action: 'saveTables', unit: '0082', apiKey: KEY, tables: { members: members2 } });
+  ok('③ 只寫團員表成功', w2.ok === true, JSON.stringify(w2).slice(0, 160));
+  const rows2 = g.sheets.get('資料表')._rows.slice();
+  const verTx2 = (rows2.find(r => r[1] === 'transactions') || [])[5];
+  ok('③ ★ 帳目表版本號同之前一樣（＝真係冇被掂過）',
+    !!verTx1 && verTx1 === verTx2, `${verTx1} → ${verTx2}`);
+  ok('③ ★ 冇留低重複行（「先寫新、後刪舊」）', rows2.length === rows1.length,
+    `${rows1.length} → ${rows2.length}`);
+  const r2 = g.post({ action: 'loadTables', unit: '0082', apiKey: KEY });
+  ok('③ 讀返嚟 3 個團員、帳目照舊 2 筆',
+    r2.db?.members?.length === 3 && r2.db?.transactions?.length === 2);
+
+  /* ④ 逐表讀：一個表一個請求砌返成份 */
+  const p0 = g.post({ action: 'loadTablesPart', unit: '0082', apiKey: KEY, idx: 0 });
+  ok('④ loadTablesPart 真係答到（唔會 ReferenceError）', p0.ok === true, JSON.stringify(p0).slice(0, 160));
+  const per = {};
+  let count = 0;
+  for (let idx = 0; idx < 50; idx++) {
+    const p = g.post({ action: 'loadTablesPart', unit: '0082', apiKey: KEY, idx });
+    if (!p.ok) break;
+    count = Number(p.count) || 0;
+    if (p.name) per[p.name] = p.value;
+    if (idx + 1 >= count) break;
+  }
+  ok('④ ★ 逐表讀砌返嚟嘅團員數同 loadTables 一樣（3 個）',
+    (per.members || []).length === 3, JSON.stringify(Object.keys(per)));
+  ok('④ ★ 逐表讀攞齊所有表（count 對得上）',
+    count > 0 && Object.keys(per).length === count, `count=${count} 攞到=${Object.keys(per).length}`);
+  const over = g.post({ action: 'loadTablesPart', unit: '0082', apiKey: KEY, idx: count + 5 });
+  ok('④ 表編號超出範圍 → 如實回失敗（唔會靜靜地回空）',
+    over.ok === false && /超出範圍/.test(String(over.error || '')), JSON.stringify(over).slice(0, 120));
+
+  /* ⑤ 整壞一個表 → 其餘照讀（呢個先係同舊路線最大分別） */
+  const tab = g.sheets.get('資料表');
+  const txIdx = tab._rows.findIndex(r => r[1] === 'transactions');
+  tab._rows[txIdx][3] = '{ 呢段被人整壞咗';
+  const r3 = g.post({ action: 'loadTables', unit: '0082', apiKey: KEY });
+  ok('⑤ ★ 壞咗帳目表，成份資料庫照樣讀到（唔係「讀唔到」）',
+    r3.ok === true && r3.found === true && (r3.db?.members || []).length === 3,
+    JSON.stringify({ ok: r3.ok, found: r3.found, m: r3.db?.members?.length }));
+  ok('⑤ ★ 如實報出邊個表壞咗', (r3.broken || []).includes('transactions'), JSON.stringify(r3.broken));
+  const pb = g.post({ action: 'loadTablesPart', unit: '0082', apiKey: KEY, idx: 0 });
+  ok('⑤ ★ 逐表讀都照樣報 broken（唔會扮冇事）',
+    (pb.broken || []).includes('transactions'), JSON.stringify(pb.broken));
+  const info = g.post({ action: 'dbInfo', unit: '0082', apiKey: KEY });
+  ok('⑤ dbInfo 報 mode=simple ＋ broken',
+    info.mode === 'simple' && (info.broken || []).includes('transactions'),
+    JSON.stringify({ mode: info.mode, broken: info.broken }));
+  const fix = g.post({ action: 'saveTables', unit: '0082', apiKey: KEY, tables: { transactions: db1.transactions } });
+  const r4 = g.post({ action: 'loadTables', unit: '0082', apiKey: KEY });
+  ok('⑤ ★ 再儲存一次就蓋返好嘅上去（冇表再壞）',
+    fix.ok === true && (r4.broken || []).length === 0 && (r4.db?.transactions || []).length === 2,
+    JSON.stringify({ broken: r4.broken, t: r4.db?.transactions?.length }));
+
+  /* ⑥ 讀入口統一：loadDb 都要行 dbReadRaw（讀到「資料表」嘅嘢） */
+  const legacy = g.post({ action: 'loadDb', unit: '0082', apiKey: KEY });
+  ok('⑥ ★ loadDb 讀到「資料表」嘅資料（dbReadRaw 統一讀入口）',
+    legacy.ok === true && (legacy.db?.members || []).length === 3,
+    JSON.stringify({ ok: legacy.ok, m: legacy.db?.members?.length }));
+}
+
+
 console.log(`\n${fail === 0 ? '✅' : '❌'} Code.gs：${pass} 過 / ${fail} 唔過（${Date.now() - t0}ms）`);
 process.exit(fail === 0 ? 0 : 1);

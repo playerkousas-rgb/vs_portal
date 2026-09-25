@@ -416,6 +416,7 @@ export async function pullDbSegmented({ onProgress } = {}) {
 async function pullTablesPart() {
   const db = {};
   let at = '', version = '', count = 0;
+  const broken = new Set();
   for (let idx = 0; idx < 200; idx++) {
     const r = await callBackend({ action: 'loadTablesPart', idx }, { timeoutMs: 90000 });
     if (!r.ok) {
@@ -425,11 +426,14 @@ async function pullTablesPart() {
     if (!r.found) return { ok: true, found: false, db: null, bytes: 0, at: r.at || '', version: r.version || '', segmented: true };
     count = Number(r.count) || 0;
     if (r.name) db[String(r.name)] = r.value;
+    /* 逐表讀都要如實報邊個表壞咗 —— 唔可以因為「一個表一個表攞」就扮冇事 */
+    if (Array.isArray(r.broken)) r.broken.forEach((b) => broken.add(String(b)));
     at = r.at || at; version = r.version || version;
     if (idx + 1 >= count) break;
   }
   const text = JSON.stringify(db);
-  return { ok: true, found: true, db, bytes: text.length, at, version, mode: 'simple', segmented: true };
+  return { ok: true, found: true, db, bytes: text.length, at, version, mode: 'simple',
+    broken: [...broken], segmented: true };
 }
 
 /** 由後端讀返成個資料庫（唔會自動覆蓋本機 —— 交返畀呼叫者決定）

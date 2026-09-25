@@ -782,6 +782,7 @@ function doPost(e) {
         var ltp = loadTablesPart(textOf(body.unit), body.idx);
         return json({ ok: ltp.success === true, success: ltp.success === true, found: !!ltp.found,
           idx: ltp.idx || 0, count: ltp.count || 0, name: ltp.name || '', value: ltp.value,
+          broken: ltp.broken || [],
           at: ltp.at || '', version: ltp.version || '', error: ltp.error || '' });
       }
       if (body.action === 'saveDb') {
@@ -1839,6 +1840,27 @@ function loadTables(unit) {
   var found = Object.keys(db).length > 0;
   return { success: true, found: found, db: found ? db : null, tables: tables, broken: broken,
     at: at, version: version };
+}
+
+/** ★ v2.8.0 逐表讀：一個請求淨係攞**一個表**。
+ *  成份資料庫大過代理回應上限（或者 loadTables 砌唔返）嗰陣，前端就一個表一個表攞。
+ *  idx ＝ 第幾個表（表名排序）；回 { name, value, count }，idx 超出範圍就 success:false。
+ *  broken 照樣如實報 —— 逐表讀唔可以因為「一個表一個表攞」就扮冇事。 */
+function loadTablesPart(unit, idx) {
+  var i = Math.max(0, parseInt(idx, 10) || 0);
+  var all = loadTables(unit);
+  if (!all.found) {
+    return { success: true, found: false, idx: i, count: 0, name: '',
+      broken: all.broken || [], at: all.at, version: all.version };
+  }
+  var names = Object.keys(all.db || {}).sort();
+  if (i >= names.length) {
+    return { success: false, found: true, idx: i, count: names.length, name: '',
+      broken: all.broken || [], error: '表編號超出範圍', at: all.at, version: all.version };
+  }
+  var name = names[i];
+  return { success: true, found: true, idx: i, count: names.length, name: name,
+    value: all.db[name], broken: all.broken || [], at: all.at, version: all.version };
 }
 
 /** dbInfo／loadTables 共用：由成份資料庫計體積、相片體積、筆數 */

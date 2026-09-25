@@ -331,11 +331,11 @@ function loadTables(unit) {
 function loadTablesPart(unit, idx) {
   const i = Math.max(0, parseInt(idx, 10) || 0);
   const all = loadTables(unit);
+  if (!all.found) return { ok: true, success: true, found: false, idx: i, count: 0, name: '', broken: all.broken || [], at: all.at, version: all.version };
   const names = Object.keys(all.db || {}).sort();
-  if (!all.found) return { ok: true, success: true, found: false, idx: i, count: 0, name: '', at: all.at, version: all.version };
-  if (i >= names.length) return { ok: false, success: false, found: true, idx: i, count: names.length, name: '', error: '表編號超出範圍' };
+  if (i >= names.length) return { ok: false, success: false, found: true, idx: i, count: names.length, name: '', broken: all.broken || [], error: '表編號超出範圍', at: all.at, version: all.version };
   const name = names[i];
-  return { ok: true, success: true, found: true, idx: i, count: names.length, name, value: all.db[name], at: all.at, version: all.version };
+  return { ok: true, success: true, found: true, idx: i, count: names.length, name, value: all.db[name], broken: all.broken || [], at: all.at, version: all.version };
 }
 
 function dbStats(db) {

@@ -23,6 +23,7 @@ import {
 } from './lib/auth.js';
 import { pendingMeetings, overdueFees, pendingClaims, pendingLoans, profile, notices, onLegacyHost, canonicalUrl } from './lib/model.js';
 import { esc, icon, toast, toastAction, modal, confirmDlg } from './lib/util.js';
+import { APP_VERSION } from './lib/version.js';
 import { parse, go } from './lib/router.js';
 
 import * as dashboard from './views/dashboard.js';
@@ -257,8 +258,17 @@ function loginSyncBanner() {
     : fromBackend
       ? `後端（${accs.length} 個帳戶）`
       : `⚠ 本機初始帳戶（${accs.filter(a => a.seeded).length} 個種子）—— 後端仲未有帳戶名單`;
+  /* ★ v2.8.1：登入畫面一定要見到版號（團長要求）—— APP 版本＋後端版本＋寫入緊邊張表。
+     後端版本係開機載入嗰陣後端自報嘅；未連過就係「未連過」。 */
+  const bs = (remoteApi && remoteApi.backendStatus) ? remoteApi.backendStatus() : {};
+  const verLine = `<div class="xs faint mt-4">${icon('info', 12)} 版本：APP <b class="mono">${APP_VERSION}</b>`
+    + `　·　後端 <b class="mono">${esc(bs.version || '（未連過）')}</b>`
+    + (bs.spreadsheet ? `　·　${esc(bs.spreadsheet)}` : '')
+    + (bs.route ? `（${bs.route === 'proxy' ? '平台代理' : '自己貼嘅 /exec'}）` : '')
+    + `</div>`;
   const prov = `<div class="xs faint mt-8">${icon('shield', 12)} 帳戶來源：${esc(src)}`
-    + `　·　密碼核對：喺後端讀返嚟嘅名單上進行</div>`;
+    + `　·　密碼核對：喺後端讀返嚟嘅名單上進行</div>`
+    + verLine;
 
   const s = remoteApi.syncState();
   if (s.state === 'pending' && remoteApi.hasPending()) {
@@ -484,6 +494,7 @@ function renderUnitGate() {
       </div>
 
       <div class="gate-foot">
+        <div class="xs faint" style="margin-bottom:6px">APP 版本 <b class="mono">${APP_VERSION}</b></div>
         揀完之後先會出現<b>登入畫面</b>（領袖 / 執行委員會）。<br>
         管理員開新旅團：喺 <code>data/units.json</code> 加 entry（唔使起資料夾）＋ Vercel 加
         <code>TROOP_&lt;編號&gt;_BACKEND</code> / <code>_APIKEY</code>，再 Redeploy（詳見 docs/ADD_NEW_UNIT.md）。
@@ -887,6 +898,8 @@ function renderMoved() {
 function renderBackendGate(reason = {}) {
   document.body.classList.add('login-body');
   const code = currentUnit() || '—';
+  /* ★ v2.8.1：封鎖頁都要見到版號＋上次連到啲乜 —— 唔係齋得句「稍後再試」。 */
+  const bs = (remoteApi && remoteApi.backendStatus) ? remoteApi.backendStatus() : {};
   /* 連線原因留喺內部狀態，普通用家只需要知道下一步：再試，或聯絡管理員。
      ★ 2026-09-24（第三輪）：團長回報「無痕讀不到後端＝所有人睇唔到」——
      以前呢頁只有「重新連線」，用家完全唔知係（甲）後端真係連唔到、
@@ -903,12 +916,13 @@ function renderBackendGate(reason = {}) {
         <div class="logo">82</div>
         <div>
           <div class="gate-title">未能連接旅團後端</div>
-          <div class="gate-sub">旅團 ${esc(code)} · 暫時不能登入</div>
+          <div class="gate-sub">旅團 ${esc(code)} · APP ${APP_VERSION} · 暫時不能登入</div>
         </div>
       </div>
       <div class="note-box danger">${icon('alert', 16)}<div>
         <b>暫時未能連線，請稍後再試。</b>
         <div class="xs mt-4">後端未連線，所以暫時未能顯示登入畫面。</div>
+        <div class="xs mt-4">上次連線現況：後端 <b class="mono">${esc(bs.version || '（未連過）')}</b>${bs.route ? `（${bs.route === 'proxy' ? '平台代理' : '自己貼嘅 /exec'}）` : ''}${bs.spreadsheet ? ` · ${esc(bs.spreadsheet)}` : ''}${bs.error ? ` · <span style="color:var(--danger)">${esc(bs.error)}</span>` : ''}</div>
         <div class="xs mt-4"><b>想知係咩事？</b>撳下面「檢查後端」—— 會話你知係連唔到、後端冇資料，定係後端資料壞咗（有得修復）。</div>
       </div></div>
       <div class="row gap-8 wrap mt-16">

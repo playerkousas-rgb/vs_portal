@@ -275,6 +275,9 @@ try {
         bytes: r.bytes || 0, parts: r.parts || 0, version: String(r.version || ''),
         /* ★ v2.8.0：呢次儲存行咗邊條路（simple＝逐表寫／blob＝舊嘅整份寫） */
         mode: r.mode || '', simple: remote.simpleWriteMode(),
+        /* ★ v2.8.1：後端自證（confirmed）＋報表合併（reports） */
+        reports: r.reports ? !!r.reports.ok : null,
+        confirmed: r.confirmed ?? null,
         remoteChanged: !!r.remoteChanged, mine: r.mine ?? null, theirs: r.theirs ?? null, same: r.same ?? null, applied: r.applied ?? null,
         conflicts: (r.conflicts || []).map(c => c.key), resolved: r.resolved || 0, kept: r.kept ?? 0,
         overrideOk: r.overrideOk, dialog: out.lastDialog,
@@ -378,6 +381,7 @@ try {
       out.steps.push({
         op: 'reality', ok: !!r.ok, found: !!r.found, route: r.route || '', sheet: r.sheet || '',
         backendVersion: r.backendVersion || '', version: String(r.version || ''), bytes: Number(r.bytes || 0),
+        mode: r.mode || '', simpleRows: Number(r.simpleRows || 0), blobRows: Number(r.blobRows || 0), broken: r.broken || [],
         counts: r.counts || null, local: r.local || null, rows: r.rows || [],
         pending: Number(r.pending || 0), pendingAccounts: Number(r.pendingAccounts || 0),
         level: r.verdict?.level || '', title: r.verdict?.title || '', detail: r.verdict?.detail || '',
@@ -392,6 +396,7 @@ try {
         op: 'verify', ok: !!r.ok, matched: !!r.matched, version: String(r.version || ''),
         expectedVersion: String(r.expectedVersion || ''), versionOk: !!r.versionOk, countsOk: !!r.countsOk,
         sheet: r.sheet || '', bytes: Number(r.bytes || 0), rows: r.rows || [],
+        backendVersion: r.backendVersion || '', mode: r.mode || '', simpleRows: Number(r.simpleRows || 0), blobRows: Number(r.blobRows || 0), broken: r.broken || [],
         backend: r.backend || null, local: r.local || null, error: r.error || ''
       });
     }
@@ -420,7 +425,8 @@ try {
     }
     if (step.op === 'info') {
       const i = await remote.remoteInfo();
-      out.steps.push({ op: 'info', ok: i.ok, found: !!i.found, reason: i.reason || '', error: (i.error || '').slice(0, 80), counts: i.counts || null, at: i.at || '' });
+      out.steps.push({ op: 'info', ok: i.ok, found: !!i.found, reason: i.reason || '', error: (i.error || '').slice(0, 80), counts: i.counts || null, at: i.at || '',
+        mode: i.mode || '', simpleRows: Number(i.simpleRows || 0), blobRows: Number(i.blobRows || 0), backendVersion: i.backendVersion || '', broken: i.broken || [] });
     }
     /* 「由後端重新載入」（丟棄本機未存改動；冇 pending 嗰陣同 load 一樣） */
     if (step.op === 'pull') {

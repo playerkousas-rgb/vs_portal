@@ -40,6 +40,26 @@ ok('getTrustedUnit 帶埋伺服器端 API Key', trusted?.apiKey === 'test9_secre
 ok('非白名單旅團回傳 null', getTrustedUnit('9999') === null);
 ok('0082 冇登記就攞唔到後端（唔會再借用舊旅團）', getTrustedUnit('0082') === null);
 
+// 代理憑證來源：瀏覽器以前保存的 Key 不可蓋過伺服器端的新 Key。
+{
+  const originalFetch = globalThis.fetch;
+  let forwarded = null;
+  globalThis.fetch = async (_url, init) => {
+    forwarded = JSON.parse(init.body);
+    return { status: 200, text: async () => JSON.stringify({ success: true }) };
+  };
+  try {
+    const response = { setHeader() { return this; }, status() { return this; }, json(v) { this.body = v; return this; } };
+    await proxyHandler({ method: 'POST', body: { action: 'saveTables', unit: 'TEST9', apiKey: 'outdated', apikey: 'outdated', tables: { members: [] } } }, response);
+    ok('舊瀏覽器 Key 不會蓋過 Registry Key', response.body?.success === true && forwarded?.apiKey === 'test9_secret_key' && !forwarded?.apikey);
+  } finally { globalThis.fetch = originalFetch; }
+}
+
+// 正式站的 backendReady 必須有網址 *及* API Key；單靠 status 不能寫入。
+process.env.TROOP_NOKEY_BACKEND = TEST_GAS;
+ok('有 /exec 但未設 API Key 不顯示「可同步」', listPublicUnits().NOKEY?.backendReady === false);
+delete process.env.TROOP_NOKEY_BACKEND;
+
 // 3. listPublicUnits
 const pub = listPublicUnits();
 ok('公開清單包含登記咗嘅旅團', !!pub.TEST9);

@@ -12,7 +12,7 @@ export function gasTemplate() {
   return `/**
  * ============================================================
  *  深資童軍管理系統 · 總表同步與多旅團後端 Apps Script（Code.gs）
- *  版本：v2.8.1
+ *  版本：v2.8.2
  *
  *  ★ v2.8.1（2026-09-25，團長回報 4 項：「登入畫面睇唔到版號」／
  *    「後端分頁明明有資料但 app 話冇」／「有幾頁不停在儲存，會唔會爆量」／
@@ -154,7 +154,7 @@ var MODE = 'per-unit-sheet';   // 'per-unit-sheet' = 每個旅團獨立工作表
 var DRIVE_FOLDER_ID = '';
 
 /** 後端版本（status 會回報；APP 用嚟檢查「你張 Sheet 係咪仲行舊 code」） */
-var BACKEND_VERSION = 'v2.8.1';
+var BACKEND_VERSION = 'v2.8.2';
 
 /* ============================================================
    初始化與 API KEY 管理
@@ -351,7 +351,7 @@ var SUPPORTED_ACTIONS = ['ping', 'test', 'status', 'sync', 'claim', 'claimDecisi
   /* ★ v2.7.2：一鍵修復（清垃圾／舊版本段）＋ 強制覆蓋（人手搶救） */
   'repairDb', 'saveDbForce',
   /* ★ v2.8.0：簡單寫入（逐表寫／逐表讀）—— 見下面 saveTables／loadTables／loadTablesPart */
-  'saveTables', 'loadTables', 'loadTablesPart'];
+  'saveTables', 'loadTables', 'loadTablesPart', 'syncCheck'];
 
 /**
  * BUILD §1／§2：敏感 action 必須由 server-side API_KEY 明確授權。
@@ -799,7 +799,7 @@ function doPost(e) {
         var stx = withLock(function () { return saveTables(body); });
         return json({ ok: stx.success === true, success: stx.success === true,
           tables: stx.tables || null, bytes: stx.bytes || 0, at: stx.at || '',
-          version: stx.version || '', error: stx.error || '',
+          version: stx.version || '', conflict: stx.conflict === true, error: stx.error || '',
           /* ★ v2.8.1 自證：confirmed=false ＝ 後端話收到、但分頁留唔到呢次寫嘅行。
              前端要當寫入失敗（保留 pending 再試），唔可以假成功。 */
           confirmed: stx.confirmed === true, simpleRows: stx.simpleRows || 0,
@@ -1034,6 +1034,14 @@ function doPost(e) {
       /* 團員查返自己嘅申報狀態（只會回自己 YMIS 嘅紀錄） */
       return json(loadMyRequests(textOf(body.ymis)));
     }
+    /* 獨立讀寫自測：唔使有帳戶或舊資料；只寫臨時記號，立即讀回再清走。
+       API Key 仍只由同源代理注入，與 VSBADGE 相同的配置方式。 */
+    if (body.action === 'syncCheck') {
+      var checkAuth = requireAuth(expectedKey, key);
+      if (!checkAuth.ok) return json(checkAuth);
+      var checked = withLock(function () { return checkSheetWriteRead(textOf(body.unit)); });
+      return json(checked);
+    }
     if (body.action === 'status' || body.action === 'test') {
       return json({ ok: true, msg: '深資童軍管理系統 後端正常', spreadsheet: SpreadsheetApp.getActiveSpreadsheet().getName(), tabs: SHEET_TABS, backendVersion: BACKEND_VERSION, simpleWrite: true, at: new Date() });
     }
@@ -1210,7 +1218,7 @@ function saveDb(body) {
     if (textOf(rows[i][0]) !== unit) continue;
     oldRows.push(i + 1);
   }
-  deleteRowRuns(sh, oldRows);
+  /* 舊 blob 留到新版本寫好並驗收先刪，避免寫到一半時整份資料變空。 */
 
   var now = new Date();
   /* v2.2.0：版本由**伺服器**派（ISO 時間＋隨機尾數）。
@@ -1224,12 +1232,22 @@ function saveDb(body) {
 
   var out = chunks.map(function (c, idx) { return [unit, idx + 1, c, now, version]; });
   sh.getRange(sh.getLastRow() + 1, 1, out.length, 5).setValues(out);
+  var blobCheck = dbRawText(unit, true);
+  if (blobCheck.version !== version || blobCheck.text !== text) {
+    var rollback = sh.getDataRange().getValues(), undo = [];
+    for (var bi = 1; bi < rollback.length; bi++) if (textOf(rollback[bi][0]) === unit && textOf(rollback[bi][4]) === version) undo.push(bi + 1);
+    deleteRowRuns(sh, undo);
+    return { success: false, error: '新資料庫未能完整讀回，原版本已保留' };
+  }
+  deleteRowRuns(sh, oldRows);
 
   /* ★ v2.8.0：舊路線寫完「資料庫」之後，**鏡像**去「資料表」分頁。
      因為讀取一律以「資料表」为先，唔鏡像嘅話舊路線（舊版前端／saveDbForce
      搶救上載）寫嘅嘢會讀唔到 —— 兩邊就會各睇各嘅。 */
   var mirrored = null;
   try { mirrored = saveTables({ unit: unit, tables: db, full: true, refreshReports: false }); } catch (mirrorErr) { /* 鏡像失敗唔阻斷主寫入 */ }
+
+  if (!mirrored || !mirrored.success) return { success: false, error: '資料庫已寫入，但資料表鏡像失敗；請勿清除本機資料：' + (mirrored && mirrored.error || '後端異常') };
 
   /* ★ v2.6.3：一次儲存，兩處都寫 —— 順手刷新晒報表分頁（團員／帳目／物資…），
      團長開 Google Sheet 即刻睇到嘢，唔使再撳第二粒掣。 */
@@ -1348,7 +1366,8 @@ function dbRawText(unit, strict) {
    「app 讀到新資料、公開頁讀到舊資料」呢種兩邊唔同步。 */
 function dbReadRaw(unit) {
   var simple = loadTables(unit);
-  if (simple.found) {
+  if (simple.found || simple.rowCount) {
+    if (simple.broken.length || !simple.found) return { found: true, broken: simple.broken, corrupt: true, text: '', version: simple.version, mode: 'simple' };
     return { found: true, text: JSON.stringify(simple.db), at: simple.at, version: simple.version,
       stagingRows: 0, stagingBytes: 0, staleRows: 0, versions: 1, brokenNewer: 0,
       broken: simple.broken || [], mode: 'simple' };
@@ -1367,6 +1386,7 @@ function loadDb(unit) {
       versions: raw.versions || 0, brokenNewer: raw.brokenNewer || 0, error: '' };
   }
   try {
+    if (raw.corrupt) throw new Error('BROKEN_TABLES');
     return { success: true, found: true, db: JSON.parse(raw.text), at: raw.at, version: raw.version,
       bytes: raw.text.length, stagingRows: raw.stagingRows, stagingBytes: raw.stagingBytes,
       staleRows: raw.staleRows, versions: raw.versions || 0, brokenNewer: raw.brokenNewer || 0 };
@@ -1393,6 +1413,7 @@ function loadDbPart(unit, partIdx) {
   if (!raw.found) {
     return { success: true, found: false, part: '', partIdx: idx, parts: 0, bytes: 0, at: raw.at, version: raw.version, error: '' };
   }
+  if (raw.corrupt) return { success: false, found: true, error: '資料表有損壞的表（' + (raw.broken || []).join('、') + '），請修復或完整上載', version: raw.version };
   var total = raw.text.length;
   var n = Math.max(1, Math.ceil(total / LOAD_PART_CHARS));
   /* 段號超範圍：通常係讀緊嗰陣另一部機儲存咗、資料庫縮細咗。
@@ -1439,10 +1460,8 @@ function saveDbPart(body) {
   var rows = sh.getDataRange().getValues();
 
   /* 版本檢查：同 saveDb 一樣 —— 第一件就擋，唔會寫咗一半先知撞版 */
-  var curVersion = '';
-  for (var v = rows.length - 1; v >= 1; v--) {
-    if (textOf(rows[v][0]) === unit) { curVersion = textOf(rows[v][4]); break; }
-  }
+  var currentSimple = loadTables(unit);
+  var curVersion = currentSimple.found ? currentSimple.version : (dbRawText(unit, true).version || '');
   var baseVersion = textOf(body.baseVersion);
   if (curVersion && baseVersion !== curVersion) {
     return { success: false, conflict: true, version: curVersion, error: '後端已有較新版本（另一部機剛剛同步過）' };
@@ -1479,7 +1498,8 @@ function saveDbCommit(body) {
   var rows = sh.getDataRange().getValues();
 
   /* commit 前最後一次版本檢查（v2.7.0：同讀取路一致 —— 用讀得到嗰套嘅版本） */
-  var curVersion = dbRawText(unit, true).version || '';
+  var currentSimple = loadTables(unit);
+  var curVersion = currentSimple.found ? currentSimple.version : (dbRawText(unit, true).version || '');
   var baseVersion = textOf(body.baseVersion);
   if (curVersion && baseVersion !== curVersion) {
     return { success: false, conflict: true, version: curVersion, error: '後端已有較新版本（另一部機剛剛同步過）' };
@@ -1524,7 +1544,7 @@ function saveDbCommit(body) {
     if (textOf(rows[i][0]) !== unit) continue;
     kill.push(i + 1);
   }
-  deleteRowRuns(sh, kill);
+  /* 先寫並驗新版本，再清舊 blob＋暫存；唔好先刪唯一一份完整資料。 */
 
   var now = new Date();
   var version = now.toISOString() + '-' + Math.floor(Math.random() * 100000);
@@ -1534,9 +1554,18 @@ function saveDbCommit(body) {
   var out2 = [];
   for (var c3 = 0; c3 < chunks.length; c3++) out2.push([unit, c3 + 1, chunks[c3], now, version]);
   sh.getRange(sh.getLastRow() + 1, 1, out2.length, 5).setValues(out2);
+  var committedCheck = dbRawText(unit, true);
+  if (committedCheck.version !== version || committedCheck.text !== text) {
+    var rollback2 = sh.getDataRange().getValues(), undo2 = [];
+    for (var ci = 1; ci < rollback2.length; ci++) if (textOf(rollback2[ci][0]) === unit && textOf(rollback2[ci][4]) === version) undo2.push(ci + 1);
+    deleteRowRuns(sh, undo2);
+    return { success: false, error: '分件新版本未能完整讀回，原版本已保留' };
+  }
+  deleteRowRuns(sh, kill);
 
   var mirrored2 = null;
   try { mirrored2 = saveTables({ unit: unit, tables: merged, full: true, refreshReports: false }); } catch (mirrorErr2) { /* 鏡像失敗唔阻斷 */ }
+  if (!mirrored2 || !mirrored2.success) return { success: false, error: '資料庫已寫入，但資料表鏡像失敗；請勿清除本機資料：' + (mirrored2 && mirrored2.error || '後端異常') };
   /* ★ v2.6.3：分件儲存都要一次過做齊兩處（呢度先至有成份拼合好嘅資料庫） */
   var reports2 = body.refreshReports === false ? null : refreshReportsFromDb(merged, unit);
   /* 同 saveDb 一樣：回讀取路認嗰個版本 */
@@ -1699,15 +1728,16 @@ function pruneOldSimpleVersions() {
     Object.keys(byUnit[u]).forEach(function (t) {
       var vers = Object.keys(byUnit[u][t]);
       if (vers.length <= 1) return;
-      /* 同 loadTables 一樣次序：段數多先，平手就分頁最後出現嗰套（＝最新寫入） */
+      /* 跟讀取入口一致：新版本可以比舊版本短，唔好用段數判斷新舊。 */
       vers.sort(function (a, b) {
-        var ga = byUnit[u][t][a], gb = byUnit[u][t][b];
-        if (gb.parts.length !== ga.parts.length) return gb.parts.length - ga.parts.length;
-        return gb.lastRow - ga.lastRow;
+        var ma = /^S([0-9a-z]+)-/.exec(a), mb = /^S([0-9a-z]+)-/.exec(b);
+        if (ma && mb && ma[1] !== mb[1]) return parseInt(mb[1], 36) - parseInt(ma[1], 36);
+        return byUnit[u][t][b].lastRow - byUnit[u][t][a].lastRow;
       });
       var keeper = '';
       for (var k = 0; k < vers.length; k++) {
         var ps = byUnit[u][t][vers[k]].parts.slice().sort(function (a, b) { return a.seq - b.seq; });
+        if (!ps.every(function (p, i) { return p.seq === i + 1; })) continue;
         try { JSON.parse(ps.map(function (p) { return p.text; }).join('')); keeper = vers[k]; break; }
         catch (e0) { /* 壞嘅唔留 */ }
       }
@@ -1835,25 +1865,69 @@ function simpleSheet() {
   return sh;
 }
 
+/** 一個細小、獨立的 Sheet 寫入／讀回測試，不碰正式資料或帳戶。
+ *  攞 script lock 避免兩個人測試時互相刪除；即使測試失敗也清走臨時行。 */
+function checkSheetWriteRead(unit) {
+  if (!unit) return { ok: false, success: false, error: '欠缺旅團編號' };
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sh = ss.getSheetByName('連線測試');
+  if (!sh) {
+    sh = ss.insertSheet('連線測試');
+    sh.appendRow(['旅團', '測試記號', '時間']);
+  }
+  var marker = Utilities.getUuid() + '-' + Date.now();
+  var row = sh.getLastRow() + 1;
+  var wrote = false;
+  try {
+    sh.getRange(row, 1, 1, 3).setValues([[unit, marker, new Date()]]);
+    wrote = true;
+    SpreadsheetApp.flush();
+    var back = sh.getRange(row, 1, 1, 2).getValues()[0];
+    var matched = textOf(back[0]) === unit && textOf(back[1]) === marker;
+    return { ok: matched, success: matched, wrote: true, readBack: matched,
+      spreadsheet: ss.getName(), backendVersion: BACKEND_VERSION,
+      error: matched ? '' : '測試行已寫入，但讀回內容不一致' };
+  } catch (err) {
+    return { ok: false, success: false, wrote: wrote, readBack: false,
+      spreadsheet: ss.getName(), backendVersion: BACKEND_VERSION,
+      error: '試算表讀寫失敗：' + String(err && err.message || err) };
+  } finally {
+    if (wrote) { try { sh.deleteRow(row); } catch (ignore) { /* 留住測試行供排查 */ } }
+  }
+}
+
 /** 寫入幾個表（正常淨係寫「有改過」嗰啲） */
 function saveTables(body) {
   var unit = textOf(body.unit) || 'UNKNOWN';
   var tables = body.tables;
-  if (!tables || typeof tables !== 'object') return { success: false, error: '冇收到表內容（tables）' };
+  if (!tables || typeof tables !== 'object' || Array.isArray(tables)) return { success: false, error: '冇收到表內容（tables）' };
 
+  /* 同一個 script lock 入面核對版本。前端三方合併後到實際寫入之前仍有競態；
+     唔可以學舊版逐表寫直接 last-write-wins，否則另一部機的改動會消失。 */
+  var before = loadTables(unit);
+  var currentVersion = before.found ? before.version : (dbRawText(unit, true).version || '');
+  if (Object.prototype.hasOwnProperty.call(body, 'baseVersion') &&
+      textOf(body.baseVersion) !== currentVersion) {
+    return { success: false, conflict: true, version: currentVersion,
+      error: '後端已有較新版本，請重新讀取並合併後再儲存' };
+  }
+  if (before.broken.length && body.full !== true) {
+    return { success: false, error: '後端有損壞的表（' + before.broken.join('、') + '），拒絕部分寫入；請先修復或完整上載' };
+  }
   var sh = simpleSheet();
   var now = new Date();
   /* 呢次寫入嘅版本：時間（36 進位）＋隨機尾數 —— 字串可以直接排序比大小 */
-  var saveId = 'S' + now.getTime().toString(36) + '-' + Math.floor(Math.random() * 100000);
-  var out = [], saved = {}, bytes = 0;
+  var previousMs = /^S([0-9a-z]+)-/.test(currentVersion) ? parseInt(currentVersion.split('-')[0].slice(1), 36) : 0;
+  var saveId = 'S' + Math.max(now.getTime(), previousMs + 1).toString(36) + '-' + Math.floor(Math.random() * 100000);
+  var out = [], saved = {}, bytes = 0, invalid = [];
 
   Object.keys(tables).forEach(function (name) {
     /* 表名白名單：只收英數底線，唔畀寫啲奇怪嘢入分頁 */
-    if (!/^[A-Za-z0-9_]{1,40}$/.test(String(name))) return;
+    if (!/^[A-Za-z0-9_]{1,40}$/.test(String(name))) { invalid.push(name); return; }
     var text;
     try { text = JSON.stringify(tables[name] === undefined ? null : tables[name]); }
-    catch (e) { return; }
-    if (text.length > 9000000) return;      // 單表大過 9MB 唔寫（要先做體積治理）
+    catch (e) { invalid.push(name); return; }
+    if (text.length > 9000000) { invalid.push(name); return; }      // 單表大過 9MB 唔寫（要先做體積治理）
     bytes += text.length;
     var segs = [];
     for (var p = 0; p < text.length; p += SIMPLE_CHUNK) segs.push(text.substring(p, p + SIMPLE_CHUNK));
@@ -1861,10 +1935,32 @@ function saveTables(body) {
     segs.forEach(function (c, i) { out.push([unit, String(name), i + 1, c, now, saveId]); });
     saved[name] = { segs: segs.length, bytes: text.length };
   });
+  if (invalid.length) return { success: false, error: '以下表未能寫入（名稱、格式或超過 9MB）：' + invalid.join('、'), missingTables: invalid };
   if (!out.length) return { success: false, error: '冇一個表寫得入（表名或者內容唔合規格）' };
 
   /* ① 先寫新 —— 寫完呢一步，分頁入面已經有完整嘅新資料 */
   sh.getRange(sh.getLastRow() + 1, 1, out.length, 6).setValues(out);
+  /* 新表即使比舊表短（例如刪除大量團員，由兩段縮成一段），也要先驗收，
+     不能用 loadTables 的「較長版本優先」來驗：那會錯誤讀回舊表。 */
+  var stagedRows = sh.getDataRange().getValues();
+  var stagedParts = {};
+  stagedRows.slice(1).forEach(function (r) {
+    if (textOf(r[0]) !== unit || textOf(r[5]) !== saveId) return;
+    (stagedParts[textOf(r[1])] = stagedParts[textOf(r[1])] || []).push({ seq: Number(r[2]), text: String(r[3]) });
+  });
+  var namesToCheck = Object.keys(saved);
+  var stagedOk = namesToCheck.every(function (name) {
+    var parts = (stagedParts[name] || []).sort(function (a, b) { return a.seq - b.seq; });
+    return parts.length === saved[name].segs && parts.every(function (p, i) { return p.seq === i + 1; }) &&
+      parts.map(function (p) { return p.text; }).join('') === JSON.stringify(tables[name]);
+  });
+  if (!stagedOk) {
+    var undo = [];
+    for (var si = 1; si < stagedRows.length; si++)
+      if (textOf(stagedRows[si][0]) === unit && textOf(stagedRows[si][5]) === saveId) undo.push(si + 1);
+    deleteRowRuns(sh, undo);
+    return { success: false, confirmed: false, error: '新表未完整寫入，舊版本已保留', missingTables: namesToCheck };
+  }
   /* ② 後刪舊 —— 同一旅團＋同一個表、但唔係呢次 saveId 嘅行（即上一套） */
   var rows = sh.getDataRange().getValues();
   var kill = [];
@@ -1897,7 +1993,10 @@ function saveTables(body) {
     seenNew[textOf(confirmRows[ci][1])] = true;
   }
   var missing = names.filter(function (t) { return !seenNew[t]; });
-  var confirmed = missing.length === 0 && newRows === out.length;
+  var verified = loadTables(unit);
+  var confirmed = missing.length === 0 && newRows === out.length &&
+    verified.broken.length === 0 &&
+    names.every(function (name) { return JSON.stringify(verified.db && verified.db[name]) === JSON.stringify(tables[name]); });
   if (!confirmed) {
     return { success: false, confirmed: false, simpleRows: unitRows,
       tables: saved, bytes: bytes, at: now, version: '', missingTables: missing,
@@ -1967,23 +2066,25 @@ function loadTables(unit) {
       g.lastRow = Math.max(g.lastRow || 0, p.row || 0);
     });
     var keys = Object.keys(groups);
-    /* 揀邊一套：① 段數多嘅先（完整嗰套一定多過寫到一半嗰套）；
-       ② 段數一樣就揀**分頁上最後出現**嗰套（＝最新寫入）。
-       ★ 唔可以淨係靠段數：新舊兩套段數一樣嗰陣，排序係唔穩定嘅，
-         隨時揀返舊嗰套 —— 症狀就係「明明儲咗，讀返仲係舊嘢」。 */
+    /* 以分頁中最後出現的版本為準；新資料縮短時段數會變少，不能以段數排序。
+       若最新版本損壞，保留舊版供診斷，但標明 broken，前端不可把它當完整正本。 */
     keys.sort(function (a, b) {
-      if (groups[b].length !== groups[a].length) return groups[b].length - groups[a].length;
+      var ma = /^S([0-9a-z]+)-/.exec(a), mb = /^S([0-9a-z]+)-/.exec(b);
+      if (ma && mb && ma[1] !== mb[1]) return parseInt(mb[1], 36) - parseInt(ma[1], 36);
       return groups[b].lastRow - groups[a].lastRow;
     });
+    var newerBroken = false;
     for (var k = 0; k < keys.length; k++) {
       var ps = groups[keys[k]].slice().sort(function (a, b) { return a.seq - b.seq; });
       var text = ps.map(function (p) { return p.text; }).join('');
+      if (!ps.every(function (p, i) { return p.seq === i + 1; })) { newerBroken = true; continue; }
       try {
         var val = JSON.parse(text);
         db[name] = val;
         tables[name] = Array.isArray(val) ? val.length : 1;
+        if (newerBroken) broken.push(name);
         return;
-      } catch (e) { /* 呢套砌唔成 → 試下一套 */ }
+      } catch (e) { newerBroken = true; /* 呢套砌唔成 → 試下一套 */ }
     }
     broken.push(name);
   });
@@ -2000,6 +2101,7 @@ function loadTables(unit) {
 function loadTablesPart(unit, idx) {
   var i = Math.max(0, parseInt(idx, 10) || 0);
   var all = loadTables(unit);
+  if (all.broken.length) return { success: false, found: all.found, broken: all.broken, error: '資料表有損壞的表：' + all.broken.join('、') };
   if (!all.found) {
     return { success: true, found: false, idx: i, count: 0, name: '',
       broken: all.broken || [], at: all.at, version: all.version };

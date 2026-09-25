@@ -321,8 +321,8 @@ try {
     { op: 'push' }
   ] });
   const pushP = stepOf(P, 'push');
-  ok('★ 舊後端都儲存成功（冇 confirmed 唔當失敗）', pushP?.ok === true, JSON.stringify(pushP).slice(0, 240));
-  ok('★ 如實記低「呢個後端唔識自證」（confirmed=null）', pushP?.confirmed == null, JSON.stringify({ c: pushP?.confirmed }));
+  ok('★ 舊後端冇 confirmed 但讀回核對後先算成功', pushP?.ok === true, JSON.stringify(pushP).slice(0, 240));
+  ok('★ 舊後端寫入後由前端讀回驗證（confirmed=true）', pushP?.confirmed === true, JSON.stringify({ c: pushP?.confirmed }));
   const Q = await runDevice(v280.base, { steps: [{ op: 'simplePull' }] });
   ok('★ 資料真係落到後端（第二部機讀得返）', stepOf(Q, 'simplePull')?.members === 1,
     JSON.stringify(stepOf(Q, 'simplePull')).slice(0, 200));
@@ -370,8 +370,8 @@ section('⑧ 靜態守門（唔會重演「action 漏咗喺白名單」嗰單事
     /var SIMPLE_TAB = '資料表'/.test(gasSrc) && /var DB_TAB = '資料庫'/.test(gasSrc));
   ok('★ 寫入次序係「先寫新、後刪舊」（中途斷都唔會乜都冇）',
     gasSrc.indexOf('① 先寫新') > 0 && gasSrc.indexOf('① 先寫新') < gasSrc.indexOf('② 後刪舊'));
-  ok('★ 逐表寫冇用樂觀鎖（唔會再出現「版本對唔上 → 永遠存唔入」）',
-    !/baseVersion/.test(gasSrc.slice(gasSrc.indexOf('function saveTables'), gasSrc.indexOf('function loadTables'))));
+  ok('★ 逐表寫喺鎖內核對版本（兩機同時寫唔會互蓋）',
+    /baseVersion/.test(gasSrc.slice(gasSrc.indexOf('function saveTables'), gasSrc.indexOf('function loadTables'))));
   /* 補底一定要**三份對稱**（基準／本機／後端），否則「後端有 []、基準連 key 都冇」
      會被當成一個改動 —— 三方比對就會無端端話「有人喺我之後改過嘢」。 */
   const storeSrc = fs.readFileSync(path.join(ROOT, 'assets', 'js', 'lib', 'store.js'), 'utf8');
@@ -384,14 +384,14 @@ section('⑧ 靜態守門（唔會重演「action 漏咗喺白名單」嗰單事
   ok('★ 仍然得一個寫入口（頂部「儲存到後端」）—— 冇加自動寫入',
     !/debounce|setInterval\([^)]*saveToBackend|autoSave/i.test(remoteSrc.replace(/\/\*[\s\S]*?\*\//g, '')));
   /* ★ v2.8.1：自證＋真相＋版號（唔會重演「假成功／登入見唔到版號」） */
-  ok('★ 逐表寫一定要過自證（confirmed===false → 唔可以當成功）',
-    /confirmed\s*===\s*false/.test(remoteSrc));
-  ok('★ gastemplate.js 後端版本係 v2.8.1',
-    fs.readFileSync(path.join(ROOT, 'assets', 'js', 'lib', 'gastemplate.js'), 'utf8').includes("BACKEND_VERSION = 'v2.8.1'"));
-  ok('★ Code.gs 係由 v2.8.1 gastemplate 起出嚟（唔係舊 build）',
-    gasSrc.includes("BACKEND_VERSION = 'v2.8.1'"));
+  ok('★ 逐表寫一定要過自證或讀回驗證（否則唔算成功）',
+    /confirmed\s*!==\s*true/.test(remoteSrc));
+  ok('★ gastemplate.js 後端版本係 v2.8.2',
+    fs.readFileSync(path.join(ROOT, 'assets', 'js', 'lib', 'gastemplate.js'), 'utf8').includes("BACKEND_VERSION = 'v2.8.2'"));
+  ok('★ Code.gs 係由 v2.8.2 gastemplate 起出嚟（唔係舊 build）',
+    gasSrc.includes("BACKEND_VERSION = 'v2.8.2'"));
   ok('★ 有版本單一來源（version.js）＋登入閘用緊佢',
-    fs.readFileSync(path.join(ROOT, 'assets', 'js', 'lib', 'version.js'), 'utf8').includes("APP_VERSION = 'v2.8.1'")
+    fs.readFileSync(path.join(ROOT, 'assets', 'js', 'lib', 'version.js'), 'utf8').includes("APP_VERSION = 'v2.8.2'")
     && fs.readFileSync(path.join(ROOT, 'assets', 'js', 'main.js'), 'utf8').includes('APP_VERSION'));
 }
 

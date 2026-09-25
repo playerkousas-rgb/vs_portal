@@ -423,7 +423,11 @@ async function pullTablesPart() {
       if (/未知 action|unknown action/i.test(String(r.error || ''))) { simpleWrite = false; }
       return { ok: false, reason: r.reason || 'backend', error: r.error || '逐表讀取失敗', hint: r.hint || '', segmented: true };
     }
+    if (Array.isArray(r.broken) && r.broken.length) return { ok: false, reason: 'broken_tables', error: '後端有損壞的表：' + r.broken.join('、') };
     if (!r.found) return { ok: true, found: false, db: null, bytes: 0, at: r.at || '', version: r.version || '', segmented: true };
+    if (version && (r.version !== version || Number(r.count) !== count)) {
+      return { ok: false, reason: 'changed_during_read', error: '讀取期間後端版本改變，請重新讀取' };
+    }
     count = Number(r.count) || 0;
     if (r.name) db[String(r.name)] = r.value;
     /* 逐表讀都要如實報邊個表壞咗 —— 唔可以因為「一個表一個表攞」就扮冇事 */
@@ -454,6 +458,10 @@ export async function pullDb({ bytes: knownBytes } = {}) {
      所以升級 Code.gs 之後、未做第一次儲存之前，舊資料照樣讀得到。 */
   if (simpleMode) {
     const t = await callBackend({ action: 'loadTables' }, { timeoutMs: 90000 });
+    if (t.ok && Array.isArray(t.broken) && t.broken.length) {
+      setState('error', '後端有損壞的表：' + t.broken.join('、'));
+      return { ok: false, reason: 'broken_tables', error: '後端有損壞的表：' + t.broken.join('、'), broken: t.broken };
+    }
     if (t.ok && t.found) {
       setState('idle');
       return { ...t, mode: 'simple' };
@@ -486,6 +494,9 @@ export async function pullDb({ bytes: knownBytes } = {}) {
   if (r.ok && !r.found && !simpleProbed) {
     simpleProbed = true;
     const probe = await callBackend({ action: 'loadTables' }, { timeoutMs: 90000 });
+    if (probe.ok && Array.isArray(probe.broken) && probe.broken.length) {
+      return { ok: false, reason: 'broken_tables', error: '後端有損壞的表：' + probe.broken.join('、') };
+    }
     if (probe.ok && probe.found) {
       simpleMode = true;
       setState('idle');
@@ -516,6 +527,20 @@ export async function remoteInfo() {
      用家完全唔知其實一直冇同步（2026-09-19 團長回報）。 */
   if (!r.ok) setState('unreachable', r.error || '連唔到後端');
   return r;
+}
+
+/** 真正走代理 → GAS → Google Sheet 的小型寫入＋讀回，不依賴登入或現有資料。 */
+export async function testReadWrite() {
+  const cfg = remoteCfg();
+  if (!cfg.ok) return { ok: false, error: notConfiguredMessage(cfg), stage: 'route' };
+  const r = await callBackend({ action: 'syncCheck' }, { timeoutMs: 45000 });
+  if (!r.ok) return { ok: false, error: r.error || '讀寫測試失敗',
+    hint: r.hint || '', stage: r.wrote ? 'read' : 'write', via: r.via || '' };
+  if (r.wrote !== true || r.readBack !== true) {
+    return { ok: false, error: '後端未證實寫入與讀回成功', stage: 'read', via: r.via || '' };
+  }
+  return { ok: true, sheet: r.spreadsheet || '', version: r.backendVersion || '', via: r.via || '',
+    message: '已在 Google Sheet 寫入測試記號、讀回相同內容，並清理測試行' };
 }
 
 /** 測試連線（同 remoteConfigured 一樣：有同源代理＋旅團編號就算接得通，
@@ -1648,8 +1673,18 @@ async function saveToBackendInner({ policy = 'ask', resolver = null, silent = tr
         mode: r.mode || '', simpleRows: Number(r.simpleRows || 0) };
     }
 
-    /* ④ 成功：本機 ＝ 後端 ＝ 新基準 */
-    commitSaved({ ...local, ...finalDb }, { version: String(r.version || ''), bytes: r.bytes || 0, parts: r.parts || 0 });
+    /* 網絡等待期間用戶仍可能繼續修改。只把已送出的快照標為已儲存；
+       新改動合併回工作副本、保留 pending，不能 commitSaved() 一口氣清空。 */
+    const duringSave = diffDb(localStripped, stripForBase(tryLoad()));
+    if (duringSave.length) {
+      const current = JSON.parse(JSON.stringify(finalDb));
+      applyChanges(current, duringSave);
+      setLocalMerged(current, finalDb, {
+        version: String(r.version || ''), pending: Math.max(1, Number(tryLoad()?.sync?.pending || 1))
+      });
+    } else {
+      commitSaved({ ...local, ...finalDb }, { version: String(r.version || ''), bytes: r.bytes || 0, parts: r.parts || 0 });
+    }
     lastLoadAt = Date.now();
     if (remoteChanged) {
       logLocal(`ℹ 後端喺你登入後有人儲存過（${remoteAt.slice(0, 19).replace('T', ' ')}）：對方 ${theirsN} 項、你 ${mineN} 項、相同 ${sameN} 項、衝突 ${conflicts.length} 項`);
@@ -1752,12 +1787,19 @@ async function pushPayload(payload, { baseVersion, unit, silent, tables: changed
   if (simpleMode) {
     const tables = pickTables(payload, changedNames);
     /* full＝呢次送晒所有表（第一次寫入）→ 後端可以順手清走「已經冇咗嘅表」 */
-    const sr = await callBackend({ action: 'saveTables', unit, tables, full: !changedNames }, { timeoutMs: 90000 });
-    /* ★ v2.8.1：後端自證寫唔到（v2.8.1 起 saveTables 寫完會即刻讀返驗一次）。
-       confirmed === false ＝ 後端話收到、但分頁留唔到呢次寫嘅行 —— 當寫入失敗，
-       等 pending 保留、用家再撳一次，唔可以假成功清走 pending。
-       （v2.8.0 後端冇呢個欄位＝undefined → 當成功，唔會斷舊部署。） */
-    if (sr.ok && sr.confirmed === false) {
+    const sr = await callBackend({ action: 'saveTables', unit, tables, full: !changedNames, baseVersion }, { timeoutMs: 90000 });
+    /* 舊版後端冇 confirmed；不可盲信 success，當場讀回每張剛寫的表。
+       回應錯誤／有壞表／版本不同時保留 pending。 */
+    if (sr.ok && sr.confirmed !== true) {
+      const check = await callBackend({ action: 'loadTables' }, { timeoutMs: 90000 });
+      if (check.ok && check.found && !(check.broken || []).length &&
+          (!sr.version || check.version === sr.version) &&
+          Object.keys(tables).every(name => JSON.stringify(check.db?.[name]) === JSON.stringify(tables[name]))) {
+        sr.confirmed = true;
+      }
+    }
+    /* 冇後端自證就靠上面讀回驗證；兩者都過唔到就保留 pending，絕不假成功。 */
+    if (sr.ok && sr.confirmed !== true) {
       return {
         ok: false, reason: 'not_confirmed', mode: 'simple', bytes: 0, parts: 0, version: '',
         simpleRows: Number(sr.simpleRows || 0),

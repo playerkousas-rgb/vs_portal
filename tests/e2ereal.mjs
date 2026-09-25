@@ -141,6 +141,22 @@ ok('dev-server（同源 /api/proxy）已啟動', await waitPort(WEB_PORT));
   ok('後端答到 status（有版本號）', st.ok === true && !!st.backendVersion, JSON.stringify(st).slice(0, 160));
 }
 
+section('無帳戶／無資料：兩部裝置都以伺服器 API Key 做讀寫測試');
+{
+  const A = await runDevice({ steps: [{ op: 'checkReadWrite' }] });
+  const B = await runDevice({ steps: [{ op: 'checkReadWrite' }] });
+  ok('A 經同源代理用 API Key 寫入並讀回', step(A, 'checkReadWrite').ok === true &&
+    step(A, 'checkReadWrite').via === 'proxy', JSON.stringify(step(A, 'checkReadWrite')));
+  ok('B 用全新本機環境同樣可寫入及讀回', step(B, 'checkReadWrite').ok === true,
+    JSON.stringify(step(B, 'checkReadWrite')));
+  ok('兩部機連到同一試算表', !!step(A, 'checkReadWrite').sheet &&
+    step(A, 'checkReadWrite').sheet === step(B, 'checkReadWrite').sheet);
+  const rows = await sheetRows();
+  ok('無資料仍可測試，資料庫只有表頭沒有正式資料', rows.length === 1);
+  const checkRows = await fetch(`http://127.0.0.1:${GAS_PORT}/_rows?tab=${encodeURIComponent('連線測試')}`).then(r => r.json());
+  ok('測試記號讀回後已清走（連線測試分頁只剩表頭）', checkRows.rows?.length === 1);
+}
+
 /* ============================================================
    ① 小資料庫：寫入 → 換機讀返
    ============================================================ */
@@ -487,6 +503,37 @@ section('⑨ ★ 搶救：後端讀唔到 → 修復 → 新裝置讀到（真 C
   ok('★ 後端檢查答得到：修復後乾淨（1 套版本、0 垃圾、0 舊段）',
     Number(info.versions) === 1 && Number(info.stagingRows) === 0 && Number(info.staleRows) === 0,
     JSON.stringify({ v: info.versions, staging: info.stagingRows, stale: info.staleRows }));
+}
+
+section('多人驗收：新建帳號 → 頂部手動儲存 → 新裝置後端登入 → 第二人寫入');
+{
+  const A = await runDevice({ steps: [
+    { op: 'load' },
+    { op: 'addStaff', name: '甲領袖', email: 'leader-a@example.com' },
+    { op: 'setHubPw', id: '@last', pw: 'test-pw-a' },
+    { op: 'push' }
+  ] });
+  ok('甲建立帳號、設定密碼、頂部儲存到真 Sheet',
+    step(A, 'setHubPw').ok && step(A, 'push').ok, JSON.stringify(A.steps).slice(0, 500));
+  const B = await runDevice({ steps: [
+    { op: 'login', login: 'leader-a@example.com', pw: 'test-pw-a' },
+    { op: 'load' },
+    { op: 'addStaff', name: '乙領袖', email: 'leader-b@example.com' },
+    { op: 'setHubPw', id: '@last', pw: 'test-pw-b' },
+    { op: 'push' }
+  ] });
+  ok('全新裝置乙用甲的帳號經真後端登入', step(B, 'login').ok && step(B, 'login').gateOk,
+    JSON.stringify(step(B, 'login')));
+  ok('乙讀到甲的資料，建立第二位使用者並儲存',
+    step(B, 'load').members === 3 && step(B, 'setHubPw').ok && step(B, 'push').ok,
+    JSON.stringify(B.steps).slice(0, 500));
+  const C = await runDevice({ steps: [
+    { op: 'login', login: 'leader-b@example.com', pw: 'test-pw-b' },
+    { op: 'load' }
+  ] });
+  ok('第三部全新裝置乙的獨立帳號可登入，讀到四人資料',
+    step(C, 'login').ok && step(C, 'load').members === 4,
+    JSON.stringify(C.steps).slice(0, 500));
 }
 
 console.log(`\n${fail ? '❌' : '✅'} 端到端（真 Code.gs）：${pass} 過 / ${fail} 唔過（${Date.now() - START}ms）`);

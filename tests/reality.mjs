@@ -65,8 +65,8 @@ const spawnBg = (args, env = {}) => {
   return p;
 };
 
-const runDevice = (plan) => new Promise((resolve) => {
-  const p = spawn(process.execPath, [path.join(ROOT, 'tests', '_device.mjs'), BASE, JSON.stringify(plan)],
+const runDevice = (plan, url = BASE) => new Promise((resolve) => {
+  const p = spawn(process.execPath, [path.join(ROOT, 'tests', '_device.mjs'), url, JSON.stringify(plan)],
     { cwd: ROOT, env: { ...process.env }, stdio: ['ignore', 'pipe', 'pipe'] });
   let buf = '', err = '';
   p.stdout.on('data', d => { buf += d; });
@@ -179,23 +179,24 @@ try {
   /* ============================================================
      ④ 後端斷咗：要講得出「斷咗」而唔係扮「對得上」
      ============================================================ */
-  section('後端連唔到：要老實講「斷咗」，唔可以扮冇事');
-  const C = await runDevice({
-    steps: [{ op: 'reality' }, { op: 'syncNow' }],
-    badKey: true                               // ← 模擬 API Key 唔啱（status 通、讀寫被拒）
-  });
-  const cReality = stepOf(C, 'reality');
-  console.log('  · API Key 唔啱嘅後端實況：' + JSON.stringify(cReality).slice(0, 400));
-  ok('★ 讀寫被拒 → ok = false（唔會扮讀到）', cReality.ok === false, JSON.stringify(cReality));
-  ok('★ 結論係「斷咗」', cReality.level === 'bad', `level=${cReality.level}`);
-  ok('★ 結論直指 API Key（唔係淨係「同步失敗」四個字）',
-    /API Key|讀／寫被拒/.test((cReality.title || '') + (cReality.error || '')),
-    `${cReality.title} / ${cReality.error}`);
-  ok('★ 有 hint 教下一步點做', !!cReality.hint, cReality.hint);
+  section('本機過期 Key 不影響代理；伺服器端 Key 錯誤才拒絕');
+  const C = await runDevice({ steps: [{ op: 'load' }, { op: 'reality' }], badKey: true });
+  ok('★ 本機過期 Key 不阻止代理用伺服器 Key 讀取', stepOf(C, 'reality').ok === true);
 
-  const cPush = stepOf(C, 'syncNow');
-  ok('★（對照）API Key 唔啱嗰陣「儲存到後端」會失敗，而且唔會盲寫',
-    cPush.ok === false, JSON.stringify(cPush));
+  const badPort = await freePort();
+  spawnBg([path.join(ROOT, 'dev-server.mjs')], {
+    TROOP_0082_BACKEND: FAKE_EXEC,
+    TROOP_0082_APIKEY: 'wrong_server_key',
+    V82_PROXY_TEST: '1', PORT: String(badPort)
+  });
+  ok('錯誤伺服器 Key 測試代理啟動', await waitPort(badPort));
+  const D = await runDevice({ steps: [{ op: 'reality' }, { op: 'syncNow' }] }, `http://127.0.0.1:${badPort}`);
+  const cReality = stepOf(D, 'reality');
+  ok('★ 伺服器端 Key 不符時讀寫被拒', cReality.ok === false, JSON.stringify(cReality).slice(0, 300));
+  ok('★ 結論直指 API Key', /API Key|讀／寫被拒/.test((cReality.title || '') + (cReality.error || '')),
+    `${cReality.title} / ${cReality.error}`);
+  ok('★ 顯示修復提示', !!cReality.hint, cReality.hint);
+  ok('★ 伺服器端 Key 錯誤時儲存不會盲寫', stepOf(D, 'syncNow').ok === false);
 
   console.log(`\n──────── 後端實況測試結果：${pass} 通過 / ${fail} 失敗 ────────`);
   process.exitCode = fail ? 1 : 0;

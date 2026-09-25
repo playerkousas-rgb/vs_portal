@@ -906,6 +906,7 @@ function renderBackendGate(reason = {}) {
      （乙）後端連得上但**入面根本冇資料**、（丙）後端資料讀唔到（有得救）。
      而家三粒掣：睇醫生（檢查）／食藥（修復）／最後一招（用呢部機上載）。 */
   const retryBtn = `<button class="btn btn-primary" id="btnRetryBackend" type="button">${icon('refresh', 15)} 重新連線</button>`;
+  const rwBtn = `<button class="btn" id="btnBackendReadWrite" type="button">${icon('check', 15)} 測試寫入＋讀回（不需登入）</button>`;
   const diagBtn = `<button class="btn" id="btnBackendHealth" type="button">${icon('shield', 15)} 檢查後端（睇下係咩事）</button>`;
   const repairBtn = `<button class="btn" id="btnBackendRepair" type="button">${icon('settings', 15)} 修復後端（清垃圾／舊版本段）</button>`;
   const uploadBtn = `<button class="btn btn-accent" id="btnBackendUpload" type="button">${icon('cloud', 15)} 用呢部機嘅資料上載到後端</button>`;
@@ -927,6 +928,7 @@ function renderBackendGate(reason = {}) {
       </div></div>
       <div class="row gap-8 wrap mt-16">
         ${retryBtn}
+        ${rwBtn}
         ${diagBtn}
       </div>
       <div class="row gap-8 wrap mt-8">
@@ -955,6 +957,7 @@ function renderBackendGate(reason = {}) {
     renderBackendGate(r);
   });
   app.querySelector('#btnChangeUnit')?.addEventListener('click', () => resetToGate());
+  app.querySelector('#btnBackendReadWrite')?.addEventListener('click', runBackendReadWrite);
   app.querySelector('#btnBackendHealth')?.addEventListener('click', runBackendHealth);
   app.querySelector('#btnBackendRepair')?.addEventListener('click', runBackendRepair);
   app.querySelector('#btnBackendUpload')?.addEventListener('click', runBackendUpload);
@@ -963,6 +966,27 @@ function renderBackendGate(reason = {}) {
 /* ============================================================
    後端搶救（未登入都可以用 —— 呢個係最需要嘅時候）
    ============================================================ */
+/** 登入被擋住時仍可獨立測試接線／API Key／Sheet 寫讀。 */
+async function runBackendReadWrite() {
+  const { modal } = await import('./lib/util.js');
+  const b = app.querySelector('#btnBackendReadWrite, #btnLoginReadWrite');
+  if (b) { b.disabled = true; b.textContent = '測試緊…'; }
+  try {
+    const r = await remoteApi.testReadWrite();
+    await modal({
+      title: r.ok ? '✓ 後端寫入及讀回成功' : '⚠ 後端讀寫未通',
+      body: `<div class="note-box ${r.ok ? '' : 'danger'}"><div>${esc(r.ok ? r.message : (r.error || '未知原因'))}</div></div>
+        ${r.sheet ? `<p class="sm">試算表：${esc(r.sheet)}</p>` : ''}
+        ${r.version ? `<p class="sm">後端版本：${esc(r.version)}</p>` : ''}
+        ${r.hint ? `<p class="sm">${esc(r.hint)}</p>` : ''}
+        <p class="xs muted">本測試不操作帳戶或正式資料；成功只代表此後端的 API Key 與試算表可用，並不代表主資料庫已建立。</p>`,
+      actions: [{ label: '知道了', class: 'btn-primary', value: true }]
+    });
+  } finally {
+    if (b?.isConnected) { b.disabled = false; b.innerHTML = `${icon('check', 15)} 測試寫入＋讀回（不需登入）`; }
+  }
+}
+
 /** 顯示後端檢查結果（＋按情況提供修復／上載） */
 async function runBackendHealth() {
   const { modal } = await import('./lib/util.js');
@@ -1158,6 +1182,7 @@ function renderLogin() {
           <button type="submit" class="btn btn-primary btn-lg btn-block mt-16">${icon('key', 17)} 進入系統</button>
         </form>
         <div class="hint mt-8">名冊有個名但未設密碼？首次用 <code>${TEMP_PASSWORD}</code> 入，入去即刻要改。</div>
+        <button class="btn btn-block mt-8" type="button" id="btnLoginReadWrite">${icon('check', 15)} 測試寫入＋讀回（不需登入）</button>
 
         <button class="btn btn-block mt-8" type="button" id="btnPublicInfo">${icon('globe', 16)} 睇吓${esc(u.name || '呢個旅團')}嘅公開資料（免登入）</button>
         <button class="btn btn-ghost btn-block mt-8" type="button" id="btnForgotPassword">忘記密碼？用 EMAIL 重設</button>
@@ -1202,6 +1227,7 @@ function renderLogin() {
   app.querySelector('#loginGuide')?.addEventListener('click', openDeployGuideModal);
   app.querySelector('#btnGate')?.addEventListener('click', () => forgetChoice());
   app.querySelector('#btnGate2')?.addEventListener('click', () => forgetChoice());
+  app.querySelector('#btnLoginReadWrite')?.addEventListener('click', runBackendReadWrite);
   app.querySelector('#btnPublicInfo')?.addEventListener('click', () => showPublicInfo());
 
   app.querySelector('#btnApply')?.addEventListener('click', async () => {

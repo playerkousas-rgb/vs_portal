@@ -152,11 +152,12 @@ export async function postBackend(payload, { unit, execUrl = '', apiKey = '', ti
   let unregistered = false;
 
   /* ---- ① 同源 proxy（正路）----
-     **唔好送空 apiKey**：proxy 係 `if (unit.apiKey && !payload.apiKey)` 先注入，
-     送個空字串上去會令伺服器端條 key 注入唔到。 */
+     **唔送瀏覽器 Key**：代理永遠用伺服器 Registry 入面嘅 Key，
+     本機貼嘅 Key 只畀直連 /exec 用，唔可以蓋過伺服器設定。 */
   if (proxyUsable()) {
     const body = { ...body0 };
-    if (apiKey) { body.apiKey = apiKey; body.apikey = apiKey; }
+    // 同源代理用伺服器 Key；本機舊 Key 只留畀直連 /exec，唔好傳去代理。
+    delete body.apiKey; delete body.apikey;
     const r = await postJson('api/proxy', body, timeoutMs, false);
     const errText = String(r.json?.error || '');
     if (r.json && !UNREGISTERED_RE.test(errText)) {

@@ -379,7 +379,7 @@ export function listPublicUnits() {
       noticeReady: !!(u.notice?.submitUrl || u.backend?.gasUrl),
       /* 呢個旅團係靠 Vercel 環境變數登記（前端會標示「Vercel 登記」） */
       server: !!u.fromEnv,
-      backendReady: !!u.backendTrusted
+      backendReady: !!(u.backendTrusted && u.backend?.apiKey)
     };
   }
   return out;

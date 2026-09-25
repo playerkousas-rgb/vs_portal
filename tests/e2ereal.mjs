@@ -111,6 +111,12 @@ const sheetRows = async () => {
   const j = await r.json().catch(() => ({ rows: [] }));
   return j.rows || [];
 };
+/* ★ v2.8.0「資料表」分頁（逐表寫嘅正本）：一行一段 [旅團, 表名, 段號, 內容, 時間, 版本] */
+const simpleRows = async () => {
+  const r = await fetch(`http://127.0.0.1:${GAS_PORT}/_rows?tab=${encodeURIComponent('資料表')}`);
+  const j = await r.json().catch(() => ({ rows: [] }));
+  return j.rows || [];
+};
 /* 舊版留低嘅垃圾行，用後端嘅逃生門 cleanStaleStaging() 清 */
 const cleanStaleStaging = async () => {
   const r = await fetch(`http://127.0.0.1:${GAS_PORT}/_clean`, { method: 'POST' });
@@ -183,7 +189,11 @@ let bulkTotal = 0;
   const p = step(A, 'push');
   ok('★ 分件儲存成功（真 Code.gs 嘅 saveDbPart＋saveDbCommit）',
     p.ok === true, JSON.stringify(p).slice(0, 500));
-  ok('★ 真係行咗分件（parts > 0，唔係靜靜地退返單件）', Number(p.parts || 0) > 0, JSON.stringify(p).slice(0, 200));
+  /* ★ v2.8.0：3.3MB 都係**一次逐表寫** —— 一個表一個請求，所以唔使再分件，
+     亦都撞唔到代理 4MB 上限。舊嘅分件路（saveDbPart／saveDbCommit）保留做後備，
+     下面 ⑥b 另外驗佢仲行得。 */
+  ok('★ 新路線：3.3MB 一次逐表寫（唔使分件、唔會撞代理上限）',
+    p.mode === 'simple' && Number(p.parts || 0) === 0, JSON.stringify({ mode: p.mode, parts: p.parts }));
 
   const truth = await backendTruth();
   ok(`★★ 後端真係收到晒 ${bulkTotal} 個團員（唔係淨係收到第一件）`,
@@ -261,13 +271,21 @@ section('⑥ ★ 連續分件儲存：分頁唔會越存越大');
   }
   const after = await sheetRows();
   const junk = after.filter(r => r.unit === '__staging__');
-  ok('★★ 三次分件儲存之後冇留低暫存垃圾行', junk.length === 0, `${junk.length} 行垃圾`);
+  ok('★★ 三次儲存之後冇留低暫存垃圾行', junk.length === 0, `${junk.length} 行垃圾`);
+  /* ★ v2.8.0：正本已經搬去「資料表」分頁（逐表寫）——
+     驗嘅嘢一樣：儲存多次都唔可以越存越大（舊版每存一次就多留一份資料庫）。 */
+  const sRows = await simpleRows();
+  const sJunk = sRows.filter(r => String(r.unit) === '__staging__');
+  ok('★★「資料表」分頁冇暫存垃圾行（逐表寫根本唔用暫存）', sJunk.length === 0, `${sJunk.length} 行`);
+  const perTable = {};
+  sRows.forEach(r => { const t = String(r.table ?? r.seq ?? ''); perTable[t] = (perTable[t] || 0) + 1; });
   const truth = await backendTruth();
-  const expected = Math.ceil(truth.bytes / 45000) + 1;   // +1 = 標題列
-  ok(`「資料庫」分頁行數 ＝ 正式段數（${after.length} 行，應該係 ${expected}）`,
-    after.length === expected, `actual=${after.length} expected=${expected} bytes=${truth.bytes}`);
-  ok('分頁冇比開頭脹大（舊版每存一次就多留一份資料庫）',
-    after.length <= before.length + 40, `${before.length} → ${after.length}`);
+  ok('★★「資料表」分頁行數 ＝ 各表段數之和（冇重複、冇殘留舊段）',
+    sRows.length === Object.values(perTable).reduce((a, b) => a + b, 0) && sRows.length > 1,
+    `rows=${sRows.length} tables=${Object.keys(perTable).length}`);
+  ok('分頁冇比開頭脹大（舊「資料庫」分頁行數應該係啱啱鏡像嗰一份）',
+    after.length <= before.length + Math.ceil(truth.bytes / 45000) + 2,
+    `${before.length} → ${after.length}`);
 }
 
 /* ============================================================

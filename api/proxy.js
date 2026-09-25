@@ -40,6 +40,10 @@ const ALLOWED_ACTIONS = new Set([
      saveDbPart／saveDbCommit ＝ v2.4.0 分件儲存（大資料庫拆件上，冇硬天花板）
      loadDbPart            ＝ v2.6.0 分段讀取（大資料庫分段落，唔會撞 Vercel 4.5MB 回應上限） */
   'saveDb', 'loadDb', 'loadDbPart', 'dbInfo', 'verifySetupKey', 'saveDbPart', 'saveDbCommit',
+  /* ★ v2.8.0「簡單寫入」（學 VSBADGE：一個請求淨係寫一個表嗰幾行）。
+     saveTables＝逐表寫、loadTables＝逐表讀、loadTablesPart＝成份太大嗰陣一個表一個表攞。
+     舊嘅 saveDb／loadDb 照樣放行做後備（後端 Code.gs 未升級就自動跌返去用）。 */
+  'saveTables', 'loadTables', 'loadTablesPart',
   /* ★ v2.7.2：搶救路線 —— diag（後端自查）／repairDb（清垃圾同舊版本段）／
      saveDbForce（強制用呢部機嘅資料覆蓋後端）。三個都要後端 API Key（由本代理注入），
      前端唔會見到 Key。用途：後端資料讀唔到、所有人都入唔到嘅時候，由留住資料嗰部機救返。 */

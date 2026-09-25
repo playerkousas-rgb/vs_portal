@@ -304,8 +304,17 @@ const tabs = await allTabs();
 tabs.forEach(t => say(`分頁「${t.tab}」：${t.rows} 行${t.rows ? '　首行＝' + JSON.stringify(t.first.slice(0, 3)) : ''}`));
 const emptyReadable = tabs.filter(t => t.tab !== '資料庫' && t.rows === 0).map(t => t.tab);
 say(`而家仲係空嘅分頁有 ${emptyReadable.length} 張：${emptyReadable.join('、')}`);
-ok('「資料庫」分頁有嘢（app 嘅正本住喺呢度）',
-  (tabs.find(t => t.tab === '資料庫')?.rows || 0) > 0);
+/* ★ v2.8.0：app 嘅正本搬咗去「資料表」分頁（逐表寫，學 VSBADGE）。
+   舊嘅「資料庫」分頁仍然留底做備份，但正本喺「資料表」。 */
+ok('「資料表」分頁有嘢（★ v2.8.0 起 app 嘅正本住喺呢度）',
+  (tabs.find(t => t.tab === '資料表')?.rows || 0) > 0,
+  JSON.stringify(tabs.find(t => t.tab === '資料表')));
+/* 舊嘅「資料庫」分頁（整份 blob）而家係**後備**：新路線唔會寫佢，
+   只有舊版前端／saveDbForce 搶救上載先會寫（寫完會鏡像返去「資料表」）。
+   所以佢空著係正常嘅 —— 正本喺「資料表」，讀取亦一律以「資料表」为先。 */
+ok('舊「資料庫」分頁留空係正常（後備；讀取一律以「資料表」为先）',
+  (tabs.find(t => t.tab === '資料庫')?.rows || 0) === 0,
+  JSON.stringify(tabs.find(t => t.tab === '資料庫')));
 /* ★ 團長回報「話已寫入但張 Sheet 完全冇嘢」嘅根治：
    儲存到後端而家會連埋報表分頁一齊刷新，唔使再撳第二粒掣。 */
 ok('★ 撳完「儲存到後端」，團長開 Sheet 即刻見到「團員」分頁有嘢（唔使再撳第二粒掣）',

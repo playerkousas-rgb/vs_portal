@@ -60,7 +60,8 @@ const NAV = [
   { id: 'links', label: '公開資料', icon: 'share' },   /* ★ 2026-09-24 團長：「成員連結」改名「公開資料」 */
   { id: 'constitution', label: '團章', icon: 'book' },
   { id: 'docs', label: '教學', icon: 'note' },
-  { id: 'admin', label: '身份與系統', icon: 'shield' }
+  /* ★ 2026-09-24 團長：「身份與系統改名為系統」—— 入面嘅「身份與帳號」已經搬去「用戶與身份」 */
+  { id: 'admin', label: '系統', icon: 'shield' }
 ];
 const MOBILE_MAIN = ['dashboard', 'calendar', 'finance', 'inventory'];
 
@@ -279,7 +280,7 @@ function paintSyncChip() {
 
 
   if (!remoteApi || !remoteApi.remoteConfigured()) {
-    el.innerHTML = `<span class="badge b-warn" title="資料淨係存喺呢部機嘅瀏覽器，換機／清 cache 就會冇咗。去「帳號與系統 → 資料管理 → 總表同步」設定後端。">
+    el.innerHTML = `<span class="badge b-warn" title="資料淨係存喺呢部機嘅瀏覽器，換機／清 cache 就會冇咗。去「系統 → 資料管理 → 總表同步」設定後端。">
       ${icon('alert', 12)} 只存喺本機</span>`;
     el.onclick = () => go('#/tables/sync');
     el.style.cursor = 'pointer';
@@ -327,7 +328,9 @@ function paintSyncChip() {
     if (btn) { btn.disabled = true; btn.textContent = '處理中…'; }
     try {
       const dlg = await import('./views/syncdialog.js');
-      if (needSave) await dlg.saveWithDialog({ silent: false });
+      /* ★ 2026-09-24 團長：「我完全不知道他能不能寫進後端」——
+         撳完呢粒掣會即刻向後端核對一次，用對數表答「寫咗去邊、後端而家有冇」。 */
+      if (needSave) await dlg.saveWithDialog({ silent: false, receipt: true });
       else await dlg.reloadFromBackend();
     } finally {
       paintSyncChip();
@@ -1486,7 +1489,8 @@ async function maybeForceChangePw() {
    大部分 section 都係 #/<section>/<tab>，但有啲 view 嘅預設分頁係住喺個「淨係 section」
    嘅 hash（例如 #/inventory 就係「物資清單」），咁就唔好加個 /items 落去，
    否則會撳完一次之後 render 同 hash 對唔上。 */
-const TAB_AT_ROOT = { inventory: 'items' };
+/* 「用戶名冊」分頁就係 #/members 本身（members 嘅預設分頁） */
+const TAB_AT_ROOT = { inventory: 'items', members: 'list' };
 function tabHash(section, tab) {
   return TAB_AT_ROOT[section] === tab ? `#/${section}` : `#/${section}/${tab}`;
 }
@@ -1498,6 +1502,12 @@ function render() {
   if (bootError) return renderFatal(bootError);
   if (!current()) return renderLogin();
   const r = parse();
+  /* ★ 2026-09-24：「身份與帳號」由「系統」搬去「用戶與身份」——
+     書籤／舊連結 #/admin/accounts 一律自動導去新址，唔好畀人見到空白頁。 */
+  if (r.section === 'admin' && r.id === 'accounts') {
+    location.hash = '#/members/accounts';   // 會自己再觸發一次 hashchange → 重新 render
+    return;
+  }
   const view = VIEWS[r.section] || VIEWS.dashboard;
   const u = profile();
 
@@ -1583,7 +1593,7 @@ function render() {
 
   /* ---- 分頁掣（ui.js 個 tabs()）：全域統一綁 ----
      以前每個 view 要自己喺 mount() 綁一次 [data-tab]，漏咗就成頁分頁死晒。
-     「帳號與系統」「通告」「表格與同步」就係咁壞咗 —— 六個分頁一粒都撳唔郁，
+     「系統」「通告」「表格與同步」就係咁壞咗 —— 六個分頁一粒都撳唔郁，
      連帶入面所有掣（改密碼、備份、旅團設定…）都永遠去唔到，
      用家見到嘅就係「所有掣都壞咗」。
      而家 tabs() 吐出嚟嘅 <div data-tabnav> 一律喺呢度處理：撳分頁 ＝ 去 #/<section>/<tab>。

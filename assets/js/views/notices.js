@@ -484,7 +484,7 @@ function settingsView() {
           <input class="input" id="n-submit" value="${esc(s.submitUrl || '')}" placeholder="https://script.google.com/macros/s/…/exec">
           <div class="hint">設定咗：公開頁嘅報名會直接 POST 去你嘅總表（Google Sheet）。
             未設定：報名會存喺填表人自己嗰部裝置，領袖可以喺該裝置輸出 CSV。
-            Apps Script 範本可以喺「帳號與系統 → 資料管理」下載。</div></div>
+            Apps Script 範本可以喺「系統 → 資料管理」下載。</div></div>
         ${can('notice.edit') ? `<button class="btn btn-primary mt-12" data-act="save-settings">${icon('save', 15)} 儲存</button>` : ''}
       </div>
     </div>
@@ -866,7 +866,7 @@ export function mount(root, params) {
     if (act === 'sync-notice') {
       const keep = b.innerHTML;
       b.disabled = true; b.innerHTML = `${icon('refresh', 15)} 儲存中…`;
-      const hint = '如失敗，請去「帳號與系統 → 資料管理 → 總表同步」檢查 /exec 網址同 API Key';
+      const hint = '如失敗，請去「系統 → 資料管理 → 總表同步」檢查 /exec 網址同 API Key';
       try {
         const { saveWithDialog } = await import('./syncdialog.js');
         const r = await saveWithDialog({ silent: true, toastOk: false });

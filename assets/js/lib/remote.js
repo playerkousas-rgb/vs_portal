@@ -35,10 +35,28 @@ import {
 } from './store.js';
 import { unitEntry } from './units.js';
 import { postBackend, isExecUrl, shortExec } from './gateway.js';
-import { threeWay, overridesFor, describeConflict, diffDb, applyChanges } from './merge3.js';
+import { threeWay, overridesFor, describeConflict, diffDb, applyChanges, SKIP_TOP } from './merge3.js';
 
 /* ---------------- 狀態 ---------------- */
 let inFlight = false;
+/* ★ v2.8.0「簡單寫入」（學 VSBADGE）：後端識 saveTables／loadTables 就改行「逐表寫」。
+   由後端自報（status／dbInfo 都會帶 simpleWrite:true）—— 舊 Code.gs 冇呢個欄位，
+   simpleMode 就一直係 false，照行舊嘅整份 saveDb，所以升級唔使改設定、唔會斷。
+   ★ 一定要由後端「自報」先開：未問過後端就盲試 loadTables，會令舊後端
+     每次讀寫都白白多一個 400 請求，診斷畫面亦會多出冇意義嘅 action。 */
+let simpleMode = false;
+/* 「舊『資料庫』分頁睇落係空」嗰陣探過一次「資料表」分頁未（一個 session 一次就夠） */
+let simpleProbed = false;
+/** 而家係咪行緊「逐表寫」（界面上要話畀用家知用邊條路） */
+export function simpleWriteMode() { return simpleMode === true; }
+/** 人手切返舊嘅「整份寫入」（後端逐表寫出問題時嘅逃生門；重新載入就會再自動偵測） */
+export function useBlobWriteMode() { simpleMode = false; simpleProbed = true; }
+/* ★ v2.8.0「簡單寫入」（學 VSBADGE：一個請求淨係寫一個表嗰幾行）。
+   null＝未知（未問過後端）／true＝後端識 saveTables／false＝後端唔識（行返舊嘅整份 saveDb）。
+   點解要偵測而唔係硬轉：用家嘅 Code.gs 未必已經更新 —— 偵測唔到就自動跌返舊路，
+   唔會令未升級嘅旅團即刻斷線。 */
+let simpleWrite = null;
+export function simpleWriteSupported() { return simpleWrite === true; }
 let lastState = { state: 'idle', msg: '' };
 let lastLoadAt = 0;                          // 上次成功由後端載入（ms）
 /*
@@ -49,6 +67,9 @@ let lastLoadAt = 0;                          // 上次成功由後端載入（ms
 let lastBackend = {
   verified: false, unit: '', route: '', version: '', at: 0, error: ''
 };
+/* 後端自報嘅試算表名 —— 團長問「如果真係寫咗，寫咗去邊？」，
+   呢個名先至答得到（平台登記嘅 /exec 有可能指去另一張 Sheet）。 */
+let lastSpreadsheet = '';
 
 /** 目前同步狀態（畀介面畫個提示） */
 export function syncState() { return { ...lastState }; }
@@ -67,12 +88,18 @@ export function backendStatus() {
     route: lastBackend.route || (cfg.serverManaged ? 'proxy' : (cfg.url ? 'direct' : (cfg.viaProxy ? 'proxy' : ''))),
     unit: cfg.unit || lastBackend.unit || '',
     version: lastBackend.version || '',
+    /* 後端自報嘅試算表名 —— 「寫咗去邊」全靠呢個名 */
+    spreadsheet: lastSpreadsheet || '',
     at: lastBackend.at || 0,
     error: lastBackend.error || ''
   };
 }
 
+/** 後端自報嘅試算表名（未連過／後端太舊 ＝ 空字串） */
+export function backendSheetName() { return lastSpreadsheet || ''; }
+
 function noteBackend(r, { version = '', error = '' } = {}) {
+  if (r?.spreadsheet) lastSpreadsheet = String(r.spreadsheet);
   if (r?.via === 'proxy' || r?.via === 'direct') {
     lastBackend = {
       verified: !!r.ok,
@@ -227,6 +254,12 @@ async function callBackend(payload, { timeoutMs = 60000 } = {}) {
   }
   const out = normalize(r.json);
   out.via = r.via;                       // 界面／診斷用：今次行咗邊條路
+  /* ★ v2.8.0：後端自報識唔識「簡單寫入」（逐表）—— 見過一次就記住 */
+  if (out.simpleWrite === true) simpleMode = true;
+  /* ★ v2.8.0：後端自報「識唔識簡單寫入」。status／dbInfo 都會帶呢個欄位，
+     所以開機第一次問後端就已經知 —— 唔使另外發一個請求。 */
+  if (out.simpleWrite === true) simpleWrite = true;
+  else if (out.simpleWrite === false) simpleWrite = false;
   if (!out.ok) out.hint = hintOf(out.error, r.via);
   noteBackend(out, { version: out.backendVersion, error: out.error });
   return out;
@@ -237,7 +270,7 @@ async function callBackend(payload, { timeoutMs = 60000 } = {}) {
 const SELF_SERVE_HINT =
   '平台伺服器端未登記你旅團嘅後端（TROOP_<旅團編號>_BACKEND / _APIKEY 未設定，或者變數名打錯）。'
   + '兩個選擇：① 叫平台管理員喺 Vercel 加返嗰兩個環境變數再 Redeploy；'
-  + '② 自己即刻救返 —— 去「帳號與系統 → 資料管理 → 總表同步 → 同步設定」，'
+  + '② 自己即刻救返 —— 去「系統 → 資料管理 → 總表同步 → 同步設定」，'
   + '貼你嘅 Apps Script /exec 網址＋API Key（喺 Apps Script 執行 showApiKey() 攞），撳「儲存設定」，'
   + '然後撳「同步診斷」確認。';
 
@@ -246,7 +279,7 @@ const SELF_SERVE_HINT =
 const NO_ROUTE_HINT =
   '呢個部署讀唔到同源代理（/api/proxy），而你自己都未貼 /exec，所以兩條路都行唔到。'
   + '兩個選擇：① 用正式部署（有 /api 嗰個），並確認平台管理員喺 Vercel 設咗 '
-  + 'TROOP_<旅團編號>_BACKEND / _APIKEY；② 即刻自救 —— 去「帳號與系統 → 資料管理 → '
+  + 'TROOP_<旅團編號>_BACKEND / _APIKEY；② 即刻自救 —— 去「系統 → 資料管理 → '
   + '總表同步 → 同步設定」，貼你嘅 Apps Script /exec 網址＋API Key'
   + '（喺 Apps Script 執行 showApiKey() 攞），撳「儲存設定」。';
 
@@ -318,7 +351,7 @@ export const SEGMENT_ABOVE_BYTES = 3_000_000;
 /* 後端要更新先有分段讀取 —— 呢段提示唔可以再講「未設定後端網址」（後端明明登記好） */
 const UPDATE_GS_HINT =
   '後端仲行緊 v2.5.0 之前嘅版本，未支援分段讀取（loadDbPart）。'
-  + '去「帳號與系統 → 資料管理 → 總表同步 → 後端 Apps Script 範本」撳「下載 Code.gs」'
+  + '去「系統 → 資料管理 → 總表同步 → 後端 Apps Script 範本」撳「下載 Code.gs」'
   + ' → 貼入 Apps Script（全部取代）→ 儲存 →「部署 → 管理部署作業 → 編輯（鉛筆）'
   + ' → 版本：新版本 → 部署」。/exec 網址唔會變，前端設定唔使改。';
 /* 分段讀嘅安全閘：段數上限（防後端回錯 parts 令前端無限讀落去） */
@@ -379,6 +412,26 @@ export async function pullDbSegmented({ onProgress } = {}) {
     error: `讀緊嗰陣不斷有人儲存（試咗 ${SEGMENT_MAX_RETRIES} 次）—— 請稍後再試` };
 }
 
+/** 逐表讀（一個表一個請求）—— 成份資料庫大過代理回應上限嗰陣用 */
+async function pullTablesPart() {
+  const db = {};
+  let at = '', version = '', count = 0;
+  for (let idx = 0; idx < 200; idx++) {
+    const r = await callBackend({ action: 'loadTablesPart', idx }, { timeoutMs: 90000 });
+    if (!r.ok) {
+      if (/未知 action|unknown action/i.test(String(r.error || ''))) { simpleWrite = false; }
+      return { ok: false, reason: r.reason || 'backend', error: r.error || '逐表讀取失敗', hint: r.hint || '', segmented: true };
+    }
+    if (!r.found) return { ok: true, found: false, db: null, bytes: 0, at: r.at || '', version: r.version || '', segmented: true };
+    count = Number(r.count) || 0;
+    if (r.name) db[String(r.name)] = r.value;
+    at = r.at || at; version = r.version || version;
+    if (idx + 1 >= count) break;
+  }
+  const text = JSON.stringify(db);
+  return { ok: true, found: true, db, bytes: text.length, at, version, mode: 'simple', segmented: true };
+}
+
 /** 由後端讀返成個資料庫（唔會自動覆蓋本機 —— 交返畀呼叫者決定）
  *  @param {object} [opts]
  *    - bytes  已經知道嘅資料庫體積（例如啱啱 dbInfo 攞到）：
@@ -391,6 +444,26 @@ export async function pullDb({ bytes: knownBytes } = {}) {
 
   const mb = (n) => `${(Number(n) / 1048576).toFixed(1)} MB`;
 
+  /* ★ v2.8.0 逐表讀（VSBADGE 式）：某個表壞咗淨係唔要嗰個表（broken 會報出嚟），
+     唔會好似舊路線咁「一段壞咗＝成份資料庫讀唔到」。
+     後端仲未有「資料表」分頁（found:false）→ 自動跌返去讀舊嘅「資料庫」整份 blob，
+     所以升級 Code.gs 之後、未做第一次儲存之前，舊資料照樣讀得到。 */
+  if (simpleMode) {
+    const t = await callBackend({ action: 'loadTables' }, { timeoutMs: 90000 });
+    if (t.ok && t.found) {
+      setState('idle');
+      return { ...t, mode: 'simple' };
+    }
+    if (!(t.ok && !t.found)) {
+      /* 讀得到但砌唔返／回應過大 → 一個表一個表攞（呢個先係逐表讀嘅好處） */
+      const per = await pullTablesPart();
+      if (per.ok) { setState('idle'); return per; }
+      setState('error', t.error || '讀取失敗');
+      return { ...t, fallback: { error: per.error || '', reason: per.reason || '' } };
+    }
+    /* t.ok 但 found:false → 後端「資料表」分頁仲未有嘢 → 讀返舊 blob（下面） */
+  }
+
   /* 已經知道太大 → 直接分段（唔好白撞一次 4.5MB 上限） */
   if (Number(knownBytes) > SEGMENT_ABOVE_BYTES) {
     setState('loading', `資料庫 ${mb(knownBytes)} —— 分段讀取緊…`);
@@ -400,6 +473,21 @@ export async function pullDb({ bytes: knownBytes } = {}) {
   }
 
   const r = await callBackend({ action: 'loadDb' });
+  if (r.ok && r.found) { setState('idle'); return r; }
+
+  /* ★ 安全網（v2.8.0）：舊「資料庫」分頁睇落係空 —— 但升級之後嘅資料係寫喺
+     「資料表」分頁。如果後端其實係新版而我哋未問過（simpleMode 仲係 false），
+     呢度探一次。唔探嘅話，「升級咗 Code.gs、資料已經搬去資料表」會被誤判做
+     「後端冇資料」，跟住一次儲存就會用本機嗰份蓋過去 —— 呢個正正係「洗紀錄」。 */
+  if (r.ok && !r.found && !simpleProbed) {
+    simpleProbed = true;
+    const probe = await callBackend({ action: 'loadTables' }, { timeoutMs: 90000 });
+    if (probe.ok && probe.found) {
+      simpleMode = true;
+      setState('idle');
+      return { ...probe, mode: 'simple' };
+    }
+  }
   if (r.ok) { setState('idle'); return r; }
 
   /* 單一讀失敗 —— 好可能就係「回應過大」（代理回 500 純文字）。
@@ -560,6 +648,26 @@ export async function remoteDiagnose() {
       + (sheetName ? '（如果你開緊嘅 Google Sheet 唔係呢個名，即係平台登記咗另一張表 —— 搵平台管理員改 TROOP_<編號>_BACKEND）' : ''));
   }
 
+  /* ④b ★ v2.8.0「寫入路線」—— 呢格先至答得到團長嗰句
+     「我完全唔知佢寫唔寫得入後端；寫得入又點解讀唔到」。
+     後端 v2.8.0 起改行**逐表寫**（學 VSBADGE：一個請求淨係寫一個表嗰幾行）；
+     舊版仍然係「成份資料庫一鋪過」：serialize → 分段 → 先刪晒舊段 → 再寫晒新段
+     → 對版本（樂觀鎖）→ 重刷全部報表分頁。任何一格出事（GAS 執行時間／
+     代理 4MB／版本對唔上／寫到一半斷），結果都係同一個：**成份資料庫讀唔到**。 */
+  if (simpleMode) {
+    add('mode', '寫入路線', 'ok', '逐表寫（後端 v2.8.0）—— 一個表一個請求，讀取逐表砌',
+      '呢個就係 VSBADGE 一路用得嗰種寫法：一個表寫唔到，其餘表照樣讀得到，'
+      + '所以唔會再出現「一次失敗＝成份資料讀唔到」。');
+  } else {
+    add('mode', '寫入路線', 'warn',
+      `舊嘅「成份資料庫一鋪過」寫入（後端 ${ver || '版本未知'}，未支援逐表寫）`,
+      '呢個正正係「撳咗儲存話成功、但另一部機／無痕讀唔到」嘅死因。'
+      + '解決：去「系統 → 資料管理 → 總表同步 → 後端 Apps Script 範本」撳「下載 Code.gs」'
+      + ' → 貼入 Apps Script（全部取代）→ 儲存 →「部署 → 管理部署作業 → 編輯（鉛筆）'
+      + ' → 版本：新版本 → 部署」。/exec 網址唔會變、前端設定唔使改；'
+      + '更新完呢格會變做「逐表寫」，跟住撳一次「儲存到後端」就會把資料搬過去。');
+  }
+
   /* ⑤ 讀寫權（dbInfo 同 saveDb 一樣要 API Key —— 過到就代表寫得入） */
   const info = await callBackend({ action: 'dbInfo' }, { timeoutMs: 20000 });
   if (!info.ok) {
@@ -707,7 +815,7 @@ export function splitDbIntoParts(db, maxBytes = PART_MAX_BYTES) {
 export async function uploadPhotos(photos = [], { id = '' } = {}) {
   const cfg = remoteCfg();
   if (!cfg.ok) return { ok: false, reason: 'not_configured', error: notConfiguredMessage(cfg), links: [] };
-  /* 單據 Drive 資料夾：旅團設定（財務 → 設定／帳號與系統 都改到同一個欄） */
+  /* 單據 Drive 資料夾：旅團設定（財務 → 設定／系統 都改到同一個欄） */
   const receiptDrive = String(tryLoad()?.settings?.receiptDrive || '').trim();
   const r = await callBackend({ action: 'uploadPhotos', payload: { id, photos }, folderId: receiptDrive }, { timeoutMs: 90000 });
   if (r?.ok && Array.isArray(r.links)) return { ok: true, links: r.links };
@@ -975,6 +1083,259 @@ export async function forcePushBackend() {
   };
 }
 
+/* ============================================================
+   ★ 2026-09-24 團長：「最大的問題還是我的資料同步不到，
+     我完全不知道他能不能寫進後端，要是能寫進為什麼讀不到」
+   ------------------------------------------------------------
+   呢三件嘢就係為咗答呢三條問題。全部用**現有**後端 action
+   （status / dbInfo / loadDb / saveDb），所以唔使更新 Code.gs 都用得：
+
+     ① backendReality()  只讀。把「本機有乜」同「後端而家有乜」並排列出，
+                         再俾一句人話結論 —— 答「**讀唔讀得到／兩邊一唔一樣**」。
+     ② verifyAgainstBackend(v)  儲存之後即刻再問後端一次：
+                         版本係唔係我啱啱寫嗰個？各表筆數同本機一唔一樣？
+                         —— 答「**係咪真係寫咗入去**」。
+     ③ syncProbe()       一寫一讀：喺 db.meta 寫個記號 → 行**同一條**寫入路
+                         （saveToBackend）送出 → pullDb 讀返出嚟對 nonce。
+                         對得上 ＝ **寫入同讀取兩條路都真係通**。最硬嘅證據。
+
+   三件都唔會偷偷改任何正式紀錄（③ 只係喺 meta 寫一個記號，完咗會清走）。
+   ============================================================ */
+
+/** 拎嚟對數嘅表（dbInfo 有回呢幾樣 —— 唔使改 Code.gs 都用得到） */
+export const REALITY_KEYS = [
+  ['members', '用戶'],
+  ['transactions', '帳目'],
+  ['meetings', '會議'],
+  ['notices', '通告'],
+  ['invItems', '物資'],
+  ['accounts', '舊版帳戶']
+];
+
+function localCounts() {
+  const db = tryLoad() || {};
+  const out = {};
+  REALITY_KEYS.forEach(([k]) => { out[k] = Array.isArray(db[k]) ? db[k].length : 0; });
+  return out;
+}
+
+/** 砌「本機 vs 後端」逐表對數（畀介面直接畫表） */
+function realityRows(backendCounts, local) {
+  const b = backendCounts || {};
+  return REALITY_KEYS.map(([k, label]) => {
+    const bv = b[k] === undefined || b[k] === null ? null : Number(b[k]);
+    const lv = Number(local[k] || 0);
+    return { key: k, label, local: lv, backend: bv, same: bv === null ? null : bv === lv };
+  });
+}
+
+/**
+ * ① 只讀「後端實況」：連唔連到、寫入緊邊張 Sheet、後端有乜、同本機差幾多。
+ * @returns {Promise<object>} 見下面 out 嘅欄位；verdict = { level, title, detail }
+ */
+export async function backendReality() {
+  const local = localCounts();
+  const out = {
+    ok: false, found: false, error: '', hint: '',
+    route: '', sheet: '', backendVersion: '',
+    at: '', version: '', bytes: 0,
+    counts: null, local,
+    pending: pendingCount(), pendingAccounts: pendingAccounts(),
+    stagingRows: 0, staleRows: 0, versions: 0,
+    rows: [], verdict: { level: 'bad', title: '', detail: '' }
+  };
+  const cfg = remoteCfg();
+  if (!cfg.ok) {
+    out.error = notConfiguredMessage(cfg);
+    out.verdict = { level: 'bad', title: '呢個旅團未有可用嘅後端接線', detail: out.error };
+    return out;
+  }
+
+  const st = await callBackend({ action: 'status' }, { timeoutMs: 20000 });
+  out.route = String(st.via || '');
+  out.sheet = String(st.spreadsheet || '');
+  out.backendVersion = String(st.backendVersion || '');
+  if (!st.ok) {
+    out.error = st.error || '連唔到後端';
+    out.hint = st.hint || '';
+    out.verdict = {
+      level: 'bad',
+      title: '連唔到後端 —— 所以「寫唔入」唔係你嘅錯',
+      detail: `${out.error}${out.sheet ? '' : ''}${out.hint ? `　${out.hint}` : ''}`
+    };
+    return out;
+  }
+
+  const info = await callBackend({ action: 'dbInfo' }, { timeoutMs: 25000 });
+  if (!info.ok) {
+    out.error = info.error || '讀唔到後端資料庫狀態';
+    out.hint = info.hint || '';
+    out.verdict = {
+      level: 'bad',
+      title: '連到後端，但讀／寫被拒絕（多數係 API Key 未入伺服器端）',
+      detail: `${out.error}${out.hint ? `　${out.hint}` : ''}`
+    };
+    return out;
+  }
+
+  out.ok = true;
+  out.found = !!info.found;
+  out.sheet = out.sheet || spreadsheetName();
+  out.at = String(info.at || info.version || '').slice(0, 19).replace('T', ' ');
+  out.version = String(info.version || '');
+  out.bytes = Number(info.bytes || 0);
+  out.counts = info.counts || null;
+  out.stagingRows = Number(info.stagingRows || 0);
+  out.staleRows = Number(info.staleRows || 0);
+  out.versions = Number(info.versions || 0);
+
+  if (!out.found) {
+    out.rows = realityRows(null, local);
+    out.verdict = {
+      level: 'warn',
+      title: '後端連到，但入面完全冇資料 —— 你啲嘢從未寫入過後端',
+      detail: '呢部機嘅資料而家淨係住喺瀏覽器。撳頂部「儲存到後端」，之後再撳「即刻核對」，'
+        + '呢度就會由「後端冇嘢」變成「後端同本機一樣」。'
+    };
+    return out;
+  }
+
+  out.rows = realityRows(out.counts, local);
+  const diff = out.rows.filter(r => r.same === false);
+  const junk = out.stagingRows + out.staleRows;
+
+  if (!diff.length) {
+    out.verdict = {
+      level: 'ok',
+      title: '後端同呢部機完全一樣 —— 寫得到、讀得返 ✓',
+      detail: `後端${out.at ? `（${out.at}）` : ''}有 ${(out.rows[0]?.backend ?? 0)} 位用戶、`
+        + `${(out.rows[1]?.backend ?? 0)} 筆帳目，同你而家見到嘅一樣。`
+        + '第二部機／無痕視窗登入會見到呢一份。'
+        + (junk ? `　（分頁有 ${junk} 行垃圾／舊段，去「總表同步 → 修復後端」清走）` : '')
+    };
+    return out;
+  }
+
+  const detail = diff.map(r => `${r.label}：本機 ${r.local}、後端 ${r.backend}`).join('；');
+  out.verdict = {
+    level: out.pending > 0 ? 'warn' : 'bad',
+    title: out.pending > 0
+      ? `有 ${out.pending} 項改動仲喺呢部機，未寫入後端`
+      : '後端同呢部機唔同 —— 兩邊睇緊唔同嘅資料',
+    detail: `${detail}。${out.pending > 0
+      ? '呢個數就係「未寫入」嗰份 —— 撳頂部「儲存到後端」就會寫過去。'
+      : '本機冇未儲存改動都對唔上 ＝ 多數係後端俾另一部機寫過，撳「由後端重新載入」拉返最新嗰份。'}`
+  };
+  return out;
+}
+
+/**
+ * ② 儲存之後即刻核對：後端版本係咪我啱啱寫嗰個？各表筆數同本機一唔一樣？
+ * @param {string} expectedVersion  saveToBackend 成功回傳嘅版本號
+ */
+export async function verifyAgainstBackend(expectedVersion = '') {
+  const local = localCounts();
+  const out = {
+    ok: false, matched: false, error: '', hint: '',
+    version: '', expectedVersion: String(expectedVersion || ''),
+    at: '', sheet: '', bytes: 0, local, backend: null, rows: []
+  };
+  const info = await callBackend({ action: 'dbInfo' }, { timeoutMs: 25000 });
+  if (!info.ok) {
+    out.error = info.error || '核對嗰陣讀唔到後端';
+    out.hint = info.hint || '';
+    return out;
+  }
+  out.ok = true;
+  out.sheet = spreadsheetName();
+  out.found = !!info.found;
+  out.version = String(info.version || '');
+  out.at = String(info.at || info.version || '').slice(0, 19).replace('T', ' ');
+  out.bytes = Number(info.bytes || 0);
+  out.backend = info.counts || null;
+  out.rows = realityRows(info.counts, local);
+  const versionOk = !out.expectedVersion || out.version === out.expectedVersion;
+  const countsOk = out.rows.every(r => r.same !== false);
+  out.matched = !!info.found && versionOk && countsOk;
+  out.versionOk = versionOk;
+  out.countsOk = countsOk;
+  return out;
+}
+
+function spreadsheetName() { return lastSpreadsheet; }
+
+/**
+ * ③ 一寫一讀驗證：寫個記號落 db.meta → 行**同一條**寫入路送出 → 讀返出嚟對。
+ *    對得上 ＝ 寫入同讀取兩條路都真係通（呢個係最硬嘅證據，唔係「我覺得應該得」）。
+ * @returns {Promise<{ok:boolean, matched:boolean, nonce:string, seen:string, ...}>}
+ */
+export async function syncProbe({ cleanup = true } = {}) {
+  const store = await import('./store.js');
+  const cfg = remoteCfg();
+  const out = {
+    ok: false, matched: false, nonce: '', seen: '', error: '', hint: '',
+    savedVersion: '', readVersion: '', at: '', bytes: 0, sheet: spreadsheetName(),
+    writeMs: 0, readMs: 0, cleanedUp: false, cleanupError: ''
+  };
+  if (!cfg.ok) { out.error = notConfiguredMessage(cfg); return out; }
+  const db = tryLoad();
+  if (!db) { out.error = '資料庫未載入'; return out; }
+
+  const nonce = `probe-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+  out.nonce = nonce;
+  db.meta = db.meta || {};
+  const prev = db.meta.probe;
+  db.meta.probe = { nonce, at: new Date().toISOString() };
+  store.commit();                                    // 本機 ＋ pending +1
+
+  const t0 = Date.now();
+  const saved = await saveToBackend({ policy: 'theirs' });
+  out.writeMs = Date.now() - t0;
+  out.savedVersion = String(saved.version || '');
+  if (!saved.ok) {
+    out.error = saved.error || '寫入失敗';
+    out.hint = saved.hint || '';
+    /* 記號留喺本機冇意思 —— 清走，等下次正常儲存先至寫（唔好污染資料） */
+    const cur = tryLoad();
+    if (cur?.meta) {
+      if (prev) cur.meta.probe = prev; else delete cur.meta.probe;
+      store.commitMeta();
+    }
+    return out;
+  }
+
+  const t1 = Date.now();
+  const got = await pullDb();
+  out.readMs = Date.now() - t1;
+  if (!got.ok) {
+    out.error = got.error || '讀取失敗';
+    out.hint = got.hint || '寫入嗰下後端話 OK，但讀返唔到 —— 呢個正正就係「寫到但讀唔到」。';
+    out.wroteButCannotRead = true;
+  } else if (!got.found) {
+    out.error = '後端冇任何資料庫（寫咗但讀返係空）';
+    out.wroteButCannotRead = true;
+  } else {
+    out.seen = String(got?.db?.meta?.probe?.nonce || '');
+    out.readVersion = String(got.version || '');
+    out.at = String(got.at || got.version || '').slice(0, 19).replace('T', ' ');
+    out.bytes = Number(got.bytes || 0);
+    out.matched = out.seen === nonce;
+    out.ok = true;
+  }
+
+  if (cleanup) {
+    const cur = tryLoad();
+    if (cur?.meta) {
+      if (prev) cur.meta.probe = prev; else delete cur.meta.probe;
+      store.commit();
+      const again = await saveToBackend({ policy: 'theirs' });
+      out.cleanedUp = !!again.ok;
+      if (!again.ok) out.cleanupError = again.error || '';
+    }
+  }
+  return out;
+}
+
 /** 冇基準嘅舊裝置專用：後端為準 ＋ 本機多出嚟嘅紀錄（有 id）補入。唔刪、唔蓋。 */
 function unionAdditions(remote, local) {
   const out = JSON.parse(JSON.stringify(remote));
@@ -1201,7 +1562,16 @@ async function saveToBackendInner({ policy = 'ask', resolver = null, silent = tr
 
     /* ③ 寫入（樂觀鎖 baseVersion ＝ 我啱啱見到嘅後端版本） */
     const payload = exportForBackend({ ...local, ...finalDb });
-    const r = await pushPayload(payload, { baseVersion: String(info.version || ''), unit: cfg.unit, silent });
+    /* ★ v2.8.0 逐表寫用：正常只寫「基準 → 而家」有改過嗰幾個表。
+       ★★ 但後端「資料表」分頁仲未有嘢嗰陣（info.mode 唔係 'simple'）
+       **一定要寫齊所有表** —— 呢個係第一次寫入／由舊「資料庫」blob 搬過嚟嗰一次。
+       如果呢度淨係寫改過嗰幾個表，另一部機讀「資料表」就會讀到一份缺晒嘅 db，
+       缺咗嘅表被當做「空」—— 睇落就係「資料冇咗」。寧願第一次大啲，唔可以缺。 */
+    const firstSimpleWrite = !base || String(info.mode || '') !== 'simple';
+    const r = await pushPayload(payload, {
+      baseVersion: String(info.version || ''), unit: cfg.unit, silent,
+      tables: firstSimpleWrite ? null : changedTableNames(base?.db || null, finalDb)
+    });
     if (r.conflict) {
       /* dbInfo → 寫入之間又有人寫咗（幾秒內撞正）→ 由頭核對多一次（唔會自動蓋） */
       if (_attempt < 2) {
@@ -1210,7 +1580,18 @@ async function saveToBackendInner({ policy = 'ask', resolver = null, silent = tr
         return saveToBackendInner({ policy, resolver, silent, _attempt: _attempt + 1 });
       }
       setState('conflict', '後端不停有人寫入 —— 請等一陣再儲存');
-      return { ok: false, reason: 'conflict', error: '後端連續有人寫入，核對咗三次都撞版 —— 請等一陣再撳「儲存到後端」' };
+      /* ★ 2026-09-24 團長：「我完全不知道他能不能寫進後端」——
+         撞版嗰陣要講得出「後端而家嗰個版本係乜」，唔可以淨係「請等一陣」。
+         最常見嘅死因係後端「資料庫」分頁有舊版本段／空旅團欄嘅行，
+         令「讀到嘅版本」同「寫入要對嘅版本」唔一致 —— 一睇到兩個版本對唔上就知。 */
+      return {
+        ok: false, reason: 'conflict',
+        version: String(r.version || ''),
+        error: '後端連續有人寫入，核對咗三次都撞版 —— 請等一陣再撳「儲存到後端」'
+          + (r.version ? `（後端而家嗰個版本：${String(r.version).slice(0, 19).replace('T', ' ')}）` : ''),
+        hint: '去「系統 → 資料管理」撳「即刻核對」睇下後端而家有乜；'
+          + '如果後端「資料庫」分頁有舊版本段／垃圾行，撳「總表同步 → 修復後端」清走就正常返。'
+      };
     }
     if (!r.ok) {
       setState('error', r.error || '儲存失敗');
@@ -1226,6 +1607,9 @@ async function saveToBackendInner({ policy = 'ask', resolver = null, silent = tr
     }
     const out = {
       ok: true, pushed: true, version: String(r.version || ''), bytes: r.bytes || 0, parts: r.parts || 0,
+      /* ★ v2.8.0：呢次儲存行咗邊條路 —— 'simple'（逐表寫）／''（舊嘅整份寫）。
+         界面同「同步診斷」要話畀用家知，出事先追得到。 */
+      mode: r.mode || '',
       remoteChanged, remoteAt, mine: mineN, theirs: theirsN, same: sameN, applied: appliedN,
       conflicts, ctx, resolved: 0, kept: conflicts.length,
       /* ★ v2.6.3 Code.gs 會喺寫完「資料庫」分頁之後**顺手刷新晒報表分頁**，
@@ -1259,15 +1643,74 @@ async function saveToBackendInner({ policy = 'ask', resolver = null, silent = tr
   }
 }
 
-/** 實際送出（單件 saveDb／大過閾值自動分件）—— 回 { ok, conflict, version, bytes, parts, error } */
-async function pushPayload(payload, { baseVersion, unit, silent }) {
+/* ============================================================
+   ★ v2.8.0 簡單寫入（學 VSBADGE）
+   ------------------------------------------------------------
+   VSBADGE 一路冇事，vs_portal 就係「寫入成功但讀唔到」—— 兩者最大分別：
+
+     VSBADGE：一個請求淨係寫**一個表嗰幾行**（handleSave 改邊行改邊行）。
+              冇鎖、冇分段暫存、冇「成份 serialize」。
+     vs_portal（舊）：成份資料庫 → 一條大 JSON → 每段 45000 字 → 先刪晒舊段
+              → 再寫晒新段 → 仲要對版本（樂觀鎖）→ 最後重刷全部報表分頁。
+              任何一格出事，結果都係「成份資料庫讀唔到」。
+
+   所以呢度照 VSBADGE 個思路改：**一個表一個表寫**。
+     寫：saveTables  { tables:{ members:[…], transactions:[…] } }  ← 淨係有改過嗰幾個表
+     讀：loadTables  → 逐表砌返；某個表壞咗淨係 skip 嗰個表，其餘照讀
+   後端唔識（Code.gs 未更新）就自動跌返舊嘅整份 saveDb，唔會斷。
+   ============================================================ */
+
+/* 呢幾個一定要跟住每次寫入一齊上（體積細，但少咗讀返嚟就砌唔成一份完整 db） */
+const ALWAYS_TABLES = ['meta', 'schema', 'kind', 'unitCode'];
+/** 今次要寫邊幾個表（base → next 有改過嗰啲；base 冇＝第一次，全部都要寫） */
+export function changedTableNames(baseDb, nextDb) {
+  const names = new Set(ALWAYS_TABLES);
+  try {
+    if (!baseDb || typeof baseDb !== 'object') return null;      // null＝全部
+    diffDb(baseDb, nextDb || {}).forEach(c => {
+      const top = String(c?.path?.[0] || '');
+      if (top && !SKIP_TOP.has(top)) names.add(top);
+    });
+  } catch { return null; }
+  return [...names];
+}
+
+/** 由成份 payload 抽出要寫嘅表 */
+function pickTables(payload, names) {
+  const out = {};
+  (names || Object.keys(payload || {})).forEach(k => { if (payload && k in payload) out[k] = payload[k]; });
+  ALWAYS_TABLES.forEach(k => { if (payload && payload[k] !== undefined) out[k] = payload[k]; });
+  return out;
+}
+
+/** 實際送出（★ v2.8.0 先試逐表寫；後端唔識先跌返單件 saveDb／大過閾值自動分件）
+ *  回 { ok, conflict, version, bytes, parts, error } */
+async function pushPayload(payload, { baseVersion, unit, silent, tables: changedNames }) {
   let text = '';
   try { text = JSON.stringify(payload); } catch { /* ignore */ }
   const bytes = text.length;
   if (bytes > 40000000) {
-    return { ok: false, reason: 'too_big', error: `資料庫太大（${fmtBytes(bytes)}）`, hint: '去「帳號與系統 → 資料管理 → 總表同步 → 體積檢查」睇下邊個分頁食緊位。' };
+    return { ok: false, reason: 'too_big', error: `資料庫太大（${fmtBytes(bytes)}）`, hint: '去「系統 → 資料管理 → 總表同步 → 體積檢查」睇下邊個分頁食緊位。' };
   }
   if (!silent) setState('saving', '寫入緊後端…');
+
+  /* ★ v2.8.0 逐表寫（VSBADGE 式）—— 冇版本鎖、冇分段暫存、冇「成份 serialize」。
+     只送有改過嗰幾個表，一次寫入通常幾 KB，撞唔到代理 4MB 上限；
+     而且**先寫新、後刪舊**（後端嗰邊），中途斷都唔會乜都冇。 */
+  if (simpleMode) {
+    const tables = pickTables(payload, changedNames);
+    /* full＝呢次送晒所有表（第一次寫入）→ 後端可以順手清走「已經冇咗嘅表」 */
+    const sr = await callBackend({ action: 'saveTables', unit, tables, full: !changedNames }, { timeoutMs: 90000 });
+    if (sr.ok) return { ...sr, bytes: sr.bytes || bytes, parts: 0, mode: 'simple' };
+    if (/未知 action|unknown action|不支援的操作/.test(String(sr.error || ''))) {
+      /* 後端 Code.gs 未更新到 v2.8.0 —— 記低，今次跌返舊路，之後唔使再試 */
+      simpleMode = false;
+      logLocal('⚠ 後端未更新到 v2.8.0（唔識 saveTables）—— 今次改用整份寫入');
+    } else {
+      return { ...sr, bytes: 0, parts: 0, mode: 'simple' };
+    }
+  }
+
   if (bytes <= CHUNKED_ABOVE) {
     const r = await callBackend({ action: 'saveDb', db: payload, baseVersion });
     return { ...r, bytes: r.bytes || bytes, parts: 0 };

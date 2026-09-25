@@ -537,7 +537,7 @@ section('團費收款紀錄');
 /* ---------- 詳細頁 / 編輯頁 ---------- */
 section('詳細頁與編輯頁');
 const detailPages = ['#/meetings/new', '#/members/m001', '#/members/new', '#/inventory/new', '#/finance/new',
-  '#/admin/accounts', '#/docs/multiunit'];
+  '#/members/accounts', '#/docs/multiunit'];
 for (const p of detailPages) {
   const before = errors.length;
   try {

@@ -218,7 +218,7 @@ export function envUnitTemplate(code = '<編號>', name = '', execUrl = '', apiK
   ].join('\n');
 }
 
-/** 貼落 Vercel 嘅逐步指示（同一個來源：教學頁同「帳號與系統」都用呢個） */
+/** 貼落 Vercel 嘅逐步指示（同一個來源：教學頁同「系統」都用呢個） */
 export function envUnitSteps(code = '<編號>') {
   return [
     `Vercel → 你嘅專案 → Settings → Environment Variables`,

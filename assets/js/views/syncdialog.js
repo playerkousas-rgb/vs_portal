@@ -118,10 +118,96 @@ export function saveResultText(r) {
  *   核對版本 → 三方比對 → 先寫唔撞嘅 → 撞嘅彈框問 → 確認咗先蓋
  * @returns {Promise<object>} remote.saveToBackend 嘅結果
  */
-export async function saveWithDialog({ silent = false, toastOk = true } = {}) {
+/**
+ * 「收據」—— 寫入之後**即刻向後端再問一次**，證明啲嘢真係喺後端。
+ * ------------------------------------------------------------
+ * ★ 2026-09-24 團長：「我完全不知道他能不能寫進後端，要是能寫進為什麼讀不到」。
+ *   以前撳完「儲存到後端」只會彈一個一閃就冇嘅 toast，講「已儲存到後端 ✓」，
+ *   但冇任何嘢證明後端**真係**有嗰份嘢 —— 團長開 Google Sheet 見到空白，
+ *   自然就覺得「根本冇寫到」。
+ *   而家：寫完 → 問後端「你而家係咩版本、有幾多用戶／帳目」→
+ *   同本機對一次 → 用一個對數表答你「對得上／對唔上」。
+ */
+export async function showSaveReceipt(r) {
+  const remote = await import('../lib/remote.js');
+  let v = null;
+  try { v = await remote.verifyAgainstBackend(r?.version || ''); }
+  catch (e) { v = null; }
+
+  const okAll = !!v?.ok && !!v?.matched;
+  const rows = (v?.rows || []).map(x => `<tr>
+      <td>${esc(x.label)}</td>
+      <td class="right mono">${x.local}</td>
+      <td class="right mono">${x.backend === null ? '<span class="faint">（冇）</span>' : x.backend}</td>
+      <td class="center">${x.same === null ? '—' : x.same ? '<span style="color:var(--ok);font-weight:700">✓</span>' : '<span style="color:var(--danger);font-weight:700">✗</span>'}</td>
+    </tr>`).join('');
+
+  const body = `
+    ${v ? `
+      <div class="note-box ${okAll ? '' : 'danger'} mb-12">${icon(okAll ? 'check' : 'alert', 15)}<div>
+        <b>${okAll ? '已寫入後端，而且核對過 —— 後端而家同你部機一樣 ✓' : '寫入回傳成功，但核對嗰陣對唔上'}</b>
+        <div class="xs mt-4">${okAll
+          ? '即係：第二部機（甚至無痕視窗）登入就會見到呢一份。'
+          : (v.ok
+            ? '後端而家嘅版本／筆數同你部機唔同。多數係「寫完之後又有另一部機寫過」，或者後端讀取有問題（例如資料庫太大讀唔返）。'
+            : `核對嗰陣讀唔到後端：${esc(v.error || '')}`)}
+        </div>
+      </div></div>
+      <div class="kv mb-12">
+        ${v.sheet ? `<div class="kv-row sm"><span>寫入緊嘅試算表</span><span><b>${esc(v.sheet)}</b></span></div>` : ''}
+        <div class="kv-row sm"><span>後端版本</span><span class="mono xs">${esc(v.version || '（未知）')}</span></div>
+        <div class="kv-row sm"><span>寫入嗰陣後端畀嘅版本</span><span class="mono xs">${esc(v.expectedVersion || '（未知）')}</span></div>
+        <div class="kv-row sm"><span>後端最後更新</span><span>${esc(String(v.at || '').slice(0, 19).replace('T', ' '))}</span></div>
+        <div class="kv-row sm"><span>寫入路線</span><span class="xs">${r?.mode === 'simple'
+          ? '<b>逐表寫</b>（一個表一個請求 —— 壞一個表唔會連累其他表）'
+          : '整份寫入（舊路線；後端 Code.gs 未更新到 v2.8.0）'}</span></div>
+        ${v.bytes ? `<div class="kv-row sm"><span>後端資料庫大小</span><span>${esc(remote.fmtBytes(v.bytes))}</span></div>` : ''}
+      </div>
+      <div class="scroll-x">
+        <table class="table table-compact">
+          <thead><tr><th>資料</th><th class="right">呢部機</th><th class="right">後端</th><th class="center" style="width:60px">一樣？</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <div class="hint mt-8">${icon('info', 13)}
+        我哋點核對：寫完之後<b>即刻再問後端</b>「你而家係咩版本、有幾多用戶／帳目」，
+        同呢部機對一次。版本一樣 ＋ 筆數一樣 ＝ 真係寫咗入去。
+        ${v.sheet ? '如果你開 Google Sheet 睇唔到團員／帳目，請對一對上面個<b>試算表名</b>係唔係你開緊嗰張。' : ''}</div>
+      ${okAll ? `<div class="note-box info mt-12">${icon('info', 15)}<div>
+        <b>後端已經有呢份 —— 如果第二部機（或者無痕）睇到嘅仲係舊嘢：</b>
+        <div class="xs mt-4">① 對一對上面個<b>試算表名</b>；② 第二部機係唔係揀咗另一個旅團編號（網址 <code>?u=</code>）；
+        ③ 第二部機如果一早開住 app，佢<b>唔會自己刷新</b> —— 喺嗰部機撳頂部「<b>重新載入</b>」（或者重新登入）就會見到呢一份。</div>
+      </div></div>` : ''}
+    ` : `
+      <div class="note-box warn mb-12">${icon('alert', 15)}<div>
+        <b>寫入成功，但核對唔到（讀唔到後端）</b>
+        <div class="xs mt-4">你嘅資料已經送出，後端亦冇報錯。不過而家讀唔到後端狀態，
+        所以未能證明後端而家有乜 —— 可以遲啲去「系統 → 資料管理」撳「即刻核對」再驗一次。</div>
+      </div></div>
+    `}`;
+
+  return modal({
+    title: okAll ? '✓ 已寫入後端（已核對）' : '寫入後核對',
+    sub: '「寫咗」同「寫咗去邊、後端有冇」係兩件事 —— 呢張收據答第二件',
+    wide: true,
+    body,
+    actions: [
+      { label: '去睇後端實況', class: 'btn', value: 'reality' },
+      { label: '知道喇', class: 'btn-primary', value: true }
+    ]
+  }).then(choice => {
+    if (choice === 'reality') {
+      try { window.dispatchEvent(new HashChangeEvent('hashchange')); } catch { /* ignore */ }
+      location.hash = '#/tables/sync';
+    }
+    return choice;
+  });
+}
+
+export async function saveWithDialog({ silent = false, toastOk = true, receipt = false } = {}) {
   const remote = await import('../lib/remote.js');
   if (!remote.remoteConfigured()) {
-    toast('未設定後端 —— 去「帳號與系統 → 資料管理 → 總表同步」', 'err');
+    toast('未設定後端 —— 去「系統 → 資料管理 → 總表同步」', 'err');
     return { ok: false, reason: 'not_configured' };
   }
   const r = await remote.saveToBackend({ policy: 'ask', resolver: resolveConflictsDialog, silent });
@@ -158,6 +244,11 @@ export async function saveWithDialog({ silent = false, toastOk = true } = {}) {
     if (toastOk || r.remoteChanged || r.conflicts?.length) toast(saveResultText(r), 'ok');
     /* 後端有對方改動 → 本機已經併入 → 畫面要重畫 */
     if (r.remoteChanged) { try { window.dispatchEvent(new CustomEvent('v82:refresh')); } catch { /* ignore */ } }
+    /* ★ 2026-09-24：團長「我完全不知道他能不能寫進後端」——
+       撳完掣一定要**俾證據**：寫完即刻問後端一次，用對數表答「寫咗去邊、後端有冇」。 */
+    if (receipt) {
+      try { await showSaveReceipt(r); } catch (e) { console.warn('[sync] 收據核對失敗', e); }
+    }
   } else if (r.reason === 'no_base') {
     toastAction(r.error, '重新載入', () => reloadFromBackend({ force: false }), 'err');
   } else if (r.reason !== 'busy') {

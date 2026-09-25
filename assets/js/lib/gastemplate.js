@@ -4,14 +4,15 @@
    （一張 Sheet 統管整個 Venture，支援多旅團獨立 Sheet 或合併 Sheet）。
    ============================================================ */
 
-export const SHEET_TABS = ['資料庫', '帳目', '物資', '團員', '收支申報', '通告', '通告全文', '報名', '物資借用', '會議', '設定', '同步紀錄',
+/* ★ v2.8.0：「資料表」＝簡單寫入（逐表寫）嘅正本；「資料庫」＝舊嘅整份 blob（留底／後備） */
+export const SHEET_TABS = ['資料表', '資料庫', '帳目', '物資', '團員', '收支申報', '通告', '通告全文', '報名', '物資借用', '會議', '設定', '同步紀錄',
   '進度追蹤', '其他獎章', '待批完成', '活動履歷', '待批履歷', '成員名單'];   // 後 6 個 = 同進度前端共用嘅分頁
 
 export function gasTemplate() {
   return `/**
  * ============================================================
  *  深資童軍管理系統 · 總表同步與多旅團後端 Apps Script（Code.gs）
- *  版本：v2.7.2
+ *  版本：v2.8.0
  *
  *  ★ v2.6.3 修正（2026-09-21，團長回報「佢話已寫入但張 Sheet 完全冇嘢；
  *    唔好搞咁多掣要人按，存入後端就資料庫同分頁都 SAVE 曬」）：
@@ -141,7 +142,7 @@ var MODE = 'per-unit-sheet';   // 'per-unit-sheet' = 每個旅團獨立工作表
 var DRIVE_FOLDER_ID = '';
 
 /** 後端版本（status 會回報；APP 用嚟檢查「你張 Sheet 係咪仲行舊 code」） */
-var BACKEND_VERSION = 'v2.7.2';
+var BACKEND_VERSION = 'v2.8.0';
 
 /* ============================================================
    初始化與 API KEY 管理
@@ -336,7 +337,9 @@ var SUPPORTED_ACTIONS = ['ping', 'test', 'status', 'sync', 'claim', 'claimDecisi
   /* ★ v2.7.1：「人讀到、進度全空」自查（見 diagnoseBackendTabs） */
   'diag',
   /* ★ v2.7.2：一鍵修復（清垃圾／舊版本段）＋ 強制覆蓋（人手搶救） */
-  'repairDb', 'saveDbForce'];
+  'repairDb', 'saveDbForce',
+  /* ★ v2.8.0：簡單寫入（逐表寫／逐表讀）—— 見下面 saveTables／loadTables／loadTablesPart */
+  'saveTables', 'loadTables', 'loadTablesPart'];
 
 /**
  * BUILD §1／§2：敏感 action 必須由 server-side API_KEY 明確授權。
@@ -765,9 +768,33 @@ function doPost(e) {
 
     /* ---- 整份資料庫讀／寫（app 嘅真正儲存；一定要 API Key）---- */
     if (body.action === 'saveDb' || body.action === 'loadDb' || body.action === 'loadDbPart'
-      || body.action === 'dbInfo' || body.action === 'saveDbPart' || body.action === 'saveDbCommit') {
+      || body.action === 'dbInfo' || body.action === 'saveDbPart' || body.action === 'saveDbCommit'
+      || body.action === 'saveTables' || body.action === 'loadTables' || body.action === 'loadTablesPart') {
       var dbAuth = requireAuth(expectedKey, key);
       if (!dbAuth.ok) return json(dbAuth);
+      /* ★ v2.8.0 簡單寫入（逐表）：一個請求淨係寫「有改過」嗰幾個表。
+         冇樂觀鎖、冇分段暫存、冇報表重寫 —— 一個表寫唔到，其餘表照讀得到。 */
+      if (body.action === 'saveTables') {
+        var stx = withLock(function () { return saveTables(body); });
+        return json({ ok: stx.success === true, success: stx.success === true,
+          tables: stx.tables || null, bytes: stx.bytes || 0, at: stx.at || '',
+          version: stx.version || '', error: stx.error || '',
+          /* 報表分頁喺同一次請求入面一齊刷咗（前端就唔使再發第二次） */
+          reports: stx.reports || null });
+      }
+      if (body.action === 'loadTables') {
+        var ltx = loadTables(textOf(body.unit));
+        return json({ ok: ltx.success === true, success: ltx.success === true, found: !!ltx.found,
+          db: ltx.db || null, tables: ltx.tables || null, broken: ltx.broken || [],
+          at: ltx.at || '', version: ltx.version || '', error: ltx.error || '' });
+      }
+      /* 逐表讀：成份資料庫大過代理回應上限嗰陣，前端一個表一個表攞 */
+      if (body.action === 'loadTablesPart') {
+        var ltp = loadTablesPart(textOf(body.unit), body.idx);
+        return json({ ok: ltp.success === true, success: ltp.success === true, found: !!ltp.found,
+          idx: ltp.idx || 0, count: ltp.count || 0, name: ltp.name || '', value: ltp.value,
+          at: ltp.at || '', version: ltp.version || '', error: ltp.error || '' });
+      }
       if (body.action === 'saveDb') {
         var sv = withLock(function () { return saveDb(body); });
         return json({ ok: sv.success === true, success: sv.success === true, conflict: sv.conflict === true,
@@ -793,7 +820,11 @@ function doPost(e) {
           at: nfo.at || '', version: nfo.version || '', bytes: nfo.bytes || 0,
           sizes: nfo.sizes || null, photoBytes: nfo.photoBytes || 0, counts: nfo.counts || null,
           stagingRows: nfo.stagingRows || 0, stagingBytes: nfo.stagingBytes || 0,
-          staleRows: nfo.staleRows || 0, versions: nfo.versions || 0, error: nfo.error || '' });
+          staleRows: nfo.staleRows || 0, versions: nfo.versions || 0, error: nfo.error || '',
+          /* ★ v2.8.0：話畀前端知呢個後端識「簡單寫入」（逐表寫）——
+             前端見到 true 就會改行 saveTables／loadTables；舊後端冇呢個欄位
+             → 前端照行舊嘅整份 saveDb，唔使改設定、唔會斷。 */
+          simpleWrite: true, mode: nfo.mode || 'blob', broken: nfo.broken || [] });
       }
       /* v2.6.0：分段讀取 —— 每次淨係回一段純文字，唔會撞代理 4.5MB 回應上限 */
       if (body.action === 'loadDbPart') {
@@ -975,7 +1006,7 @@ function doPost(e) {
       return json(loadMyRequests(textOf(body.ymis)));
     }
     if (body.action === 'status' || body.action === 'test') {
-      return json({ ok: true, msg: '深資童軍管理系統 後端正常', spreadsheet: SpreadsheetApp.getActiveSpreadsheet().getName(), tabs: SHEET_TABS, backendVersion: BACKEND_VERSION, at: new Date() });
+      return json({ ok: true, msg: '深資童軍管理系統 後端正常', spreadsheet: SpreadsheetApp.getActiveSpreadsheet().getName(), tabs: SHEET_TABS, backendVersion: BACKEND_VERSION, simpleWrite: true, at: new Date() });
     }
     /* ★ v2.7.2：一鍵修復（清暫存垃圾行 ＋ 舊版本段）—— 見上面 repairDb。
        要 API Key（會刪行，雖然只刪垃圾）。 */
@@ -1066,7 +1097,7 @@ function doGet(e) {
     spreadsheet: (function () { try { return SpreadsheetApp.getActiveSpreadsheet().getName(); } catch (err) { return '(未綁定試算表)'; } })(),
     tabs: SHEET_TABS,
     api: ['ping', 'status', 'sync', 'saveDb', 'loadDb', 'dbInfo', 'claim', 'claimDecision', 'noticeSignup', 'noticeSubscribe', 'noticeSubscriptions', 'loan', 'loanDecision', 'load', 'save', 'saveOtherBadge'],
-    usage: 'APP 內「帳號與系統 → 資料管理 → 總表同步」填呢個 /exec 網址即可'
+    usage: 'APP 內「系統 → 資料管理 → 總表同步」填呢個 /exec 網址即可'
   });
 }
 
@@ -1121,7 +1152,11 @@ function saveDb(body) {
      嘅係上一個完整版本，baseVersion 永遠對唔上 → 每次儲存都話「後端有較新版本」
      → 用家永遠儲存唔到（同「新儲嘅完全讀唔到」係同一個死法）。
      而家：攞「讀得到」嗰套嘅版本。 */
-  var curVersion = dbRawText(unit, true).version || '';
+  /* ★ v2.8.0：版本鎖要對住**正本**。讀取一律以「資料表」为先，所以佢有嘢嗰陣
+     版本就以佢為準 —— 否則一部淨係用新路線寫過嘅機，會令舊路線嘅 saveDb
+     讀到「舊『資料庫』分頁冇版本」而以為冇衝突，盲蓋走新資料。 */
+  var simpleNow = loadTables(unit);
+  var curVersion = simpleNow.found ? (simpleNow.version || '') : (dbRawText(unit, true).version || '');
   var baseVersion = textOf(body.baseVersion);
   /* ★ v2.7.2：force（＝「用呢部機嘅資料修復後端」）。
      情況：後端資料讀唔到（幾套版本段／寫壞咗），只有一部機留住成份資料，
@@ -1158,12 +1193,24 @@ function saveDb(body) {
   var out = chunks.map(function (c, idx) { return [unit, idx + 1, c, now, version]; });
   sh.getRange(sh.getLastRow() + 1, 1, out.length, 5).setValues(out);
 
+  /* ★ v2.8.0：舊路線寫完「資料庫」之後，**鏡像**去「資料表」分頁。
+     因為讀取一律以「資料表」为先，唔鏡像嘅話舊路線（舊版前端／saveDbForce
+     搶救上載）寫嘅嘢會讀唔到 —— 兩邊就會各睇各嘅。 */
+  var mirrored = null;
+  try { mirrored = saveTables({ unit: unit, tables: db, full: true, refreshReports: false }); } catch (mirrorErr) { /* 鏡像失敗唔阻斷主寫入 */ }
+
   /* ★ v2.6.3：一次儲存，兩處都寫 —— 順手刷新晒報表分頁（團員／帳目／物資…），
      團長開 Google Sheet 即刻睇到嘢，唔使再撳第二粒掣。 */
   var reports = body.refreshReports === false ? null : refreshReportsFromDb(db, unit);
 
-  return { success: true, chunks: chunks.length, bytes: text.length, at: now, version: version,
-    reports: reports, forced: forced, overwroteVersion: overwroteVersion };
+  /* ★ v2.8.0：回俾前端嘅 version 一定要係**讀取路認嗰個**（＝「資料表」嘅版本）。
+     因為 dbInfo／loadDb 一律以「資料表」为先，如果呢度回舊「資料庫」分頁嘅版本，
+     前端下次攞佢做 baseVersion 就會永遠對唔上 → 每次儲存都話「後端有較新版本」
+     → 用家永遠儲存唔到（同「新儲嘅完全讀唔到」係同一個死法）。 */
+  var outVersion = (mirrored && mirrored.success && mirrored.version) ? mirrored.version : version;
+
+  return { success: true, chunks: chunks.length, bytes: text.length, at: now, version: outVersion,
+    blobVersion: version, reports: reports, forced: forced, overwroteVersion: overwroteVersion };
 }
 
 /** 由「資料庫」分頁把某旅團嘅所有段讀出嚟、拼返成份 JSON 純文字。
@@ -1259,9 +1306,25 @@ function dbRawText(unit, strict) {
   };
 }
 
+/* ★ v2.8.0：讀取一律以「資料表」分頁（逐表寫）为先，冇先至跌返去舊嘅
+   「資料庫」整份 blob。呢個係**全後端唯一**嘅讀取入口 —— authLogin／claim／
+   loan／notices／constitution／diag… 全部都經呢度，所以唔會出現
+   「app 讀到新資料、公開頁讀到舊資料」呢種兩邊唔同步。 */
+function dbReadRaw(unit) {
+  var simple = loadTables(unit);
+  if (simple.found) {
+    return { found: true, text: JSON.stringify(simple.db), at: simple.at, version: simple.version,
+      stagingRows: 0, stagingBytes: 0, staleRows: 0, versions: 1, brokenNewer: 0,
+      broken: simple.broken || [], mode: 'simple' };
+  }
+  var blob = dbRawText(unit);
+  blob.mode = blob.found ? 'blob' : 'empty';
+  return blob;
+}
+
 /** 讀返整份資料庫（把所有段拼返） */
 function loadDb(unit) {
-  var raw = dbRawText(unit);
+  var raw = dbReadRaw(unit);
   if (!raw.found) {
     return { success: true, found: false, db: null, at: raw.at, version: raw.version, bytes: 0,
       stagingRows: raw.stagingRows, stagingBytes: raw.stagingBytes, staleRows: raw.staleRows,
@@ -1290,7 +1353,7 @@ var LOAD_PART_CHARS = 1000000;
 function loadDbPart(unit, partIdx) {
   var idx = parseInt(partIdx, 10);
   if (isNaN(idx) || idx < 0) idx = 0;
-  var raw = dbRawText(unit);
+  var raw = dbReadRaw(unit);      /* ★ v2.8.0：同 loadDb 用同一個入口（資料表優先） */
   if (!raw.found) {
     return { success: true, found: false, part: '', partIdx: idx, parts: 0, bytes: 0, at: raw.at, version: raw.version, error: '' };
   }
@@ -1436,10 +1499,15 @@ function saveDbCommit(body) {
   for (var c3 = 0; c3 < chunks.length; c3++) out2.push([unit, c3 + 1, chunks[c3], now, version]);
   sh.getRange(sh.getLastRow() + 1, 1, out2.length, 5).setValues(out2);
 
+  var mirrored2 = null;
+  try { mirrored2 = saveTables({ unit: unit, tables: merged, full: true, refreshReports: false }); } catch (mirrorErr2) { /* 鏡像失敗唔阻斷 */ }
   /* ★ v2.6.3：分件儲存都要一次過做齊兩處（呢度先至有成份拼合好嘅資料庫） */
   var reports2 = body.refreshReports === false ? null : refreshReportsFromDb(merged, unit);
+  /* 同 saveDb 一樣：回讀取路認嗰個版本 */
+  var outVersion2 = (mirrored2 && mirrored2.success && mirrored2.version) ? mirrored2.version : version;
 
-  return { success: true, chunks: chunks.length, bytes: text.length, at: now, version: version, parts: parts, reports: reports2 };
+  return { success: true, chunks: chunks.length, bytes: text.length, at: now, version: outVersion2,
+    blobVersion: version, parts: parts, reports: reports2 };
 }
 
 /* v2.6.2：把一批行號計成一梳一梳、由最底嗰梳刪起（全後端唯一嘅刪行方法）。
@@ -1618,25 +1686,224 @@ function repairDb(unit) {
 /** 只睇 meta：後端有冇資料、幾時更新（唔會傳成份資料庫落嚟）。
  *  v2.3.0：附帶逐分頁體積（sizes，只計 JSON 字元長度）同相片 bytes ——
  *  app 用嚟畫「體積檢查」，等成團人用嗰陣知道邊個分頁食緊嘢。 */
+/* ============================================================
+   ★ v2.8.0「簡單寫入」—— 逐表寫、逐表讀
+   ------------------------------------------------------------
+   點解要呢條路（團長 2026-09-24 回報：「我完全唔知佢寫唔寫得入後端，
+   寫得入又點解讀唔到」）：
+
+   舊路線 saveDb 係「成份資料庫 → 一條大 JSON → 每段 45000 字 → 寫入
+   『資料庫』分頁」，一次儲存要做晒呢幾件事：
+     ① 讀成份分頁（幾 MB 文字）→ ② 對版本（樂觀鎖）→ ③ 刪晒舊段
+     → ④ 寫晒新段 → ⑤ 再重刷全部報表分頁。
+   任何一格出事（GAS 執行時間／代理 4MB 上限／版本對唔上／寫到一半斷），
+   結果都係同一個：**成份資料庫讀唔到**，用家見到就係「後端仲未有資料庫」。
+
+   VSBADGE（同一個團用緊、一路冇事）嘅做法係：
+     **一個請求淨係寫一個表嗰幾行**，冇鎖、冇分段暫存、冇重刷報表、
+     冇「成份 serialize」。一個表寫唔到，其餘表照樣讀得到 ——
+     所以永遠唔會出現「一次失敗＝全部冇晒」。
+
+   呢度照抄同一個思路，但**保留 app 原有嘅資料形狀**
+   （成份資料庫嘅每一個 top-level key ＝ 一個「表」）：
+     寫：POST { action:'saveTables', unit, tables:{ members:[…], transactions:[…] } }
+         —— 前端淨係送「有改過」嗰幾個表
+     讀：POST { action:'loadTables', unit }
+         —— 逐表砌返，某個表壞咗淨係 skip 嗰個表（其餘照讀）
+
+   兩個關鍵次序（同舊路線相反，呢兩點先係「唔會洗紀錄」嘅原因）：
+     ① **先寫新、後刪舊** —— 舊 saveDb 係「先刪後寫」，中途斷就乜都冇；
+        而家任何一刻都至少有一份完整嘢喺分頁度。
+     ② **唔用樂觀鎖** —— 最後寫嗰個贏（同 VSBADGE 一樣）。
+        樂觀鎖本意係「過時裝置唔好蓋走人哋嘅嘢」，但實戰入面佢嘅副作用係
+        「後端一讀唔到版本，所有裝置都永遠存唔入」——呢個正正係團長撞到嘅嘢。
+        防撞靠嘅係：寫入前後都由前端做三方比對（app 本身已經做緊）。
+
+   舊嘅「資料庫」分頁**一行都唔會掂**（繼續留底做備份），
+   所以就算新路線有乜事，舊資料都仲喺度。
+   ============================================================ */
+var SIMPLE_TAB = '資料表';
+var SIMPLE_CHUNK = 45000;        // 同 DB_CHUNK：Sheet 單格上限 50000
+
+function simpleSheet() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sh = ss.getSheetByName(SIMPLE_TAB);
+  if (!sh) {
+    sh = ss.insertSheet(SIMPLE_TAB);
+    sh.appendRow(['旅團', '表名', '段號', '內容(JSON)', '更新時間', '版本']);
+    sh.getRange(1, 1, 1, 6).setFontWeight('bold').setBackground('#7B2233').setFontColor('#FFFFFF');
+    sh.setFrozenRows(1);
+  }
+  return sh;
+}
+
+/** 寫入幾個表（正常淨係寫「有改過」嗰啲） */
+function saveTables(body) {
+  var unit = textOf(body.unit) || 'UNKNOWN';
+  var tables = body.tables;
+  if (!tables || typeof tables !== 'object') return { success: false, error: '冇收到表內容（tables）' };
+
+  var sh = simpleSheet();
+  var now = new Date();
+  /* 呢次寫入嘅版本：時間（36 進位）＋隨機尾數 —— 字串可以直接排序比大小 */
+  var saveId = 'S' + now.getTime().toString(36) + '-' + Math.floor(Math.random() * 100000);
+  var out = [], saved = {}, bytes = 0;
+
+  Object.keys(tables).forEach(function (name) {
+    /* 表名白名單：只收英數底線，唔畀寫啲奇怪嘢入分頁 */
+    if (!/^[A-Za-z0-9_]{1,40}$/.test(String(name))) return;
+    var text;
+    try { text = JSON.stringify(tables[name] === undefined ? null : tables[name]); }
+    catch (e) { return; }
+    if (text.length > 9000000) return;      // 單表大過 9MB 唔寫（要先做體積治理）
+    bytes += text.length;
+    var segs = [];
+    for (var p = 0; p < text.length; p += SIMPLE_CHUNK) segs.push(text.substring(p, p + SIMPLE_CHUNK));
+    if (!segs.length) segs = [text];
+    segs.forEach(function (c, i) { out.push([unit, String(name), i + 1, c, now, saveId]); });
+    saved[name] = { segs: segs.length, bytes: text.length };
+  });
+  if (!out.length) return { success: false, error: '冇一個表寫得入（表名或者內容唔合規格）' };
+
+  /* ① 先寫新 —— 寫完呢一步，分頁入面已經有完整嘅新資料 */
+  sh.getRange(sh.getLastRow() + 1, 1, out.length, 6).setValues(out);
+  /* ② 後刪舊 —— 同一旅團＋同一個表、但唔係呢次 saveId 嘅行（即上一套） */
+  var rows = sh.getDataRange().getValues();
+  var kill = [];
+  var names = Object.keys(saved);
+  /* ★ body.full ＝ 呢次送嘅係**成份**資料庫嘅所有表（第一次寫入／整份鏡像）。
+     咁樣先可以順手清走「已經冇咗嘅表」—— 否則頂層某個 key 消失咗，
+     佢嘅行會永遠留喺分頁做幽靈，讀返嚟就多出啲早應該冇咗嘅資料。
+     部份寫入（淨係改過嗰幾個表）唔可以咁做，否則會刪走今次冇送嘅表。 */
+  var full = body.full === true;
+  for (var i = 1; i < rows.length; i++) {
+    if (textOf(rows[i][0]) !== unit) continue;
+    var tname = textOf(rows[i][1]);
+    if (textOf(rows[i][5]) === saveId) continue;
+    if (!full && names.indexOf(tname) < 0) continue;
+    kill.push(i + 1);
+  }
+  deleteRowRuns(sh, kill);
+
+  return { success: true, tables: saved, bytes: bytes, at: now, version: saveId };
+}
+
+/** 讀返呢個旅團喺「資料表」分頁嘅所有表 */
+function loadTables(unit) {
+  unit = textOf(unit);
+  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SIMPLE_TAB);
+  if (!sh) return { success: true, found: false, db: null, tables: {}, broken: [], at: '', version: '' };
+
+  var rows = sh.getDataRange().getValues();
+  var byTable = {};
+  var at = '', version = '';
+  for (var i = 1; i < rows.length; i++) {
+    if (textOf(rows[i][0]) !== unit) continue;
+    var name = textOf(rows[i][1]);
+    if (!name) continue;
+    (byTable[name] = byTable[name] || []).push({
+      seq: Number(rows[i][2]) || 0,
+      text: String(rows[i][3] == null ? '' : rows[i][3]),
+      at: rows[i][4] || '',
+      row: i,                       /* 分頁上嘅位置：用嚟分「邊套先係最新寫入」 */
+      ver: textOf(rows[i][5])
+    });
+    if (rows[i][4] && String(rows[i][4]) > String(at)) at = String(rows[i][4]);
+    if (textOf(rows[i][5]) > version) version = textOf(rows[i][5]);
+  }
+
+  var db = {}, tables = {}, broken = [];
+  Object.keys(byTable).forEach(function (name) {
+    /* 正常同一個表只會有一套（舊嗰套寫入嗰陣已經刪咗）。
+       萬一有兩套（例如上次寫到一半斷咗），淨係要**砌得返 JSON** 嗰套 ——
+       另一套一定係半段，砌出嚟 parse 唔到，自然會被跳過。
+       ★ 呢度就係同舊路線最大分別：壞一個表淨係唔要嗰個表，
+         唔會連累成份資料庫讀唔到。 */
+    var groups = {};
+    byTable[name].forEach(function (p) {
+      var g = groups[p.ver || '_'] = groups[p.ver || '_'] || [];
+      g.push(p);
+      g.lastRow = Math.max(g.lastRow || 0, p.row || 0);
+    });
+    var keys = Object.keys(groups);
+    /* 揀邊一套：① 段數多嘅先（完整嗰套一定多過寫到一半嗰套）；
+       ② 段數一樣就揀**分頁上最後出現**嗰套（＝最新寫入）。
+       ★ 唔可以淨係靠段數：新舊兩套段數一樣嗰陣，排序係唔穩定嘅，
+         隨時揀返舊嗰套 —— 症狀就係「明明儲咗，讀返仲係舊嘢」。 */
+    keys.sort(function (a, b) {
+      if (groups[b].length !== groups[a].length) return groups[b].length - groups[a].length;
+      return groups[b].lastRow - groups[a].lastRow;
+    });
+    for (var k = 0; k < keys.length; k++) {
+      var ps = groups[keys[k]].slice().sort(function (a, b) { return a.seq - b.seq; });
+      var text = ps.map(function (p) { return p.text; }).join('');
+      try {
+        var val = JSON.parse(text);
+        db[name] = val;
+        tables[name] = Array.isArray(val) ? val.length : 1;
+        return;
+      } catch (e) { /* 呢套砌唔成 → 試下一套 */ }
+    }
+    broken.push(name);
+  });
+
+  var found = Object.keys(db).length > 0;
+  return { success: true, found: found, db: found ? db : null, tables: tables, broken: broken,
+    at: at, version: version };
+}
+
+/** dbInfo／loadTables 共用：由成份資料庫計體積、相片體積、筆數 */
+function dbStats(db) {
+  db = db || {};
+  var sizes = {}, photoBytes = 0;
+  var keys = Object.keys(db).sort(function (a, b) {
+    return JSON.stringify(db[b] || null).length - JSON.stringify(db[a] || null).length;
+  });
+  keys.slice(0, 14).forEach(function (k) { sizes[k] = JSON.stringify(db[k] || null).length; });
+  (db.claims || []).forEach(function (c) {
+    (c.photos || []).forEach(function (ph) {
+      if (ph && ph.dataUrl) photoBytes += String(ph.dataUrl).length;
+    });
+  });
+  return {
+    bytes: JSON.stringify(db).length,
+    sizes: sizes,
+    photoBytes: photoBytes,
+    counts: {
+      members: (db.members || []).length,
+      transactions: (db.transactions || []).length,
+      meetings: (db.meetings || []).length,
+      notices: (db.notices || []).length,
+      invItems: (db.invItems || []).length,
+      accounts: (db.accounts || []).length
+    }
+  };
+}
+
+/** ★ v2.8.0：先睇「資料表」分頁（簡單寫入），冇先至跌返去舊嘅「資料庫」整份 blob。
+ *  mode：'simple'（行緊逐表寫）／'blob'（行緊整份 blob）／'empty'（兩邊都冇） */
 function dbInfo(unit) {
+  var simple = loadTables(unit);
+  if (simple.found) {
+    var a = dbStats(simple.db || {});
+    /* ★ 逐表寫每個表得一套（寫完即刻刪舊），所以正本永遠係「1 套版本、0 舊段」。
+       但舊「資料庫」分頁仍然留底 —— 佢入面嘅暫存垃圾行／舊版本段照樣如實報，
+       因為 cleanStaleStaging()／pruneOldDbVersions() 清嘅就係嗰度，
+       而萬一要跌返舊路線讀，嗰啲垃圾就即刻變成問題。唔報＝呃人。 */
+    var legacy = dbRawText(unit);
+    return { success: true, found: true, mode: 'simple', at: simple.at, version: simple.version,
+      bytes: a.bytes, sizes: a.sizes, photoBytes: a.photoBytes, counts: a.counts,
+      broken: simple.broken || [],
+      stagingRows: legacy.stagingRows || 0, stagingBytes: legacy.stagingBytes || 0,
+      staleRows: legacy.staleRows || 0, versions: legacy.versions || 0 };
+  }
   var r = loadDb(unit);
   if (!r.success) return { success: false, error: r.error };
   var db = r.db || {};
-  var sizes = {}, photoBytes = 0;
-  if (r.found) {
-    var keys = Object.keys(db).sort(function (a, b) {
-      return JSON.stringify(db[b] || null).length - JSON.stringify(db[a] || null).length;
-    });
-    keys.slice(0, 14).forEach(function (k) { sizes[k] = JSON.stringify(db[k] || null).length; });
-    (db.claims || []).forEach(function (c) {
-      (c.photos || []).forEach(function (ph) {
-        if (ph && ph.dataUrl) photoBytes += String(ph.dataUrl).length;
-      });
-    });
-  }
+  var b = dbStats(db);
   return {
-    success: true, found: !!r.found, at: r.at || '', version: r.version || '', bytes: r.bytes || 0,
-    sizes: sizes, photoBytes: photoBytes,
+    success: true, found: !!r.found, at: r.at || '', version: r.version || '', bytes: b.bytes,
+    sizes: b.sizes, photoBytes: b.photoBytes,
     /* v2.6.2：舊版留低嘅暫存垃圾行（正常應該係 0）—— app 嘅「同步診斷」
        見到就會話你知要更新 Code.gs ＋ 執行 cleanStaleStaging() 清走。 */
     stagingRows: r.stagingRows || 0, stagingBytes: r.stagingBytes || 0,
@@ -1644,14 +1911,8 @@ function dbInfo(unit) {
        有舊段都唔會讀錯，但清走佢可以令分頁細啲、快啲。
        app 嘅「同步診斷」見到 > 0 會提你執行 pruneOldDbVersions()。 */
     staleRows: r.staleRows || 0, versions: r.versions || 0,
-    counts: r.found ? {
-      members: (db.members || []).length,
-      transactions: (db.transactions || []).length,
-      meetings: (db.meetings || []).length,
-      notices: (db.notices || []).length,
-      invItems: (db.invItems || []).length,
-      accounts: (db.accounts || []).length
-    } : null
+    mode: r.found ? 'blob' : 'empty',
+    counts: r.found ? b.counts : null
   };
 }
 

@@ -13,6 +13,8 @@ const DB_CHUNK = 45000;
 
 /* 模擬 Sheet：一行一段 [unit, seq, text, at, version] */
 let sheet = [];
+/* ★ v2.8.0「資料表」分頁（簡單寫入）：一行一段 [unit, table, seq, text, at, saveId] */
+let simpleSheet = [];
 /* 模擬「待批完成」分頁（addRequest / myRequests） */
 const requests = [];
 /* 模擬「進度追蹤」分頁（save / reviewRequest；同一個後端、兩個前端共用） */
@@ -103,6 +105,10 @@ function saveDb(body) {
     sheet.push([unit, i, text.substring(p, p + DB_CHUNK), now, version]);
   }
   syncProgressMembers(body.db || {});                  // 名冊 → 「成員名單」分頁
+  /* ★ v2.8.0：同真 Code.gs 一樣 —— 舊路線寫完「資料庫」之後**鏡像**去「資料表」。
+     讀取一律以「資料表」为先，唔鏡像嘅話舊路線（舊版前端／saveDbForce 搶救上載）
+     寫嘅嘢就會讀唔到，兩邊各睇各嘅。 */
+  try { saveTables({ unit, tables: body.db || {}, full: true, refreshReports: false }); } catch { /* 鏡像失敗唔阻斷 */ }
   return { ok: true, success: true, bytes: text.length, chunks: Math.ceil(text.length / DB_CHUNK), at: now, version };
 }
 
@@ -166,6 +172,7 @@ function saveDbCommit(body) {
   for (let p = 0, i = 1; p < text.length; p += DB_CHUNK, i++) {
     sheet.push([unit, i, text.substring(p, p + DB_CHUNK), now, version]);
   }
+  try { saveTables({ unit, tables: merged, full: true, refreshReports: false }); } catch { /* 鏡像失敗唔阻斷 */ }
   return { ok: true, success: true, bytes: text.length, at: now, version };
 }
 
@@ -208,7 +215,16 @@ function dbRawText(unit, strict) {
   };
 }
 
+/* ★ v2.8.0：同真 Code.gs dbReadRaw 一樣 —— 讀取一律以「資料表」为先。
+   公開頁（團章／通告）同 authLogin 全部都經 loadDb，所以一定要同一個入口，
+   否則就會出現「app 讀到新資料、公開頁讀到舊資料」。 */
 function loadDb(unit) {
+  const simple = loadTables(unit);
+  if (simple.found) {
+    return { ok: true, success: true, found: true, db: simple.db, at: simple.at, version: simple.version,
+      bytes: JSON.stringify(simple.db).length, stagingRows: 0, staleRows: 0, versions: 1,
+      broken: simple.broken || [], mode: 'simple' };
+  }
   const raw = dbRawText(unit);
   if (!raw.found) return { ok: true, success: true, found: false, db: null, at: '', version: '',
     stagingRows: raw.stagingRows, staleRows: raw.staleRows, versions: raw.versions };
@@ -222,12 +238,110 @@ function loadDb(unit) {
   }
 }
 
-function dbInfo(unit) {
-  const r = loadDb(unit);
-  if (!r.found) return { ok: true, success: true, found: false };
-  const db = r.db || {};
+/* ============================================================
+   ★ v2.8.0「簡單寫入」—— 同真 Code.gs saveTables／loadTables 一樣嘅行為
+   ------------------------------------------------------------
+   一個請求淨係寫有改過嗰幾個表；**先寫新、後刪舊**；冇樂觀鎖。
+   讀嗰陣逐表砌返，某個表砌唔成就淨係 skip 嗰個表（broken）。
+   ============================================================ */
+function saveTables(body) {
+  const unit = String(body.unit || 'UNKNOWN');
+  const tables = body.tables;
+  if (!tables || typeof tables !== 'object') return { ok: false, success: false, error: '冇收到表內容（tables）' };
+  const now = new Date().toISOString();
+  const saveId = 'S' + Date.now().toString(36) + '-' + Math.floor(Math.random() * 100000);
+  const rows = [];
+  const saved = {};
+  let bytes = 0;
+  for (const [name, val] of Object.entries(tables)) {
+    if (!/^[A-Za-z0-9_]{1,40}$/.test(String(name))) continue;
+    const text = JSON.stringify(val === undefined ? null : val);
+    if (text.length > 9000000) continue;
+    bytes += text.length;
+    const segs = [];
+    for (let p = 0; p < text.length; p += DB_CHUNK) segs.push(text.substring(p, p + DB_CHUNK));
+    if (!segs.length) segs.push(text);
+    segs.forEach((c, k) => rows.push([unit, String(name), k + 1, c, now, saveId]));
+    saved[name] = { segs: segs.length, bytes: text.length };
+  }
+  if (!rows.length) return { ok: false, success: false, error: '冇一個表寫得入（表名或者內容唔合規格）' };
+  /* ① 先寫新 */
+  simpleSheet = simpleSheet.concat(rows);
+  /* ② 後刪舊（同一旅團＋同一個表、但唔係呢次 saveId）。
+     body.full ＝ 呢次送咗成份嘅所有表 → 順手清走「已經冇咗嘅表」，
+     否則頂層某個 key 消失咗，佢嘅行會永遠留低做幽靈（讀返會多出啲應該冇咗嘅資料）。 */
+  /* 同真 Code.gs 一樣：寫完順手由名冊更新「成員名單」分頁（進度頁揀人用）。
+     ★ 要用「寫完之後」嘅名冊 —— 呢次淨係寫咗幾個表，其余表要讀返返嚟一齊睇。 */
+  syncProgressMembers(loadTables(unit).db || {});
+  const names = Object.keys(saved);
+  const full = body.full === true;
+  simpleSheet = simpleSheet.filter(r => {
+    if (r[0] !== unit || r[5] === saveId) return true;
+    if (!full && !names.includes(String(r[1]))) return true;
+    return false;
+  });
+  /* 同真 Code.gs 一樣：寫完順手由名冊更新「成員名單」分頁（進度頁揀人用）。
+     ★ 一定要喺**刪舊之後**先讀 —— 呢度新舊兩套段同時存在，讀早咗會讀到舊嗰套。 */
+  syncProgressMembers(loadTables(unit).db || {});
+  return { ok: true, success: true, tables: saved, bytes, at: now, version: saveId, reports: { ok: true, counts: {} } };
+}
+
+function loadTables(unit) {
+  unit = String(unit || '');
+  const byTable = {};
+  let at = '', version = '';
+  for (let idx = 0; idx < simpleSheet.length; idx++) {
+    const r = simpleSheet[idx];
+    if (String(r[0] || '') !== unit) continue;
+    const name = String(r[1] || '');
+    if (!name) continue;
+    (byTable[name] = byTable[name] || []).push({ seq: Number(r[2]) || 0, text: String(r[3] ?? ''), ver: String(r[5] || ''), row: idx });
+    if (r[4] && String(r[4]) > at) at = String(r[4]);
+    if (String(r[5] || '') > version) version = String(r[5] || '');
+  }
+  const db = {}, counts = {}, broken = [];
+  for (const [name, parts] of Object.entries(byTable)) {
+    const groups = {};
+    parts.forEach(p => {
+      const g = groups[p.ver] = groups[p.ver] || [];
+      g.push(p);
+      g.lastRow = Math.max(g.lastRow || 0, p.row || 0);
+    });
+    /* ① 段數多嘅先（完整嗰套）；② 平手就揀分頁上最後出現嗰套（＝最新寫入）。
+       淨係靠段數嘅話，新舊兩套段數一樣時排序唔穩定，隨時讀返舊嗰套。 */
+    const keys = Object.keys(groups).sort((a, b) =>
+      (groups[b].length - groups[a].length) || (groups[b].lastRow - groups[a].lastRow));
+    let done = false;
+    for (const k of keys) {
+      const text = groups[k].slice().sort((a, b) => a.seq - b.seq).map(p => p.text).join('');
+      try {
+        const val = JSON.parse(text);
+        db[name] = val;
+        counts[name] = Array.isArray(val) ? val.length : 1;
+        done = true;
+        break;
+      } catch { /* 呢套砌唔成 → 試下一套 */ }
+    }
+    if (!done) broken.push(name);
+  }
+  const found = Object.keys(db).length > 0;
+  return { ok: true, success: true, found, db: found ? db : null, tables: counts, broken, at, version };
+}
+
+function loadTablesPart(unit, idx) {
+  const i = Math.max(0, parseInt(idx, 10) || 0);
+  const all = loadTables(unit);
+  const names = Object.keys(all.db || {}).sort();
+  if (!all.found) return { ok: true, success: true, found: false, idx: i, count: 0, name: '', at: all.at, version: all.version };
+  if (i >= names.length) return { ok: false, success: false, found: true, idx: i, count: names.length, name: '', error: '表編號超出範圍' };
+  const name = names[i];
+  return { ok: true, success: true, found: true, idx: i, count: names.length, name, value: all.db[name], at: all.at, version: all.version };
+}
+
+function dbStats(db) {
+  db = db || {};
   return {
-    ok: true, success: true, found: true, at: r.at, version: r.version, bytes: r.bytes,
+    bytes: JSON.stringify(db).length,
     counts: {
       members: (db.members || []).length,
       transactions: (db.transactions || []).length,
@@ -239,11 +353,32 @@ function dbInfo(unit) {
   };
 }
 
+/* ★ v2.8.0：先睇「資料表」分頁（簡單寫入），冇先至跌返去舊嘅「資料庫」整份 blob */
+function dbInfo(unit) {
+  const adv = NO_SIMPLE ? {} : { simpleWrite: true };
+  const simple = loadTables(unit);
+  if (simple.found) {
+    const a = dbStats(simple.db || {});
+    return { ok: true, success: true, found: true, mode: 'simple', at: simple.at, version: simple.version,
+      bytes: a.bytes, counts: a.counts, broken: simple.broken, ...adv };
+  }
+  const r = loadDb(unit);
+  if (!r.found) return { ok: true, success: true, found: false, mode: 'empty', ...adv };
+  const db = r.db || {};
+  const b = dbStats(db);
+  return { ok: true, success: true, found: true, mode: 'blob', at: r.at, version: r.version, bytes: r.bytes,
+    counts: b.counts, ...adv };
+}
+
 /* 後端如果設咗 API_KEY（真 Code.gs 行完 initializeSheets 就一定會有），
    saveDb / loadDb / dbInfo 就要條 key 啱先做得 —— 呢個正正係
    「app 條 key 留空 → 寫唔入」嗰個真實故障。
    用法：FAKEGAS_APIKEY=xxx node tests/_fakegas.mjs <port> */
 const EXPECTED_KEY = process.env.FAKEGAS_APIKEY || '';
+/* ★ 測試用：模擬「未更新到 v2.8.0」嘅舊 Code.gs —— 唔報 simpleWrite，
+   而且唔識 saveTables／loadTables（回「未知 action」）。
+   前端見到就應該自動跌返舊嘅整份 saveDb 路線，唔會斷。 */
+const NO_SIMPLE = process.env.FAKEGAS_NO_SIMPLE === '1';
 
 http.createServer((req, res) => {
   let raw = '';
@@ -258,6 +393,7 @@ http.createServer((req, res) => {
     const a = qAction || body.action || '';
     const key = body.apiKey || body.apikey || '';
     const needsKey = a === 'saveDb' || a === 'loadDb' || a === 'dbInfo' || a === 'saveDbPart' || a === 'saveDbCommit'
+      || a === 'saveTables' || a === 'loadTables' || a === 'loadTablesPart'
       || a === 'save' || a === 'saveOtherBadge' || a === 'reviewRequest' || a === 'reviewLogRequest';
 
     if (a === 'load') {
@@ -269,6 +405,9 @@ http.createServer((req, res) => {
     else if (a === 'saveDbCommit') out = saveDbCommit(body);
     else if (a === 'loadDb') out = loadDb(String(body.unit || ''));
     else if (a === 'dbInfo') out = dbInfo(String(body.unit || ''));
+    else if (a === 'saveTables') out = saveTables(body);
+    else if (a === 'loadTables') out = loadTables(String(body.unit || ''));
+    else if (a === 'loadTablesPart') out = loadTablesPart(String(body.unit || ''), body.idx);
     else if (a === 'sync') {
       out = { ok: true, success: true, msg: '已寫入總表', counts: {} };
       if (body.db) {
@@ -294,7 +433,34 @@ http.createServer((req, res) => {
       out = saveProgress(body);
     } else if (a === 'reviewRequest') {
       out = reviewRequest(body);
-    } else if (a === 'status' || a === 'ping') out = { ok: true, success: true, msg: 'pong', backendVersion: 'v2.5.0' };
+    } else if (a === 'status' || a === 'ping') out = { ok: true, success: true, msg: 'pong',
+      backendVersion: NO_SIMPLE ? 'v2.7.2' : 'v2.8.0', ...(NO_SIMPLE ? {} : { simpleWrite: true }) };
+    /* ★ 測試用：把「資料表」入面某個表嘅第一段弄壞 ——
+       證明「壞一個表淨係唔要嗰個表」，唔會連累成份資料庫讀唔到。 */
+    else if (a === '__corrupt') {
+      const unit = String(body.unit || ''), table = String(body.table || '');
+      let n = 0;
+      simpleSheet = simpleSheet.map(r => {
+        if (String(r[0]) === unit && String(r[1]) === table && Number(r[2]) === 1) {
+          n++; return [r[0], r[1], r[2], '{壞咗嘅 JSON', r[4], r[5]];
+        }
+        return r;
+      });
+      out = { ok: true, success: true, corrupted: n };
+    }
+    /* ★ 測試用：數一數「資料表」分頁而家有幾多行（證明「先寫新、後刪舊」冇留垃圾） */
+    else if (a === '__simpleRows') {
+      const unit = String(body.unit || '');
+      const rows = simpleSheet.filter(r => String(r[0]) === unit);
+      const byTable = {}, versions = {};
+      rows.forEach(r => {
+        const t = String(r[1]);
+        byTable[t] = (byTable[t] || 0) + 1;
+        /* 每個表而家嗰套嘅 saveId —— 用嚟證明「只寫改過嗰幾個表」 */
+        versions[t] = String(r[5] || '');
+      });
+      out = { ok: true, success: true, total: rows.length, byTable, versions };
+    }
     /* v2.5.0 公開團章：由「資料庫」抽 constitution（同真 Code.gs 一樣） */
     else if (a === 'constitution') {
       const r = loadDb(String(body.unit || ''));

@@ -908,7 +908,7 @@ function settingsView() {
 
       <div class="card">
         <div class="card-head"><div class="card-title">單據相片 Drive 資料夾</div>
-          <div class="card-sub">申報相片存邊度 —— 同「帳號與系統 → 旅團設定」係<b>同一個設定</b></div></div>
+          <div class="card-sub">申報相片存邊度 —— 同「系統 → 旅團設定」係<b>同一個設定</b></div></div>
         <div style="padding:18px 20px">
           <div class="field"><label class="label">Drive 資料夾連結（或 ID）</label>
             <input class="input" id="set-receipt" data-draft="receiptDrive" value="${esc(s.receiptDrive || '')}" placeholder="https://drive.google.com/drive/folders/…"></div>

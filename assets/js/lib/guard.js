@@ -52,7 +52,7 @@ export function clearDraft(section, id) {
   activeKeys.delete(keyOf(section, id));
 }
 
-/** 所有暫存（用嚟喺「帳號與系統 → 資料管理」睇／清） */
+/** 所有暫存（用嚟喺「系統 → 資料管理」睇／清） */
 export function listDrafts() {
   return Object.entries(readAll()).map(([k, v]) => {
     const [section, id] = k.split('::');

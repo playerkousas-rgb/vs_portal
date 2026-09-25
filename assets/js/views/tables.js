@@ -19,6 +19,7 @@ import { profile, settings } from '../lib/model.js';
 import { fmtBytes, remoteConfigured, backendStatus, remoteDiagnose, syncState,
   backendHealth, repairBackend, forcePushBackend } from '../lib/remote.js';
 import { pageHead, tabs, stat, empty, noteBox, kv, storageBar } from './ui.js';
+import { realityCard, mountRealityCard } from './backend-reality.js';
 
 let tab = 'design';
 let mapState = null;        // 自己 Sheet 匯入狀態
@@ -295,7 +296,7 @@ export function openFieldDesigner(key, { onSaved = null } = {}) {
 }
 
 /* ★ 2026-09-24 團長：「總表同步／表格與同步 太複雜」「我設定好他們就用，統一化前端會更好」
-   → 呢一頁而家淨係三樣嘢（同「帳號與系統 → 資料管理」一樣）：
+   → 呢一頁而家淨係三樣嘢（同「系統 → 資料管理」一樣）：
         ① 插入自己嘅 Sheet　② 總表同步　③ 儲存與備份
    逐個表嘅欄位設計已經搬去各自嘅分頁（財務／用戶／物資／通告／會議 都有「欄位」掣），
    呢度唔再重複列一次 —— 少咗十幾個分頁，就少咗十幾個撳錯嘅機會。 */
@@ -309,7 +310,7 @@ export function render(params) {
   ${pageHead({
     title: '資料管理',
     sub: '三樣嘢：插入自己嘅 Sheet、總表同步、儲存與備份',
-    actions: `<button class="btn btn-sm" data-go="#/admin/data">${icon('chevronL', 15)} 返回帳號與系統</button>`
+    actions: `<button class="btn btn-sm" data-go="#/admin/data">${icon('chevronL', 15)} 返回系統</button>`
   })}
 
   ${tabs(DATA_TABS, tab)}
@@ -553,6 +554,8 @@ function syncView() {
     其他分頁（帳目／團員／物資…）係攤平出嚟畀你自己睇同用公式嘅「報表」。
     同一個後端仲會處理 <b>成員手機記帳</b>（entry.html）同 <b>通告報名</b>（notice.html）。</span>
   </div></div>
+
+  ${realityCard()}
 
   ${wired ? `<div class="card mb-16"><div class="card-head">
     <div><div class="card-title">${icon('shield', 15)} 儲存狀態</div>
@@ -1309,6 +1312,8 @@ export function mount(root, params) {
 
   /* ---- 總表同步 ---- */
   if (params.id === 'sync') {
+    /* ★ 2026-09-24：「後端實況」卡（只讀核對 ＋ 一寫一讀驗證） */
+    mountRealityCard(root);
     root.querySelectorAll('[data-act]').forEach(b => b.addEventListener('click', async () => {
       const act = b.dataset.act;
       if (act === 'save-sync') {
@@ -1469,7 +1474,7 @@ export function mount(root, params) {
         const { saveWithDialog } = await import('./syncdialog.js');
         const old = b.innerHTML;
         b.disabled = true; b.textContent = '核對緊後端…';
-        const r = await saveWithDialog({ silent: false, toastOk: true });
+        const r = await saveWithDialog({ silent: false, toastOk: true, receipt: true });
         b.disabled = false; b.innerHTML = old;
         if (r.ok) {
           /* toast 已由 saveWithDialog 出 */

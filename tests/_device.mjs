@@ -51,6 +51,13 @@ try {
   /* 同 main.js 一樣：改動會自動排一次寫入（critical＝即刻）。
      舊劇本想測「未撳掣之前後端應該冇嘢」嘅，加 { bootAutoSave:false }。 */
   store.setSaveHook((info) => remote.scheduleSave(info));
+  /* ★ 2026-09-24：模擬「status 通、但讀寫被拒」（最常見嘅死因：API Key 唔啱）。
+     呢個情況正正係「以為同步到，其實一個字都寫唔入」，所以一定要測得到。 */
+  if (PLAN.badKey) {
+    const db = store.tryLoad();
+    db.sync = { ...(db.sync || {}), apiKey: 'definitely_wrong_key' };
+    store.commitMeta();
+  }
   if (PLAN.bootLoad) await remote.loadFromBackend();
 
   out.configured = remote.remoteConfigured();
@@ -254,6 +261,11 @@ try {
       });
     }
     /* 「儲存到後端」—— 唯一寫入路（核對版本 → 三方比對 → 撞就問 resolver） */
+    /* ★ v2.8.0：人手切返舊嘅「整份寫入」—— 用來證明後備路仲行得 */
+    if (step.op === 'useBlobMode') {
+      remote.useBlobWriteMode();
+      out.steps.push({ op: 'useBlobMode', simple: remote.simpleWriteMode() });
+    }
     if (step.op === 'push' || step.op === 'save' || step.op === 'syncNow') {
       const policy = step.policy || 'ask';
       out.lastDialog = null;
@@ -261,6 +273,8 @@ try {
       out.steps.push({
         op: step.op, ok: !!r.ok, pushed: !!r.pushed, error: r.error || '', reason: r.reason || '', hint: (r.hint || '').slice(0, 400),
         bytes: r.bytes || 0, parts: r.parts || 0, version: String(r.version || ''),
+        /* ★ v2.8.0：呢次儲存行咗邊條路（simple＝逐表寫／blob＝舊嘅整份寫） */
+        mode: r.mode || '', simple: remote.simpleWriteMode(),
         remoteChanged: !!r.remoteChanged, mine: r.mine ?? null, theirs: r.theirs ?? null, same: r.same ?? null, applied: r.applied ?? null,
         conflicts: (r.conflicts || []).map(c => c.key), resolved: r.resolved || 0, kept: r.kept ?? 0,
         overrideOk: r.overrideOk, dialog: out.lastDialog,
@@ -326,13 +340,22 @@ try {
     }
     /* 直接問後端攞成份 db，睇下頂層有咩 key（驗 sync／backend 冇上到 Sheet） */
     if (step.op === 'backendKeys') {
+      /* ★ v2.8.0：後端而家有兩個放資料嘅位 ——「資料表」（逐表寫，新）同
+         「資料庫」（整份 blob，舊）。邊個有料就读邊個，先至答得到
+         「寫上後端嘅 payload 有乜」。 */
       const cfg = remote.remoteCfg();
-      const r = await fetch(cfg.url || `${BASE}/api/proxy`, {
-        method: 'POST', headers: { 'Content-Type': cfg.url ? 'text/plain;charset=utf-8' : 'application/json' },
-        body: JSON.stringify(cfg.url ? { action: 'loadDb', unit: cfg.unit || '0082', apiKey: cfg.apiKey } : { action: 'loadDb', unit: cfg.unit || '0082' })
-      });
-      const j = await r.json().catch(() => ({}));
-      out.steps.push({ op: 'backendKeys', ok: !!j.ok && !!j.found, keys: Object.keys(j.db || {}).sort(), version: String(j.version || '') });
+      const post = async (action) => {
+        const rr = await fetch(cfg.url || `${BASE}/api/proxy`, {
+          method: 'POST', headers: { 'Content-Type': cfg.url ? 'text/plain;charset=utf-8' : 'application/json' },
+          body: JSON.stringify(cfg.url ? { action, unit: cfg.unit || '0082', apiKey: cfg.apiKey } : { action, unit: cfg.unit || '0082' })
+        });
+        return rr.json().catch(() => ({}));
+      };
+      let j = await post('loadTables');
+      let via = 'simple';
+      if (!j.found) { j = await post('loadDb'); via = 'blob'; }
+      out.steps.push({ op: 'backendKeys', ok: !!j.ok && !!j.found, via,
+        keys: Object.keys(j.db || {}).sort(), version: String(j.version || '') });
     }
     /* 劇本中途直接問後端而家有咩（唔信前端自己講）——
        要喺兩個 step **之間**取樣先有意義，例如證明「手動模式下未撳同步
@@ -347,6 +370,41 @@ try {
       out.steps.push({
         op: 'backendPeek', http: r.status, found: !!j.found,
         members: Number(j.counts?.members || 0), version: String(j.version || '')
+      });
+    }
+    /* ★ 2026-09-24：「後端實況」—— 只讀核對（本機 vs 後端） */
+    if (step.op === 'reality') {
+      const r = await remote.backendReality();
+      out.steps.push({
+        op: 'reality', ok: !!r.ok, found: !!r.found, route: r.route || '', sheet: r.sheet || '',
+        backendVersion: r.backendVersion || '', version: String(r.version || ''), bytes: Number(r.bytes || 0),
+        counts: r.counts || null, local: r.local || null, rows: r.rows || [],
+        pending: Number(r.pending || 0), pendingAccounts: Number(r.pendingAccounts || 0),
+        level: r.verdict?.level || '', title: r.verdict?.title || '', detail: r.verdict?.detail || '',
+        error: r.error || '', hint: (r.hint || '').slice(0, 400)
+      });
+    }
+    /* ★ 2026-09-24：儲存之後即刻核對（寫咗去邊、後端有冇） */
+    if (step.op === 'verify') {
+      /* 冇指定就用「後端上次寫入畀嘅版本」—— 同 saveWithDialog 傳 r.version 一樣 */
+      const r = await remote.verifyAgainstBackend(step.version || (store.tryLoad()?.sync?.lastSyncedVersion || ''));
+      out.steps.push({
+        op: 'verify', ok: !!r.ok, matched: !!r.matched, version: String(r.version || ''),
+        expectedVersion: String(r.expectedVersion || ''), versionOk: !!r.versionOk, countsOk: !!r.countsOk,
+        sheet: r.sheet || '', bytes: Number(r.bytes || 0), rows: r.rows || [],
+        backend: r.backend || null, local: r.local || null, error: r.error || ''
+      });
+    }
+    /* ★ 2026-09-24：一寫一讀驗證（寫個記號落後端再讀返出嚟對） */
+    if (step.op === 'probe') {
+      const r = await remote.syncProbe({ cleanup: step.cleanup !== false });
+      out.steps.push({
+        op: 'probe', ok: !!r.ok, matched: !!r.matched, nonce: String(r.nonce || ''), seen: String(r.seen || ''),
+        savedVersion: String(r.savedVersion || ''), readVersion: String(r.readVersion || ''),
+        cleanedUp: !!r.cleanedUp, cleanupError: String(r.cleanupError || ''),
+        writeMs: Number(r.writeMs || 0), readMs: Number(r.readMs || 0),
+        wroteButCannotRead: !!r.wroteButCannotRead, error: r.error || '', hint: (r.hint || '').slice(0, 400),
+        pending: pendingN()
       });
     }
     /* 「公開資料」頁會派出去嘅公開連結（驗 ?be= 自助後端附埋入 link） */
@@ -377,6 +435,17 @@ try {
         };
       }
       out.steps.push({ op: 'pull', ok: g.ok, found: g.ok ? true : (g.reason === 'empty' ? false : null), error: g.error || '', reason: g.reason || '', adopted });
+    }
+    /* ★ v2.8.0：直接 pullDb（唔採用）—— 用嚟驗「逐表讀」回咗乜，
+       包括邊個表壞咗（broken）同今次行咗邊條路（mode）。 */
+    if (step.op === 'simplePull') {
+      const g = await remote.pullDb();
+      out.steps.push({
+        op: 'simplePull', ok: !!g.ok, found: !!g.found, mode: g.mode || '', via: g.segmented ? 'per-table' : 'whole',
+        broken: Array.isArray(g.broken) ? g.broken : [],
+        members: (g.db?.members || []).length, names: (g.db?.members || []).map(m => m.name),
+        transactions: (g.db?.transactions || []).length, error: g.error || ''
+      });
     }
     if (step.op === 'snapshot') {
       const db = store.load();
@@ -409,11 +478,17 @@ try {
       db.members = [...(db.members || []), { id: 'm8' + Date.now(), name: step.name, ymis: step.ymis, identity: 'member' }];
       db.meta = { ...(db.meta || {}), updatedAt: '2026-09-18T20:00:00.000Z' };
       const cfg = remote.remoteCfg();
+      /* ★ v2.8.0：隊友都係用同一個 app —— 後端識逐表寫就一樣行 saveTables，
+         唔識先至用舊嘅整份 saveDb。唔跟嘅話兩部機會寫去兩個唔同嘅位。 */
+      const simple = remote.simpleWriteMode();
+      const body = simple
+        ? { action: 'saveTables', unit: '0082', tables: db }
+        : { action: 'saveDb', unit: '0082', db, baseVersion: String(got.version || '') };
       const r = await (await fetch(cfg.url || `${BASE}/api/proxy`, {
         method: 'POST', headers: { 'Content-Type': cfg.url ? 'text/plain;charset=utf-8' : 'application/json' },
-        body: JSON.stringify({ action: 'saveDb', unit: '0082', db, baseVersion: String(got.version || ''), ...(cfg.url ? { apiKey: cfg.apiKey } : {}) })
+        body: JSON.stringify({ ...body, ...(cfg.url ? { apiKey: cfg.apiKey } : {}) })
       })).json();
-      out.steps.push({ op: 'teammatePush', ok: r.ok === true, version: String(r.version || '') });
+      out.steps.push({ op: 'teammatePush', ok: r.ok === true, via: simple ? 'simple' : 'blob', version: String(r.version || '') });
     }
     if (step.op === 'import') {
       const st = JSON.parse(fs.readFileSync(step.file, 'utf8'));

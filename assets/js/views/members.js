@@ -26,6 +26,7 @@ import {
   currentRole, isSuper
 } from '../lib/auth.js';
 import { pageHead, tabs, empty, kv, chipbar, progressBar, noteBox } from './ui.js';
+import { memberTabs, identityTabView, mountAccountsTab } from './members-accounts.js';
 
 let kw = '';
 let statusFilter = 'all';
@@ -52,15 +53,23 @@ function chiefBanner() {
   </div></div>`;
 }
 
+/* 「用戶與身份」四個分頁嘅 id（其餘 id 一律當係用戶編號 → 個人頁） */
+const SECTION_IDS = ['list', 'accounts', 'perms', 'birthdays'];
+
 export function render(params) {
   const id = params.id;
   if (id === 'new') return editor(null);
   if (id === 'edit') return editor(params.action);        // #/members/edit/<id>
   if (id === 'birthdays') return birthdayView();
-  if (id === 'perms') return permsView();          // ★ 權限總表由「帳號與系統」搬過嚟（2026-09-24）
+  if (id === 'perms') return permsView();          // ★ 權限總表由「系統」搬過嚟（2026-09-24）
+  /* ★ 2026-09-24 團長：「身份與系統內的身份與帳號 移去 用戶與身份」
+     → #/members/accounts 就係以前 #/admin/accounts 嗰一版 */
+  if (id === 'accounts') return identityTabView();
+  if (id === 'list') return listView();
   if (id) return detail(id);
   return listView();
 }
+export { SECTION_IDS };
 
 /* ============================================================
    名冊
@@ -91,6 +100,7 @@ function listView() {
       ${can('member.create') ? `<button class="btn btn-sm" data-act="bulk-open">${icon('users', 15)} 批量開戶</button>
       <button class="btn btn-sm btn-primary" data-act="new">${icon('plus', 15)} 新增用戶</button>` : ''}`
   })}
+  ${memberTabs('list')}
 
   <div class="note-box mb-16">${icon('users', 15)}<div>
     呢度係<b>用戶名冊</b> —— 團長、領袖、執委同團員都會列喺呢度，<b>每人一個帳號</b>（冇共用帳號）。
@@ -222,6 +232,7 @@ function birthdayView() {
       <button class="btn btn-sm" data-act="exp-bday-csv">${icon('download', 15)} CSV</button>
       <button class="btn btn-sm" data-act="exp-bday-ics">${icon('calendar', 15)} 匯入日曆（.ics）</button>`
   })}
+  ${memberTabs('birthdays')}
 
   ${next7.length ? `<div class="card mb-16">${noteBox(`<b>${next7.length} 位</b>團員生日快到：` +
     next7.map(x => `${esc(x.name)}（${x.days === 0 ? '今日' : x.days + ' 日後'}，${Number(x.md.slice(0, 2))} 月 ${Number(x.md.slice(3))} 日${x.turning ? ` 將滿 ${x.turning} 歲` : ''}）`).join('、'), 'warn')}</div>` : ''}
@@ -608,6 +619,7 @@ function permsView() {
     actions: `<button class="btn btn-sm" data-go="#/members">${icon('chevronL', 15)} 返回用戶</button>
       ${editable ? `<button class="btn btn-sm" data-act="perm-reset">${icon('undo', 15)} 還原預設</button>` : ''}`
   })}
+  ${memberTabs('perms')}
   <div class="card">
     <div class="card-head"><div><div class="card-title">權限總表</div>
       <div class="card-sub">${editable
@@ -631,6 +643,11 @@ function permsView() {
 
 export function mount(root, params = {}) {
   root.querySelectorAll('[data-go]').forEach(el => el.addEventListener('click', () => go(el.dataset.go)));
+
+  /* ★ 2026-09-24：「身份與帳號」分頁（由「系統」搬過嚟）—— 成個分頁嘅掣
+     （設密碼／編輯／轉移團長／認領團長／舊版帳戶）由 members-accounts.js 負責。
+     mountAccountsTab 自己會 querySelectorAll 呢個 root，所以直接交畀佢。 */
+  if (params.id === 'accounts') mountAccountsTab(root, () => refresh());
 
   /* 權限總表：撳格子換狀態 */
   root.querySelectorAll('[data-perm-toggle]').forEach(td => td.addEventListener('click', () => {

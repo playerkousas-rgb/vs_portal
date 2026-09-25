@@ -86,6 +86,11 @@ try {
       store.wipe();
       out.steps.push({ op: 'wipe', members: store.load().members.length });
     }
+    if (step.op === 'checkReadWrite') {
+      const r = await remote.testReadWrite();
+      out.steps.push({ op: 'checkReadWrite', ok: r.ok, sheet: r.sheet || '',
+        version: r.version || '', error: r.error || '', via: r.via || '' });
+    }
     if (step.op === 'addMember') {
       /* identity 可以指定（2026-09-24 團員入口要測「邊個睇到」——
          要一個 leader 身份嘅團員先至驗到權限升高見到更多公開資料）。 */

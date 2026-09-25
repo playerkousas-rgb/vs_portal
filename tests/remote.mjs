@@ -121,9 +121,8 @@ section('Apps Script 範本（Code.gs）');
   /* ★ v2.7.0：寫入路嘅版本檢查一定要同讀取路同一套判斷 ——
      否則「最後一套段寫到一半死咗」會令 baseVersion 永遠對唔上，
      變成「永遠儲存唔到」（同「新儲嘅讀唔到」係同一個死法）。 */
-  ok('★ 寫入路（saveDbCommit）版本檢查用返 dbRawText（同讀取路一致）',
-    (code.match(/var curVersion = dbRawText\(unit, true\)\.version/g) || []).length === 1,
-    'count=' + (code.match(/dbRawText\(unit, true\)/g) || []).length);
+  ok('★ 分件儲存同提交都以資料表為正本、blob 為後備核對版本',
+    (code.match(/var curVersion = currentSimple\.found \? currentSimple\.version : \(dbRawText\(unit, true\)\.version \|\| ''\);/g) || []).length === 2);
   /* ★ v2.8.0：saveDb 唔可以再用舊「資料庫」分頁嘅版本鎖死寫入 ——
      「資料表」有嘢嗰陣佢先係正本，鎖住舊版本就等於「永遠存唔入」。 */
   /* ★ v2.8.0：版本鎖要對住**正本**。讀取一律以「資料表」为先，所以佢有嘢嗰陣
@@ -1001,8 +1000,8 @@ section('API Key 由伺服器端注入（前端唔應該知）');
      所以呢個性質而家喺 gateway.js 度驗 —— 驗嘅嘢一樣，冇放寬。 */
   const src = fs.readFileSync(path.join(ROOT, 'assets/js/lib/remote.js'), 'utf8');
   const gsrc = fs.readFileSync(path.join(ROOT, 'assets/js/lib/gateway.js'), 'utf8');
-  ok('gateway.js 只喺有 key 嗰陣先加入 payload（proxy 路線）',
-    /if \(apiKey\) \{\s*body\.apiKey/.test(gsrc));
+  ok('gateway.js 代理路線永遠不傳本機 Key，直連才傳 Key',
+    /delete body\.apiKey; delete body\.apikey/.test(gsrc) && /if \(apiKey\) \{ direct\.apiKey/.test(gsrc));
   ok('remote.js 把路由交畀 gateway（唔會自己砌 proxy payload）',
     /postBackend\(/.test(src) && !/body\.apiKey/.test(src));
   ok('remote.js 有 proxy 路線就唔再強制要前端填 /exec',

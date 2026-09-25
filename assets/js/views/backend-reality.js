@@ -58,6 +58,7 @@ export function realityCard() {
 
   const actions = `
     <div class="row gap-8 mt-12 wrap">
+      <button class="btn btn-sm" data-act="reality-write-read">${icon('check', 15)} 測試接線寫入＋讀回</button>
       <button class="btn btn-sm btn-primary" data-act="reality-check">${icon('refresh', 15)} 即刻核對（淨係讀）</button>
       <button class="btn btn-sm" data-act="reality-probe">${icon('shield', 15)} 一寫一讀驗證</button>
       ${d ? `<button class="btn btn-sm" data-act="reality-copy">${icon('copy', 15)} 複製結果</button>` : ''}
@@ -217,6 +218,25 @@ export function mountRealityCard(root) {
       b.disabled = false; b.innerHTML = old;
       try { window.dispatchEvent(new CustomEvent('v82:refresh')); } catch { /* ignore */ }
     }
+  }));
+
+  root.querySelectorAll('[data-act="reality-write-read"]').forEach(b => b.addEventListener('click', async () => {
+    b.disabled = true;
+    const old = b.innerHTML;
+    b.textContent = '測試緊…';
+    try {
+      const remote = await import('../lib/remote.js');
+      const r = await remote.testReadWrite();
+      await modal({
+        title: r.ok ? '✓ 寫入和讀回都成功' : '⚠ 接線讀寫失敗',
+        body: `<div class="note-box ${r.ok ? '' : 'danger'}"><div>${esc(r.ok ? r.message : (r.error || '未知原因'))}</div></div>
+          ${r.sheet ? `<p class="sm">試算表：${esc(r.sheet)}</p>` : ''}
+          ${r.version ? `<p class="sm">後端：${esc(r.version)}</p>` : ''}
+          ${r.hint ? `<p class="sm">${esc(r.hint)}</p>` : ''}
+          <p class="xs muted">此測試不碰帳戶或資料庫；成功後仍須儲存一筆正式資料，再用新裝置讀回驗收。</p>`,
+        actions: [{ label: '知道了', class: 'btn-primary', value: true }]
+      });
+    } finally { b.disabled = false; b.innerHTML = old; }
   }));
 
   root.querySelectorAll('[data-act="reality-probe"]').forEach(b => b.addEventListener('click', async () => {

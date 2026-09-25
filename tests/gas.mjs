@@ -47,6 +47,48 @@ const sampleDb = () => ({
   notices: [], invItems: [], meetings: [], accounts: []
 });
 
+section('真 Sheet 的數字自動轉型：0082 不能被寫成 82');
+{
+  const g = makeGas({ apiKey: 'test-sync-secret', coerceNumericText: true });
+  const check = g.post({ action: 'syncCheck', unit: '0082' });
+  ok('臨時行旅團 0082（前導零）與記號均能讀回', check.ok && check.wrote && check.readBack, JSON.stringify(check));
+  const written = g.post({ action: 'saveTables', unit: '0082', tables: {
+    members: [{ id: 'm1', name: '新團員' }]
+  }, full: true, refreshReports: false, baseVersion: '' });
+  ok('正式資料表的旅團編號不會轉成數字 82', written.success && written.confirmed,
+    JSON.stringify(written).slice(0, 300));
+  const read = g.post({ action: 'loadTables', unit: '0082' });
+  ok('另一裝置以 0082 讀回真正寫入的團員', read.found && read.db?.members?.[0]?.name === '新團員', JSON.stringify(read).slice(0, 300));
+  ok('資料表原始首欄是純文字 0082', g.sheets.get('資料表')?._rows?.[1]?.[0] === '0082');
+  const reportSave = g.post({ action: 'saveTables', unit: '0082', tables: {
+    members: [{ id: 'm1', name: '新團員' }]
+  }, baseVersion: written.version });
+  ok('報表刷新成功並且團員分頁旅團欄保留 0082', reportSave.success && reportSave.reports?.ok !== false
+    && g.sheets.get('團員')?._rows?.[1]?.[0] === '0082', JSON.stringify(reportSave).slice(0, 300));
+  const gBlob = makeGas({ apiKey: 'test-sync-secret', coerceNumericText: true });
+  const blob = gBlob.post({ action: 'saveDb', unit: '0082', db: sampleDb(), baseVersion: '' });
+  ok('整份後備寫入也能驗收及鏡像', blob.success === true, JSON.stringify(blob).slice(0, 300));
+  ok('資料庫原始首欄亦是純文字 0082', gBlob.sheets.get('資料庫')?._rows?.[1]?.[0] === '0082');
+  const blobRead = gBlob.post({ action: 'loadDb', unit: '0082' });
+  ok('另一裝置仍能讀返後備寫入資料', blobRead.found && blobRead.db?.members?.length === 2);
+}
+
+section('API Key 代理式獨立讀寫測試（無資料、無登入也能驗證）');
+{
+  const g = makeGas({ apiKey: 'test-sync-secret' });
+  const denied = g.post({ action: 'syncCheck', unit: '0082', apiKey: 'wrong' });
+  ok('Key 錯誤時不會建立測試工作表', denied.ok === false && !g.sheets.has('連線測試'));
+  const first = g.post({ action: 'syncCheck', unit: '0082' });
+  ok('第一次測試真的寫入並讀回相同記號', first.ok === true && first.wrote === true && first.readBack === true,
+    JSON.stringify(first));
+  ok('回應顯示實際試算表、後端版號，不回傳 Key',
+    !!first.spreadsheet && first.backendVersion === 'v2.8.3' && !JSON.stringify(first).includes('test-sync-secret'));
+  ok('測試行已清走，不影響正式資料庫',
+    g.sheets.get('連線測試')._rows.length === 1 && !g.sheets.has('資料表') && !g.sheets.has('資料庫'));
+  const second = g.post({ action: 'syncCheck', unit: '0099' });
+  ok('第二旅團同樣可以重複測試，無資料遺留', second.ok && g.sheets.get('連線測試')._rows.length === 1);
+}
+
 /* ============================================================
    ① Code.gs 本身載入得到 + 有齊 action
    ============================================================ */
@@ -1070,7 +1112,7 @@ section('★ v2.8.0 簡單寫入（真 Code.gs）：saveTables／loadTables／lo
   const txIdx = tab._rows.findIndex(r => r[1] === 'transactions');
   tab._rows[txIdx][3] = '{ 呢段被人整壞咗';
   const r3 = g.post({ action: 'loadTables', unit: '0082', apiKey: KEY });
-  ok('⑤ ★ 壞咗帳目表，成份資料庫照樣讀到（唔係「讀唔到」）',
+  ok('⑤ 壞表不得當完整資料庫採用（但可診斷其他表）',
     r3.ok === true && r3.found === true && (r3.db?.members || []).length === 3,
     JSON.stringify({ ok: r3.ok, found: r3.found, m: r3.db?.members?.length }));
   ok('⑤ ★ 如實報出邊個表壞咗', (r3.broken || []).includes('transactions'), JSON.stringify(r3.broken));
@@ -1081,7 +1123,10 @@ section('★ v2.8.0 簡單寫入（真 Code.gs）：saveTables／loadTables／lo
   ok('⑤ dbInfo 報 mode=simple ＋ broken',
     info.mode === 'simple' && (info.broken || []).includes('transactions'),
     JSON.stringify({ mode: info.mode, broken: info.broken }));
-  const fix = g.post({ action: 'saveTables', unit: '0082', apiKey: KEY, tables: { transactions: db1.transactions } });
+  const blockedPartial = g.post({ action: 'saveTables', unit: '0082', apiKey: KEY, tables: { transactions: db1.transactions } });
+  ok('⑤ 壞表時拒絕部分寫入', blockedPartial.ok === false);
+  ok('⑤ loadDb 拒絕將壞表當成完整資料庫', g.post({ action: 'loadDb', unit: '0082', apiKey: KEY }).ok === false);
+  const fix = g.post({ action: 'saveTables', unit: '0082', apiKey: KEY, tables: { ...db1, members: members2 }, full: true });
   const r4 = g.post({ action: 'loadTables', unit: '0082', apiKey: KEY });
   ok('⑤ ★ 再儲存一次就蓋返好嘅上去（冇表再壞）',
     fix.ok === true && (r4.broken || []).length === 0 && (r4.db?.transactions || []).length === 2,
@@ -1095,6 +1140,37 @@ section('★ v2.8.0 簡單寫入（真 Code.gs）：saveTables／loadTables／lo
 }
 
 
+
+/* 兩部機及損壞寫入：不能用「success」遮住未儲存的資料。 */
+section('逐表同步：版本競態、非法表及鏡像失敗');
+{
+  const g = makeGas({ apiKey: 'key' });
+  const first = g.post({ action: 'saveTables', unit: '0082', full: true, baseVersion: '', tables: sampleDb(), refreshReports: false });
+  ok('初次寫入有可核對版本', first.success && first.confirmed && !!first.version);
+  const next = g.post({ action: 'saveTables', unit: '0082', baseVersion: first.version, tables: { members: [{ id: 'new' }] }, refreshReports: false });
+  ok('機 A 用正確版本更新', next.success && next.confirmed);
+  const stale = g.post({ action: 'saveTables', unit: '0082', baseVersion: first.version, tables: { transactions: [] }, refreshReports: false });
+  ok('機 B 用過期版本被鎖攔住，並收到後端版本', !stale.success && stale.conflict && stale.version === next.version);
+  ok('被拒寫入不清除機 A 的資料', g.post({ action: 'loadDb', unit: '0082' }).db?.members?.[0]?.id === 'new');
+  const invalid = g.post({ action: 'saveTables', unit: '0082', baseVersion: next.version,
+    tables: { members: [], 'bad name': [] }, refreshReports: false });
+  ok('有一張表無效時整批拒寫（不能靜默略過）', !invalid.success && invalid.missingTables?.includes('bad name'));
+  ok('整批拒寫保留原表及版本', g.post({ action: 'loadDb', unit: '0082' }).db?.members?.[0]?.id === 'new');
+  const giant = 'a'.repeat(46000);
+  const grown = g.post({ action: 'saveTables', unit: '0082', baseVersion: next.version,
+    tables: { members: [{ id: giant }] }, refreshReports: false });
+  const shrunk = g.post({ action: 'saveTables', unit: '0082', baseVersion: grown.version,
+    tables: { members: [{ id: 'short' }] }, refreshReports: false });
+  ok('從兩段縮回一段仍寫得入（唔會誤選較長舊版）', grown.success && shrunk.success && shrunk.confirmed);
+  ok('縮短後讀返係新資料，版本也係新版本',
+    g.post({ action: 'loadDb', unit: '0082' }).db?.members?.[0]?.id === 'short' &&
+    g.post({ action: 'dbInfo', unit: '0082' }).version === shrunk.version);
+  const former = g.sandbox.saveTables;
+  g.sandbox.saveTables = () => ({ success: false, error: '鏡像不可用' });
+  const blob = g.post({ action: 'saveDb', unit: '0082', baseVersion: shrunk.version, db: sampleDb(), refreshReports: false });
+  ok('資料庫寫好但資料表鏡像失敗時，絕不回成功', blob.success === false && /鏡像/.test(blob.error));
+  g.sandbox.saveTables = former;
+}
 
 /* ============================================================
    ★ v2.8.1：自證寫入＋報表合併＋真相欄位＋止血
@@ -1133,7 +1209,7 @@ section('★ v2.8.1：自證＋報表合併＋真相欄位＋止血');
     JSON.stringify({ f: info.found, m: info.mode }));
   ok('③ dbInfo 版本對得上寫入版本', info.version === sv2.version, `${info.version} vs ${sv2.version}`);
   ok('③ ★ dbInfo 報分頁原行數＋後端版本',
-    info.simpleRows === 8 && info.blobRows === 0 && info.backendVersion === 'v2.8.1',
+    info.simpleRows === 8 && info.blobRows === 0 && info.backendVersion === 'v2.8.3',
     JSON.stringify({ s: info.simpleRows, b: info.blobRows, v: info.backendVersion }));
 
   /* ④ 全部表壞晒 → found:false，但行數＋壞表如實報（唔再係齋「空」） */
@@ -1167,7 +1243,7 @@ section('★ v2.8.1：自證＋報表合併＋真相欄位＋止血');
   /* ⑦ diag 真相欄位 */
   const dg = g.post({ action: 'diag', unit: '0082', apiKey: KEY });
   ok('⑦ ★ diag 有 backendVersion／mode／simpleRows',
-    dg.backendVersion === 'v2.8.1' && dg.mode === 'simple' && dg.simpleRows === 8,
+    dg.backendVersion === 'v2.8.3' && dg.mode === 'simple' && dg.simpleRows === 8,
     JSON.stringify({ v: dg.backendVersion, m: dg.mode, s: dg.simpleRows }));
 }
 

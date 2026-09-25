@@ -245,6 +245,12 @@ function loadDb(unit) {
    讀嗰陣逐表砌返，某個表砌唔成就淨係 skip 嗰個表（broken）。
    ============================================================ */
 function saveTables(body) {
+  /* ★ 測試用：FAKEGAS_UNCONFIRMED=1 ＝ 扮自證失敗（寫完讀返冇行）。
+     前端要當寫入失敗（保留 pending），唔可以假成功。 */
+  if (process.env.FAKEGAS_UNCONFIRMED === '1') {
+    return { ok: true, success: true, tables: {}, bytes: 0, at: new Date().toISOString(),
+      version: 'Sfake-unconfirmed', confirmed: false, simpleRows: 0, missingTables: ['members'], reports: null };
+  }
   const unit = String(body.unit || 'UNKNOWN');
   const tables = body.tables;
   if (!tables || typeof tables !== 'object') return { ok: false, success: false, error: '冇收到表內容（tables）' };
@@ -283,7 +289,14 @@ function saveTables(body) {
   /* 同真 Code.gs 一樣：寫完順手由名冊更新「成員名單」分頁（進度頁揀人用）。
      ★ 一定要喺**刪舊之後**先讀 —— 呢度新舊兩套段同時存在，讀早咗會讀到舊嗰套。 */
   syncProgressMembers(loadTables(unit).db || {});
-  return { ok: true, success: true, tables: saved, bytes, at: now, version: saveId, reports: { ok: true, counts: {} } };
+  const unitRows = simpleSheet.filter(r => r[0] === unit).length;
+  if (process.env.FAKEGAS_V280 === '1') {
+    /* 扮 v2.8.0：冇 confirmed／reports —— 前端要當成功（唔會斷舊部署） */
+    return { ok: true, success: true, tables: saved, bytes, at: now, version: saveId };
+  }
+  /* ★ v2.8.1：同真 Code.gs 一樣自證（confirmed）＋報行數（simpleRows） */
+  return { ok: true, success: true, tables: saved, bytes, at: now, version: saveId,
+    confirmed: true, simpleRows: unitRows, reports: { ok: true, counts: {} } };
 }
 
 function loadTables(unit) {
@@ -356,18 +369,23 @@ function dbStats(db) {
 /* ★ v2.8.0：先睇「資料表」分頁（簡單寫入），冇先至跌返去舊嘅「資料庫」整份 blob */
 function dbInfo(unit) {
   const adv = NO_SIMPLE ? {} : { simpleWrite: true };
+  /* ★ v2.8.1：同真 Code.gs 一樣 —— 就算 found:false 都如實報行數＋壞表＋後端版本 */
+  const simpleRows = simpleSheet.filter(r => String(r[0] || '') === String(unit || '')).length;
+  const blobRows = sheet.filter(r => String(r[0] || '') === String(unit || '')).length;
   const simple = loadTables(unit);
+  const bv = NO_SIMPLE ? 'v2.7.2' : 'v2.8.1';
   if (simple.found) {
     const a = dbStats(simple.db || {});
     return { ok: true, success: true, found: true, mode: 'simple', at: simple.at, version: simple.version,
-      bytes: a.bytes, counts: a.counts, broken: simple.broken, ...adv };
+      bytes: a.bytes, counts: a.counts, broken: simple.broken, simpleRows, blobRows, backendVersion: bv, ...adv };
   }
   const r = loadDb(unit);
-  if (!r.found) return { ok: true, success: true, found: false, mode: 'empty', ...adv };
+  if (!r.found) return { ok: true, success: true, found: false, mode: 'empty', counts: null, bytes: 2,
+    broken: simple.broken || [], simpleRows, blobRows, backendVersion: bv, ...adv };
   const db = r.db || {};
   const b = dbStats(db);
   return { ok: true, success: true, found: true, mode: 'blob', at: r.at, version: r.version, bytes: r.bytes,
-    counts: b.counts, ...adv };
+    counts: b.counts, broken: simple.broken || [], simpleRows, blobRows, backendVersion: bv, ...adv };
 }
 
 /* 後端如果設咗 API_KEY（真 Code.gs 行完 initializeSheets 就一定會有），
@@ -434,7 +452,7 @@ http.createServer((req, res) => {
     } else if (a === 'reviewRequest') {
       out = reviewRequest(body);
     } else if (a === 'status' || a === 'ping') out = { ok: true, success: true, msg: 'pong',
-      backendVersion: NO_SIMPLE ? 'v2.7.2' : 'v2.8.0', ...(NO_SIMPLE ? {} : { simpleWrite: true }) };
+      backendVersion: NO_SIMPLE ? 'v2.7.2' : 'v2.8.1', ...(NO_SIMPLE ? {} : { simpleWrite: true }) };
     /* ★ 測試用：把「資料表」入面某個表嘅第一段弄壞 ——
        證明「壞一個表淨係唔要嗰個表」，唔會連累成份資料庫讀唔到。 */
     else if (a === '__corrupt') {

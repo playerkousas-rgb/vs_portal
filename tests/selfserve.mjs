@@ -201,7 +201,7 @@ section('⑤ 「同步診斷」逐格講清楚邊格斷');
   ok('診斷跑得到', !!d.stages, JSON.stringify(d).slice(0, 200));
   ok('诊断話你知成條鏈正常（自助路線）', d.ok === true, JSON.stringify(d));
   ok('診斷講明行緊「自己貼嘅 /exec」', d.route === 'direct', String(d.route));
-  ok('診斷攞到後端版本號（v2.8.0）', d.backendVersion === 'v2.8.0', String(d.backendVersion));
+  ok('診斷攞到後端版本號（v2.8.1）', d.backendVersion === 'v2.8.1', String(d.backendVersion));
   ok('診斷照樣指出平台未登記（warn，唔係當冇事）',
     (d.stages || []).includes('registry:warn') || (d.stages || []).includes('registry:bad'), JSON.stringify(d.stages));
 
@@ -308,7 +308,7 @@ section('⑦ 對照：平台已登記 → 行返正路 proxy，連結唔會多�
     body: JSON.stringify({ action: 'status', unit: '0082' })
   });
   const j = await r.json().catch(() => null);
-  ok('平台登記咗就經 proxy 通到後端', r.status === 200 && j?.ok === true && j?.backendVersion === 'v2.8.0',
+  ok('平台登記咗就經 proxy 通到後端', r.status === 200 && j?.ok === true && j?.backendVersion === 'v2.8.1',
     `HTTP ${r.status} ${JSON.stringify(j)}`);
 
   const reg = await (await fetch(`${BASE2}/api/units?diag=1`)).json();

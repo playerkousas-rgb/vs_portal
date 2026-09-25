@@ -67,10 +67,17 @@ section('Server-side access audit');
 {
   const g = makeGas({ apiKey: 'audit-test-key' });
   g.sandbox.initializeSheets();
+  /* ★ v2.8.1：純讀取唔記審計（慳配額＋唔洗版） */
   g.post({ action: 'status', unit: '0082', apiKey: 'audit-test-key', actor: 'leader@example.com', password: 'never-log-this' });
-  const rows = g.sheets.get('審計紀錄')._rows;
+  g.post({ action: 'dbInfo', unit: '0082', apiKey: 'audit-test-key' });
+  g.post({ action: 'loadDb', unit: '0082', apiKey: 'audit-test-key' });
+  let rows = g.sheets.get('審計紀錄')._rows;
+  ok('★ 純讀取（status／dbInfo／loadDb）唔留審計行', rows.length === 1, JSON.stringify(rows.length));
+  /* 寫入先記 —— 而且唔可以帶出 key／密碼／整份 payload */
+  g.post({ action: 'saveTables', unit: '0082', apiKey: 'audit-test-key', tables: { members: [] }, full: true, refreshReports: false, actor: 'leader@example.com', password: 'never-log-this' });
+  rows = g.sheets.get('審計紀錄')._rows;
   const line = JSON.stringify(rows);
-  ok('request metadata 寫入審計紀錄', rows.length >= 2 && line.includes('status') && line.includes('0082'));
+  ok('request metadata 寫入審計紀錄', rows.length >= 2 && line.includes('saveTables') && line.includes('0082'));
   ok('審計紀錄不包含 API Key／密碼／payload', !line.includes('audit-test-key') && !line.includes('never-log-this'));
 }
 
@@ -1087,6 +1094,82 @@ section('★ v2.8.0 簡單寫入（真 Code.gs）：saveTables／loadTables／lo
     JSON.stringify({ ok: legacy.ok, m: legacy.db?.members?.length }));
 }
 
+
+
+/* ============================================================
+   ★ v2.8.1：自證寫入＋報表合併＋真相欄位＋止血
+   ------------------------------------------------------------
+   團長 2026-09-25 四項回報：
+     ① saveTables 自證（寫完讀返，留唔到行就直接失敗，唔會假成功）
+     ② saveTables 包埋報表刷新（一次請求搞掂，唔使第二次 pushToMaster）
+     ③ dbInfo／diag 如實報分頁原行數＋壞表（分得出「真係空」定「讀唔到」）
+     ④ 止血：審計唔記純讀取（見上面）／同步紀錄封頂／repairDb 清「資料表」舊套
+   ============================================================ */
+section('★ v2.8.1：自證＋報表合併＋真相欄位＋止血');
+{
+  const g = makeGas({ apiKey: 'v281_key' });
+  const KEY = g.props.get('API_KEY');
+  const db = sampleDb();
+
+  /* ① saveTables 自證＋報表合併 */
+  const sv = g.post({ action: 'saveTables', unit: '0082', apiKey: KEY, tables: db, full: true });
+  ok('① saveTables 成功', sv.success === true, JSON.stringify(sv).slice(0, 200));
+  ok('① ★ 自證 confirmed=true', sv.confirmed === true, JSON.stringify(sv).slice(0, 200));
+  ok('① ★ 報表同一次請求刷埋（唔使第二次 pushToMaster）', sv.reports && sv.reports.ok === true, JSON.stringify(sv.reports));
+  ok('① ★ 報表真係有料（團員分頁 2 行）', (g.sheets.get('團員')._rows.length - 1) === 2,
+    String(g.sheets.get('團員')._rows.length));
+
+  /* ② partial 寫入：報表用讀返嚟嘅成份砌，唔會洗走冇送嚟嘅表 */
+  const sv2 = g.post({ action: 'saveTables', unit: '0082', apiKey: KEY,
+    tables: { members: [...db.members, { id: 'm3', name: '王五' }] } });
+  ok('② partial save 成功＋confirmed', sv2.success === true && sv2.confirmed === true, JSON.stringify(sv2).slice(0, 160));
+  ok('② ★ 帳目報表冇被洗走（仲係 2 行）', (g.sheets.get('帳目')._rows.length - 1) === 2,
+    String(g.sheets.get('帳目')._rows.length));
+  ok('② ★ 團員報表更新咗（3 行）', (g.sheets.get('團員')._rows.length - 1) === 3);
+
+  /* ③ dbInfo 真相欄位 */
+  const info = g.post({ action: 'dbInfo', unit: '0082', apiKey: KEY });
+  ok('③ dbInfo found＋mode=simple', info.found === true && info.mode === 'simple',
+    JSON.stringify({ f: info.found, m: info.mode }));
+  ok('③ dbInfo 版本對得上寫入版本', info.version === sv2.version, `${info.version} vs ${sv2.version}`);
+  ok('③ ★ dbInfo 報分頁原行數＋後端版本',
+    info.simpleRows === 8 && info.blobRows === 0 && info.backendVersion === 'v2.8.1',
+    JSON.stringify({ s: info.simpleRows, b: info.blobRows, v: info.backendVersion }));
+
+  /* ④ 全部表壞晒 → found:false，但行數＋壞表如實報（唔再係齋「空」） */
+  const tab = g.sheets.get('資料表');
+  tab._rows.forEach((r, i) => { if (i > 0) r[3] = '{壞咗嘅 JSON'; });
+  const infoB = g.post({ action: 'dbInfo', unit: '0082', apiKey: KEY });
+  ok('④ ★ 全壞 → found:false', infoB.found === false, JSON.stringify(infoB).slice(0, 200));
+  ok('④ ★ 全壞 → simpleRows 照報（8 行，唔係 0）', infoB.simpleRows === 8, String(infoB.simpleRows));
+  ok('④ ★ 全壞 → broken 列出晒 8 個表', (infoB.broken || []).length === 8, JSON.stringify(infoB.broken));
+  /* 整返好佢先至試埋落去 */
+  g.post({ action: 'saveTables', unit: '0082', apiKey: KEY, tables: db, full: true, refreshReports: false });
+
+  /* ⑤ 同步紀錄封頂 500 */
+  const logSh = g.sheets.get('同步紀錄') || g.sandbox.SpreadsheetApp.getActiveSpreadsheet().insertSheet('同步紀錄');
+  while (logSh._rows.length < 601) logSh._rows.push(['t', '0082', 'n', '{}']);
+  g.post({ action: 'sync', unit: '0082', apiKey: KEY, tables: { members: [] } });
+  ok('⑤ ★ 同步紀錄 600＋1 次 sync → 封頂 500 行', (g.sheets.get('同步紀錄')._rows.length - 1) === 500,
+    String(g.sheets.get('同步紀錄')._rows.length));
+
+  /* ⑥ repairDb 清「資料表」舊套 */
+  const sTab = g.sheets.get('資料表');
+  const before = sTab._rows.length;
+  sTab._rows.filter((r, i) => i > 0 && r[1] === 'members').forEach(r =>
+    sTab._rows.push(['0082', 'members', r[2], r[3], r[4], 'SOLD-set']));
+  const rep = g.post({ action: 'repairDb', unit: '0082', apiKey: KEY });
+  ok('⑥ ★ repairDb 清走「資料表」舊套', (rep.repaired?.removedOldSimple || 0) >= 1, JSON.stringify(rep.repaired));
+  ok('⑥ 清完行數返原狀', sTab._rows.length === before, `${sTab._rows.length} vs ${before}`);
+  const lt = g.post({ action: 'loadTables', unit: '0082', apiKey: KEY });
+  ok('⑥ 清完照讀到 2 個團員', (lt.db?.members || []).length === 2);
+
+  /* ⑦ diag 真相欄位 */
+  const dg = g.post({ action: 'diag', unit: '0082', apiKey: KEY });
+  ok('⑦ ★ diag 有 backendVersion／mode／simpleRows',
+    dg.backendVersion === 'v2.8.1' && dg.mode === 'simple' && dg.simpleRows === 8,
+    JSON.stringify({ v: dg.backendVersion, m: dg.mode, s: dg.simpleRows }));
+}
 
 console.log(`\n${fail === 0 ? '✅' : '❌'} Code.gs：${pass} 過 / ${fail} 唔過（${Date.now() - t0}ms）`);
 process.exit(fail === 0 ? 0 : 1);

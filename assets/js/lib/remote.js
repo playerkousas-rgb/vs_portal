@@ -972,6 +972,23 @@ export async function backendHealth() {
     out.lines.push(info.found
       ? `後端資料庫：${fmtBytes(bytes)} · 版本 ${String(info.version || '').slice(0, 19).replace('T', ' ')} · ${Number(info.counts?.members || 0)} 位用戶`
       : '後端資料庫：**仲未有資料**（未有任何一次成功儲存）');
+    /* ★ v2.8.1：分得出「真係空」定「有行但讀唔到」 */
+    const simpleRows = Number(info.simpleRows || 0);
+    const blobRows = Number(info.blobRows || 0);
+    const broken = Array.isArray(info.broken) ? info.broken : [];
+    if (!info.found && (simpleRows > 0 || blobRows > 0)) {
+      out.canRepair = true;
+      const where = [
+        simpleRows > 0 ? `「資料表」有 ${simpleRows} 行` : '',
+        blobRows > 0 ? `「資料庫」有 ${blobRows} 行` : ''
+      ].filter(Boolean).join('＋');
+      out.lines.push(`⚠ 後端分頁唔係空（${where}）—— 但砌唔返成份資料${broken.length ? `（讀唔到嘅表：${broken.join('、')}）` : ''}。呢個就係「後端有資料但 app 話冇」嘅死因。`);
+    } else if (info.mode) {
+      out.lines.push(`儲存模式：${info.mode === 'simple' ? '逐表寫（v2.8.0＋）' : info.mode === 'blob' ? '整份寫入（舊路線）' : info.mode}${info.backendVersion ? ` · 後端版本 ${info.backendVersion}` : ''}`);
+    }
+    if (broken.length && info.found) {
+      out.lines.push(`有 ${broken.length} 個表讀唔到（${broken.join('、')}）—— 其餘表唔受影響；喺仲有資料嗰部機再儲存一次就會蓋返好。`);
+    }
     if (Number(info.versions || 0) > 1 || Number(info.staleRows || 0) > 0) {
       out.canRepair = true;
       out.lines.push(`分頁入面有 ${Number(info.versions || 0)} 套版本段（其中 ${Number(info.staleRows || 0)} 行係舊段／垃圾）`
@@ -1192,9 +1209,28 @@ export async function backendReality() {
   out.stagingRows = Number(info.stagingRows || 0);
   out.staleRows = Number(info.staleRows || 0);
   out.versions = Number(info.versions || 0);
+  /* ★ v2.8.1：收據真相欄位（就算 found:false 都如實有 —— 後端 v2.8.1 起一定會報） */
+  out.mode = String(info.mode || '');
+  out.simpleRows = Number(info.simpleRows || 0);
+  out.blobRows = Number(info.blobRows || 0);
+  out.broken = Array.isArray(info.broken) ? info.broken.slice() : [];
 
   if (!out.found) {
     out.rows = realityRows(null, local);
+    /* ★ v2.8.1：「分頁有行但砌唔返」唔再當「從未寫入過」—— 兩回事，做法完全唔同 */
+    if (out.simpleRows > 0 || out.blobRows > 0) {
+      const where = [
+        out.simpleRows > 0 ? `「資料表」分頁有 ${out.simpleRows} 行` : '',
+        out.blobRows > 0 ? `「資料庫」分頁有 ${out.blobRows} 行` : ''
+      ].filter(Boolean).join('＋');
+      out.verdict = {
+        level: 'bad',
+        title: `後端分頁有行（${where}），但砌唔返成份資料 —— 所以先會「app 話冇」`,
+        detail: `唔係你冇寫入過，係後端讀取嗰邊出事${out.broken.length ? `（讀唔到嘅表：${out.broken.join('、')}）` : ''}。`
+          + '下一步：① 去「總表同步」撳「修復後端」；② 如果修完都係咁，後端 Code.gs 可能太舊 —— 重貼最新 Code.gs、部署揀「新版本」再試。'
+      };
+      return out;
+    }
     out.verdict = {
       level: 'warn',
       title: '後端連到，但入面完全冇資料 —— 你啲嘢從未寫入過後端',
@@ -1257,6 +1293,14 @@ export async function verifyAgainstBackend(expectedVersion = '') {
   out.at = String(info.at || info.version || '').slice(0, 19).replace('T', ' ');
   out.bytes = Number(info.bytes || 0);
   out.backend = info.counts || null;
+  /* ★ v2.8.1：收據真相欄位 —— 分得出「真係空」定「有行但讀唔到」 */
+  out.route = String(info.via || '');
+  out.unit = String(remoteCfg().unit || '');
+  out.mode = String(info.mode || '');
+  out.simpleRows = Number(info.simpleRows || 0);
+  out.blobRows = Number(info.blobRows || 0);
+  out.broken = Array.isArray(info.broken) ? info.broken.slice() : [];
+  out.backendVersion = String(info.backendVersion || '');
   out.rows = realityRows(info.counts, local);
   const versionOk = !out.expectedVersion || out.version === out.expectedVersion;
   const countsOk = out.rows.every(r => r.same !== false);
@@ -1600,7 +1644,8 @@ async function saveToBackendInner({ policy = 'ask', resolver = null, silent = tr
     if (!r.ok) {
       setState('error', r.error || '儲存失敗');
       logLocal(`✗ 儲存失敗：${r.error || '未知錯誤'}`);
-      return { ok: false, reason: r.reason || 'backend', error: r.error || '儲存失敗', hint: r.hint || '' };
+      return { ok: false, reason: r.reason || 'backend', error: r.error || '儲存失敗', hint: r.hint || '',
+        mode: r.mode || '', simpleRows: Number(r.simpleRows || 0) };
     }
 
     /* ④ 成功：本機 ＝ 後端 ＝ 新基準 */
@@ -1619,7 +1664,10 @@ async function saveToBackendInner({ policy = 'ask', resolver = null, silent = tr
       /* ★ v2.6.3 Code.gs 會喺寫完「資料庫」分頁之後**顺手刷新晒報表分頁**，
          並把結果放喺 reports。有呢個就不用再發第二個請求（慳一半 GAS 配額）；
          舊版 Code.gs 冇呢個欄位 → 前端會自己補撳「更新報表分頁」。 */
-      reports: (r.reports && typeof r.reports === 'object') ? r.reports : null
+      reports: (r.reports && typeof r.reports === 'object') ? r.reports : null,
+      /* ★ v2.8.1：後端自證結果（逐表寫先有；舊後端＝undefined） */
+      confirmed: r.mode === 'simple' ? (r.confirmed ?? null) : null,
+      simpleRows: Number(r.simpleRows || 0)
     };
     inFlight = false;
 
@@ -1705,6 +1753,18 @@ async function pushPayload(payload, { baseVersion, unit, silent, tables: changed
     const tables = pickTables(payload, changedNames);
     /* full＝呢次送晒所有表（第一次寫入）→ 後端可以順手清走「已經冇咗嘅表」 */
     const sr = await callBackend({ action: 'saveTables', unit, tables, full: !changedNames }, { timeoutMs: 90000 });
+    /* ★ v2.8.1：後端自證寫唔到（v2.8.1 起 saveTables 寫完會即刻讀返驗一次）。
+       confirmed === false ＝ 後端話收到、但分頁留唔到呢次寫嘅行 —— 當寫入失敗，
+       等 pending 保留、用家再撳一次，唔可以假成功清走 pending。
+       （v2.8.0 後端冇呢個欄位＝undefined → 當成功，唔會斷舊部署。） */
+    if (sr.ok && sr.confirmed === false) {
+      return {
+        ok: false, reason: 'not_confirmed', mode: 'simple', bytes: 0, parts: 0, version: '',
+        simpleRows: Number(sr.simpleRows || 0),
+        error: '後端寫入後即刻讀返唔到（有多部機同時儲存／後端部署唔啱）—— 你嘅改動仲喺呢部機，冇蝕；請再撳一次「儲存到後端」',
+        hint: '如果試幾次都係咁：① 睇下有冇另一部機／另一個分頁同時撳緊儲存；② 去「系統 → 資料管理」睇下後端版本係咪 v2.8.1（唔係＝要重貼 Code.gs、部署揀「新版本」）。'
+      };
+    }
     if (sr.ok) return { ...sr, bytes: sr.bytes || bytes, parts: 0, mode: 'simple' };
     if (/未知 action|unknown action|不支援的操作/.test(String(sr.error || ''))) {
       /* 後端 Code.gs 未更新到 v2.8.0 —— 記低，今次跌返舊路，之後唔使再試 */

@@ -95,6 +95,11 @@ export function realityCard() {
   const facts = [
     d.sheet ? ['寫入緊嘅試算表', `「${esc(d.sheet)}」`] : null,
     d.backendVersion ? ['後端版本', esc(d.backendVersion)] : null,
+    /* ★ v2.8.1：分得出「真係空」定「有行但讀唔到」 */
+    (d.mode || d.simpleRows || d.blobRows) ? ['儲存模式＋正本行數',
+      `${d.mode === 'simple' ? '逐表寫' : d.mode === 'blob' ? '整份寫入（舊路線）' : d.mode ? esc(d.mode) : '（後端太舊，未回報）'}`
+      + ((d.simpleRows || d.blobRows) ? ` · 「資料表」${Number(d.simpleRows || 0)} 行＋「資料庫」${Number(d.blobRows || 0)} 行` : '')] : null,
+    (d.broken || []).length ? ['讀唔到嘅表', `<b style="color:var(--danger)">${esc(d.broken.join('、'))}</b>（其餘表唔受影響）`] : null,
     ['接線方式', d.route === 'proxy' ? '平台伺服器端（/api/proxy）' : d.route === 'direct' ? '你自己貼嘅 /exec' : '—'],
     ['後端最後更新', esc(when(d.at)) || '（未知）'],
     /* 「後端版本 ≠ 呢部機對上一次同步嘅版本」＝ 有第二部機寫過（呢個係正常，但要講） */
@@ -173,6 +178,9 @@ export function realityText() {
     d.verdict?.detail || '',
     d.sheet ? `寫入緊嘅試算表：${d.sheet}` : '',
     `後端版本：${d.backendVersion || '（後端太舊／未回報）'}　接線：${d.route || '-'}`,
+    (d.mode || d.simpleRows || d.blobRows)
+      ? `儲存模式：${d.mode === 'simple' ? '逐表寫' : d.mode === 'blob' ? '整份寫入' : d.mode}　正本行數：資料表 ${Number(d.simpleRows || 0)} 行＋資料庫 ${Number(d.blobRows || 0)} 行${(d.broken || []).length ? `　讀唔到：${d.broken.join('、')}` : ''}`
+      : '',
     `後端最後更新：${when(d.at) || '（未知）'}　大小：${d.bytes ? fmtBytes(d.bytes) : '-'}`,
     '',
     '資料　　　　本機　後端',

@@ -14,6 +14,7 @@
    ============================================================ */
 import { modal, esc, icon, toast, toastAction, confirmDlg } from '../lib/util.js';
 import { describeConflict } from '../lib/merge3.js';
+import { APP_VERSION } from '../lib/version.js';
 
 /**
  * @param {object} p
@@ -145,17 +146,23 @@ export async function showSaveReceipt(r) {
   const body = `
     ${v ? `
       <div class="note-box ${okAll ? '' : 'danger'} mb-12">${icon(okAll ? 'check' : 'alert', 15)}<div>
-        <b>${okAll ? '已寫入後端，而且核對過 —— 後端而家同你部機一樣 ✓' : '寫入回傳成功，但核對嗰陣對唔上'}</b>
+        <b>${okAll ? '已寫入後端，而且核對過 —— 後端而家同你部機一樣 ✓' : (!v.found && v.ok ? '寫入嗰陣後端話收到，但即刻問返係空' : '寫入回傳成功，但核對嗰陣對唔上')}</b>
         <div class="xs mt-4">${okAll
           ? '即係：第二部機（甚至無痕視窗）登入就會見到呢一份。'
-          : (v.ok
-            ? '後端而家嘅版本／筆數同你部機唔同。多數係「寫完之後又有另一部機寫過」，或者後端讀取有問題（例如資料庫太大讀唔返）。'
-            : `核對嗰陣讀唔到後端：${esc(v.error || '')}`)}
+          : (!v.ok
+            ? `核對嗰陣讀唔到後端：${esc(v.error || '')}`
+            : (!v.found
+              ? '寫入嗰陣後端話收到，但即刻問返係空 —— 多數係旅團編號唔啱（寫咗去第二個編號）、或者後端 Code.gs 太舊（部署冇揀「新版本」）。對一對下面嘅旅團編號同後端程式版本。'
+              : '後端而家嘅版本／筆數同你部機唔同。多數係「寫完之後又有另一部機寫過」，或者後端讀取有問題（例如資料庫太大讀唔返）。'))}
         </div>
       </div></div>
       <div class="kv mb-12">
         ${v.sheet ? `<div class="kv-row sm"><span>寫入緊嘅試算表</span><span><b>${esc(v.sheet)}</b></span></div>` : ''}
-        <div class="kv-row sm"><span>後端版本</span><span class="mono xs">${esc(v.version || '（未知）')}</span></div>
+        <div class="kv-row sm"><span>旅團＋接線</span><span class="xs"><b class="mono">${esc(v.unit || '（未知）')}</b>${v.route ? ` · ${v.route === 'proxy' ? '平台代理' : v.route === 'direct' ? '自己貼嘅 /exec' : esc(v.route)}` : ''}</span></div>
+        <div class="kv-row sm"><span>APP 版本</span><span class="mono xs">${APP_VERSION}</span></div>
+        <div class="kv-row sm"><span>後端程式版本</span><span class="mono xs">${esc(v.backendVersion || '（後端太舊，未回報）')}${v.mode ? ` · ${v.mode === 'simple' ? '逐表寫' : v.mode === 'blob' ? '整份寫入' : esc(v.mode)}` : ''}</span></div>
+        ${(v.mode || v.simpleRows || v.blobRows) ? `<div class="kv-row sm"><span>正本分頁行數</span><span class="xs">「資料表」<b>${Number(v.simpleRows || 0)}</b> 行 · 「資料庫」<b>${Number(v.blobRows || 0)}</b> 行${(v.broken || []).length ? ` · <span style="color:var(--danger)">讀唔到：${esc(v.broken.join('、'))}</span>` : ''}</span></div>` : ''}
+        <div class="kv-row sm"><span>後端資料版本</span><span class="mono xs">${esc(v.version || '（未知）')}</span></div>
         <div class="kv-row sm"><span>寫入嗰陣後端畀嘅版本</span><span class="mono xs">${esc(v.expectedVersion || '（未知）')}</span></div>
         <div class="kv-row sm"><span>後端最後更新</span><span>${esc(String(v.at || '').slice(0, 19).replace('T', ' '))}</span></div>
         <div class="kv-row sm"><span>寫入路線</span><span class="xs">${r?.mode === 'simple'

@@ -66,7 +66,7 @@ async function gas(gasPort, body) {
 }
 
 /** 起一套「假後端 ＋ dev-server」，回 { base, gasPort, stop } */
-async function bootStack({ noSimple = false } = {}) {
+async function bootStack({ noSimple = false, extraEnv = {} } = {}) {
   const gasPort = await freePort();
   const webPort = await freePort();
   const procs = [];
@@ -76,7 +76,7 @@ async function bootStack({ noSimple = false } = {}) {
     return p;
   };
   spawnBg([path.join(ROOT, 'tests', '_fakegas.mjs'), String(gasPort)],
-    { FAKEGAS_APIKEY: 'test_key_0082', ...(noSimple ? { FAKEGAS_NO_SIMPLE: '1' } : {}) });
+    { FAKEGAS_APIKEY: 'test_key_0082', ...(noSimple ? { FAKEGAS_NO_SIMPLE: '1' } : {}), ...extraEnv });
   spawnBg([path.join(ROOT, 'dev-server.mjs')], {
     TROOP_0082_BACKEND: `http://127.0.0.1:${gasPort}/exec`,
     TROOP_0082_APIKEY: 'test_key_0082',
@@ -265,10 +265,99 @@ try {
   old.stop();
 }
 
+
 /* ============================================================
-   ⑤ 靜態守門：新 action 一定要喺代理白名單 ＋ Code.gs 識做
+   ⑤ ★ v2.8.1：自證＋報表合併（一次請求搞掂）
+   ------------------------------------------------------------
+   團長 2026-09-25：「寫入回傳成功，但核對嗰陣對唔上。」
+   而家寫入嗰陣後端即刻自證，收據／實況要見到真相。
    ============================================================ */
-section('⑤ 靜態守門（唔會重演「action 漏咗喺白名單」嗰單事故）');
+section('⑤ v2.8.1：寫入自證＋報表合併（一次請求搞掂）');
+const v281 = await bootStack({});
+ok('假後端（v2.8.1）已啟動', v281.up === true);
+try {
+  const V = await runDevice(v281.base, { steps: [
+    { op: 'load' },
+    { op: 'wipe' },
+    { op: 'addMember', name: '陳大文', ymis: '2026000001' },
+    { op: 'addTx', date: '2026-09-25', type: 'income', item: '團費', amount: 360 },
+    { op: 'push' },
+    { op: 'info' },
+    { op: 'reality' }
+  ] });
+  const pushV = stepOf(V, 'push');
+  ok('★ 儲存成功', pushV?.ok === true, JSON.stringify(pushV).slice(0, 240));
+  ok('★ 後端自證 confirmed=true（寫完即刻讀返有行）', pushV?.confirmed === true, JSON.stringify({ c: pushV?.confirmed }));
+  ok('★ 報表同一次請求刷埋（唔使第二次請求）', pushV?.reports === true, JSON.stringify({ r: pushV?.reports }));
+  const infoV = stepOf(V, 'info');
+  /* 真 app 有 16 個表，大表仲會切段 —— 所以唔寫死數字，直接問分頁實際有幾多行嚟對 */
+  const rawRows = await gas(v281.gasPort, { action: '__simpleRows', unit: '0082' });
+  ok('★ dbInfo 報 mode=simple', infoV?.mode === 'simple', JSON.stringify({ m: infoV?.mode }));
+  ok('★ dbInfo 報嘅行數＝「資料表」分頁實際行數（唔係估、唔係寫死）',
+    infoV?.simpleRows === rawRows.total && rawRows.total >= 16,
+    JSON.stringify({ info: infoV?.simpleRows, raw: rawRows.total }));
+  ok('★ 16 個表全部寫齊（一個唔少）',
+    Object.keys(rawRows.versions || {}).length >= 16, JSON.stringify(Object.keys(rawRows.versions || {})));
+  ok('★ dbInfo 報後端程式版本 v2.8.1', infoV?.backendVersion === 'v2.8.1', JSON.stringify({ v: infoV?.backendVersion }));
+  const realV = stepOf(V, 'reality');
+  ok('★ 後端實況判「對得上」', realV?.level === 'ok', JSON.stringify({ lv: realV?.level, t: realV?.title }));
+  ok('★ 後端實況見到真相欄位', realV?.mode === 'simple' && realV?.backendVersion === 'v2.8.1',
+    JSON.stringify({ m: realV?.mode, v: realV?.backendVersion }));
+} finally {
+  v281.stop();
+}
+
+/* ============================================================
+   ⑥ 後端仲係 v2.8.0（冇 confirmed／reports）→ 照成功，唔會斷舊部署
+   ============================================================ */
+section('⑥ 扮 v2.8.0 後端（冇自證）→ 照成功，唔會斷舊部署');
+const v280 = await bootStack({ extraEnv: { FAKEGAS_V280: '1' } });
+ok('假「v2.8.0 後端」（唔識自證）已啟動', v280.up === true);
+try {
+  const P = await runDevice(v280.base, { steps: [
+    { op: 'load' },
+    { op: 'wipe' },
+    { op: 'addMember', name: '陳大文', ymis: '2026000001' },
+    { op: 'push' }
+  ] });
+  const pushP = stepOf(P, 'push');
+  ok('★ 舊後端都儲存成功（冇 confirmed 唔當失敗）', pushP?.ok === true, JSON.stringify(pushP).slice(0, 240));
+  ok('★ 如實記低「呢個後端唔識自證」（confirmed=null）', pushP?.confirmed == null, JSON.stringify({ c: pushP?.confirmed }));
+  const Q = await runDevice(v280.base, { steps: [{ op: 'simplePull' }] });
+  ok('★ 資料真係落到後端（第二部機讀得返）', stepOf(Q, 'simplePull')?.members === 1,
+    JSON.stringify(stepOf(Q, 'simplePull')).slice(0, 200));
+} finally {
+  v280.stop();
+}
+
+/* ============================================================
+   ⑦ 扮自證失敗 → 唔可以假成功，pending 要留返
+   （呢個就係團長嗰單「寫入回傳成功但核對對唔上」——
+   v2.8.1 起後端唔收貨就直接話失敗，等用家再撳儲存）
+   ============================================================ */
+section('⑦ 扮自證失敗 → 唔可以假成功，pending 要留返');
+const bad = await bootStack({ extraEnv: { FAKEGAS_UNCONFIRMED: '1' } });
+ok('假「收唔到貨嘅後端」（自證失敗）已啟動', bad.up === true);
+try {
+  const N = await runDevice(bad.base, { steps: [
+    { op: 'load' },
+    { op: 'wipe' },
+    { op: 'addMember', name: '陳大文', ymis: '2026000001' },
+    { op: 'push' }
+  ] });
+  const pushN = stepOf(N, 'push');
+  ok('★ 自證失敗 → 儲存話失敗（唔係假成功）', pushN?.ok === false, JSON.stringify(pushN).slice(0, 300));
+  ok('★ 失敗原因係 not_confirmed（分得出係邊種死因）', pushN?.reason === 'not_confirmed', JSON.stringify({ r: pushN?.reason }));
+  ok('★ pending 留返（唔會以為存好咗丟咗啲改動）', Number(pushN?.pending || 0) >= 1, String(pushN?.pending));
+  ok('★ 指引用家修後端（唔係齋「稍後再試」）', (pushN?.hint || '').includes('重貼 Code.gs'), (pushN?.hint || '').slice(0, 200));
+} finally {
+  bad.stop();
+}
+
+/* ============================================================
+   ⑧ 靜態守門：新 action 一定要喺代理白名單 ＋ Code.gs 識做
+   ============================================================ */
+section('⑧ 靜態守門（唔會重演「action 漏咗喺白名單」嗰單事故）');
 {
   const proxSrc = fs.readFileSync(path.join(ROOT, 'api', 'proxy.js'), 'utf8');
   const gasSrc = fs.readFileSync(path.join(ROOT, 'apps-script', 'Code.gs'), 'utf8');
@@ -294,6 +383,16 @@ section('⑤ 靜態守門（唔會重演「action 漏咗喺白名單」嗰單事
     /firstSimpleWrite/.test(remoteSrc) && /info\.mode/.test(remoteSrc));
   ok('★ 仍然得一個寫入口（頂部「儲存到後端」）—— 冇加自動寫入',
     !/debounce|setInterval\([^)]*saveToBackend|autoSave/i.test(remoteSrc.replace(/\/\*[\s\S]*?\*\//g, '')));
+  /* ★ v2.8.1：自證＋真相＋版號（唔會重演「假成功／登入見唔到版號」） */
+  ok('★ 逐表寫一定要過自證（confirmed===false → 唔可以當成功）',
+    /confirmed\s*===\s*false/.test(remoteSrc));
+  ok('★ gastemplate.js 後端版本係 v2.8.1',
+    fs.readFileSync(path.join(ROOT, 'assets', 'js', 'lib', 'gastemplate.js'), 'utf8').includes("BACKEND_VERSION = 'v2.8.1'"));
+  ok('★ Code.gs 係由 v2.8.1 gastemplate 起出嚟（唔係舊 build）',
+    gasSrc.includes("BACKEND_VERSION = 'v2.8.1'"));
+  ok('★ 有版本單一來源（version.js）＋登入閘用緊佢',
+    fs.readFileSync(path.join(ROOT, 'assets', 'js', 'lib', 'version.js'), 'utf8').includes("APP_VERSION = 'v2.8.1'")
+    && fs.readFileSync(path.join(ROOT, 'assets', 'js', 'main.js'), 'utf8').includes('APP_VERSION'));
 }
 
 console.log(`\n──────── 簡單寫入測試結果：${pass} 通過 / ${fail} 失敗（${Date.now() - t0} ms）────────\n`);

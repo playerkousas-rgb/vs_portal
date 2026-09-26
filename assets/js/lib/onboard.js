@@ -472,6 +472,6 @@ export function adminChecklist(troopId = '<編號>') {
     `深資童軍管理系統 → Vercel 環境變數：加 TROOP_${troopId}_BACKEND（旅團嘅 /exec）同 TROOP_${troopId}_APIKEY，再 Redeploy（名單即現身，後端經伺服器端轉發）`,
     `（進度）一個後端、兩個前端：旅團自己嘅後端 /exec 就係進度資料所在；團員用嘅進度前端讀同一個後端`,
     `通知旅團：登入後去「進度 → 設定」填自己嘅 /exec 網址 + API Key，就可以喺執委系統直接讀寫進度`,
-    '兩邊 deploy 一次，再由旅團喺「進度」撳「測試連線」實測（讀得到團員同進度就成功）'
+    '兩邊 deploy 一次，再由旅團喺「進度」開機就自動讀後端（見到團員同進度就成功）'
   ];
 }

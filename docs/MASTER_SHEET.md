@@ -54,11 +54,12 @@ https://script.google.com/macros/s/AKfycbySGLBg5KuWzgM9EySiOIppqnzrL0QASIYLlhbCI
    * 說明：`深資童軍管理系統 sync`
    * 執行身分：**我**
    * 具有存取權的使用者：**任何人** ← 一定要，否則 APP 送唔到資料
-6. 複製 **`/exec` 網址**，返到 APP：「表格與同步 → 總表同步」——你嘅網址**已經預填**，
-   直接按「**測試連線**」（如果換咗網址就先貼上新嘅，並確認「同一條網址共用」有剔）。
-7. 見到成功就撳頂部「**儲存到後端**」—— 成份資料庫會寫入總 Sheet 嘅「**資料庫**」分頁
+6. 複製 **`/exec` 網址**，返到 APP：「表格與同步 → 總表同步」——你嘅網址**已經預填**
+   （如果換咗網址就先貼上新嘅，並確認「同一條網址共用」有剔），然後撳「**儲存設定**」。
+7. 撳頂部「**儲存到後端**」—— 收到「**已寫入後端（已核對）**」收據即係連通成功；
+   成份資料庫會寫入總 Sheet 嘅「**資料庫**」分頁
    （呢個係正本；之後每部機登入都由呢度攞）。
-   想另外出報表分頁就撳「**報表同步**」，總 Sheet 會出現：
+   想另外出報表分頁就撳「**更新報表分頁**」，總 Sheet 會出現：
    `帳目 · 收支申報 · 物資 · 團員 · 通告 · 報名 · 會議 · 同步紀錄`
 
 > **儲存到後端**係唯一寫入「資料庫」分頁嘅路（2026-09-20 起）：登入攞後端 → 本機改 → 撳儲存先核對版本、
@@ -141,7 +142,7 @@ https://script.google.com/macros/s/AKfycbySGLBg5KuWzgM9EySiOIppqnzrL0QASIYLlhbCI
 ```
 
 * 三邊都係同一個 payload 格式：`{ action, unit, source:'82venture', payload / tables, at }`
-* Apps Script 支援動作：`ping`（測試連線）、`status`、`sync`（全部表格）、`claim`（成員手機記帳）、`noticeSignup`（通告報名）
+* Apps Script 支援動作：`ping`（探測連線）、`status`、`sync`（全部表格）、`claim`（成員手機記帳）、`noticeSignup`（通告報名）
 * 唔識嘅 `action` 會回 `{ ok:false, error:'未知 action：…' }`，APP 嘅「同步紀錄」會顯示出嚟，方便對格式
 * 進度紀錄：**同一個後端**（`?action=load` / `action=save`）—— 深資童軍管理系統同進度前端係兩個前端、一份資料；
   後端範本 `Code.gs` 已經兩邊都支援（`initializeSheets` 會建 `進度追蹤`／`其他獎章`／`活動履歷` 等分頁）
@@ -150,7 +151,7 @@ https://script.google.com/macros/s/AKfycbySGLBg5KuWzgM9EySiOIppqnzrL0QASIYLlhbCI
 
 ## 5. 自我檢查清單
 
-- [ ] 「總表同步」見到「後端已連接」而且「測試連線」成功（會回 `pong` ／ 總表名）
+- [ ] 「總表同步」見到「後端已連接」，撳頂部「**儲存到後端**」收到「**已寫入後端（已核對）**」收據（會顯示試算表名）
 - [ ] 總 Sheet 見到 `帳目`、`報名` 等分頁，而且有資料
 - [ ] `entry.html` QR 喺手機開到，影相＋揀欄目送得出
 - [ ] 送咗之後，總表「待批申報」多咗一行

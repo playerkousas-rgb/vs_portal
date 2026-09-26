@@ -161,7 +161,7 @@ for (const [home, tab, needle] of RENDER) {
   await goTo('#/tables');
   await wait(200);
   const txt = doc.getElementById('view')?.textContent || '';
-  ok('開「資料管理」（#/tables）預設就係「總表同步」', /總表同步/.test(txt) && /後端實況/.test(txt), txt.replace(/\s+/g, ' ').slice(0, 90));
+  ok('開「資料管理」（#/tables）預設就係「總表同步」', /總表同步/.test(txt) && /儲存到後端/.test(txt), txt.replace(/\s+/g, ' ').slice(0, 90));
 }
 
 /* ============================================================

@@ -352,38 +352,12 @@ ok('GAS /dev 網址都會被擋',
   ok('log 唔會記錄後端完整網址', !joined.includes('/macros/s/AKfycb'));
 }
 
-/* ---------- 9. 自查結果 → 用家睇到嘅結論（diagVerdict，純函數） ---------- */
+/* ---------- 9. 顯示用：遮 /exec 部署 ID（maskBackendUrl，純函數） ---------- */
 {
-  const { diagVerdict, maskBackendUrl } = await import('../assets/js/lib/progress.js');
+  const { maskBackendUrl } = await import('../assets/js/lib/progress.js');
 
   ok('遮網址：唔會成條部署 ID 擺上螢幕',
     maskBackendUrl('https://script.google.com/macros/s/AKfycbxqQ3J/exec') === 'https://script.google.com/macros/s/…/exec');
-
-  const base = { recognized: true, self: { ok: true, msg: '深資童軍管理系統 後端正常' },
-    detail: { spreadsheet: '第82旅總表', progress: { rows: 3, ymis: 1, items: 3, matchedWithMemberList: 1, notInMemberList: 0 },
-      memberList: { rows: 1, ymis: 1 }, tabs: [{ name: '進度追蹤', rows: 3 }], missingTabs: [] } };
-
-  const ok1 = diagVerdict(base, { memberCount: 1, withProgress: 1 });
-  ok('正常：結論係 ok、有講讀到幾多人／幾多人有進度',
-    ok1.level === 'ok' && /1 位成員/.test(ok1.title), JSON.stringify(ok1.title));
-
-  const empty = diagVerdict({ ...base, detail: { ...base.detail, progress: { rows: 0, ymis: 0, items: 0, matchedWithMemberList: 0, notInMemberList: 0 } } },
-    { memberCount: 12, withProgress: 0 });
-  ok('「進度追蹤」空：結論 bad、明講分頁冇紀錄、有教 initializeSheets＋版本記錄還原',
-    empty.level === 'bad' && /進度追蹤/.test(empty.title) && empty.steps.join(' ').includes('initializeSheets')
-      && empty.steps.join(' ').includes('版本記錄'), JSON.stringify(empty.title));
-
-  const unmatched = diagVerdict({ ...base, detail: { ...base.detail, progress: { rows: 5, ymis: 3, items: 2, matchedWithMemberList: 0, notInMemberList: 3 } } },
-    { memberCount: 12, withProgress: 3 });
-  ok('有進度但 YMIS 對唔上：結論 warn、教去對 YMIS',
-    unmatched.level === 'warn' && /YMIS/.test(unmatched.title) && unmatched.steps.join(' ').includes('用戶名冊'),
-    JSON.stringify(unmatched.title));
-
-  const notOurs = diagVerdict({ recognized: false, self: { success: false, error: 'Unknown action' }, detail: { success: false, error: 'Unknown action' } },
-    { memberCount: 12, withProgress: 0 });
-  ok('唔係管理系統嘅後端：結論 warn、教睇下係唔係另一張 Sheet／舊版',
-    notOurs.level === 'warn' && /唔係/.test(notOurs.title) && notOurs.steps.join(' ').includes('設定'),
-    JSON.stringify(notOurs.title));
 }
 
 console.log = realLog;

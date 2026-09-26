@@ -24,7 +24,7 @@ import { pageHead, tabs, stat, empty, noteBox, kv, chipbar, progressBar } from '
 import {
   progressCfg, setProgressCfg, progressConfigured, progressIsRegistered,
   loadRemote, loadItems, saveTicks, flattenItems, summarizeRemote, memberDetail,
-  reviewRequest, reviewLogRequest, diagnoseBackend, diagVerdict, maskBackendUrl,
+  reviewRequest, reviewLogRequest, maskBackendUrl,
   getLinkState, setLocalLogin
 } from '../lib/progress.js';
 
@@ -39,8 +39,6 @@ let selBadge = 'all';     // 勾選：獎章篩選
 let pending = {};         // { 'ymis|itemId': true/false } 未儲存嘅改動
 let tickDate = '';        // 勾選日期
 let memberSearch = '';
-let diag = null;          // ★ 後端自查結果（見 runDiag）
-let checking = false;     // 測試連線中
 let reviewing = false;    // 審批中
 let reviewDate = '';      // 審批：確認日期（留空＝用申報日期）
 let linkMode = '';        // ''＝apikey 直連／'link'＝經 VSBADGE 旅系統簽名／'closed'＝後端閂咗直接入口
@@ -121,27 +119,6 @@ function reviewCount() {
 
 const maskUrl = u => String(u || '').replace(/\/macros\/s\/[^/]+/, '/macros/s/…');
 
-/* ============================================================
-   ★ 2026-09-24 後端自查（團長：「人係讀到，但係個個都冇進度」）
-   ------------------------------------------------------------
-   同一個症狀可以有幾個完全唔同嘅成因，而且**全部喺旅團張 Sheet 度**，
-   前端自己睇唔到。所以呢度問後端（/api/progress → GET ?action=diag）：
-     · 呢支 /exec 係邊張 Sheet（自報）
-     · 認唔認得 diag（＝係唔係深資童軍管理系統嘅後端；唔認得＝舊版／另一支腳本）
-     · 有邊啲分頁、每張幾多行、進度追蹤有幾個 YMIS／項目、同名冊對唔對得上
-   然後直接講結論＋要做乜，唔使人自己猜。
-   ============================================================ */
-async function runDiag({ quiet = false } = {}) {
-  if (!progressConfigured()) { toast('未設定進度後端', 'info'); return null; }
-  diag = { loading: true, at: '' };
-  if (!quiet) refresh();
-  const r = await diagnoseBackend();
-  diag = r.ok
-    ? { loading: false, at: new Date().toLocaleString('zh-HK', { hour12: false }), ...r.data }
-    : { loading: false, at: new Date().toLocaleString('zh-HK', { hour12: false }), error: r.error || '自查失敗' };
-  refresh();
-  return diag;
-}
 
 /* ============================================================
    ★ 2026-09-25 VSBADGE 開關掣（本系統閂／開 VSBADGE 後端嘅「直接入口」）
@@ -208,7 +185,6 @@ function emptyProgressBanner() {
     <div class="sm mt-4">後端回嘅「進度追蹤」係空嘅（${ticks} 格）——所以每個人都顯示 0。
     多數係：你填嘅 <code>/exec</code> 唔係進度資料嗰張 Sheet／「進度追蹤」分頁唔見咗或者空。</div>
     <div class="row gap-8 mt-8 wrap">
-      <button class="btn btn-sm btn-primary" data-act="diag">${icon('search', 15)} 後端資料檢查</button>
       <button class="btn btn-sm" data-act="settings">${icon('settings', 15)} 檢查設定</button>
     </div></div></div>`;
 }
@@ -597,17 +573,15 @@ function settingsView() {
           </div>
           <div class="row gap-8 wrap mt-12">
             <button class="btn btn-primary" data-act="save-cfg">${icon('save', 16)} 儲存</button>
-            <button class="btn" data-act="test">${icon('send', 16)} ${checking ? '測試中…' : '測試連線'}</button>
-            <button class="btn" data-act="diag">${icon('search', 16)} 後端資料檢查</button>
             <button class="btn" data-act="reload">${icon('refresh', 16)} 重新讀取</button>
             <button class="btn btn-ghost" data-act="clear-cfg">${icon('trash', 15)} 清除自訂設定</button>
           </div>
           ${noteBox('★ 呢啲設定係<b>跟旅團資料庫走</b>嘅：撳完「儲存」系統會<b>自動寫入後端</b>（頂部狀態會轉做「已存到後端」；'
-            + '想即刻寫就撳頂部「即刻儲存」），'
+            + '想即刻寫就撳頂部「儲存到後端」），'
             + '無痕視窗／另一部機（新裝置）先會自動有同一組設定。<b>冇撳</b>嘅話，只有呢部機讀得到 ——'
             + '換部機就會好似「無痕讀唔到後端」。', 'warn')}
           <div class="hint mt-8"><b>點填：</b>① 喺 Apps Script 撳「部署 → 管理部署」複製 <code>/exec</code> 網址；
-            ② 喺 Apps Script 執行 <code>showApiKey()</code> 複製 API Key；③ 貼上面兩個格 → 撳「測試連線」見到成員就成功。
+            ② 喺 Apps Script 執行 <code>showApiKey()</code> 複製 API Key；③ 貼上面兩個格 → 儲存後撳「重新讀取」見到成員就成功。
             <div class="xs faint mt-4">填完存在旅團自己嘅資料（跟 JSON 備份走），唔會交畀第三方。
               如果想收埋條 Key 唔落前端，先設環境變數 <code>TROOP_${esc((c.unit || '0082'))}_PROGRESSBACKEND</code> /
               <code>…_PROGRESSAPIKEY</code>。</div></div>
@@ -822,43 +796,10 @@ export function mount(root, params) {
     readCfg();
     const pend = Number(load()?.sync?.pending || 0);
     toast(pend > 0
-      ? '已儲存 —— 自動寫入後端中，其他裝置／無痕好快讀得到（想即刻寫就撳頂部「即刻儲存」）'
+      ? '已儲存 —— 自動寫入後端中，其他裝置／無痕好快讀得到（想即刻寫就撳頂部「儲存到後端」）'
       : '已儲存設定', 'ok');
     tab = 'overview';
     fetchAll();
-  });
-  root.querySelector('[data-act="test"]')?.addEventListener('click', async () => {
-    if (!can('progress.tick')) { toast('只有領袖／執委可以改設定', 'err'); return; }
-    readCfg();
-    checking = true; refresh();
-    const r = await probe();
-    checking = false;
-    if (r.ok) {
-      remote = { data: r.data || {}, at: new Date().toLocaleString('zh-HK', { hour12: false }) };
-      const it = await loadItems();
-      if (it.ok) catalog = flattenItems(it.data);
-      toast(`連線成功 ✓ 讀到 ${(r.data.members || []).length} 位成員、${(r.data.progress ? Object.keys(r.data.progress).length : 0)} 位有進度`, 'ok');
-    } else {
-      toast(r.error || '連線失敗', 'err');
-    }
-    refresh();
-  });
-  root.querySelector('[data-act="diag"]')?.addEventListener('click', async () => {
-    const d = await runDiag({ quiet: true });
-    if (!d) return;
-    const sum = remote
-      ? summarizeRemote(remote.data, { catalog, roster: members() })
-      : { memberCount: 0, withProgress: 0 };
-    const v = diagVerdict(d, { memberCount: sum.memberCount, withProgress: sum.withProgress });
-    const level = v.level === 'ok' ? 'ok' : 'warn';
-    await modal({
-      title: '後端資料檢查',
-      body: `<div class="note-box ${level} mb-12">${icon(v.level === 'ok' ? 'check' : 'alert', 15)}<div>
-          <b>${esc(v.title)}</b></div></div>
-        ${v.lines.length ? `<div class="sm muted col gap-4 mb-12">${v.lines.map(l => `<div>· ${esc(l)}</div>`).join('')}</div>` : ''}
-        ${v.steps.length ? `<div class="sm"><b>要做乜：</b><ol style="padding-left:18px;line-height:1.9">${v.steps.map(x => `<li>${esc(x)}</li>`).join('')}</ol></div>` : ''}`,
-      actions: [{ label: '知道', class: 'btn-primary', value: true }]
-    });
   });
   root.querySelector('[data-act="clear-cfg"]')?.addEventListener('click', async () => {
     if (!(await modal({
@@ -883,12 +824,4 @@ export function mount(root, params) {
 
   /* 第一次入嚟：自動讀一次 */
   if (progressConfigured() && !remote && !loading && !errMsg) setTimeout(() => fetchAll({ silent: true }), 30);
-}
-/**
- * 測試連線（同 loadRemote，但唔改全域狀態）
- */
-async function probe() {
-  const started = Date.now();
-  const r = await loadRemote();
-  return { ...r, ms: Date.now() - started };
 }

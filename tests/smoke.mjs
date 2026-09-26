@@ -979,9 +979,8 @@ google.visualization.Query.setResponse({"version":"0.6","reqId":"0","status":"ok
   const viewTxt = () => doc.getElementById('view')?.textContent || '';
   ok('平台登記嘅旅團（本機冇 backend 記錄）照樣見到「立即儲存到後端」',
     !!doc.querySelector('[data-act="push-db"]'));
-  ok('…照樣見到「由後端還原資料」同「睇後端有咩資料」',
-    !!doc.querySelector('[data-act="pull-db"]') && !!doc.querySelector('[data-act="db-info"]'));
-  ok('…有「同步診斷」掣（逐格驗成條鏈）', !!doc.querySelector('[data-act="diagnose"]'));
+  ok('…照樣見到「由後端重新載入」（診斷掣已經唔要，改做簡潔介面）',
+    !!doc.querySelector('[data-act="pull-db"]'));
   ok('唔會再誤報「未設定後端」（明明經平台代理接得到）', !/未設定後端 ——/.test(viewTxt()), viewTxt().slice(0, 80));
   db0.backend = savedBackend;
   store.commitMeta();
@@ -2250,8 +2249,8 @@ section('進度紀錄（讀 ＋ 勾 ＋ 寫，同一個後端）');
     window.dispatchEvent(new window.HashChangeEvent('hashchange'));
     await new Promise(r => setTimeout(r, 100));
     const sv = doc.getElementById('view');
-    ok('設定頁有「點填」指示（複製 /exec ＋ showApiKey ＋ 測試連線）',
-      /點填/.test(sv.textContent) && /showApiKey/.test(sv.textContent) && /測試連線/.test(sv.textContent));
+    ok('設定頁有「點填」指示（複製 /exec ＋ showApiKey ＋ 儲存後重新讀取）',
+      /點填/.test(sv.textContent) && /showApiKey/.test(sv.textContent) && /重新讀取/.test(sv.textContent));
     ok('設定頁有「後端 /exec 網址」同「API Key」欄',
       !!sv.querySelector('#p-backend') && !!sv.querySelector('#p-key') && !!sv.querySelector('#p-catalog'));
     sv.querySelector('#p-backend').value = 'https://script.google.com/macros/s/AKfycbTESTTESTTESTTESTTESTTESTTESTTEST/exec';
@@ -2370,14 +2369,12 @@ section('進度紀錄（讀 ＋ 勾 ＋ 寫，同一個後端）');
     (() => { const db = store.load(); const pb = db.profile?.progress?.backend || {};
       pb.catalogUrl = ''; store.commit(); })();
 
-    /* 測試連線 */
+    /* 測試連線（唔再需要 —— 儲存設定後撳「重新讀取」就係實測） */
     window.location.hash = '#/progress/settings';
     window.dispatchEvent(new window.HashChangeEvent('hashchange'));
     await new Promise(r => setTimeout(r, 120));
-    doc.getElementById('view').querySelector('[data-act="test"]').click();
-    await new Promise(r => setTimeout(r, 300));
-    ok('「測試連線」會實測後端（成功會有提示）',
-      /連線成功|讀到/.test(doc.getElementById('view').textContent) || doc.getElementById('view').textContent.includes('2 位'));
+    ok('進度設定頁已經冇「測試連線」掣（清理診斷嘢）',
+      !doc.getElementById('view').querySelector('[data-act="test"]'));
 
     ok('進度頁冇咗外連模式（唔再開任何其他系統）',
       !/外連模式/.test(doc.getElementById('view').textContent));

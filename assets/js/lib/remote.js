@@ -18,7 +18,7 @@
                同一格唔同值（早走 vs 遲到）→ 嗰格**唔寫**，彈出嚟畀用家再確認；
                                              確認咗先至蓋過去
         寫入成功 → 本機 ＝ 後端 ＝ 新基準
-     頂部「儲存到後端」掣而家係**「即刻儲存」**（唔等 debounce），唔係唯一寫入路。
+     頂部「儲存到後端（N）」掣＝ 即寫，係**全系統唯一寫入後端嘅路**（團長 2026-09-24 定案）。
 
    同一個瀏覽器另一個分頁嘅改動由 store.bindCrossTabSync() 併入（見 store.js）。
 
@@ -203,7 +203,7 @@ export function remoteConfigured() { return remoteCfg().ok; }
 
 function notConfiguredMessage(cfg = remoteCfg()) {
   if (cfg.unit && cfg.viaProxy) {
-    return '已選定旅團，但同源 Vercel 代理未能建立；唔需要再填第二個後端。請撳「同步診斷」檢查部署／Registry。';
+    return '已選定旅團，但同源 Vercel 代理未能建立；唔需要再填第二個後端。請稍後再試，或者用「求救（回報問題）」通知平台。';
   }
   return '未設定後端網址（去「總表同步」填 /exec）';
 }
@@ -272,7 +272,7 @@ const SELF_SERVE_HINT =
   + '兩個選擇：① 叫平台管理員喺 Vercel 加返嗰兩個環境變數再 Redeploy；'
   + '② 自己即刻救返 —— 去「系統 → 資料管理 → 總表同步 → 同步設定」，'
   + '貼你嘅 Apps Script /exec 網址＋API Key（喺 Apps Script 執行 showApiKey() 攞），撳「儲存設定」，'
-  + '然後撳「同步診斷」確認。';
+  + '然後再試一次。';
 
 /* 兩條路都行唔到：呢個部署根本冇 /api/proxy（純靜態），而用家又未貼 /exec。
    呢種情況以前只回「未設定後端網址」五個字、冇 hint —— 用家完全唔知下一步。 */
@@ -388,7 +388,7 @@ export async function pullDbSegmented({ onProgress } = {}) {
         total = Number(r.bytes) || 0; count = Number(r.parts) || 1;
         if (count > SEGMENT_MAX_PARTS) {
           return { ok: false, reason: 'too_large', segmented: true,
-            error: `資料庫太大（${count} 段）—— 請先喺「總表同步 → 體積檢查」做「相片瘦身」` };
+            error: `資料庫太大（${count} 段，超過分段讀取上限）—— 相片本應上 Drive 而唔係塞喺資料庫；請用「求救（回報問題）」通知平台跟進。` };
         }
       } else if (String(r.version || '') !== version) {
         /* 讀緊嗰陣有人儲存咗 —— 手上嗰幾段已經過時，由頭再讀 */
@@ -761,8 +761,8 @@ export async function remoteDiagnose() {
           ? `　⚠ 大過 Vercel 4.5MB 回應上限，已改用分段讀取（${read.segmented ? '成功' : '未分段'}）`
           : ''),
         overProxy
-          ? '後端要 v2.6.0 先支援分段讀取（loadDbPart）。另外建議做一次「體積檢查 → 相片瘦身」'
-            + '把舊單據相嘅 dataURL 清走 —— 相片應該喺 Drive，唔應該喺資料庫 JSON 入面。'
+          ? '後端要 v2.6.0 先支援分段讀取（loadDbPart）；相片應該喺 Drive，'
+            + '唔應該喺資料庫 JSON 入面（舊單據相可以喺「儲存與備份」清理已入帳嘅相片）。'
           : '');
     }
   }
@@ -1253,14 +1253,14 @@ export async function backendReality() {
         level: 'bad',
         title: `後端分頁有行（${where}），但砌唔返成份資料 —— 所以先會「app 話冇」`,
         detail: `唔係你冇寫入過，係後端讀取嗰邊出事${out.broken.length ? `（讀唔到嘅表：${out.broken.join('、')}）` : ''}。`
-          + '下一步：① 去「總表同步」撳「修復後端」；② 如果修完都係咁，後端 Code.gs 可能太舊 —— 重貼最新 Code.gs、部署揀「新版本」再試。'
+          + '下一步：① 後端 Code.gs 可能太舊 —— 重貼最新 Code.gs、部署揀「新版本」再試；② 都唔得 → 用「求救（回報問題）」通知平台跟進。'
       };
       return out;
     }
     out.verdict = {
       level: 'warn',
       title: '後端連到，但入面完全冇資料 —— 你啲嘢從未寫入過後端',
-      detail: '呢部機嘅資料而家淨係住喺瀏覽器。撳頂部「儲存到後端」，之後再撳「即刻核對」，'
+      detail: '呢部機嘅資料而家淨係住喺瀏覽器。撳頂部「儲存到後端」（寫入後會自動讀回核對），'
         + '呢度就會由「後端冇嘢」變成「後端同本機一樣」。'
     };
     return out;
@@ -1277,7 +1277,7 @@ export async function backendReality() {
       detail: `後端${out.at ? `（${out.at}）` : ''}有 ${(out.rows[0]?.backend ?? 0)} 位用戶、`
         + `${(out.rows[1]?.backend ?? 0)} 筆帳目，同你而家見到嘅一樣。`
         + '第二部機／無痕視窗登入會見到呢一份。'
-        + (junk ? `　（分頁有 ${junk} 行垃圾／舊段，去「總表同步 → 修復後端」清走）` : '')
+        + (junk ? `　（分頁有 ${junk} 行垃圾／舊段，平台管理員可以喺後端清走）` : '')
     };
     return out;
   }
@@ -1560,7 +1560,7 @@ export async function discardAndReload() {
  *   error?:string, reason?:string, hint?:string, bytes?:number, parts?:number}>}
  */
 /* ★ 2026-09-24：所有儲存排成一條隊。
-   自動儲存上線之後，用家撳「即刻儲存」好容易撞正背景嗰次寫入 ——
+   用家撳「儲存到後端」好容易撞正上一次未行完嗰次寫入 ——
    以前呢度直接回 `{ ok:false, reason:'busy' }`，用家見到「儲存失敗」，
    但其實乜都冇錯，只係撞咗 0.5 秒。而家排隊：等前一次完成先至行下一次。 */
 let saveChain = Promise.resolve();
@@ -1663,8 +1663,8 @@ async function saveToBackendInner({ policy = 'ask', resolver = null, silent = tr
         version: String(r.version || ''),
         error: '後端連續有人寫入，核對咗三次都撞版 —— 請等一陣再撳「儲存到後端」'
           + (r.version ? `（後端而家嗰個版本：${String(r.version).slice(0, 19).replace('T', ' ')}）` : ''),
-        hint: '去「系統 → 資料管理」撳「即刻核對」睇下後端而家有乜；'
-          + '如果後端「資料庫」分頁有舊版本段／垃圾行，撳「總表同步 → 修復後端」清走就正常返。'
+        hint: '你嘅改動仲喺呢部機，冇蝕到 —— 等一陣再撳「儲存到後端」試一次；'
+          + '如果次次都撞，用「求救（回報問題）」通知平台跟進。'
       };
     }
     if (!r.ok) {
@@ -1778,7 +1778,7 @@ async function pushPayload(payload, { baseVersion, unit, silent, tables: changed
   try { text = JSON.stringify(payload); } catch { /* ignore */ }
   const bytes = text.length;
   if (bytes > 40000000) {
-    return { ok: false, reason: 'too_big', error: `資料庫太大（${fmtBytes(bytes)}）`, hint: '去「系統 → 資料管理 → 總表同步 → 體積檢查」睇下邊個分頁食緊位。' };
+    return { ok: false, reason: 'too_big', error: `資料庫太大（${fmtBytes(bytes)}）`, hint: '去「資料管理 → 儲存與備份」撳「清理已入帳嘅相片（保留記錄）」減細體積，再試一次。' };
   }
   if (!silent) setState('saving', '寫入緊後端…');
 
@@ -1805,7 +1805,7 @@ async function pushPayload(payload, { baseVersion, unit, silent, tables: changed
         ok: false, reason: 'not_confirmed', mode: 'simple', bytes: 0, parts: 0, version: '',
         simpleRows: Number(sr.simpleRows || 0),
         error: '後端寫入後即刻讀返唔到（有多部機同時儲存／後端部署唔啱）—— 你嘅改動仲喺呢部機，冇蝕；請再撳一次「儲存到後端」',
-        hint: '如果試幾次都係咁：① 睇下有冇另一部機／另一個分頁同時撳緊儲存；② 去「系統 → 資料管理」睇下後端版本係咪 v2.8.1（唔係＝要重貼 Code.gs、部署揀「新版本」）。'
+        hint: '如果試幾次都係咁：① 睇下有冇另一部機／另一個分頁同時撳緊儲存；② 後端 Code.gs 可能太舊 —— 去「總表同步 → 後端 Apps Script 範本」撳「下載 Code.gs」，重貼 Code.gs、部署揀「新版本」再試。'
       };
     }
     if (sr.ok) return { ...sr, bytes: sr.bytes || bytes, parts: 0, mode: 'simple' };

@@ -23,7 +23,6 @@ import { esc, icon, modal, confirmDlg, toast, download, copyText } from '../lib/
 import { download as dlFile, toCSV, stamp } from '../lib/exporter.js';
 import { go } from '../lib/router.js';
 import { pageHead, tabs, empty, kv, stat, noteBox } from './ui.js';
-import { realityCard, mountRealityCard } from './backend-reality.js';
 import { renderPublicLinksEditor, mountPublicLinksEditor } from './public-links-editor.js';
 
 let tab = 'unit';
@@ -177,8 +176,6 @@ function dataView() {
     ${wired ? '' : '<div class="xs mt-4" style="color:var(--warn)">⚠ 未接駁後端 —— 資料而家只存喺呢部機嘅瀏覽器。</div>'}
   </div></div>
 
-  ${realityCard()}
-
   <div class="grid g-3">
     <div class="card">
       <div class="card-head"><div><div class="card-title">① 插入自己嘅 Sheet</div>
@@ -254,10 +251,6 @@ function auditView() {
    ============================================================ */
 export function mount(root) {
   root.querySelectorAll('[data-go]').forEach(el => el.addEventListener('click', () => go(el.dataset.go)));
-
-  /* ★ 2026-09-24 團長：「我完全不知道他能不能寫進後端，要是能寫進為什麼讀不到」
-     → 「資料管理」頁第一張卡就係「後端實況」：只讀核對 ＋ 一寫一讀驗證。 */
-  mountRealityCard(root);
 
   /* 公開資料**填嘢嘅位**（社交媒體／相簿／網站／關於我團／其他連結）。
      ★ 團長 2026-09-24：「公開資料其實唔係要填嘢嘅，係方便了解有乜嘢而家正喺度公開」

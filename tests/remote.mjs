@@ -677,8 +677,7 @@ section('只有一個儲存方式（原始碼守門：冇自動寫、冇 poll、
   ok('beforeunload 只提醒、唔寫後端', /beforeunload/.test(mainSrc) && !/flush\(\)/.test(mainSrc));
   ok('team 員入口：開機 loadFromBackend、交嘢 saveToBackend（唔係 flush）、冇 poll',
     /loadFromBackend\(/.test(hubSrc) && /saveToBackend\(\{ policy: 'mine'/.test(hubSrc) && !/flush\(|startPolling|startVisibilityWatch/.test(hubSrc));
-  const testSyncBlock = (tablesSrc.match(/act === 'test-sync'\)([\s\S]*?)if \(act === 'push-sync'\)/) || ['', ''])[1];
-  ok('總表同步：「測試連線」淨係讀（唔會 pushToMaster）', testSyncBlock.length > 0 && !/pushToMaster/.test(testSyncBlock) && /testConnection/.test(testSyncBlock));
+  ok('總表同步：「測試連線」掣已清理（唔會再有淨讀嘅測試掣）', !/act === 'test-sync'/.test(tablesSrc));
   ok('總表同步：報表同步唔會夾帶整個 db、唔會清 pending', /payload\.skipDb = true/.test(tablesSrc) && !/payload\.db = db/.test(tablesSrc) && !/pending: 0, lastPushAt/.test(tablesSrc));
   ok('總表同步：冇咗「會議模式」開關', !/y-poll/.test(tablesSrc));
   ok('狀態 badge 撳擊仍去「總表同步」詳情', /tables\/sync/.test(mainSrc));
@@ -688,8 +687,8 @@ section('只有一個儲存方式（原始碼守門：冇自動寫、冇 poll、
     /too_big/.test(remoteSrc) && /CHUNKED_ABOVE/.test(remoteSrc) && /saveDbPart/.test(remoteSrc) && /40000000/.test(remoteSrc));
   ok('大 db 對舊後端會退返單件路（唔會靜靜地死）',
     /未知 action/.test(remoteSrc) && /改用單一件儲存/.test(remoteSrc));
-  ok('總表同步有「體積檢查」同「相片瘦身」掣',
-    /size-check/.test(tablesSrc) && /size-slim/.test(tablesSrc) && /slimClaimPhotos/.test(tablesSrc));
+  ok('總表同步已經冇「體積檢查／相片瘦身」掣（清理診斷嘢）',
+    !/size-check|size-slim/.test(tablesSrc));
   const financeSrc = fs.readFileSync(path.join(ROOT, 'assets/js/views/finance.js'), 'utf8');
   ok('APP 內申報相片會先試 uploadPhotos 上 Drive（失敗先本地存）',
     /uploadPhotos\(photos/.test(financeSrc) && /photosOnDrive/.test(financeSrc));
@@ -1028,28 +1027,15 @@ section('API Key 由伺服器端注入（前端唔應該知）');
 }
 
 /* ============================================================
-   ⑦ 搬遷檢查：清走前端資料之前，要證實後端真係有齊嘢
-   ------------------------------------------------------------
-   0082 原本係「靜態檔 + localStorage」嘅系統，要搬入後端。
-   清嘢係不可逆，所以「搬遷檢查」必須喺以下情況擋住：
-     · 後端仲係空（未推過）
-     · 本機有嘢未寫入後端（pending）
-     · 兩邊筆數對唔上
+   ⑦ 搬遷檢查（已清理）：「檢查／修復／上載／診斷」呢組診斷工具
+   團長話已經完成晒、用家用唔着，全部剷走 —— 呢度驗證真係剷咗。
    ============================================================ */
-section('搬遷檢查（清前端之前要對數）');
+section('搬遷檢查／診斷掣已清理');
 {
   const src = fs.readFileSync(path.join(ROOT, 'assets/js/views/tables.js'), 'utf8');
-  ok('「總表同步」有「搬遷檢查」掣', /data-act="migrate-check"/.test(src));
-  ok('檢查會 pullDb 攞成份後端資料落嚟逐項數（唔淨係信 dbInfo 個 count）',
-    /act === 'migrate-check'/.test(src) && /remote\.pullDb\(\)/.test(src));
-  ok('後端空 → 明確叫人唔好清', /後端仲係空/.test(src) && /千祈唔好/.test(src));
-  ok('有 pending → 擋住', /pendingCount\(\)/.test(src) && /未寫入後端/.test(src));
-  ok('筆數唔夾 → 唔畀清', /未可以清/.test(src));
-  ok('全部夾 → 先至講可以安全清走', /可以安全清走前端資料/.test(src));
-  ok('對數範圍唔止 6 項（連團章／團費／申報／預算／借用都數）',
-    /團章章節/.test(src) && /團費紀錄/.test(src) && /收支申報/.test(src)
-    && /活動預算/.test(src) && /物資借用/.test(src));
-  ok('建議次序有叫人先做 JSON 備份', /匯出 JSON 備份/.test(src));
+  ok('「總表同步」已經冇「搬遷檢查」掣', !/data-act="migrate-check"/.test(src));
+  ok('…已經冇「檢查／修復／上載」嗰組掣', !/backend-health|backend-repair|backend-upload/.test(src));
+  ok('…已經冇「同步診斷」掣', !/data-act="diagnose"/.test(src));
 }
 
 /* ============================================================
@@ -1893,13 +1879,12 @@ section('★ 搶救三寶（前端契約：後端讀唔到 → 檢查 → 修復
 
   /* ---- ⑥ 破壞性動作要有人肯撳、而且要打字確認（介面守門） ---- */
   /* ★ 2026-09-26 團長：「檢查／修復／上載嗰堆都唔想要，我哋應該解決咗嗰個問題」——
-     登入閘（連唔到嗰頁）簡化成「重新連線」；但「檢查／修復／覆蓋」三項仍然保留喺
-     「總表同步 → 儲存狀態」卡（登入咗先見得到，係情境性工具，唔再迫喺連線閘）。 */
+     連線閘（連唔到嗰頁）簡化做「暫時未能連線」；連「總表同步 → 儲存狀態」卡
+     嗰組「檢查／修復／覆蓋」掣都一齊剷走（登入咗都唔再見到）。 */
   ok('★ 登入閘已經冇「檢查／修復／上載」嗰組掣', ['#btnBackendHealth', '#btnBackendRepair', '#btnBackendUpload'].every(id => !mainSrc3.includes(id)));
   ok('★ 連線提示留低「重試連線」（喺登入表單頂，唔再係成頁閘）', /id="btnRetrySync"/.test(mainSrc3));
-  ok('★ 「儲存狀態」卡仍保有同一組搶救掣（登入咗先見到）',
-    /backend-health/.test(tablesSrc3) && /backend-repair/.test(tablesSrc3) && /backend-upload/.test(tablesSrc3));
-  ok('★ 代理白名單放行三個新動作（舊 action 一個都冇拆）',
+  ok('★ 「儲存狀態」卡嗰組搶救掣都一齊清走', !/backend-health|backend-repair|backend-upload/.test(tablesSrc3));
+  ok('★ 代理白名單照舊放行 repairDb／saveDbForce／diag（後端能力未拆，只係介面唔再迫人用）',
     /'repairDb'/.test(proxSrc3) && /'saveDbForce'/.test(proxSrc3) && /'diag'/.test(proxSrc3));
 
   globalThis.fetch = memFetch3;

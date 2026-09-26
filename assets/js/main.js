@@ -8,8 +8,7 @@ import {
 } from './lib/store.js';
 import {
   loadRegistry, unitList, unitEntry, defaultUnitCode, registryReachable,
-  serverUnitsStatus, bakedUnitsStatus, fileUnitsStatus, fetchRegistryDiag, registryStale,
-  canonicalUnitCode
+  serverUnitsStatus, bakedUnitsStatus, canonicalUnitCode
 } from './lib/units.js';
 import {
   adminInbox, validateApplication, submitApplication, adminChecklist,
@@ -129,7 +128,7 @@ async function boot() {
                     開人／設密碼／改身份＝帳戶級，即刻寫）
      saveToBackend() → 核對版本 → 逐格三方比對 → 唔撞嘅寫入；
                        撞嘅（早走 vs 遲到）彈框問，確認咗先蓋
-     頂部掣「即刻儲存」＝ 唔想等 debounce；「重新載入」＝ 由後端拉新嘅
+     頂部掣「儲存到後端」＝ 即寫（唯一寫入路）；「重新載入」＝ 由後端拉新嘅
      另一個分頁嘅改動 → store.bindCrossTabSync() 併入（唔使重新整理）
      切返呢個分頁 → refreshIfClean()（本機冇未存改動先至拉，唔會彈衝突框）
 
@@ -565,13 +564,12 @@ function renderUnitGate() {
                <li>變數名唔啱：要 <code>TROOP_&lt;編號&gt;_BACKEND</code>（＋<code>_APIKEY</code>、<code>_NAME</code>）</li>
                <li>部署未完成／網絡問題 —— 可以撳下面「重新載入清單」再試</li>
              </ul>
-             你亦可以撳「<b>診斷伺服器登記</b>」睇實際讀到啲咩，或直接<b>輸入旅團編號</b>入去。`
+             你可以直接<b>輸入旅團編號</b>入去。`
           : `你可以撳「新旅團申請接入」登記自己旅團 —— 登記好之後，你嘅旅團就會喺呢度出現，由空白資料庫開始。
              <ul style="margin:6px 0 0;padding-left:18px;line-height:1.8">
                <li>已經喺 Vercel 加咗 <code>TROOP_&lt;編號&gt;_*</code>？記得撳 <b>Redeploy</b>，
                    同埋將變數嘅 Environments 勾埋 <b>Preview ＋ Production</b>
                    （淨係勾 Production，開 Preview 網址就會一個都讀唔到）</li>
-               <li>撳「<b>診斷伺服器登記</b>」可以即刻睇到伺服器認到咩、邊個變數名打錯咗</li>
              </ul>`}
       </div>
     </div>` : '';
@@ -591,7 +589,6 @@ function renderUnitGate() {
         <span>${serverRegistryLine()}</span>
         <span class="grow"></span>
         <button class="btn btn-xs" data-act="reload">${icon('refresh', 13)} 重新載入清單</button>
-        <button class="btn btn-xs" data-act="diag">${icon('target', 13)} 診斷伺服器登記</button>
       </div>
 
       <div class="gate-list">
@@ -616,7 +613,7 @@ function renderUnitGate() {
         <div class="row-between wrap gap-8">
           <div class="grow" style="min-width:240px">
             <div class="semibold">已經喺 Vercel 登記咗，但清單見唔到？</div>
-            <div class="xs faint">直接輸入旅團編號一樣入得（例如 <code>0082</code>）；入到去先撳「診斷伺服器登記」查原因。</div>
+            <div class="xs faint">直接輸入旅團編號一樣入得（例如 <code>0082</code>）。</div>
           </div>
           <div class="row gap-8 wrap" style="align-items:center">
             <input class="input" id="gateCode" placeholder="旅團編號，例：0082" style="width:170px" inputmode="numeric">
@@ -667,7 +664,6 @@ function renderUnitGate() {
       : (b.ok ? `已重新載入：部署名單 ${b.count} 個旅團（即時 API：${s.error || '讀唔到'}）`
         : `仲係讀唔到伺服器清單：${s.error}`), (s.ok || b.ok) ? 'ok' : 'err');
   });
-  app.querySelector('[data-act="diag"]')?.addEventListener('click', openRegistryDiag);
   app.querySelector('#btnUnitGateSOS')?.addEventListener('click', () => openSOS());
   const goCode = () => {
     const raw = app.querySelector('#gateCode')?.value.trim() || '';
@@ -702,104 +698,6 @@ function gotoUnit(code, { remember = true } = {}) {
   u.searchParams.set('u', code);
   u.hash = '';
   location.href = u.toString();
-}
-
-/* ============================================================
-   診斷：伺服器端到底讀到啲咩？（唔會顯示 API Key）
-   ============================================================ */
-async function openRegistryDiag() {
-  const local = serverUnitsStatus();
-  const baked = bakedUnitsStatus();
-  const file = fileUnitsStatus();
-  const d = await fetchRegistryDiag();
-  const rows = [];
-  rows.push(['檔案名單 <code>data/units.json</code>', !file.at
-    ? '（未檢查）'
-    : (file.ok
-      ? `<span class="badge b-ok">OK</span>&nbsp; ${file.count} 個旅團`
-      : `<span class="badge b-warn">失敗</span> <code>${esc(file.error || '')}</code>`)]);
-  rows.push(['瀏覽器讀 <code>/api/units</code>', local.ok
-    ? `<span class="badge b-ok">OK</span>&nbsp; ${local.count} 個旅團`
-    : `<span class="badge b-warn">失敗</span> <code>${esc(local.error || '')}</code>`]);
-  rows.push(['部署時名單（靜態）', !baked.at
-    ? '（未檢查）'
-    : (baked.ok
-      ? `<span class="badge b-ok">OK</span>&nbsp; ${baked.count} 個旅團` +
-        (baked.generatedAt ? ` · <span class="xs muted">${esc(baked.generatedAt)}${baked.vercelEnv ? `（${esc(baked.vercelEnv)}）` : ''}</span>` : '')
-      : `<span class="badge b-warn">冇</span> <span class="xs muted">呢個部署冇焗名單（舊部署／未經正常 build）</span>`)]);
-  rows.push(['伺服器端回應', d.ok
-    ? `<span class="badge b-ok">OK</span>`
-    : `<span class="badge b-warn">有問題</span> <code>${esc(d.error || '')}</code>`]);
-  rows.push(['伺服器認到嘅旅團', (d.ids || []).length
-    ? (d.ids || []).map(i => `<code>${esc(i)}</code>`).join('、')
-    : '（一個都認唔到）']);
-  rows.push(['後端 /exec 已通過白名單', (d.trusted || []).length
-    ? (d.trusted || []).map(i => `<code>${esc(i)}</code>`).join('、')
-    : '<span class="muted">冇 —— 旅團一定要有 <code>TROOP_&lt;編號&gt;_BACKEND</code>（要 <code>https://script.google.com/macros/s/…/exec</code>）先生效</span>']);
-  rows.push(['有 API Key', (d.withKey || []).length
-    ? (d.withKey || []).map(i => `<code>${esc(i)}</code>`).join('、')
-    : '<span class="muted">冇（未設定 _APIKEY）</span>']);
-  rows.push(['執行環境', d.onVercel
-    ? `<span class="badge b-ok">Vercel</span> ${d.vercelEnv ? `<code>${esc(d.vercelEnv)}</code>` : ''}`
-    : `<span class="badge b-warn">唔似 Vercel</span> <span class="xs muted">${esc(d.env || '')}</span>`]);
-  if (d.host) rows.push(['你而家開緊', `<code>${esc(d.host)}</code>`]);
-
-  const suspicious = d.suspicious || [];
-  const recognized = d.recognizedNames || [];
-  const none = !(d.ids || []).length;
-
-  /* 一個都認唔到 —— 九成係以下其中一樣，直接列出嚟 */
-  const emptyHelp = none ? `
-    <div class="note-box warn mt-12">${icon('alert', 15)}<div>
-      <b>伺服器讀唔到你嘅 TROOP_* 變數，最常見係呢三個原因：</b>
-      <ul style="margin:8px 0 0;padding-left:18px;line-height:1.9">
-        <li><b>未 Redeploy</b> —— 加／改環境變數之後一定要喺 Vercel 重新部署一次
-            （Deployments → 最新嗰個 → ⋯ → Redeploy）</li>
-        <li><b>變數只勾咗 Production，但你開緊 Preview／Development 網址</b>
-            （網址帶 <code>-git-</code>、隨機字尾，或者唔係你嘅正式網域）。
-            去 Vercel → Settings → Environment Variables，將每個 <code>TROOP_*</code> 嘅 Environments
-            改成 <b>Production ＋ Preview ＋ Development</b>（或者全部），再 Redeploy</li>
-        <li><b>唔係呢個部署</b> —— 環境變數只存在於 Vercel 嗰邊；本機預覽讀唔到，
-            要本機都見到就要喺專案嘅 <code>.env.local</code> 自己填同樣嘅變數</li>
-      </ul>
-      而家嘅環境：<code>${esc(d.vercelEnv || d.env || 'local')}</code>${d.host ? ` · <code>${esc(d.host)}</code>` : ''}
-    </div></div>` : '';
-
-  await modal({
-    title: '伺服器登記診斷',
-    sub: '睇睇 Vercel 環境變數有冇被讀到（唔會顯示任何 API Key）',
-    wide: true,
-    body: `
-      <div class="card" style="padding:14px">
-        <table class="table" style="font-size:13px"><tbody>
-          ${rows.map(([k, v]) => `<tr><td style="width:190px" class="sm semibold">${k}</td><td class="sm">${v}</td></tr>`).join('')}
-        </tbody></table>
-      </div>
-      ${emptyHelp}
-
-      ${recognized.length ? `
-      <div class="note-box info mt-12">${icon('check', 15)}<div>
-        <b>已識別嘅變數（名）</b><div class="xs mono" style="word-break:break-all">${recognized.map(esc).join('<br>')}</div>
-      </div></div>` : ''}
-
-      ${suspicious.length ? `
-      <div class="note-box warn mt-12">${icon('alert', 15)}<div>
-        <b>見到疑似旅團變數但認唔到（可能就係佢令旅團唔出現）</b>
-        <div class="xs mono" style="word-break:break-all">${suspicious.map(esc).join('<br>')}</div>
-        <div class="xs" style="margin-top:6px">正確格式：<code>TROOP_&lt;編號&gt;_BACKEND</code>、<code>TROOP_&lt;編號&gt;_APIKEY</code>、<code>TROOP_&lt;編號&gt;_NAME</code>（<code>GASURL</code>、<code>URL</code>、<code>KEY</code> 等都認得）。</div>
-      </div></div>` : ''}
-
-      <div class="note-box info mt-12">${icon('refresh', 15)}<div>
-        加／改完環境變數一定要喺 Vercel 撳 <b>Redeploy</b>；只係重新整理瀏覽器係唔會生效㗎。
-      </div></div>`,
-    actions: [{ label: '重新載入旅團清單', class: 'btn', value: 'reload' }, { label: '關閉', class: 'btn-primary', value: null }]
-  }).then(async v => {
-    if (v === 'reload') {
-      app.innerHTML = loadingScreen();
-      await loadRegistry(true);
-      renderUnitGate();
-    }
-  });
 }
 
 /* ============================================================
@@ -1047,33 +945,6 @@ function renderMoved() {
    暫時連唔到就照出登入表單＋頂部一句「暫時未能連線」（loginSyncBanner），
    登入嗰一刻仍會同後端硬性核對，唔會唔問過就放行。 */
 
-/* ============================================================
-   後端自測（保留）：登入頁個「測試連線」掣仍然用緊。
-   救命三寶「檢查／修復／上載」已經搬晒去「總表同步 → 儲存狀態」卡
-   （登入咗先見到），未登入嗰陣唔再迫用家睇咁多嘢。
-   ★ 2026-09-26 團長：SET 好之後再連唔到嘅機會好細，唔使搞咁大陣仗。
-   ============================================================ */
-/** 登入被擋住時仍可獨立測試接線／API Key／Sheet 寫讀。 */
-async function runBackendReadWrite() {
-  const { modal } = await import('./lib/util.js');
-  const b = app.querySelector('#btnLoginReadWrite');
-  if (b) { b.disabled = true; b.textContent = '測試緊…'; }
-  try {
-    const r = await remoteApi.testReadWrite();
-    await modal({
-      title: r.ok ? '✓ 後端寫入及讀回成功' : '⚠ 後端讀寫未通',
-      body: `<div class="note-box ${r.ok ? '' : 'danger'}"><div>${esc(r.ok ? r.message : (r.error || '未知原因'))}</div></div>
-        ${r.sheet ? `<p class="sm">試算表：${esc(r.sheet)}</p>` : ''}
-        ${r.version ? `<p class="sm">後端版本：${esc(r.version)}</p>` : ''}
-        ${r.hint ? `<p class="sm">${esc(r.hint)}</p>` : ''}
-        <p class="xs muted">本測試不操作帳戶或正式資料；成功只代表此後端的 API Key 與試算表可用，並不代表主資料庫已建立。</p>`,
-      actions: [{ label: '知道了', class: 'btn-primary', value: true }]
-    });
-  } finally {
-    if (b?.isConnected) { b.disabled = false; b.textContent = '測試連線'; }
-  }
-}
-
 function renderFatal(e) {
   app.innerHTML = `
   <div style="max-width:640px;margin:60px auto;padding:26px" class="card">
@@ -1198,8 +1069,6 @@ function renderLogin() {
           <span class="faint">·</span>
           <button type="button" id="btnApply">申請開戶</button>
           <span class="faint">·</span>
-          <button type="button" id="btnLoginReadWrite">測試連線</button>
-          <span class="faint">·</span>
           <button type="button" id="btnPublicInfo">公開資料</button>
         </div>` : `
         <h1 style="text-align:center">開團</h1>
@@ -1241,7 +1110,6 @@ function renderLogin() {
   app.querySelector('#loginGuide')?.addEventListener('click', openDeployGuideModal);
   app.querySelector('#btnGate')?.addEventListener('click', () => forgetChoice());
   app.querySelector('#btnGate2')?.addEventListener('click', () => forgetChoice());
-  app.querySelector('#btnLoginReadWrite')?.addEventListener('click', runBackendReadWrite);
   app.querySelector('#btnPublicInfo')?.addEventListener('click', () => showPublicInfo());
 
   app.querySelector('#btnApply')?.addEventListener('click', async () => {

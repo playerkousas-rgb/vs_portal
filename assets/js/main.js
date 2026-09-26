@@ -13,7 +13,8 @@ import {
 } from './lib/units.js';
 import {
   adminInbox, validateApplication, submitApplication, adminChecklist,
-  applicationText, downloadCodeGs, copyCodeGs
+  applicationText, downloadCodeGs, copyCodeGs,
+  recordIssueReport, markIssueReportSent, validateIssue, submitIssue, issueText
 } from './lib/onboard.js';
 import { applyTheme, MAROON } from './lib/theme.js';
 import {
@@ -111,16 +112,13 @@ async function boot() {
   window.addEventListener('v82:sync', paintSyncChip);
 
   /* 資料真正嘅家係旅團自己嘅 Google Sheet：
-     真實旅團要先成功載入後端，先可以顯示帳戶／密碼畫面。
-     連唔到後端就停喺「後端未連線」頁，唔會畀用家輸入一堆一定登入唔到嘅資料。 */
-  const bootSync = await syncBoot();
-  if (!bootSync?.ok) {
-    /* 舊 session 唔可以繞過後端硬閘直接入 app。 */
-    if (current()) logout();
-    return renderBackendGate(bootSync);
-  }
-  if (!current()) renderLogin();
-  else { render(); maybeForceChangePw(); maybeShowLoginConflicts(); }
+     真實旅團要先成功載入後端，先至會出**帳戶／密碼**畫面（見 loginSyncBanner）。
+     ★ 2026-09-26 團長：SET 好之後再連唔到後端嘅機會好細，唔使成頁咁大陣仗；
+       暫時連唔到就照出登入表單＋頂部一句「暫時未能連線」，唔收埋登入畫面。
+       登入嗰一刻仍然會同後端硬性核對（gateLoginOnBackend），未連到就唔會放行。 */
+  await syncBoot();
+  if (current()) { render(); maybeForceChangePw(); maybeShowLoginConflicts(); }
+  else renderLogin();
 }
 
 /* ============================================================
@@ -241,10 +239,10 @@ function loginSyncBanner() {
   if (!remoteApi.remoteConfigured()) return '';
   if (bootSyncWarn) {
     return `<div class="note-box danger mb-12" id="loginSyncWarn">${icon('alert', 15)}<div>
-      <b>登入已封鎖 —— 連唔到旅團後端</b><div class="xs mt-4">${esc(bootSyncWarn.error || '未知原因')}</div>
+      <b>暫時未能連線，請稍後再試</b><div class="xs mt-4">${esc(bootSyncWarn.error || '未知原因')}</div>
       ${bootSyncWarn.hint ? `<div class="xs mt-4">${esc(bootSyncWarn.hint)}</div>` : ''}
-      <div class="xs mt-8">帳戶一定要同後端核對過先至入到主控頁 —— 後端答唔到，
-      所以<b>而家登唔到</b>（唔係密碼錯）。呢部機上次留低嘅資料仲喺度，冇蝕。</div>
+      <div class="xs mt-8">登入表單照樣用 —— 撳「進入系統」嗰陣會再同後端核對一次；
+      後端答得返就會入到，唔使驚（唔係密碼錯）。呢部機上次留低嘅資料仲喺度，冇蝕。</div>
       <button class="btn btn-xs mt-8" type="button" id="btnRetrySync">${icon('refresh', 13)} 重試連線</button>
     </div></div>`;
   }
@@ -346,6 +344,153 @@ function paintSyncChip() {
       paintSyncChip();
     }
   });
+}
+
+/* ============================================================
+   求救／問題回報（2026-09-25 團長：「加個求救制，有咩大問題
+   SEND 去問 ADMIN，當回報問題處理」）
+   ------------------------------------------------------------
+   行「開戶申請」同一條路：validateIssue / submitIssue →
+   同源 proxy submitIssue → 中央 ADMIN 收件匣（appType 照係
+   82venture，kind:'issue' 分辨係問題回報唔係新旅團申請）。
+   內容＝你手打嗰段字（2000 字內）＋ 旅團編號／回報人／身處邊度。
+   ADMIN 收到之後登記做「問題回報」再轉寄返報告者 Email。
+   ============================================================ */
+export async function openSOS(opts = {}) {
+  const unit = String(currentUnit() || '').trim();
+  const session = current() || null;
+  const who = session ? String(displayName() || displaySub() || username() || '').trim() : '';
+  const contactEmail = session ? String(userEmail() || '').trim() : String((opts && opts.email) || '').trim();
+  let mainUrl = '';
+  try { mainUrl = location.href || location.origin || ''; } catch (e) { mainUrl = ''; }
+  const r = await modal({
+    title: '求救 —— 回報問題畀 ADMIN',
+    wide: true,
+    sub: '呢份會入 ADMIN 系統嘅「問題回報」看板（同圖書館嗰啲一樣），佢會登記＋轉寄去你 EMAIL 跟進',
+    body: `
+      <div class="note-box mb-12">${icon('alert', 15)}<div>
+        會 SEND 出去嘅嘢只有下面你填嘅嘢＋背景（旅團編號／回報人／Email）：
+        <div class="xs mono mt-4">旅團編號：${esc(unit || '（未揀）')}${session ? ` · 回報人：${esc(who || '（未登入）')}${contactEmail ? ` · Email：${esc(contactEmail)}` : ''}` : ' · 未登入（入唔到都可以回報）'}</div>
+      </div></div>
+      ${!session ? `
+      <div class="grid g-2" style="gap:12px">
+        <div class="field"><label class="label">你嘅名（可選）</label>
+          <input class="input" id="sos-name" maxlength="120" placeholder="點稱呼你"></div>
+        <div class="field"><label class="label">Email <span class="req">*</span>（ADMIN 轉寄跟進用）</label>
+          <input class="input" id="sos-email" type="email" maxlength="120" placeholder="你嘅電郵"></div>
+      </div>` : ''}
+      <div class="grid g-2" style="gap:12px">
+        <div class="field"><label class="label">標題 <span class="req">*</span>（一句講晒）</label>
+          <input class="input" id="sos-title" maxlength="120" placeholder="例：同步啲掣唔知點排"></div>
+        <div class="field"><label class="label">嚴重度</label>
+          <select class="select" id="sos-severity">
+            <option value="高" selected>🔴 高 —— 用唔到（成個功能死／資料唔見）</option>
+            <option value="緊急">🛑 緊急 —— 即刻要救</option>
+            <option value="中">🟠 中 —— 用得但唔方便／一時時壞</option>
+            <option value="低">🟢 低 —— 意見／想建議</option>
+          </select></div>
+      </div>
+      <div class="field mt-12"><label class="label">問題詳情 <span class="req">*</span>（2000 字內）</label>
+        <textarea class="input mono" id="sos-desc" rows="6" placeholder="發生咗咩事？撳咗邊粒掣？想點樣？…"></textarea></div>
+      <div class="hint mt-6">報告會先落你部機求救紀錄（跟「儲存到後端」一齊上，換機都留得返），再送去 ADMIN。佢唔會即時回覆；收到會當「問題回報」登記，轉寄去你 EMAIL 跟進。</div>`,
+    actions: [
+      { label: '取消', class: 'btn', value: false },
+      {
+        label: 'SEND 去 ADMIN', class: 'btn-primary',
+        onClick: el => {
+          const title = (el.querySelector('#sos-title')?.value || '').trim();
+          const desc = (el.querySelector('#sos-desc')?.value || '').trim();
+          const severity = el.querySelector('#sos-severity')?.value || '高';
+          const name = (el.querySelector('#sos-name')?.value || '').trim();
+          const email = (el.querySelector('#sos-email')?.value || '').trim();
+          if (!title || !desc) {
+            el.querySelector('.modal-body')?.insertAdjacentHTML('afterbegin',
+              '<div class="note-box danger mb-8"><div class="sm">要填「標題」同「問題詳情」先送到畀 ADMIN。</div></div>');
+            return false;
+          }
+          if (!session && !email) {
+            el.querySelector('.modal-body')?.insertAdjacentHTML('afterbegin',
+              '<div class="note-box danger mb-8"><div class="sm">未登入要留返 Email，ADMIN 先轉寄到份報告畀你跟進。</div></div>');
+            return false;
+          }
+          return { title, desc, severity, name, email };
+        }
+      }
+    ]
+  });
+  if (!r) return;   // 撳咗取消（false）／關咗個框（null）
+  const input = {
+    troopId: unit,
+    name: session ? who : String((r && r.name) || '').trim(),
+    contact: session ? contactEmail : String((r && r.email) || '').trim(),
+    title: String((r && r.title) || '').trim(),
+    desc: String((r && r.desc) || '').trim(),
+    severity: String((r && r.severity) || '高').trim(),
+    from: '管理系統',
+    issueUrl: mainUrl
+  };
+  const v = validateIssue(input);
+  if (!v.ok) { toast(v.errors[0], 'err'); return openSOS(opts); }
+  /* 送出之前先落本機貯稿 —— 送唔到都留得返一份在手 */
+  const draft = recordIssueReport({ unit, name: input.name, contact: input.contact, title: input.title, desc: input.desc, severity: input.severity });
+  toast('送出中…', 'info');
+  const res = await submitIssue(input);
+  if (res.ok) {
+    if (draft && draft.id) markIssueReportSent(draft.id);
+    await modal({
+      title: '已送出畀 ADMIN',
+      sub: `${res.payload.title} · ${res.payload.severity || '高'} · ${res.via === 'proxy' ? '經伺服器轉發' : '直接送出'}${res.ms != null ? ` · ${res.ms} ms` : ''}`,
+      body: `
+        <div class="note-box info mb-12">${icon('check', 15)}<div>
+          你份問題回報已經入咗<b>ADMIN「問題回報」看板</b>（同圖書館嗰個一樣）。<br>
+          <span class="xs">ADMIN 系統<b>唔會即刻覆你</b>（你唔會見到「已收到」）；管理員收到會登記跟進，再轉寄去你 Email。</span>
+        </div></div>
+        <div class="xs faint">過幾日都未見 Email？複製下面段字，WhatsApp／電郵追一追管理員就穩陣。</div>
+        <textarea class="input mono mt-8" rows="8" readonly style="font-size:12px">${esc(issueText(res.payload))}</textarea>`,
+      actions: [{ label: '好', class: 'btn-primary', value: true }]
+    });
+  } else {
+    const sig = (res.errors || []).join(' · ') || '送出失敗';
+    toast(sig, 'err');
+    await modal({
+      title: '送唔到去 ADMIN',
+      wide: true,
+      sub: res.via === 'proxy' ? '（經伺服器轉發時失敗）' : '（直接送出時失敗）',
+      body: `
+        <div class="note-box danger mb-12">${icon('alert', 15)}<div>
+          <b>${esc(sig)}</b><br>
+          <span class="xs">你打嗰啲嘢仲喺下面 —— 你可以複製落嚟，直接 WhatsApp／電郵畀平台管理員，佢一樣會當問題回報處理。</span>
+        </div></div>
+        <textarea class="input mono" rows="8" readonly style="font-size:12px">${esc(issueText(res.payload))}</textarea>`,
+      actions: [
+        { label: '關閉', class: 'btn', value: null },
+        { label: '再試一次', class: 'btn', value: 'retry' },
+        { label: '複製報告內容', class: 'btn-primary', value: 'copy' }
+      ]
+    }).then(async val => {
+      if (val === 'copy') {
+        const { copyText } = await import('./lib/util.js');
+        toast((await copyText(issueText(res.payload))) ? '已複製報告內容' : '複製唔到，請手動抄低', 'ok');
+      }
+      if (val === 'retry') openSOS(opts);
+    });
+  }
+}
+
+/** 而家登入者嘅帳號名（displayName 對 super 已回名字；冇就再兜 username） */
+function username() {
+  try {
+    const s = current();
+    return s ? (s.username || '') : '';
+  } catch (e) { return ''; }
+}
+
+/** 而家登入者嘅 Email（ADMIN 轉寄返報告就用佢） */
+function userEmail() {
+  try {
+    const s = current();
+    return s ? (s.email || '') : '';
+  } catch (e) { return ''; }
 }
 
 /* ============================================================
@@ -498,6 +643,7 @@ function renderUnitGate() {
         揀完之後先會出現<b>登入畫面</b>（領袖 / 執行委員會）。<br>
         管理員開新旅團：喺 <code>data/units.json</code> 加 entry（唔使起資料夾）＋ Vercel 加
         <code>TROOP_&lt;編號&gt;_BACKEND</code> / <code>_APIKEY</code>，再 Redeploy（詳見 docs/ADD_NEW_UNIT.md）。
+        <div class="mt-12"><button class="btn btn-ghost" id="btnUnitGateSOS" type="button">${icon('megaphone', 15)} 求救／回報問題（未揀旅團都用得）</button></div>
       </div>
     </div>
   </div>`;
@@ -522,6 +668,7 @@ function renderUnitGate() {
         : `仲係讀唔到伺服器清單：${s.error}`), (s.ok || b.ok) ? 'ok' : 'err');
   });
   app.querySelector('[data-act="diag"]')?.addEventListener('click', openRegistryDiag);
+  app.querySelector('#btnUnitGateSOS')?.addEventListener('click', () => openSOS());
   const goCode = () => {
     const raw = app.querySelector('#gateCode')?.value.trim() || '';
     if (!raw) { toast('請輸入旅團編號', 'err'); return; }
@@ -895,81 +1042,21 @@ function renderMoved() {
   });
 }
 
-function renderBackendGate(reason = {}) {
-  document.body.classList.add('login-body');
-  const code = currentUnit() || '—';
-  /* ★ v2.8.1：封鎖頁都要見到版號＋上次連到啲乜 —— 唔係齋得句「稍後再試」。 */
-  const bs = (remoteApi && remoteApi.backendStatus) ? remoteApi.backendStatus() : {};
-  /* 連線原因留喺內部狀態，普通用家只需要知道下一步：再試，或聯絡管理員。
-     ★ 2026-09-24（第三輪）：團長回報「無痕讀不到後端＝所有人睇唔到」——
-     以前呢頁只有「重新連線」，用家完全唔知係（甲）後端真係連唔到、
-     （乙）後端連得上但**入面根本冇資料**、（丙）後端資料讀唔到（有得救）。
-     而家三粒掣：睇醫生（檢查）／食藥（修復）／最後一招（用呢部機上載）。 */
-  const retryBtn = `<button class="btn btn-primary" id="btnRetryBackend" type="button">${icon('refresh', 15)} 重新連線</button>`;
-  const rwBtn = `<button class="btn" id="btnBackendReadWrite" type="button">${icon('check', 15)} 測試寫入＋讀回（不需登入）</button>`;
-  const diagBtn = `<button class="btn" id="btnBackendHealth" type="button">${icon('shield', 15)} 檢查後端（睇下係咩事）</button>`;
-  const repairBtn = `<button class="btn" id="btnBackendRepair" type="button">${icon('settings', 15)} 修復後端（清垃圾／舊版本段）</button>`;
-  const uploadBtn = `<button class="btn btn-accent" id="btnBackendUpload" type="button">${icon('cloud', 15)} 用呢部機嘅資料上載到後端</button>`;
-  app.innerHTML = `
-  <div class="gate-wrap">
-    <div class="gate-card">
-      <div class="gate-brand">
-        <div class="logo">82</div>
-        <div>
-          <div class="gate-title">未能連接旅團後端</div>
-          <div class="gate-sub">旅團 ${esc(code)} · APP ${APP_VERSION} · 暫時不能登入</div>
-        </div>
-      </div>
-      <div class="note-box danger">${icon('alert', 16)}<div>
-        <b>暫時未能連線，請稍後再試。</b>
-        <div class="xs mt-4">後端未連線，所以暫時未能顯示登入畫面。</div>
-        <div class="xs mt-4">上次連線現況：後端 <b class="mono">${esc(bs.version || '（未連過）')}</b>${bs.route ? `（${bs.route === 'proxy' ? '平台代理' : '自己貼嘅 /exec'}）` : ''}${bs.spreadsheet ? ` · ${esc(bs.spreadsheet)}` : ''}${bs.error ? ` · <span style="color:var(--danger)">${esc(bs.error)}</span>` : ''}</div>
-        <div class="xs mt-4"><b>想知係咩事？</b>撳下面「檢查後端」—— 會話你知係連唔到、後端冇資料，定係後端資料壞咗（有得修復）。</div>
-      </div></div>
-      <div class="row gap-8 wrap mt-16">
-        ${retryBtn}
-        ${rwBtn}
-        ${diagBtn}
-      </div>
-      <div class="row gap-8 wrap mt-8">
-        ${repairBtn}
-        ${uploadBtn}
-      </div>
-      <div class="xs faint mt-12">「修復後端」只會清走分頁入面嘅暫存垃圾同舊版本段（最新一套資料一行都唔會掂）。
-        「用呢部機嘅資料上載」係最後一招：後端冇資料／讀唔到，而<b>呢部機</b>手上有全部資料時用。</div>
-      <div class="row gap-8 wrap mt-8">
-        <button class="btn btn-ghost" id="btnChangeUnit" type="button">${icon('chevronL', 15)} 返回揀旅團</button>
-      </div>
-      <div class="gate-foot">如仍然未能連線，請聯絡旅團管理員。</div>
-    </div>
-  </div>`;
-
-  app.querySelector('#btnRetryBackend')?.addEventListener('click', async () => {
-    const b = app.querySelector('#btnRetryBackend');
-    if (b) { b.disabled = true; b.textContent = '連線中…'; }
-    const r = await syncBoot();
-    if (r?.ok) {
-
-      if (!current()) renderLogin();
-      else render();
-      return;
-    }
-    renderBackendGate(r);
-  });
-  app.querySelector('#btnChangeUnit')?.addEventListener('click', () => resetToGate());
-  app.querySelector('#btnBackendReadWrite')?.addEventListener('click', runBackendReadWrite);
-  app.querySelector('#btnBackendHealth')?.addEventListener('click', runBackendHealth);
-  app.querySelector('#btnBackendRepair')?.addEventListener('click', runBackendRepair);
-  app.querySelector('#btnBackendUpload')?.addEventListener('click', runBackendUpload);
-}
+/* ★ 2026-09-26 團長：連線閘成頁嘅嘢（暫時未能連線＋重新連線＋檢查／修復／上載）
+   而家已經唔需要 —— SET 好之後再連唔到後端嘅機會好細。
+   暫時連唔到就照出登入表單＋頂部一句「暫時未能連線」（loginSyncBanner），
+   登入嗰一刻仍會同後端硬性核對，唔會唔問過就放行。 */
 
 /* ============================================================
-   後端搶救（未登入都可以用 —— 呢個係最需要嘅時候）
+   後端自測（保留）：登入頁個「測試連線」掣仍然用緊。
+   救命三寶「檢查／修復／上載」已經搬晒去「總表同步 → 儲存狀態」卡
+   （登入咗先見到），未登入嗰陣唔再迫用家睇咁多嘢。
+   ★ 2026-09-26 團長：SET 好之後再連唔到嘅機會好細，唔使搞咁大陣仗。
    ============================================================ */
 /** 登入被擋住時仍可獨立測試接線／API Key／Sheet 寫讀。 */
 async function runBackendReadWrite() {
   const { modal } = await import('./lib/util.js');
-  const b = app.querySelector('#btnBackendReadWrite, #btnLoginReadWrite');
+  const b = app.querySelector('#btnLoginReadWrite');
   if (b) { b.disabled = true; b.textContent = '測試緊…'; }
   try {
     const r = await remoteApi.testReadWrite();
@@ -983,91 +1070,8 @@ async function runBackendReadWrite() {
       actions: [{ label: '知道了', class: 'btn-primary', value: true }]
     });
   } finally {
-    if (b?.isConnected) { b.disabled = false; b.innerHTML = `${icon('check', 15)} 測試寫入＋讀回（不需登入）`; }
+    if (b?.isConnected) { b.disabled = false; b.textContent = '測試連線'; }
   }
-}
-
-/** 顯示後端檢查結果（＋按情況提供修復／上載） */
-async function runBackendHealth() {
-  const { modal } = await import('./lib/util.js');
-  const h = await remoteApi.backendHealth();
-  const level = h.level === 'ok' ? 'ok' : h.level === 'warn' ? 'warn' : 'danger';
-  const choice = await modal({
-    title: '後端檢查',
-    body: `<div class="note-box ${level} mb-12">${icon(h.level === 'ok' ? 'check' : 'alert', 15)}<div><b>${esc(h.title)}</b></div></div>
-      ${h.lines.length ? `<div class="sm muted col gap-4 mb-12">${h.lines.map(l => `<div>· ${esc(l)}</div>`).join('')}</div>` : ''}
-      ${h.steps.length ? `<div class="sm"><b>下一步：</b><ol style="padding-left:18px;line-height:1.9">${h.steps.map(x => `<li>${esc(x)}</li>`).join('')}</ol></div>` : ''}
-      ${h.canRepair ? '<div class="sm mt-8">👉 可以用「修復後端」清走舊版本段／垃圾行（安全，最新資料唔會掂）。</div>' : ''}
-      ${h.canForce ? '<div class="sm mt-8">👉 或用「用呢部機嘅資料上載到後端」直接覆蓋後端。</div>' : ''}`,
-    actions: h.canRepair
-      ? [{ label: '關閉', class: 'btn', value: 'close' }, { label: '修復後端', class: 'btn-primary', value: 'repair' }]
-      : [{ label: '知道', class: 'btn', value: 'close' }]
-  });
-  if (choice === 'repair') return runBackendRepair();
-  return h;
-}
-
-/** 一鍵修復：清暫存垃圾行 ＋ 舊版本段，跟住即刻再試連線 */
-async function runBackendRepair() {
-  const { modal, toast } = await import('./lib/util.js');
-  const yes = await modal({
-    title: '修復後端分頁',
-    body: `<p class="sm">會喺旅團自己嘅 Google Sheet「資料庫」分頁：</p>
-      <ul class="sm" style="padding-left:18px;line-height:1.9">
-        <li>清走舊版留低嘅 <b>暫存垃圾行</b>（令分頁越嚟越大嗰啲）</li>
-        <li>清走同一旅團嘅 <b>舊版本段</b>，只留最新一套</li>
-      </ul>
-      <p class="sm"><b>最新一套完整資料一行都唔會刪</b>；唔會改任何正式紀錄。</p>`,
-    actions: [{ label: '取消', class: 'btn', value: false }, { label: '修復', class: 'btn-primary', value: true }]
-  });
-  if (!yes) return null;
-  const r = await remoteApi.repairBackend();
-  if (!r.ok) { toast(r.error || '修復失敗', 'err'); return r; }
-  toast(r.text, r.loadOk ? 'ok' : 'warn');
-  await syncBoot().then(res => {
-    if (res?.ok) { if (!current()) renderLogin(); else render(); }
-    else renderBackendGate(res);
-  });
-  return r;
-}
-
-/** 最後一招：用呢部機嘅資料覆蓋後端（要打字確認 `上載` 兩個字） */
-async function runBackendUpload() {
-  const { modal, toast } = await import('./lib/util.js');
-  const n = (load()?.members || []).length;
-  const yes = await modal({
-    title: '用呢部機嘅資料上載到後端',
-    danger: true,
-    sub: '呢個係搶救動作',
-    body: `<p class="sm">會用<b>呢部機而家手上嗰份資料</b>（${n} 位用戶）<b>覆蓋後端</b>。
-        適合情況：後端冇資料／讀唔到，而正確嗰份喺呢部機。</p>
-      <div class="note-box warn mt-8"><div class="sm">後端舊有嘅資料會被取代（會記錄舊版本號，方便追溯）。
-        如果後端其實有一份好嘅資料，請先撳「檢查後端」睇清楚。</div></div>
-      <div class="field mt-8"><label class="label">請打「上載」兩個字確認</label>
-        <input class="input" id="bk-confirm" placeholder="上載" autocomplete="off"></div>`,
-    /* 打字確認：未打啱就唔會關窗（同 confirmDanger 一樣嘅做法） */
-    actions: [{ label: '取消', class: 'btn', value: false }, {
-      label: '上載', class: 'btn-accent',
-      onClick: (el) => {
-        const typed = el.querySelector('#bk-confirm')?.value?.trim() || '';
-        if (typed !== '上載') {
-          const box = el.querySelector('.modal-body');
-          if (box) box.insertAdjacentHTML('afterbegin', '<div class="note-box danger mb-8" id="bk-err"><div class="sm">要打「上載」兩個字先得。</div></div>');
-          el.querySelector('#bk-confirm')?.focus();
-          return false;
-        }
-        return true;
-      }
-    }]
-  });
-  if (!yes) return null;
-  const r = await remoteApi.forcePushBackend();
-  if (!r.ok) { toast(r.error || '上載失敗', 'err'); return r; }
-  toast(r.text, 'ok');
-  const res = await syncBoot();
-  if (res?.ok) { if (!current()) renderLogin(); else render(); }
-  else renderBackendGate(res);
-  return r;
 }
 
 function renderFatal(e) {
@@ -1129,10 +1133,10 @@ function renderLogin() {
   const code = currentUnit() || defaultUnitCode();
   const u = unitEntry(code) || {};
 
-  const gateBanner = `
-    <div style="margin-bottom:14px" class="xs faint">
-      <button class="btn btn-xs" id="btnGate2">${icon('refresh', 13)} 旅團選擇畫面</button>
-    </div>`;
+  /* 未有用戶嗰陣，登入畫面交畀「開團 KEY」；有用戶之後變返簡潔登入框 */
+  const db0 = tryLoad();
+  const hasUsers = !!(db0 && Array.isArray(db0.members) && db0.members.length > 0);
+  const luname = esc(u.name || '深資童軍團');
 
   app.innerHTML = `
   <div class="login-wrap">
@@ -1141,11 +1145,11 @@ function renderLogin() {
         <div class="logo">${esc(String(u.code || code || '82').replace(/^0+/, '') || '82')}</div>
         <div>
           <div style="font-weight:800;font-size:16px;letter-spacing:-.01em">深資童軍管理系統</div>
-          <div class="xs" style="color:#F0D3D9">${esc(u.name || '深資童軍團')} · 自務自治</div>
+          <div class="xs" style="color:#F0D3D9">${luname} · 自務自治</div>
         </div>
       </div>
       <div>
-        <h1 class="hero-title">${esc(u.name || '深資童軍團')}<br>深資童軍管理系統</h1>
+        <h1 class="hero-title">${luname}<br>深資童軍管理系統</h1>
         <p class="hero-sub">會議、財務、團員、物資、團章 —— 一個地方搞掂。財務仲可以出「兩條數」（AGM 旅年度 ＋ 童軍年度）。</p>
         <div class="hero-list">
           ${[['團章內建，可改可輸出 Word / PDF / QR', 'book'],
@@ -1155,51 +1159,62 @@ function renderLogin() {
             .map(([t, i]) => `<div class="hero-item"><span class="tick">${icon(i, 11)}</span><span>${t}</span></div>`).join('')}
         </div>
       </div>
-      <div class="xs" style="color:#D3A9B2">© ${new Date().getFullYear()} ${esc(u.name || '深資童軍管理系統')} · 內部使用</div>
+      <div class="xs" style="color:#D3A9B2">© ${new Date().getFullYear()} ${luname} · 內部使用</div>
     </aside>
 
     <main class="login-panel">
+      <div class="login-topbar">
+        <button class="btn btn-xs btn-ghost" id="btnGate" type="button">${icon('refresh', 13)} 更換旅團</button>
+        <button class="btn btn-xs btn-ghost" id="btnLoginSOS" type="button">${icon('megaphone', 13)} 問題回報</button>
+      </div>
+
       <div class="login-card">
-        ${gateBanner}
+        <div class="brandmark mb-24" style="justify-content:center">
+          <div class="logo">${esc(String(u.code || code || '82').replace(/^0+/, '') || '82')}</div>
+          <div>
+            <div style="font-weight:800;font-size:17px;letter-spacing:-.01em">${luname}</div>
+            <div class="xs" style="color:var(--muted)">深資童軍管理系統</div>
+          </div>
+        </div>
+
         ${loginSyncBanner()}
 
-        <h1>登入</h1>
-        <p class="sub">
-          <b>一個人一個帳號</b>：用自己嘅電郵（團長／領袖）或者 YMIS 會籍編號（執委／團員）＋ 密碼。<br>
-          入到去嘅權限＝你喺名冊嘅<b>身份</b>（團長／領袖／執委／團員）。
-        </p>
+        ${hasUsers ? `
+        <h1 style="text-align:center">登入</h1>
         <form id="loginForm" autocomplete="off">
-          <div class="field mt-8">
-            <label class="label">電郵 或 YMIS 會籍編號</label>
-            <input class="input" id="liUser" autocomplete="username"
-              placeholder="團長／領袖：電郵　·　執委／團員：10 位 YMIS">
+          <div class="field mt-12">
+            <label class="label">電郵 或 Scout ID</label>
+            <input class="input" id="liUser" autocomplete="username" placeholder="電郵 或 Scout ID（YMIS）">
           </div>
           <div class="field mt-12">
             <label class="label">密碼</label>
-            <input class="input" id="liPass" type="password" placeholder="首次：${TEMP_PASSWORD}" autocomplete="current-password">
+            <input class="input" id="liPass" type="password" placeholder="密碼" autocomplete="current-password">
           </div>
           <div id="liErr" class="err mt-8"></div>
-          <button type="submit" class="btn btn-primary btn-lg btn-block mt-16">${icon('key', 17)} 進入系統</button>
+          <button type="submit" class="btn btn-primary btn-lg btn-block mt-16">進入系統</button>
         </form>
-        <div class="hint mt-8">名冊有個名但未設密碼？首次用 <code>${TEMP_PASSWORD}</code> 入，入去即刻要改。</div>
-        <button class="btn btn-block mt-8" type="button" id="btnLoginReadWrite">${icon('check', 15)} 測試寫入＋讀回（不需登入）</button>
-
-        <button class="btn btn-block mt-8" type="button" id="btnPublicInfo">${icon('globe', 16)} 睇吓${esc(u.name || '呢個旅團')}嘅公開資料（免登入）</button>
-        <button class="btn btn-ghost btn-block mt-8" type="button" id="btnForgotPassword">忘記密碼？用 EMAIL 重設</button>
-        <button class="btn btn-block mt-8" type="button" id="btnApply">${icon('plus', 16)} 未開戶？申請開戶</button>
-
-        <form id="setupKeyForm" class="mt-16" autocomplete="off" style="border-top:1px solid var(--line-2);padding-top:14px">
-          <div class="semibold sm mb-8">新旅團開團 KEY（第一個設定嘅人就係「團長」）</div>
-          <div class="hint mb-8">喺 Google 試算表 → Apps Script 執行 <code>issueSetupKey()</code>（每次 72 小時；過期再執行一次）。</div>
-          <input class="input" id="liSetupKey" placeholder="貼上 EC72-… KEY">
+        <div class="login-links mt-12">
+          <button type="button" id="btnForgotPassword">忘記密碼</button>
+          <span class="faint">·</span>
+          <button type="button" id="btnApply">申請開戶</button>
+          <span class="faint">·</span>
+          <button type="button" id="btnLoginReadWrite">測試連線</button>
+          <span class="faint">·</span>
+          <button type="button" id="btnPublicInfo">公開資料</button>
+        </div>` : `
+        <h1 style="text-align:center">開團</h1>
+        <form id="setupKeyForm" autocomplete="off" class="mt-8">
+          <div class="hint mb-8">新旅團開團 KEY（第一個設定嘅人就係「團長」）<br>
+            喺 Google 試算表 → Apps Script 執行 <code>issueSetupKey()</code>（每次 72 小時；過期再執行一次）。</div>
+          <div class="field">
+            <label class="label">開團 KEY</label>
+            <input class="input" id="liSetupKey" placeholder="貼上 EC72-… KEY">
+          </div>
           <div id="liKeyErr" class="err mt-8"></div>
-          <button type="submit" class="btn btn-block mt-12">用 KEY 進入開戶</button>
-        </form>
+          <button type="submit" class="btn btn-primary btn-lg btn-block mt-12">用 KEY 進入開戶</button>
+        </form>`}
 
-        <div class="mt-16" style="border-top:1px solid var(--line-2);padding-top:12px">
-          <div class="xs faint">而家嘅旅團：<b class="mono">${esc(code)}</b></div>
-          <button class="btn btn-xs mt-8" id="btnGate" type="button">${icon('refresh', 13)} 返回旅團選擇</button>
-        </div>
+        <div class="login-version">版本 ${esc(APP_VERSION)}</div>
       </div>
     </main>
   </div>`;
@@ -1218,10 +1233,9 @@ function renderLogin() {
   app.querySelector('#btnRetrySync')?.addEventListener('click', async () => {
     const b = app.querySelector('#btnRetrySync');
     if (b) { b.disabled = true; b.textContent = '連線中…'; }
-    const r = await syncBoot();
-    if (!r?.ok) return renderBackendGate(r);
+    await syncBoot();
     renderLogin();
-    toast('已由後端載入最新資料', 'ok');
+    toast('已再試連線', 'info');
   });
   app.querySelector('#loginDlGs')?.addEventListener('click', () => downloadCodeGs());
   app.querySelector('#loginGuide')?.addEventListener('click', openDeployGuideModal);
@@ -1253,6 +1267,8 @@ function renderLogin() {
     });
     if (r) toast('已送出，等團長／領袖批准', 'ok');
   });
+
+  app.querySelector('#btnLoginSOS')?.addEventListener('click', () => openSOS());
 
   app.querySelector('#setupKeyForm')?.addEventListener('submit', async e => {
     e.preventDefault();
@@ -1306,11 +1322,12 @@ function renderLogin() {
        （後端載入成功＝本機呢份名冊密碼就係後端嗰份 → 個人身份登入即係核對過後端。） */
     const gate = await gateLoginOnBackend();
     if (!gate.ok) {
-      return renderBackendGate(gate);
+      /* ★ 暫時連唔到後端：就地話俾用家知（照保留登入表單），
+         後端答得返就可以撳多次；冇放行、亦冇收埋畫面。 */
       btn.disabled = false;
       passInput.value = '';
-      renderLogin();
-      toast(gateMessage(gate), 'err');
+      err.textContent = gateMessage(gate);
+      err.style.display = 'block';
       return;
     }
     let res = await login('staff', userInput.value, passInput.value);
@@ -1435,7 +1452,7 @@ async function gateLoginOnBackend() {
 /** 登入閘失敗嗰陣嘅人話（登入頁同錯誤位共用） */
 function gateMessage(g) {
   const why = g?.error || '連唔到旅團後端';
-  return `登入已封鎖 —— ${why}`;
+  return `暫時未能連線，請稍後再試 —— ${why}`;
 }
 
 /* ============================================================
@@ -1492,8 +1509,7 @@ async function confirmLogout() {
 async function doLogout() {
   logout();
   document.body.classList.add('login-body');
-  const r = await syncBoot();
-  if (!r?.ok) return renderBackendGate(r);
+  await syncBoot();
   renderLogin();
 }
 
@@ -1592,6 +1608,7 @@ function render() {
         </div>
         <div class="row gap-8">
           <span id="syncChip" class="no-print"></span>
+          <button class="btn btn-ghost btn-sm no-print" id="btnSOS" title="求救 —— 有咩大問題，SEND 去問 ADMIN，當回報問題處理" style="color:#B8892B">${icon('megaphone', 15)} 求救</button>
                     ${notices().length ? `<span class="badge b-warn no-print"><span class="dot"></span>${notices().length} 項提示</span>` : ''}
           <button class="btn btn-ghost btn-sm hide-desktop" id="btnPw2" title="改密碼">${icon('key', 16)}</button>
           <button class="btn btn-ghost btn-sm hide-desktop" id="btnLogout2" title="登出">${icon('logout', 16)}</button>
@@ -1623,6 +1640,8 @@ function render() {
   app.querySelectorAll('#btnPw, #btnPw2').forEach(el => el.addEventListener('click', async () => {
     go('#/admin/data');
   }));
+  /* ★ 2026-09-25 團長：「加個求救制，有咩大問題 SEND 去問 ADMIN，當回報問題處理」—— 個掣喺頂部，任何一版都撳得到。 */
+  app.querySelector('#btnSOS')?.addEventListener('click', openSOS);
 
   /* 任何分頁嘅「欄位」掣（data-fields="transactions" / members / invItems / notices / meetings…）
      都會打開同一個欄位設計器 —— 唔再需要一個獨立「表格」分頁 */

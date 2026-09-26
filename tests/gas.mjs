@@ -82,7 +82,7 @@ section('API Key 代理式獨立讀寫測試（無資料、無登入也能驗證
   ok('第一次測試真的寫入並讀回相同記號', first.ok === true && first.wrote === true && first.readBack === true,
     JSON.stringify(first));
   ok('回應顯示實際試算表、後端版號，不回傳 Key',
-    !!first.spreadsheet && first.backendVersion === 'v2.8.3' && !JSON.stringify(first).includes('test-sync-secret'));
+    !!first.spreadsheet && first.backendVersion === 'v2.8.4' && !JSON.stringify(first).includes('test-sync-secret'));
   ok('測試行已清走，不影響正式資料庫',
     g.sheets.get('連線測試')._rows.length === 1 && !g.sheets.has('資料表') && !g.sheets.has('資料庫'));
   const second = g.post({ action: 'syncCheck', unit: '0099' });
@@ -1209,7 +1209,7 @@ section('★ v2.8.1：自證＋報表合併＋真相欄位＋止血');
     JSON.stringify({ f: info.found, m: info.mode }));
   ok('③ dbInfo 版本對得上寫入版本', info.version === sv2.version, `${info.version} vs ${sv2.version}`);
   ok('③ ★ dbInfo 報分頁原行數＋後端版本',
-    info.simpleRows === 8 && info.blobRows === 0 && info.backendVersion === 'v2.8.3',
+    info.simpleRows === 8 && info.blobRows === 0 && info.backendVersion === 'v2.8.4',
     JSON.stringify({ s: info.simpleRows, b: info.blobRows, v: info.backendVersion }));
 
   /* ④ 全部表壞晒 → found:false，但行數＋壞表如實報（唔再係齋「空」） */
@@ -1243,8 +1243,73 @@ section('★ v2.8.1：自證＋報表合併＋真相欄位＋止血');
   /* ⑦ diag 真相欄位 */
   const dg = g.post({ action: 'diag', unit: '0082', apiKey: KEY });
   ok('⑦ ★ diag 有 backendVersion／mode／simpleRows',
-    dg.backendVersion === 'v2.8.3' && dg.mode === 'simple' && dg.simpleRows === 8,
+    dg.backendVersion === 'v2.8.4' && dg.mode === 'simple' && dg.simpleRows === 8,
     JSON.stringify({ v: dg.backendVersion, m: dg.mode, s: dg.simpleRows }));
+}
+
+/* ============================================================
+   ★ v2.8.4 旅系統接駁（旅 > 團 > 支部）：本後端嘅「直接入口」掣
+   ------------------------------------------------------------
+   同 VSBADGE 同一套協定（purpose／sig 公式／ALLOW_LOCAL_LOGIN）——
+   上游（旅系統）可以經簽名閂我；閂咗之後本地 apikey／登入一概拒。
+   ============================================================ */
+section('★ v2.8.4 旅系統接駁：ALLOW_LOCAL_LOGIN 掣 ＋ 簽名 setLocalLogin');
+{
+  const crypto = await import('node:crypto');
+  const g = makeGas({ apiKey: 'my-own-sheet-key' });
+  g.sandbox.initializeSheets();
+  const KEY = 'my-own-sheet-key';
+
+  /* 直接入口（未閂）正常運作 */
+  ok('未閂口：load 照讀', g.post({ action: 'load', apiKey: KEY }).ok === true);
+  ok('未閂口：apikey 直連照入', g.post({ action: 'dbInfo', unit: '0082', apiKey: KEY }).ok === true);
+
+  /* 簽名公式（同 vsbadge 一樣） */
+  const hm = (m, k) => crypto.createHmac('sha256', String(k)).update(String(m)).digest('hex');
+  const gift = (k) => hm('vsbadge-troop-sig-v1', k);
+  const signPost = (bodyOnly) => {
+    const ts = String(Date.now());
+    const nonce = 'noncetest' + Date.now();
+    /* body 傳送時 digest 綁「去掉三個 sig 欄位後嘅 body」（同 vsbadge readLinkSig 一致） */
+    const canonicalPayload = JSON.stringify(bodyOnly);
+    const digest = crypto.createHash('sha256').update(canonicalPayload).digest('hex');
+    const canonical = [bodyOnly.action, ts, nonce, digest].join('\n');
+    const sig = hm(canonical, gift(KEY));
+    return { ...bodyOnly, sig, sig_ts: ts, sig_nonce: nonce };
+  };
+
+  /* 簽名 GETLESS POST（body 帶 sig）閂口 */
+  const closeBody = signPost({ action: 'setLocalLogin', allow: 'false' });
+  const closed = g.post(closeBody);
+  ok('簽名 setLocalLogin 閂口 → allow_local_login:false', closed.success === true && closed.allow_local_login === false, JSON.stringify(closed).slice(0, 160));
+  ok('閂咗口之後本地 apikey 讀 → upstream_only（拒）', (() => {
+    const r = g.post({ action: 'load', apiKey: KEY });
+    return r.ok === false && r.upstream_only === true && /直接入口/.test(r.error || '');
+  })(), '');
+  ok('閂咗口之後本地登入（authLogin）都拒', (() => {
+    const r = g.post({ action: 'authLogin', unit: '0082', apiKey: KEY, username: 'x', password: 'y' });
+    return r.ok === false && r.upstream_only === true;
+  })(), '');
+
+  /* 閂咗口，簽名照樣入到（load／getLinkState） */
+  const loadBody = signPost({ action: 'load' });
+  const loadSigned = g.post(loadBody);
+  ok('閂咗口，簽名 load 照入（有 members／progress）', loadSigned.ok === true && 'members' in loadSigned, JSON.stringify(loadSigned).slice(0, 80));
+  const linkBody = signPost({ action: 'getLinkState' });
+  const state = g.post(linkBody);
+  ok('閂咗口，簽名 getLinkState 照答 allow_local_login:false', state.success === true && state.allow_local_login === false, JSON.stringify(state).slice(0, 160));
+
+  /* 簽名唔啱 → 拒（冇得扮上游） */
+  const badBody = signPost({ action: 'load' });
+  badBody.sig = '0'.repeat(64);
+  const bad = g.post(badBody);
+  ok('假簽名（64 個 0）→ 閂咗口就拒（upstream_only）', bad.ok === false && bad.upstream_only === true);
+
+  /* 簽名開返口 */
+  const openBody = signPost({ action: 'setLocalLogin', allow: 'true' });
+  const open = g.post(openBody);
+  ok('簽名 setLocalLogin 開返 → allow_local_login:true', open.success === true && open.allow_local_login === true, JSON.stringify(open).slice(0, 160));
+  ok('開返之後本地 apikey 讀照入', g.post({ action: 'load', apiKey: KEY }).ok === true);
 }
 
 console.log(`\n${fail === 0 ? '✅' : '❌'} Code.gs：${pass} 過 / ${fail} 唔過（${Date.now() - t0}ms）`);

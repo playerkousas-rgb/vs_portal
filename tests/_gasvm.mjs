@@ -120,7 +120,9 @@ function makeGas({ apiKey = null, coerceNumericText = false } = {}) {
 
   const post = (body) => {
     const payload = { ...body };
-    if (props.has('API_KEY') && !Object.prototype.hasOwnProperty.call(payload, 'apiKey') && !Object.prototype.hasOwnProperty.call(payload, 'apikey')) {
+    /* 簽名請求由 sig 授權、唔行 apikey —— 唔可以硬注 key 入去（會整爛 body digest 嘅驗證）。 */
+    const signed = Object.prototype.hasOwnProperty.call(payload, 'sig');
+    if (!signed && props.has('API_KEY') && !Object.prototype.hasOwnProperty.call(payload, 'apiKey') && !Object.prototype.hasOwnProperty.call(payload, 'apikey')) {
       payload.apiKey = props.get('API_KEY');
     }
     const out = sandbox.doPost({ postData: { contents: JSON.stringify(payload) } });

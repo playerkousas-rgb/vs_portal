@@ -273,6 +273,25 @@ export async function loadMyRequests(ymis) {
 }
 
 /* ============================================================
+   ★ 2026-09-25 VSBADGE 開關掣（本系統代旅團閂／開 VSBADGE 後端嘅「直接入口」）
+   ------------------------------------------------------------
+   掣喺本系統（VS-PORTAL）呢邊先有；VSBADGE 前端特登唔放出嚟（防人誤關）。
+   閂嘅係**VSBADGE 嗰支後端**（淨係佢自己支 GAS 嘅 Script Properties.ALLOW_LOCAL_LOGIN），
+   唔會掂本系統自己；亦只會鬱到填好嘅嗰支 /exec，唔會波及其他團。
+   實際授權喺伺服器端嗰條 SHEET KEY（＝進度後端自己嘅 API_KEY）——
+   冇 key 就簽唔出名，VSBADGE 一定拒。
+   ============================================================ */
+/** 讀 VSBADGE 後端而家嘅「直接入口」狀態（allow_local_login / link_flag_set…） */
+export async function getLinkState() {
+  return callApi({ ...cfgPayload(), action: 'getLinkState' });
+}
+
+/** 閂／開 VSBADGE 後端嘅直接入口（allow: true 開、false 閂） */
+export async function setLocalLogin(allow) {
+  return callApi({ ...cfgPayload(), action: 'setLocalLogin', data: { allow: allow ? 'true' : 'false' } });
+}
+
+/* ============================================================
    項目目錄（items.json）
    ============================================================ */
 /** 攤平成 { itemId: { id, name, badgeId, badgeName, segmentId, segmentName } } */

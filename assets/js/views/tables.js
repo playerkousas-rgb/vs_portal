@@ -300,16 +300,16 @@ export function openFieldDesigner(key, { onSaved = null } = {}) {
         ① 插入自己嘅 Sheet　② 總表同步　③ 儲存與備份
    逐個表嘅欄位設計已經搬去各自嘅分頁（財務／用戶／物資／通告／會議 都有「欄位」掣），
    呢度唔再重複列一次 —— 少咗十幾個分頁，就少咗十幾個撳錯嘅機會。 */
-const DATA_TABS = [['source', '插入自己嘅 Sheet'], ['sync', '總表同步'], ['data', '儲存與備份']];
+const DATA_TABS = [['sync', '總表同步'], ['source', '插入自己嘅 Sheet'], ['data', '儲存與備份']];
 
 export function render(params) {
   if (params.id && DATA_TABS.some(([k]) => k === params.id)) tab = params.id;
-  else if (!DATA_TABS.some(([k]) => k === tab)) tab = 'source';
+  else if (!DATA_TABS.some(([k]) => k === tab)) tab = 'sync';
 
   return `
   ${pageHead({
     title: '資料管理',
-    sub: '三樣嘢：插入自己嘅 Sheet、總表同步、儲存與備份',
+    sub: '三樣嘢：總表同步、插入自己嘅 Sheet、儲存與備份',
     actions: `<button class="btn btn-sm" data-go="#/admin/data">${icon('chevronL', 15)} 返回系統</button>`
   })}
 
@@ -541,6 +541,20 @@ function syncView() {
   const baseAt = base?.at ? String(base.at).slice(0, 19).replace('T', ' ') : '';
   const baseVer = base ? (base.empty ? '（後端仲係空）' : String(base.version || '').slice(0, 19).replace('T', ' ')) : '';
   return `
+  ${realityCard()}
+
+  <div class="card mb-16"><div class="card-head">
+    <div><div class="card-title">${icon('megaphone', 15)} 求救（回報問題）</div>
+      <div class="card-sub">有咩大問題，直接 SEND 去問 ADMIN（當回報問題處理）</div></div>
+  </div>
+  <div style="padding:12px 16px" class="sm muted">
+    錯手搞亂咗、個數據睇唔明、粒掣唔知點排…… 撳一下，寫兩句就送畀平台 ADMIN；
+    佢收到會登記做問題回報，再轉寄去你 EMAIL 跟進。
+    <div class="row gap-8 mt-12 wrap">
+      <button class="btn" data-act="sos">${icon('megaphone', 15)} 求救 —— 回報問題畀 ADMIN</button>
+    </div>
+  </div></div>
+
   <div class="note-box mb-16">${icon('cloud', 15)}<div>
     <b>資料真正嘅家係你自己嘅 Google Sheet。寫入後端只有一條路：頂部嗰粒「儲存到後端」。</b>
     ① 登入嗰陣由後端攞成份資料（＝登入嗰一刻嘅後端，做基準）→
@@ -554,8 +568,6 @@ function syncView() {
     其他分頁（帳目／團員／物資…）係攤平出嚟畀你自己睇同用公式嘅「報表」。
     同一個後端仲會處理 <b>成員手機記帳</b>（entry.html）同 <b>通告報名</b>（notice.html）。</span>
   </div></div>
-
-  ${realityCard()}
 
   ${wired ? `<div class="card mb-16"><div class="card-head">
     <div><div class="card-title">${icon('shield', 15)} 儲存狀態</div>
@@ -583,24 +595,29 @@ function syncView() {
       全系統得呢一條寫入路，唔會有第二個地方偷偷地寫。
     </div></div>
     <div class="row gap-8 mt-12 wrap">
-      <button class="btn btn-primary btn-sm" data-act="push-db">${icon('cloud', 15)} 儲存到後端${pending ? `（${pending}）` : ''}</button>
-      <button class="btn btn-sm" data-act="pull-db">${icon('download', 15)} 由後端重新載入${pending ? '（會丟棄未儲存改動）' : ''}</button>
+      <button class="btn btn-primary" data-act="push-db">${icon('cloud', 15)} 儲存到後端${pending ? `（${pending}）` : ''}</button>
+      <button class="btn" data-act="pull-db">${icon('download', 15)} 由後端重新載入${pending ? '（會丟棄未儲存改動）' : ''}</button>
     </div>
-    <div class="row gap-8 mt-12 wrap">
-      <button class="btn btn-sm" data-act="backend-health">${icon('shield', 15)} 檢查後端</button>
-      <button class="btn btn-sm" data-act="backend-repair">${icon('settings', 15)} 修復後端</button>
-      <button class="btn btn-sm" data-act="backend-upload">${icon('cloud', 15)} 用呢部機嘅資料覆蓋後端</button>
+    <div class="hint mt-8">「由後端重新載入」會<b>用後端嘅資料覆蓋呢部機</b>（換咗新手機／清咗 cache，或者想放棄未儲存嘅改動先用）。</div>
+    <div class="mt-16" style="border-top:1px solid var(--line);padding-top:14px">
+      <div class="xs faint mb-8">⚠ 要救後端先至用（一般唔使掂）：</div>
+      <div class="row gap-8 wrap">
+        <button class="btn btn-sm btn-ghost" data-act="backend-health">${icon('shield', 15)} 檢查後端</button>
+        <button class="btn btn-sm btn-ghost" data-act="backend-repair">${icon('settings', 15)} 修復後端</button>
+        <button class="btn btn-sm btn-ghost" data-act="backend-upload">${icon('cloud', 15)} 用呢部機嘅資料覆蓋後端</button>
+        <button class="btn btn-sm btn-ghost" data-act="diagnose">${icon('search', 15)} 同步診斷</button>
+        <button class="btn btn-sm btn-ghost" data-act="migrate-check">${icon('shield', 15)} 搬遷檢查</button>
+      </div>
+      <div class="hint mt-8">「檢查後端」＝睇下後端係連唔到、冇資料，定係有舊版本段／垃圾行；
+        「修復後端」只會清走<b>舊版本段同暫存垃圾行</b>（最新一套資料一行都唔會掂）；
+        「用呢部機嘅資料覆蓋後端」係最後一招（要打字確認），適合後端壞咗／冇資料，而正確嗰份喺呢部機。
+        「同步診斷」逐格驗成條鏈（只讀，唔會寫）；「搬遷檢查」係換新後端嗰陣用。
+        之前「其他人／無痕睇唔到」就係靠呢幾步查出同救返。</div>
     </div>
-    <div class="hint mt-8">「檢查後端」＝睇下後端係連唔到、冇資料，定係有舊版本段／垃圾行；
-      「修復後端」只會清走<b>舊版本段同暫存垃圾行</b>（最新一套資料一行都唔會掂）；
-      「用呢部機嘅資料覆蓋後端」係最後一招（要打字確認），適合後端壞咗／冇資料，
-      而正確嗰份喺呢部機。之前「其他人／無痕睇唔到」就係靠呢三步查出同救返。</div>
     <details class="mt-12" ${route.serverManaged ? 'style="display:none"' : ''}>
       <summary class="btn btn-xs">其他管理功能（一般不用）</summary>
       <div class="row gap-8 mt-8 wrap">
         <button class="btn btn-sm" data-act="db-info">${icon('search', 15)} 睇後端有咩資料</button>
-        <button class="btn btn-sm" data-act="diagnose">${icon('search', 15)} 同步診斷</button>
-        <button class="btn btn-sm" data-act="migrate-check">${icon('shield', 15)} 搬遷檢查</button>
       </div>
       ${(() => {
         const bk = dbSizeBreakdown(load());
@@ -614,7 +631,6 @@ function syncView() {
       </div>`;
       })()}
     </details>
-    <div class="hint mt-8">「由後端重新載入」會<b>用後端嘅資料覆蓋呢部機</b>（換咗新手機／清咗 cache，或者想放棄未儲存嘅改動就用呢個）。</div>
   </div></div>` : `
   <div class="note-box danger mb-16">${icon('alert', 15)}<div>
     <b>未有可用嘅後端接線。</b>
@@ -1314,6 +1330,11 @@ export function mount(root, params) {
   if (params.id === 'sync') {
     /* ★ 2026-09-24：「後端實況」卡（只讀核對 ＋ 一寫一讀驗證） */
     mountRealityCard(root);
+    /* ★ 2026-09-25 求救制：同頂部嗰粒同一條路（SEND 去 ADMIN，當回報問題處理） */
+    root.querySelectorAll('[data-act="sos"]').forEach(b => b.addEventListener('click', async () => {
+      const { openSOS } = await import('../main.js');
+      openSOS();
+    }));
     root.querySelectorAll('[data-act]').forEach(b => b.addEventListener('click', async () => {
       const act = b.dataset.act;
       if (act === 'save-sync') {

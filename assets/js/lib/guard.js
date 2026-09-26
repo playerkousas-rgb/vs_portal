@@ -84,12 +84,16 @@ export function draftAgeText(at) {
  * @param {string} section  例：'member' / 'notice' / 'tx' / 'claim' / 'meeting'
  * @param {string|number} id  編輯中嘅紀錄 id（新增用 'new'）
  * @param {object} [opts] { extra: () => ({...}) 例如相片陣列, onSaved: (at)=>{} , interval: 700 }
- * @returns {() => void} 停止監聽
+ * @returns {{ markDirty: () => void, stop: () => void }}
+ *   - stop()     停止監聽兼解除呢個分頁嘅草稿追蹤（轉分頁／render 拆除嗰陣 call）
+ *   - markDirty() 欄位值被程式改咗（例如 applyDraft 回填、掣自動填數）嗰陣 call，
+ *                 等下次 flush 唔好以為「冇改過」而掉咗
  */
 export function bindDraftAutosave(root, section, id, opts = {}) {
   if (!root || !enabled().autosave) return () => {};
   const fields = () => Array.from(root.querySelectorAll('[data-draft]'));
   let timer = null;
+  const dk = keyOf(section, id);
 
   const collect = () => {
     const out = {};
@@ -104,10 +108,24 @@ export function bindDraftAutosave(root, section, id, opts = {}) {
     }
     return out;
   };
+  const same = (a, b) => {
+    const ka = Object.keys(a).filter(k => !k.startsWith('_'));
+    const kb = Object.keys(b).filter(k => !k.startsWith('_'));
+    if (ka.length !== kb.length) return false;
+    return ka.every(k => String(a[k]) === String(b[k]));
+  };
+  /* 以「入版嗰陣」嘅欄位值做基準 —— 純粹 load 完 page 然後轉走，同基準一樣
+     就唔應該構成一份「草稿」（唔寫落 browser 亦唔報告）。入版前已有舊草稿、
+     之後 applyDraft() 回填唔同值嗰陣，先由 call site 打 markDirty()。 */
+  const baseline = collect();
+  let forced = false;   // markDirty() 打咗之後，就算欄位值冇變都要照寫
 
   const flush = () => {
-    const okSaved = saveDraft(section, id, collect());
-    if (okSaved) activeKeys.add(keyOf(section, id));
+    const cur = collect();
+    /* 冇真係改過（同基準一樣，又冇打 markDirty）＝ 空白草稿 → 唔寫亦唔報告 */
+    if (!forced && same(cur, baseline)) { opts.onSaved?.(true); return; }
+    const okSaved = saveDraft(section, id, cur);
+    if (okSaved) activeKeys.add(dk);
     const stamp = root.querySelector('[data-draft-stamp]');
     if (stamp) {
       stamp.textContent = okSaved
@@ -123,7 +141,13 @@ export function bindDraftAutosave(root, section, id, opts = {}) {
     el.addEventListener('change', schedule);
   });
   pendingFlushes.add(flush);
-  return () => { clearTimeout(timer); pendingFlushes.delete(flush); };
+  const stop = () => {
+    clearTimeout(timer);
+    pendingFlushes.delete(flush);
+    /* 停止監聽同時解除呢個分頁嘅追蹤 —— 唔好留低唔屬於呢個分頁嘅「未完成草稿」 */
+    activeKeys.delete(dk);
+  };
+  return { markDirty: () => { forced = true; }, stop };
 }
 
 /* 所有仲未落筆（debounce 未到）嘅 flush —— 離開分頁前要即刻寫落瀏覽器，

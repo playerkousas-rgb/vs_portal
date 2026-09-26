@@ -679,9 +679,10 @@ export function mount(root, params = {}) {
   /* 編輯器：草稿先暫存喺瀏覽器（防呆） */
   if (params.id === 'edit' || params.id === 'new') {
     const draftId = params.action || 'new';
-    bindDraftAutosave(root, 'member', draftId);
+    const autosave = bindDraftAutosave(root, 'member', draftId);
     root.querySelector('[data-draft-restore]')?.addEventListener('click', () => {
       applyDraft(root, 'member', draftId);
+      autosave.markDirty();   // 撳「還原」＝有內容，等轉分頁嗰陣照樣暫存
       toast('已還原暫存嘅內容', 'ok');
       root.querySelector('[data-draft-banner]')?.remove();
     });

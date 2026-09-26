@@ -171,6 +171,40 @@ ok('申請表講清楚進度系統由旅團自己填 Script ＋ API Key（唔使
     good.ok === true && good.payload.appType === '82venture', JSON.stringify(good.errors));
   ok('管理員收件匣已設定', ob.adminInbox().configured === true, ob.adminInbox().url);
 }
+/* 求救＝問題回報：標題＋詳情必填、payload 對正 ADMIN TICK 合約 */
+{
+  const ob = await import('../assets/js/lib/onboard.js');
+  const empty = ob.validateIssue({});
+  ok('求救冇標題／詳情唔會過（標題＋問題詳情都要寫）', empty.ok === false && empty.errors.length >= 2, JSON.stringify(empty.errors));
+  const good = ob.validateIssue({ troopId: '0082', title: '同步啲掣唔知點排', desc: '成頁好亂', severity: '中', name: '團長' });
+  ok('求救內容齊就通過，payload 對正 ADMIN 合約（type=issue ＋ sourceApp=82venture ＋ title/desc/severity）',
+    good.ok === true && good.payload.type === 'issue' && good.payload.sourceApp === '82venture'
+    && good.payload.title === '同步啲掣唔知點排' && good.payload.desc === '成頁好亂' && good.payload.severity === '中',
+    JSON.stringify(good.payload));
+  ok('求救詳情限 2000 字（超過唔會通過）', ob.validateIssue({ title: 't', desc: '甲'.repeat(2001) }).ok === false);
+  ok('嚴重度唔喺白名單會自動變「高」（唔會寫啲怪嘢入 ADMIN）',
+    ob.validateIssue({ title: 't', desc: 'd', severity: '核爆' }).payload.severity === '高');
+}
+/* 電子請假：交表 → 覆核 → 撤回（呢啲係純本地 db 邏輯，唔使後端） */
+{
+  const absence = await import('../assets/js/lib/absence.js');
+  const store2 = await import('../assets/js/lib/store.js');
+  await store2.init({ code: 'TEST9' });   // 確保 db 初始化咗先寫到請假
+  const today = new Date().toISOString().slice(0, 10);
+  const sub = absence.submitAbsence({ memberId: 'm1', ymis: 'Y123', date: today, slot: 'am', reason: '屋企有事', plan: '補返' });
+  ok('請假冇原因唔會過', absence.submitAbsence({ memberId: 'm1', date: today, reason: '' }).ok === false);
+  ok('請假過咗嘅日子唔會過', absence.submitAbsence({ memberId: 'm1', date: '2000-01-01', reason: 'xxx' }).ok === false);
+  ok('請假填齊就通過、status=pending', sub.ok === true && sub.record.status === 'pending', JSON.stringify(sub.record && { status: sub.record.status }));
+  const id = sub.record.id;
+  ok('團員查到自己嘅請假單', absence.absencesOf('m1').length === 1, String(absence.absencesOf('m1').length));
+  ok('第二個人睇唔到（memberId 唔同 = 冇單）', absence.absencesOf('m2').length === 0, String(absence.absencesOf('m2').length));
+  const rev = absence.reviewAbsence(id, { decision: 'approved', note: 'OK', reviewer: '團長' });
+  ok('覆核接受 → status=approved + reviewer 有落', rev.ok === true && rev.record.status === 'approved' && rev.record.reviewer === '團長' || (rev.record.reviewedBy === '團長'));
+  ok('已經處理咗就唔可以撤回', absence.withdrawAbsence(id, 'm1').ok === false, JSON.stringify(absence.withdrawAbsence(id, 'm1')));
+  const sub2 = absence.submitAbsence({ memberId: 'm1', date: today, slot: 'pm', reason: '試水' });
+  ok('pending 可以撤回', absence.withdrawAbsence(sub2.record.id, 'm1').ok === true);
+  ok('CSV 有 header 同資料行', /日期/.test(absence.absencesCsv(() => '甲')) && /已接受/.test(absence.absencesCsv(() => '甲')), absence.absencesCsv(() => '甲').split('\n')[0]);
+}
 
 /* ---------- ② 揀咗旅團 ---------- */
 console.log('\n▌揀旅團之後');

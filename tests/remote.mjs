@@ -659,14 +659,13 @@ section('只有一個儲存方式（原始碼守門：冇自動寫、冇 poll、
   ok('★ 總表同步頁已經冇「自動寫入」開關 —— 淨低「儲存到後端」',
     !/toggle-autosave/.test(tablesSrc) && /儲存到後端/.test(tablesSrc) && /冇自動寫入/.test(tablesSrc));
   ok('main.js 開機**等**後端載入完先出登入頁（await syncBoot）', /await syncBoot\(\)/.test(mainSrc));
-  ok('開機後端失敗會停喺連線閘（唔會落入登入頁）',
-    /const bootSync = await syncBoot\(\)/.test(mainSrc)
-    && /if \(!bootSync\?\.ok\)[\s\S]*?renderBackendGate\(bootSync\)/.test(mainSrc)
-    && /function renderBackendGate/.test(mainSrc));
-  ok('連線閘只顯示普通用家可明白嘅重試／揀旅團操作',
-    /暫時未能連線，請稍後再試/.test(mainSrc)
-    && /id="btnRetryBackend"/.test(mainSrc) && /id="btnChangeUnit"/.test(mainSrc)
-    && !/input[^>]+(?:exec|API Key)/i.test((mainSrc.match(/function renderBackendGate[\s\S]*?function renderFatal/) || [''])[0]));
+  ok('開機後端暫時連唔到都照出登入頁（唔會成頁吞咗畫面；登入一刻先硬閘）',
+    /const bootSync = await syncBoot\(\)/.test(mainSrc) === false
+    && /await syncBoot\(\);[\s\S]*?if \(current\(\)\)[\s\S]*?renderLogin\(\)/.test(mainSrc)
+    && !/function renderBackendGate/.test(mainSrc));
+  ok('連線閘維修已簡化：冇成頁「檢查／修復／上載」嗰類掣', /暫時未能連線，請稍後再試/.test(mainSrc)
+    && /id="btnRetrySync"/.test(mainSrc)
+    && !/btnBackendHealth|btnBackendRepair|btnBackendUpload|btnBackendReadWrite/.test(mainSrc));
   /* 2026-09-20 改：以前呢度係 `freshenBeforeLogin()`（ensureFresh，「連唔到都照登入」）。
      團長質疑「既然都同後端對咗帳戶密碼，點可能入去之後話冇連上後端」之後，
      改成硬閘 —— 後端答唔到就唔准入。所以呢條斷言要跟著改。 */
@@ -1711,8 +1710,8 @@ section('★ 登入硬閘：後端答唔到就唔准入主控頁');
     `${g2.reason} / ${String(g2.error || '').slice(0, 80)}`);
   ok('封鎖原因如實講出後端嘅問題（唔係含糊嘅「同步失敗」）',
     String(g2.error || '').length > 10, String(g2.error || '').slice(0, 100));
-  ok('★ main.js 會喺原因前面加「登入已封鎖」（用家唔會以為係密碼錯）',
-    /function gateMessage/.test(mainSrc) && /登入已封鎖/.test(mainSrc));
+  ok('★ main.js 會喺原因前面加「暫時未能連線，請稍後再試」（用家唔會以為係密碼錯）',
+    /function gateMessage/.test(mainSrc) && /暫時未能連線，請稍後再試/.test(mainSrc));
 
   /* 真係未設定後端（冇 proxy 又冇 /exec）→ 明確講「未有後端設定」，唔好扮「密碼錯」 */
   mode = 'ok';
@@ -1737,8 +1736,8 @@ section('★ 登入硬閘：後端答唔到就唔准入主控頁');
     /if \(!gate\.ok\) \{[\s\S]{0,400}?return;/.test(mainSrc));
   ok('★ 舊嗰條「連唔到都照登入」嘅 freshenBeforeLogin 已經冇咗（淨低嘅只係歷史註解）',
     !/freshenBeforeLogin/.test(stripComments(mainSrc)));
-  ok('登入頁橫額講明「登入已封鎖」（唔係淨係警告）',
-    /登入已封鎖/.test(mainSrc));
+  ok('登入頁橫額講「暫時未能連線，請稍後再試」而**唔收埋**登入表單',
+    /暫時未能連線，請稍後再試/.test(mainSrc) && /id="loginSyncWarn"/.test(mainSrc));
   ok('登入頁會顯示帳戶來源（答團長「咁啱先係登入咗乜」）',
     /帳戶來源/.test(mainSrc));
   {
@@ -1893,11 +1892,12 @@ section('★ 搶救三寶（前端契約：後端讀唔到 → 檢查 → 修復
     JSON.stringify({ t: hDown.title, s: hDown.steps }));
 
   /* ---- ⑥ 破壞性動作要有人肯撳、而且要打字確認（介面守門） ---- */
-  ok('★ 登入閘有三粒掣：檢查／修復／上載',
-    ['#btnBackendHealth', '#btnBackendRepair', '#btnBackendUpload'].every(id => mainSrc3.includes(id)));
-  ok('★ 上載要打字確認（打「上載」兩個字）先做得',
-    /上載/.test(mainSrc3) && /typeConfirm|打字|確認/.test(mainSrc3) && /runBackendUpload/.test(mainSrc3));
-  ok('★ 「儲存狀態」卡都有同一組搶救掣（唔使特登去登入閘）',
+  /* ★ 2026-09-26 團長：「檢查／修復／上載嗰堆都唔想要，我哋應該解決咗嗰個問題」——
+     登入閘（連唔到嗰頁）簡化成「重新連線」；但「檢查／修復／覆蓋」三項仍然保留喺
+     「總表同步 → 儲存狀態」卡（登入咗先見得到，係情境性工具，唔再迫喺連線閘）。 */
+  ok('★ 登入閘已經冇「檢查／修復／上載」嗰組掣', ['#btnBackendHealth', '#btnBackendRepair', '#btnBackendUpload'].every(id => !mainSrc3.includes(id)));
+  ok('★ 連線提示留低「重試連線」（喺登入表單頂，唔再係成頁閘）', /id="btnRetrySync"/.test(mainSrc3));
+  ok('★ 「儲存狀態」卡仍保有同一組搶救掣（登入咗先見到）',
     /backend-health/.test(tablesSrc3) && /backend-repair/.test(tablesSrc3) && /backend-upload/.test(tablesSrc3));
   ok('★ 代理白名單放行三個新動作（舊 action 一個都冇拆）',
     /'repairDb'/.test(proxSrc3) && /'saveDbForce'/.test(proxSrc3) && /'diag'/.test(proxSrc3));

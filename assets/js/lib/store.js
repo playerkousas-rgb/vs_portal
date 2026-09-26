@@ -231,7 +231,7 @@ function blankDb(code, entry = {}) {
     },
     accounts: [],                       // 冇共用帳戶：身份即帳號（見上面 migrateSharedAccounts）
     constitution: { version: '0.1', status: 'draft', title: { zh: '團章', en: 'Constitution' }, preamble: { zh: '', en: '' }, chapters: [], appendices: [], history: [] },
-    members: [], meetings: [], notices: [], events: [], quizzes: [],
+    members: [], meetings: [], notices: [], events: [], quizzes: [], absences: [],
     tableSchema: {}, tableSources: [], sync: null, backend: null,
     transactions: [], claims: [], fees: [], budgets: [],
     categories: {
@@ -639,7 +639,11 @@ let baseMem = undefined;           // localStorage 寫唔入（配額）嗰陣�
    三方比對會無端端多咗「對方改過」嘅項目 —— 睇落就係「有人喺我之後改過嘢」。 */
 export const COLLECTION_KEYS = ['accounts', 'accountApps', 'members', 'meetings', 'notices', 'events',
   'quizzes', 'transactions', 'claims', 'fees', 'budgets', 'invItems', 'invLoans', 'invAudits',
-  'auditLog', 'tableSources'];
+  'auditLog', 'tableSources',
+  /* ★ 2026-09-25 求救／問題回報：跟「儲存到後端」一齊上，換機都要留得返 */
+  'issueReports',
+  /* ★ 2026-09-26 電子請假表：團員自己交、領袖／執委覆核，跟同步上後端 */
+  'absences'];
 
 function fillCollections(db) {
   COLLECTION_KEYS.forEach(k => { if (!Array.isArray(db[k])) db[k] = []; });

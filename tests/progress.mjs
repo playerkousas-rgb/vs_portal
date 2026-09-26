@@ -103,6 +103,70 @@ ok('GAS /dev 網址都會被擋',
   ok('saveOtherBadge 帶 records 陣列', c.body?.action === 'saveOtherBadge' && Array.isArray(c.body?.records));
 }
 
+/* ---------- 4a2. ★ VSBADGE 開關掣（getLinkState / setLocalLogin：閂人哋唔閂自己） ---------- */
+{
+  const crypto = await import('node:crypto');
+  const sd = 'vbadge-sheet-key-0082';     // ＝進度後端（VSBADGE）自己嗰條 SHEET KEY
+  const hm = (m, k) => crypto.createHmac('sha256', String(k)).update(String(m)).digest('hex');
+  const gift = (k) => hm('vsbadge-troop-sig-v1', k);
+  const linkCalls = [];
+  const savedFetch = globalThis.fetch;
+
+  /* 後端/KEY 用瀏覽器傳上嚟（未用 server-side env）：照樣得 —— key 會由伺服器簽名，唔落 VSBADGE 網址 */
+  globalThis.fetch = async (target, init = {}) => {
+    const url = String(target);
+    const method = init.method || 'GET';
+    linkCalls.push({ target: url, method, body: init.body ? JSON.parse(init.body) : null });
+    const parsed = new URL(url);
+    if (method === 'POST' && parsed.searchParams.get('sig') && parsed.searchParams.get('snonce')) {
+      /* 驗正簽名（免費）只能由抵得上嘅 code 做到 */
+      const sig = parsed.searchParams.get('sig');
+      const ts = parsed.searchParams.get('sts');
+      const nonce = parsed.searchParams.get('snonce');
+      const action = linkCalls[linkCalls.length - 1].body?.action || '';
+      const digest = crypto.createHash('sha256').update(String(init.body || '')).digest('hex');
+      const canonical = [action, ts, nonce, digest].join('\n');
+      ok(`⑦door 簽名（query）對得上（action=${action}）`, sig === hm(canonical, gift(sd)), String(sig).slice(0, 12));
+      if (action === 'getLinkState') {
+        return { status: 200, async text() { return JSON.stringify({ success: true, node: '0082', allow_local_login: true, link_flag_set: '（未設定＝開啟）' }); } };
+      }
+      if (action === 'setLocalLogin') {
+        return { status: 200, async text() { return JSON.stringify({ success: true, allow_local_login: false, message: '直接入口已閂，只收上游 sig' }); } };
+      }
+    }
+    /* 未簽名嘅一律當閂咗口（呢啲 action 仲未行 apikey 舊路） */
+    return { status: 200, async text() { return JSON.stringify({ success: false, upstream_only: true, error: '此後端的直接入口已閂' }); } };
+  };
+
+  const ok_bad_allow = await call({ action: 'setLocalLogin', unit: '0082', backend: BACKEND, apikey: sd, data: { allow: 'maybe' } });
+  ok('門口 allow 唔正 → 400 bad_allow（唔放大錯誤）', ok_bad_allow.statusCode === 400 && ok_bad_allow.body?.reason === 'bad_allow');
+
+  const e_bad = await call({ action: 'getLinkState', unit: '0082', backend: BACKEND, apikey: '' });
+  ok('冇 key 讀門 → 400 no_sign_key（教我話）', e_bad.statusCode === 400 && e_bad.body?.reason === 'no_sign_key');
+
+  const st = await call({ action: 'getLinkState', unit: '0082', backend: BACKEND, apikey: sd });
+  ok('getLinkState → ok、allow_local_login:true、linked:true', st.statusCode === 200 && st.body?.ok === true && st.body?.data?.allow_local_login === true && st.body.linked === true, JSON.stringify(st.body).slice(0, 160));
+  {
+    const c1 = linkCalls[linkCalls.length - 1];
+    ok('getLinkState 用簽名 POST（唔係 GET+apikey）', c1.method === 'POST' && c1.body?.action === 'getLinkState' && !c1.target.includes('apikey='), c1.target.slice(-40));
+    ok('getLinkState body 唔漏任何 key 去 VSBADGE（sig 之外冇 apikey）', c1.body?.apikey === undefined && c1.body?.sig && c1.body?.sig_ts && c1.body?.sig_nonce);
+  }
+
+  const cl = await call({ action: 'setLocalLogin', unit: '0082', backend: BACKEND, apikey: sd, data: { allow: 'false' } });
+  ok('setLocalLogin 閂 → ok、allow_local_login:false', cl.statusCode === 200 && cl.body?.ok === true && cl.body?.data?.allow_local_login === false, JSON.stringify(cl.body).slice(0, 160));
+  {
+    const c2 = linkCalls[linkCalls.length - 1];
+    ok('setLocalLogin 用簽名 POST、帶 allow:false', c2.method === 'POST' && c2.body?.action === 'setLocalLogin' && c2.body?.allow === 'false', JSON.stringify(c2.body).slice(0, 120));
+    ok('setLocalLogin body 唔漏 apikey', c2.body?.apikey === undefined);
+  }
+
+  const cl2 = await call({ action: 'setLocalLogin', unit: '0082', backend: BACKEND, apikey: sd, data: { allow: 'true' } });
+  ok('setLocalLogin 開返 → ok（掣可以閂亦可以開）', cl2.statusCode === 200 && cl2.body?.ok === true);
+
+  globalThis.fetch = savedFetch;
+  upstreamJson = { success: true, members: [], progress: {} };
+}
+
 /* ---------- 4b. 審批中心（批／拒團員申報） ---------- */
 {
   upstreamJson = { success: true, message: '已批准並寫入進度' };
@@ -215,6 +279,67 @@ ok('GAS /dev 網址都會被擋',
   ok('就算唔認得，仍然回晒自報資料俾 app 交代',
     r2.body.data?.self?.msg === '深資童軍管理系統 後端正常' && r2.body.data?.detail?.error === 'Unknown action');
   upstreamJson = { success: true, members: [], progress: {} };
+}
+
+/* ---------- 7c. ★ VSBADGE 旅系統接駁（閂咗直接入口 → 轉簽名 POST） ---------- */
+{
+  /* vsbadge 閂咗口（ALLOW_LOCAL_LOGIN=false）嗰陣，doGet ?action=load 同 apikey save
+     會回 { success:false, upstream_only:true, error:'此後端的直接入口已閂…' }。
+     vs_portal 伺服器端有嗰條 SHEET KEY，就要自動轉去簽名 POST（同 vsbadge
+     callDownstream 一樣嘅 sig），而唔係淨係回個 error 就算。 */
+
+  /* 預先計定 vsbadge 簽名要用嘅嘢，嚟驗證 helpers 出嚟嘅 sig */
+  const crypto = await import('node:crypto');
+  const sd = 'serve-side-sheet-key-0082';   // server-side 嗰條（＝進度後端自己嘅 API_KEY）
+  const hm = (m, k) => crypto.createHmac('sha256', String(k)).update(String(m)).digest('hex');
+  const gift = (k) => hm('vsbadge-troop-sig-v1', k);
+
+  const sigCalls = [];   // 揸住每個經上游嘅 (target, init, body)
+  globalThis.fetch = async (target, init = {}) => {
+    const url = String(target);
+    const method = init.method || 'GET';
+    sigCalls.push({ target: url, method, body: init.body ? JSON.parse(init.body) : null });
+    const isSignedPost = method === 'POST' && url.includes('sig=') && url.includes('snonce=');
+    if (isSignedPost) {
+      /* 驗正簽名（跟 vsbadge verifyLinkSig 一樣），再扮成功 */
+      const parsed = new URL(url);
+      const sig = parsed.searchParams.get('sig');
+      const ts = parsed.searchParams.get('sts');
+      const nonce = parsed.searchParams.get('snonce');
+      const digest = crypto.createHash('sha256').update(String(init.body || '')).digest('hex');
+      const canonical = ['load', ts, nonce, digest].join('\n');
+      const expect = hm(canonical, gift(sd));
+      sigCheckOk = (sig === expect);
+      return { status: 200, async text() { return JSON.stringify({ success: true, members: [{ ymis: '1', name: '簽名成功' }], progress: {} }); } };
+    }
+    /* 未簽名（apikey）→ 扮閂咗口 */
+    return { status: 200, async text() { return JSON.stringify({ success: false, upstream_only: true, error: '此後端的直接入口已閂（ALLOW_LOCAL_LOGIN=false），只接受上游簽名（sig）請求' }); } };
+  };
+  let sigCheckOk = false;
+
+  process.env.TROOP_0082_PROGRESSBACKEND = BACKEND;
+  process.env.TROOP_0082_PROGRESSAPIKEY = sd;
+  const r = await call({ action: 'load', unit: '0082' });   // 冇帶 backend/apikey（server-side）
+  delete process.env.TROOP_0082_PROGRESSBACKEND;
+  delete process.env.TROOP_0082_PROGRESSAPIKEY;
+
+  ok('⑦ 閂口後端＋server-side key → 自動兜去簽名 POST 並讀成功',
+    r.statusCode === 200 && r.body.ok === true && r.body.data?.members?.[0]?.name === '簽名成功',
+    JSON.stringify({ code: r.statusCode, ok: r.body.ok, d: r.body.data }));
+  ok('⑦ 兜出去嗰支簽名係啱嘅（query sig 對得上砍正嘅 sha256(body)）', sigCheckOk === true, String(sigCheckOk));
+  ok('⑦ 回覆標示 linked:true（前端知得到用咗旅系統接駁）', r.body.linked === true, JSON.stringify(r.body.linked));
+
+  /* 冇可用 key 嗰陣唔簽得住，但要如實講「閂咗直接入口」+ 教路 */
+  let fallbackMsg = null;
+  {
+    const r2 = await call({ action: 'load', unit: '0082', backend: BACKEND, apikey: '' });
+    fallbackMsg = r2.body;
+    ok('⑦ 冇 API Key（閂口後端）→ upstream_only 照回、附人話提示',
+      r2.statusCode === 200 && r2.body.ok === false && r2.body.upstream_only === true
+      && /直接入口|簽名/.test(r2.body.error || ''), JSON.stringify(r2.body).slice(0, 200));
+  }
+  /* reset 返成支 fetch，唔好影響後邊（第 8 節之後） */
+  globalThis.fetch = realFetch;
 }
 
 /* ---------- 8. 唔會漏 API Key 落 log ---------- */

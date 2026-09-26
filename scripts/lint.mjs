@@ -154,7 +154,7 @@ ok(progMissing.length === 0, `進度前端嘅 ${needProg.length} 個 action 全�
 /** 白名單入面嘅 action 後端（Code.gs）真係識做 —— 唔好放行咗但後端冇 */
 const gasSrc = fs.readFileSync(gas, 'utf8');
 const gasHandles = new Set([...gasSrc.matchAll(/body\.action === '([a-zA-Z]+)'/g)].map(m => m[1]));
-const ghost = [...PROXY_ALLOW].filter(a => !gasHandles.has(a) && !['submitRegistration', 'test', 'ping'].includes(a));
+const ghost = [...PROXY_ALLOW].filter(a => !gasHandles.has(a) && !['submitRegistration', 'submitIssue', 'test', 'ping'].includes(a));
 ok(ghost.length === 0, '白名單冇「放行咗但後端唔識」嘅 action', ghost.join(', '));
 
 /** Code.gs 嘅 SUPPORTED_ACTIONS（回提示用）要同真正處理緊嘅 action 一模一樣。

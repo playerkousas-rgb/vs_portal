@@ -237,9 +237,10 @@ section('入咗旅團：冇「選擇旅團」掣，但登出喺度');
   ok('★ main.js 仍然有底部登出掣（btnLogout）', /btnLogout/.test(mainSrc));
   ok('★ 登出掣喺側邊欄底部（sb-foot）入面',
     /sb-foot[\s\S]{0,900}btnLogout/.test(mainSrc));
-  ok('登入頁與失敗閘都有免登入讀寫測試，並共用同一個後端自測',
-    /id=\"btnLoginReadWrite\"/.test(mainSrc) && /id=\"btnBackendReadWrite\"/.test(mainSrc)
-      && /remoteApi\.testReadWrite\(\)/.test(mainSrc));
+  ok('登入頁仍有免登入讀寫測試（共用同一個後端自測）',
+    /id=\"btnLoginReadWrite\"/.test(mainSrc) && /remoteApi\.testReadWrite\(\)/.test(mainSrc));
+  ok('★ 失敗閘已經冇「檢查／修復／上載」嗰組搶救掣（團長話用唔着）',
+    !/btnBackendHealth|btnBackendRepair|btnBackendUpload/.test(mainSrc));
   ok('★ 「選擇旅團」函數（unitPicker）都一齊拆走（冇人再用）',
     !/function unitPicker/.test(mainSrc));
 }

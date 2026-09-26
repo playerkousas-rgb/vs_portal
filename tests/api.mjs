@@ -170,6 +170,23 @@ ok('unitsHandler 回傳 units 物件', !!resJson?.units?.TEST9);
   ok('收件匣明確回 success:false → 當失敗（唔會呃申請人）',
     refused.statusCode === 502 && /唔收呢類申請/.test(refused.body?.error || ''), JSON.stringify(refused.body));
   upstreamJson = { success: true, message: '申請已提交' };
+
+  /* ★ 2026-09-25 團長：「加個求救制，有咩大問題 SEND 去問 ADMIN，當回報問題處理」—— 同 submitRegistration 一條路 */
+  const issue = await post({
+    action: 'submitIssue', troopId: '0082', title: '同步啲掣唔知點排', desc: '成頁啲掣好亂，唔知邊個打邊個',
+    severity: '高', name: '團長', contact: 'leader@example.hk',
+    from: '管理系統', issueUrl: 'https://example.com/app#/tables/sync', at: '2026-09-25T10:00:00.000Z'
+  });
+  const issuePayload = JSON.parse(calls[calls.length - 1]?.init?.body || '{}');
+  ok('submitIssue → 送同一個中央收件匣（目的地固定）', calls[calls.length - 1]?.target === ADMIN, calls[calls.length - 1]?.target);
+  ok('求救 payload 對正 ADMIN「問題回報」合約（type=issue ＋ sourceApp=82venture）',
+    issuePayload.type === 'issue' && issuePayload.sourceApp === '82venture', JSON.stringify({ type: issuePayload.type, sourceApp: issuePayload.sourceApp }));
+  ok('求救 payload 帶齊標題／詳情／嚴重度／旅團號／姓名／Email（轉寄用）', issuePayload.title === '同步啲掣唔知點排'
+    && issuePayload.desc === '成頁啲掣好亂，唔知邊個打邊個' && issuePayload.severity === '高'
+    && issuePayload.troopId === '0082' && issuePayload.name === '團長'
+    && issuePayload.contact === 'leader@example.hk', JSON.stringify(issuePayload));
+  ok('求救收件匣回 JSON → proxy 當送到（success:true）', issue.statusCode === 200 && issue.body?.success === true, JSON.stringify(issue.body));
+
   /* 連線唔通 → 失敗 */
   const realFetch2 = globalThis.fetch;
   globalThis.fetch = async () => { const e = new Error('boom'); e.name = 'TimeoutError'; throw e; };

@@ -189,7 +189,8 @@ export async function showSaveReceipt(r) {
       <div class="note-box warn mb-12">${icon('alert', 15)}<div>
         <b>寫入成功，但核對唔到（讀唔到後端）</b>
         <div class="xs mt-4">你嘅資料已經送出，後端亦冇報錯。不過而家讀唔到後端狀態，
-        所以未能證明後端而家有乜 —— 可以遲啲去「系統 → 資料管理」撳「即刻核對」再驗一次。</div>
+        所以未能證明後端而家有乜 —— 可以遲啲再撳一次「<b>儲存到後端</b>」（佢會自動再核對一次），
+        或者撳「<b>由後端重新載入</b>」對一對後端而家有乜。</div>
       </div></div>
     `}`;
 
@@ -199,14 +200,9 @@ export async function showSaveReceipt(r) {
     wide: true,
     body,
     actions: [
-      { label: '去睇後端實況', class: 'btn', value: 'reality' },
       { label: '知道喇', class: 'btn-primary', value: true }
     ]
   }).then(choice => {
-    if (choice === 'reality') {
-      try { window.dispatchEvent(new HashChangeEvent('hashchange')); } catch { /* ignore */ }
-      location.hash = '#/tables/sync';
-    }
     return choice;
   });
 }

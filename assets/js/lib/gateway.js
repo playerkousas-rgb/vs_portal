@@ -87,8 +87,8 @@ export const PAYLOAD_TOO_LARGE_RE = /PAYLOAD_TOO_LARGE|response.{0,20}too large|
 function tooLargeError(status, text) {
   if (PAYLOAD_TOO_LARGE_RE.test(text)) {
     return '後端回應大過 Vercel 代理上限（4.5MB）—— 資料庫太大，一次過讀唔晒。'
-      + '前端會自動改用分段讀取；如果仍然失敗，就要把後端更新到 v2.6.0（支援 loadDbPart），'
-      + '並且喺「總表同步 → 體積檢查」做一次「相片瘦身」。';
+      + '前端會自動改用分段讀取；如果仍然失敗，就要把後端更新到 v2.6.0 或以上（支援 loadDbPart）——'
+      + '撳「總表同步 → 後端 Apps Script 範本」嘅「下載 Code.gs」，重貼再部署一次。';
   }
   return `後端回應格式異常（HTTP ${status}）`;
 }

@@ -176,6 +176,13 @@ try {
 
   ok('開機顯示登入閘（YMIS＋密碼）', !!doc.querySelector('#hubLogin'));
   ok('登入閘有同步狀態指示（等團員／領袖知資料係咪最新）', !!doc.querySelector('#hubSync'));
+  doc.querySelector('#hubSOS')?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await wait(120);
+  const gateOv = [...doc.querySelectorAll('.overlay')].pop();
+  ok('未登入閘有求救掣（入唔到都有得回報問題）', /求救/.test(gateOv?.textContent || '') && /標題/.test(gateOv?.textContent || ''), (gateOv?.textContent || '').slice(0, 60));
+  const gateCancel = [...(gateOv?.querySelectorAll('button') || [])].find(x => /取消/.test(x.textContent || ''));
+  gateCancel?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await wait(80);
 
   /* 等開機拉後端完成（登入掣解鎖） */
   let ready = false;
@@ -196,6 +203,7 @@ try {
     logged = !!doc.querySelector('#hubLogout');
   }
   ok('全新裝置用 YMIS＋1234 登入成功（資料係由後端拉返嚟）', logged);
+  ok('登入後頂欄都有求救掣', !!doc.querySelector('#hubSOS'));
   ok('登入後有強制改密碼彈窗（首次 1234）', !!doc.querySelector('.overlay'));
 
   /* 收起強制改密碼彈窗（撳「稍後」），睇主頁內容 */
@@ -256,6 +264,14 @@ try {
   const rsvpBtn = doc.querySelector('[data-rsvp="present"]');
   ok('詳情頁有「出席」掣', !!rsvpBtn);
   rsvpBtn?.click();
+  await wait(200);
+  /* 2026-09-26 團長：「就甘按出席不出席…出席按下後可以選出席遲到早退」——
+     而家撳「出席」會開小表單，可以揀 出席／遲到（揀時間）／早走（揀時間）／不出席（填原因）。 */
+  const rsvpOv = [...doc.querySelectorAll('.overlay')].pop();
+  ok('撳「出席」開到小表單（可揀出席／遲到／早退）', !!rsvpOv && /出席/.test(rsvpOv.textContent || '') && /遲到/.test(rsvpOv.textContent || '') && /早走/.test(rsvpOv.textContent || ''), (rsvpOv?.textContent || '').slice(0, 80));
+  const rsvpSave = [...(rsvpOv?.querySelectorAll('button') || [])].find(b => /儲存/.test(b.textContent || ''));
+  ok('表單有「儲存」掣', !!rsvpSave);
+  rsvpSave?.click();
   await wait(300);
   ok('撳「出席」唔會再彈「請填名」（以前係必彈）', !/請喺上面填/.test(pageTxt()));
   ok('即時顯示「已回覆：出席」', /已回覆：出席/.test(pageTxt()), pageTxt().slice(0, 300));
@@ -397,6 +413,53 @@ try {
     const mine3 = await progCall('myRequests', { ymis: '2026000002' });
     ok('myRequests 只回自己嘅紀錄（李小美見唔到陳大文嘅申請）',
       (mine3?.data?.requests || []).length === 0, JSON.stringify((mine3?.data?.requests || []).length));
+  }
+
+  /* 電子請假：團員自己申報 → 覆核 */
+  section('電子請假（團員自己交 → 領袖／執委覆核）');
+  {
+    // 返去主頁先（唔使上個 section 嘅狀態）
+    [...doc.querySelectorAll('[data-open="#/home"]')][0]?.click();
+    await wait(200);
+    const abBtn = [...doc.querySelectorAll('[data-open]')].find(b => b.dataset.open === '#/absence');
+    ok('主頁有「我的請假」入口', !!abBtn, pageTxt().slice(0, 120));
+    abBtn?.click();
+    await wait(200);
+    ok('團員請假頁開咗（「我的請假」標題）', pageTxt().includes('我的請假'), pageTxt().slice(0, 100));
+
+    // 開「請假」填寫框
+    const newBtn = doc.getElementById('abNew');
+    ok('請假頁有「請假」掣開表', !!newBtn, String(!!newBtn));
+    newBtn?.click();
+    await wait(120);
+    const absentOv = [...doc.querySelectorAll('.overlay')].pop();
+    ok('請假填寫框開咗（日子＋時段＋原因）', /日子/.test(absentOv?.textContent || '') && /原因/.test(absentOv?.textContent || ''), (absentOv?.textContent || '').slice(0, 120));
+
+    const submitBtn = [...(absentOv?.querySelectorAll('button') || [])].find(b => /提交/.test(b.textContent || ''));
+    // 唔填原因 → 唔會送出（modal 唔會關）
+    submitBtn?.click();
+    await wait(120);
+    const stillOpenAfterBad = [...doc.querySelectorAll('.overlay')].length > 0;
+    ok('唔填原因送唔出（框仲開住）', stillOpenAfterBad, String(stillOpenAfterBad));
+
+    // 填返原因 → 送出
+    const reasonField = absentOv?.querySelector('#ab-reason');
+    if (reasonField) reasonField.value = '屋企有事，請假半日';
+    const slotSel = absentOv?.querySelector('#ab-slot');
+    if (slotSel) slotSel.value = 'am';
+    submitBtn?.click();
+    await wait(200);
+    ok('填好送出之後，喺「我的請假」見到張「待覆核」單', pageTxt().includes('待覆核'), pageTxt().slice(0, 160));
+
+    // 撤回
+    const withdrawBtn = doc.querySelector('[data-abwithdraw]');
+    ok('未覆核嘅單有「撤回」掣', !!withdrawBtn, String(!!withdrawBtn));
+    withdrawBtn?.click();
+    await wait(120);
+    const confirmOk = [...doc.querySelectorAll('.overlay button')].find(b => /撤回/.test(b.textContent || '') && !/取消/.test(b.textContent || ''));
+    confirmOk?.click();
+    await wait(150);
+    ok('撤回之後張單冇咗（原因唔再出現）', !pageTxt().includes('屋企有事'), pageTxt().slice(0, 160));
   }
 
   /* 登出 */

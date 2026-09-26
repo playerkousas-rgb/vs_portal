@@ -129,8 +129,8 @@ section('首頁旅團閘（Vercel 環境變數登記）');
   ok('標示「Vercel 登記」', /Vercel 登記/.test(text()));
   ok('閘面顯示伺服器登記狀態（0081 環境變數＋0082 檔案＝2 個旅團）',
     /伺服器登記（Vercel 環境變數）：/.test(text()) && /2 個旅團/.test(text()), text().slice(0, 120));
-  ok('有「重新載入清單」同「診斷伺服器登記」入口',
-    !!doc.querySelector('[data-act="reload"]') && !!doc.querySelector('[data-act="diag"]'));
+  ok('有「重新載入清單」入口',
+    !!doc.querySelector('[data-act="reload"]'));
   ok('清單冇外洩 API Key', !text().includes('troop_81_secret_should_never_reach_browser'));
 
   /* 就算清單因為任何原因見唔到（未 redeploy／環境變數打錯名），
@@ -237,9 +237,10 @@ section('入咗旅團：冇「選擇旅團」掣，但登出喺度');
   ok('★ main.js 仍然有底部登出掣（btnLogout）', /btnLogout/.test(mainSrc));
   ok('★ 登出掣喺側邊欄底部（sb-foot）入面',
     /sb-foot[\s\S]{0,900}btnLogout/.test(mainSrc));
-  ok('登入頁與失敗閘都有免登入讀寫測試，並共用同一個後端自測',
-    /id=\"btnLoginReadWrite\"/.test(mainSrc) && /id=\"btnBackendReadWrite\"/.test(mainSrc)
-      && /remoteApi\.testReadWrite\(\)/.test(mainSrc));
+  ok('登入頁已經冇「測試連線」嗰粒免登入讀寫測試掣（清理診斷嘢）',
+    !/btnLoginReadWrite/.test(mainSrc));
+  ok('★ 失敗閘已經冇「檢查／修復／上載」嗰組搶救掣（團長話用唔着）',
+    !/btnBackendHealth|btnBackendRepair|btnBackendUpload/.test(mainSrc));
   ok('★ 「選擇旅團」函數（unitPicker）都一齊拆走（冇人再用）',
     !/function unitPicker/.test(mainSrc));
 }
@@ -670,14 +671,10 @@ section('兩條路並行：閘面分得清邊個旅團嚟自邊條路');
   ok('★ 0082 標「檔案」唔標 Vercel', /檔案/.test(sub('0082')) && !/Vercel/.test(sub('0082')), sub('0082'));
   ok('★ 0033 標「Vercel 登記」唔標檔案', /Vercel 登記/.test(sub('0033')) && !/檔案/.test(sub('0033')), sub('0033'));
 
-  /* 診斷 modal：三行對照表 */
+  /* 診斷 modal 已清理（旅團閘冇咗「診斷伺服器登記」）；shared 狀態照常可用 */
   const shared = await import('../assets/js/lib/units.js');
   ok('閘面用緊嘅 shared 狀態：檔案 OK', shared.fileUnitsStatus().ok === true);
-  doc.querySelector('[data-act="diag"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
-  await wait(400);
-  const modalText = doc.querySelector('.overlay .modal')?.textContent.replace(/\s+/g, ' ') || '';
-  ok('★ 診斷有「檔案名單」行', /檔案名單/.test(modalText), modalText.slice(0, 100));
-  ok('★ 診斷有齊三條路對照', /檔案名單/.test(modalText) && /瀏覽器讀/.test(modalText) && /部署時名單/.test(modalText));
+  ok('旅團選擇閘已經冇「診斷伺服器登記」掣', !doc.querySelector('[data-act="diag"]'));
   globalThis.fetch = memFetch13;
 }
 

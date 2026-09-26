@@ -442,7 +442,7 @@ async function publish() {
     const res = await saveWithDialog({ silent: true, toastOk: false });
     toast(res?.ok
       ? `已發布 v${r.version} ✓ 公開閱讀頁同 QR Code 而家已經係新版`
-      : `已發布 v${r.version}，但暫時寫唔入後端（${res?.error || '未知'}）—— 撳頂部「即刻儲存」再試`,
+      : `已發布 v${r.version}，但暫時寫唔入後端（${res?.error || '未知'}）—— 撳頂部「儲存到後端」再試`,
       res?.ok ? 'ok' : 'warn');
   } else {
     toast(`已發布 v${r.version}（呢部機未接後端 —— 公開頁要接咗後端先至睇到）`, 'warn');

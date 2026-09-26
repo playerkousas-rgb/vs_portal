@@ -273,7 +273,7 @@ const pages = ['#/dashboard', '#/meetings', '#/finance', '#/finance/reports', '#
   '#/inventory/audits', '#/progress', '#/constitution', '#/docs',
   '#/notices', '#/notices/new',
   /* ★ 2026-09-24：「表格與同步」簡化成三樣嘢，逐個表嘅欄位設計改由 openFieldDesigner modal 負責，
-     所以 #/tables/<table> 呢啲路已經唔存在（會 fallback 去 source）。 */
+     所以 #/tables/<table> 呢啲路已經唔存在（會 fallback 去「總表同步」）。 */
   '#/tables', '#/tables/source', '#/tables/sync', '#/tables/data',
   /* ★ 權限總表由「帳號與系統」搬去「用戶與身份」（#/members/perms） */
   '#/admin', '#/admin/unit',
@@ -979,9 +979,8 @@ google.visualization.Query.setResponse({"version":"0.6","reqId":"0","status":"ok
   const viewTxt = () => doc.getElementById('view')?.textContent || '';
   ok('平台登記嘅旅團（本機冇 backend 記錄）照樣見到「立即儲存到後端」',
     !!doc.querySelector('[data-act="push-db"]'));
-  ok('…照樣見到「由後端還原資料」同「睇後端有咩資料」',
-    !!doc.querySelector('[data-act="pull-db"]') && !!doc.querySelector('[data-act="db-info"]'));
-  ok('…有「同步診斷」掣（逐格驗成條鏈）', !!doc.querySelector('[data-act="diagnose"]'));
+  ok('…照樣見到「由後端重新載入」（診斷掣已經唔要，改做簡潔介面）',
+    !!doc.querySelector('[data-act="pull-db"]'));
   ok('唔會再誤報「未設定後端」（明明經平台代理接得到）', !/未設定後端 ——/.test(viewTxt()), viewTxt().slice(0, 80));
   db0.backend = savedBackend;
   store.commitMeta();
@@ -1538,6 +1537,25 @@ section('公開資料（免登入公開頁）');
   ok('★ 側邊欄已經冇「選擇旅團」掣', !doc.getElementById('unitSwitch')
     && !/選擇旅團/.test(doc.querySelector('.sidebar')?.textContent || ''));
   ok('★ 側邊欄底部「登出」仍然喺度', !!doc.getElementById('btnLogout'));
+  /* ★ 2026-09-25 團長：「加個求救制，有咩大問題 SEND 去問 ADMIN，當回報問題處理」—— 頂部要見到求救掣 */
+  ok('★ 頂部有「求救」掣（任何一版都撳得到）', /求救/.test((doc.getElementById('btnSOS')?.textContent || '')), doc.getElementById('btnSOS')?.textContent);
+  {
+    /* 撳咗開求救 modal，標題＋詳情必填、送出格式對正 ADMIN「問題回報」合約 */
+    doc.getElementById('btnSOS')?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    await new Promise(r => setTimeout(r, 120));
+    const ov = [...doc.querySelectorAll('.overlay')].pop();
+    ok('求救 modal 開咗（標題／問題詳情框開咗）', !!ov && /標題/.test(ov.textContent || '') && /問題詳情/.test(ov.textContent || ''), (ov?.textContent || '').slice(0, 80));
+    const cancel = [...(ov?.querySelectorAll('button') || [])].find(x => /取消/.test(x.textContent || ''));
+    cancel?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    await new Promise(r => setTimeout(r, 80));
+  }
+  {
+    const ob = await import('../assets/js/lib/onboard.js');
+    ok('求救 payload 對正 ADMIN「問題回報」合約（type=issue ＋ sourceApp=82venture ＋ title/desc/severity）',
+      ob.validateIssue({ troopId: '0082', title: '同步啲掣唔知點排', desc: '成頁好亂', severity: '高' }).payload.type === 'issue'
+      && ob.validateIssue({ troopId: '0082', title: '同步啲掣唔知點排', desc: '成頁好亂', severity: '高' }).payload.sourceApp === '82venture'
+      && ob.validateIssue({ troopId: '0082', title: '同步啲掣唔知點排', desc: '成頁好亂', severity: '高' }).payload.severity === '高');
+  }
 
     ok('物資借用送出網址已設定（borrow.html → 總表）',
     /\/exec$/.test(store.load().settings?.publicBorrow?.submitUrl || ''),
@@ -1573,8 +1591,16 @@ section('進度紀錄（一個後端 · 兩個前端）');
   window.dispatchEvent(new window.HashChangeEvent('hashchange'));
   await new Promise(r => setTimeout(r, 60));
   const sv = doc.getElementById('view');
-  ok('設定頁只講後端（/exec ＋ API Key），冇提任何其他系統',
-    !!sv.querySelector('#p-backend') && !!sv.querySelector('#p-key') && !/VSBADGE|vsbadge/.test(sv.textContent));
+  /* 資料接駁嘅設定**仍然只講後端**（/exec ＋ API Key 填返自己張 Sheet）；
+     另外多咗一張「VSBADGE 後端直接入口」開關卡 —— 團長 2026-09-25 要求：
+     閂 VSBADGE 門嘅掣放喺呢邊（VSBADGE 就係嗰支進度後端，唔係另一個系統），
+     閂嘅係佢嗰邊、唔會鬱到本系統。 */
+  ok('設定頁資料接駁仍只係後端（/exec ＋ API Key）',
+    !!sv.querySelector('#p-backend') && !!sv.querySelector('#p-key'));
+  ok('設定頁有「VSBADGE 後端直接入口」開關卡（閂人哋門嗰個掣喺呢邊）',
+    !!sv.querySelector('[data-act="door-refresh"]') && /VSBADGE/.test(sv.textContent));
+  ok('開關卡講明只鬱 VSBADGE 嗰支後端、本系統唔受影響',
+    /本系統（VS-PORTAL）|唔受影響|唔會掂本系統|用簽名照讀照寫/.test(sv.textContent));
   ok('設定頁有「自訂考核項目」欄（預設留空用內建）', !!sv.querySelector('#p-catalog'));
 
   /* 內建考核項目檔 */
@@ -2223,8 +2249,8 @@ section('進度紀錄（讀 ＋ 勾 ＋ 寫，同一個後端）');
     window.dispatchEvent(new window.HashChangeEvent('hashchange'));
     await new Promise(r => setTimeout(r, 100));
     const sv = doc.getElementById('view');
-    ok('設定頁有「點填」指示（複製 /exec ＋ showApiKey ＋ 測試連線）',
-      /點填/.test(sv.textContent) && /showApiKey/.test(sv.textContent) && /測試連線/.test(sv.textContent));
+    ok('設定頁有「點填」指示（複製 /exec ＋ showApiKey ＋ 儲存後重新讀取）',
+      /點填/.test(sv.textContent) && /showApiKey/.test(sv.textContent) && /重新讀取/.test(sv.textContent));
     ok('設定頁有「後端 /exec 網址」同「API Key」欄',
       !!sv.querySelector('#p-backend') && !!sv.querySelector('#p-key') && !!sv.querySelector('#p-catalog'));
     sv.querySelector('#p-backend').value = 'https://script.google.com/macros/s/AKfycbTESTTESTTESTTESTTESTTESTTESTTEST/exec';
@@ -2343,14 +2369,12 @@ section('進度紀錄（讀 ＋ 勾 ＋ 寫，同一個後端）');
     (() => { const db = store.load(); const pb = db.profile?.progress?.backend || {};
       pb.catalogUrl = ''; store.commit(); })();
 
-    /* 測試連線 */
+    /* 測試連線（唔再需要 —— 儲存設定後撳「重新讀取」就係實測） */
     window.location.hash = '#/progress/settings';
     window.dispatchEvent(new window.HashChangeEvent('hashchange'));
     await new Promise(r => setTimeout(r, 120));
-    doc.getElementById('view').querySelector('[data-act="test"]').click();
-    await new Promise(r => setTimeout(r, 300));
-    ok('「測試連線」會實測後端（成功會有提示）',
-      /連線成功|讀到/.test(doc.getElementById('view').textContent) || doc.getElementById('view').textContent.includes('2 位'));
+    ok('進度設定頁已經冇「測試連線」掣（清理診斷嘢）',
+      !doc.getElementById('view').querySelector('[data-act="test"]'));
 
     ok('進度頁冇咗外連模式（唔再開任何其他系統）',
       !/外連模式/.test(doc.getElementById('view').textContent));

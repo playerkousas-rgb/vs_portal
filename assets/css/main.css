@@ -264,10 +264,29 @@ svg{ display:block; }
 .hero-item{ display:flex; gap:10px; align-items:flex-start; font-size:13.5px; color:#F2DDE2; }
 .hero-item .tick{ width:19px; height:19px; border-radius:99px; background:rgba(255,255,255,.16); display:grid; place-items:center; flex:0 0 auto; margin-top:1px; }
 
-.login-panel{ display:flex; align-items:center; justify-content:center; padding:36px 28px; }
+.login-panel{ display:flex; align-items:center; justify-content:center; padding:36px 28px; position:relative; }
 .login-card{ width:100%; max-width:410px; }
 .login-card h1{ font-size:24px; letter-spacing:-.02em; }
 .login-card .sub{ color:var(--muted); font-size:14px; margin-top:5px; }
+
+/* ★ 2026-09-26 登入畫面簡化（XVHK 款）：右上角兩粒細掣；底部細字版本號 */
+.login-topbar{
+  position:absolute; top:14px; right:18px; display:flex; gap:8px; z-index:5;
+}
+.login-topbar .btn{ color:var(--muted); }
+.login-links{ display:flex; justify-content:center; flex-wrap:wrap; gap:8px 10px; }
+.login-links button{
+  border:none; background:none; padding:0; cursor:pointer; color:var(--brand-700);
+  font-size:12.5px; font-weight:600;
+}
+.login-links button:hover{ text-decoration:underline; }
+.login-links .faint{ font-size:12px; }
+.login-version{
+  text-align:center; margin-top:28px; font-size:11px; color:var(--faint); letter-spacing:.03em;
+}
+@media (max-width:1023px){
+  .login-topbar{ top:10px; right:12px; }
+}
 
 .role-grid{ display:grid; gap:9px; margin:22px 0 4px; }
 .role-card{

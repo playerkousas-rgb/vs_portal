@@ -5,4 +5,4 @@
    ★ 一定要同 assets/js/lib/gastemplate.js 嘅 BACKEND_VERSION 一致
      （scripts/lint.mjs 會擋住唔一致 —— 前後端同一個 repo 同步發版）。
    ============================================================ */
-export const APP_VERSION = 'v2.8.3';
+export const APP_VERSION = 'v2.8.4';

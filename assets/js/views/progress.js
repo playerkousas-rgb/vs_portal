@@ -17,14 +17,15 @@
 
 import { load } from '../lib/store.js';
 import { profile, members, keyCoverage, progressRoster, progressIgnored, identityOf } from '../lib/model.js';
-import { esc, icon, modal, toast, todayISO } from '../lib/util.js';
+import { esc, icon, modal, toast, todayISO, confirmDlg } from '../lib/util.js';
 import { go } from '../lib/router.js';
 import { can, current } from '../lib/auth.js';
 import { pageHead, tabs, stat, empty, noteBox, kv, chipbar, progressBar } from './ui.js';
 import {
   progressCfg, setProgressCfg, progressConfigured, progressIsRegistered,
   loadRemote, loadItems, saveTicks, flattenItems, summarizeRemote, memberDetail,
-  reviewRequest, reviewLogRequest, diagnoseBackend, diagVerdict, maskBackendUrl
+  reviewRequest, reviewLogRequest, maskBackendUrl,
+  getLinkState, setLocalLogin
 } from '../lib/progress.js';
 
 /* ---------- 狀態 ---------- */
@@ -38,10 +39,10 @@ let selBadge = 'all';     // 勾選：獎章篩選
 let pending = {};         // { 'ymis|itemId': true/false } 未儲存嘅改動
 let tickDate = '';        // 勾選日期
 let memberSearch = '';
-let diag = null;          // ★ 後端自查結果（見 runDiag）
-let checking = false;     // 測試連線中
 let reviewing = false;    // 審批中
 let reviewDate = '';      // 審批：確認日期（留空＝用申報日期）
+let linkMode = '';        // ''＝apikey 直連／'link'＝經 VSBADGE 旅系統簽名／'closed'＝後端閂咗直接入口
+let door = null;          // ★ VSBADGE 開關掣：{ allow_local_login, link_flag_set, node, loading, hasKey } 
 
 export function title() { return '進度紀錄'; }
 export function refresh() { window.dispatchEvent(new CustomEvent('v82:refresh')); }
@@ -62,10 +63,19 @@ async function fetchAll({ silent = false } = {}) {
   if (!r.ok) {
     loading = false; remote = null;
     errMsg = r.error || '讀取失敗';
+    /* ★ VSBADGE 旅系統接駁：後端閂咗「直接入口」嗰陣，API 會帶 upstream_only。
+       如果經簽名都入到（linked）就唔會嚟到呢度；嚟到＝真係入唔到，照直講。 */
+    if (r.upstream_only) {
+      errMsg = (r.linked
+        ? '進度後端閂咗「直接入口」，簽名都入唔到 —— 請核對 API Key 係咪嗰張進度 Sheet 嘅 SHEET KEY。'
+        : '進度後端閂咗「直接入口」（進度前端／VSBADGE 嘅「旅系統」設定），只接受簽名請求。'
+          + '去「進度 → 設定」貼返嗰張進度 Sheet 嘅 API Key（Apps Script 執行 showApiKey()），系統就會自動用簽名接駁。');
+    }
     refresh();
     return;
   }
   remote = { data: r.data || {}, at: new Date().toLocaleString('zh-HK', { hour12: false }) };
+  linkMode = r.linked ? 'link' : (r.upstream_only ? 'closed' : '');
   const it = await loadItems();
   if (it.ok) catalog = flattenItems(it.data);
   loading = false;
@@ -109,26 +119,57 @@ function reviewCount() {
 
 const maskUrl = u => String(u || '').replace(/\/macros\/s\/[^/]+/, '/macros/s/…');
 
+
 /* ============================================================
-   ★ 2026-09-24 後端自查（團長：「人係讀到，但係個個都冇進度」）
+   ★ 2026-09-25 VSBADGE 開關掣（本系統閂／開 VSBADGE 後端嘅「直接入口」）
    ------------------------------------------------------------
-   同一個症狀可以有幾個完全唔同嘅成因，而且**全部喺旅團張 Sheet 度**，
-   前端自己睇唔到。所以呢度問後端（/api/progress → GET ?action=diag）：
-     · 呢支 /exec 係邊張 Sheet（自報）
-     · 認唔認得 diag（＝係唔係深資童軍管理系統嘅後端；唔認得＝舊版／另一支腳本）
-     · 有邊啲分頁、每張幾多行、進度追蹤有幾個 YMIS／項目、同名冊對唔對得上
-   然後直接講結論＋要做乜，唔使人自己猜。
+   掣喺**呢邊**先有（防 VSBADGE 前端有人誤關）；閂嘅係 VSBADGE 嗰支後端，
+   唔會掂本系統。授權喺伺服器端嗰條 SHEET KEY（＝進度後端自己嘅 API_KEY）。
    ============================================================ */
-async function runDiag({ quiet = false } = {}) {
-  if (!progressConfigured()) { toast('未設定進度後端', 'info'); return null; }
-  diag = { loading: true, at: '' };
-  if (!quiet) refresh();
-  const r = await diagnoseBackend();
-  diag = r.ok
-    ? { loading: false, at: new Date().toLocaleString('zh-HK', { hour12: false }), ...r.data }
-    : { loading: false, at: new Date().toLocaleString('zh-HK', { hour12: false }), error: r.error || '自查失敗' };
+async function refreshDoor() {
+  door = { loading: true, hasKey: false };
   refresh();
-  return diag;
+  const r = await getLinkState();
+  if (r.ok && r.data) {
+    door = {
+      loading: false,
+      hasKey: true,
+      allow_local_login: r.data.allow_local_login,
+      node: r.data.node || '',
+      link_flag_set: r.data.link_flag_set,
+      at: new Date().toLocaleString('zh-HK', { hour12: false })
+    };
+  } else {
+    /* 讀唔到＝後端唔係 vsbadge 旅系統版／冇 key 簽唔到名（server 回 no_sign_key）。 */
+    door = { loading: false, hasKey: false, error: r.error || '讀唔到 VSBADGE 後端狀態' };
+  }
+  refresh();
+  return door;
+}
+
+async function doorToggle(toClose) {
+  if (door?.loading) return;
+  const sure = await confirmDlg({
+    title: toClose ? '閂 VSBADGE 後端嘅「直接入口」？' : '開返 VSBADGE 後端嘅「直接入口」？',
+    danger: toClose,
+    okText: toClose ? '確定閂' : '確定開',
+    message: toClose
+      ? '閂咗之後，VSBADGE 嗰支後端只接受簽名（sig）請求，佢哋用開嘅 apikey／本機登入會入唔到。'
+        + '<br><br>本系統（VS-PORTAL）之後會用簽名照樣讀寫；本系統自己嘅後端唔受影響。'
+      : '開返之後，VSBADGE 嗰支後端恢復收 apikey／本機登入。'
+  });
+  if (!sure) return;
+  door = { ...(door || {}), loading: true };
+  refresh();
+  const r = await setLocalLogin(!toClose);
+  if (r.ok) {
+    toast(toClose ? '已閂 VSBADGE 後端嘅直接入口 — 只收簽名。' : '已開返 VSBADGE 後端嘅直接入口。', 'ok');
+    await refreshDoor();
+  } else {
+    door = { ...(door || {}), loading: false };
+    toast(r.error || '開關失敗', 'err');
+    refresh();
+  }
 }
 
 /* ---------- 總覽 ---------- */
@@ -144,7 +185,6 @@ function emptyProgressBanner() {
     <div class="sm mt-4">後端回嘅「進度追蹤」係空嘅（${ticks} 格）——所以每個人都顯示 0。
     多數係：你填嘅 <code>/exec</code> 唔係進度資料嗰張 Sheet／「進度追蹤」分頁唔見咗或者空。</div>
     <div class="row gap-8 mt-8 wrap">
-      <button class="btn btn-sm btn-primary" data-act="diag">${icon('search', 15)} 後端資料檢查</button>
       <button class="btn btn-sm" data-act="settings">${icon('settings', 15)} 檢查設定</button>
     </div></div></div>`;
 }
@@ -446,6 +486,45 @@ function reviewView() {
   </div>`;
 }
 
+/* ---------- 設定：VSBADGE 開關掣 ---------- */
+function doorCard() {
+  if (door?.loading) {
+    return `<div class="sm muted">讀取 VSBADGE 後端狀態中…</div>`;
+  }
+  if (!door) {
+    /* 第一次入設定／未讀狀態 */
+    return `<div class="col gap-8">
+      <div class="faint xs">撳「讀取狀態」睇 VSBADGE 後端而家嘅直接入口係開定閂。</div>
+      <div><button class="btn btn-sm" data-act="door-refresh">${icon('refresh', 14)} 讀取狀態</button></div>
+    </div>`;
+  }
+  if (door.error) {
+    return `<div class="note-box warn">${icon('alert', 14)}<div>
+      <b>讀唔到 VSBADGE 後端狀態</b>
+      <div class="xs mt-4">${esc(door.error)}
+        <div class="faint">（多數係：嗰支 /exec 唔係 VSBADGE 旅系統版，或者伺服器端未設定嗰支進度後端嘅 SHEET KEY
+        ＝ <code>TROOP_${esc((progressCfg().unit || '0082'))}_PROGRESSAPIKEY</code>）</div>
+      </div>
+      <div class="mt-8"><button class="btn btn-sm" data-act="door-refresh">${icon('refresh', 14)} 再試</button></div>
+    </div></div>`;
+  }
+  const open = door.allow_local_login;
+  return `<div class="col gap-10">
+    <div>${open
+      ? `<span class="badge b-ok"><span class="dot"></span>直接入口：開（apikey／本機登入入到）</span>`
+      : `<span class="badge b-warn"><span class="dot"></span>直接入口：已閂（只收簽名）</span>`}</div>
+    ${door.node ? `<div class="xs faint">後端節點：${esc(door.node)}${door.link_flag_set ? ` · flag＝${esc(door.link_flag_set)}` : ''}</div>` : ''}
+    ${door.at ? `<div class="xs faint">上次讀取：${esc(door.at)}</div>` : ''}
+    <div class="row gap-8 wrap">
+      <button class="btn btn-sm" data-act="door-refresh">${icon('refresh', 14)} 讀取狀態</button>
+      ${open
+        ? `<button class="btn btn-sm btn-accent" data-act="door-close">${icon('lock', 14)} 閂咗佢（只收簽名）</button>`
+        : `<button class="btn btn-sm" data-act="door-open">${icon('unlock', 14)} 開返（容許本機登入）</button>`}
+    </div>
+    <div class="xs faint">只會鬱到上面填嘅嗰支 VSBADGE /exec；本系統（VS-PORTAL）之後用簽名照讀照寫。</div>
+  </div>`;
+}
+
 /* ---------- 設定 ---------- */
 function settingsView() {
   const c = progressCfg();
@@ -494,17 +573,15 @@ function settingsView() {
           </div>
           <div class="row gap-8 wrap mt-12">
             <button class="btn btn-primary" data-act="save-cfg">${icon('save', 16)} 儲存</button>
-            <button class="btn" data-act="test">${icon('send', 16)} ${checking ? '測試中…' : '測試連線'}</button>
-            <button class="btn" data-act="diag">${icon('search', 16)} 後端資料檢查</button>
             <button class="btn" data-act="reload">${icon('refresh', 16)} 重新讀取</button>
             <button class="btn btn-ghost" data-act="clear-cfg">${icon('trash', 15)} 清除自訂設定</button>
           </div>
           ${noteBox('★ 呢啲設定係<b>跟旅團資料庫走</b>嘅：撳完「儲存」系統會<b>自動寫入後端</b>（頂部狀態會轉做「已存到後端」；'
-            + '想即刻寫就撳頂部「即刻儲存」），'
+            + '想即刻寫就撳頂部「儲存到後端」），'
             + '無痕視窗／另一部機（新裝置）先會自動有同一組設定。<b>冇撳</b>嘅話，只有呢部機讀得到 ——'
             + '換部機就會好似「無痕讀唔到後端」。', 'warn')}
           <div class="hint mt-8"><b>點填：</b>① 喺 Apps Script 撳「部署 → 管理部署」複製 <code>/exec</code> 網址；
-            ② 喺 Apps Script 執行 <code>showApiKey()</code> 複製 API Key；③ 貼上面兩個格 → 撳「測試連線」見到成員就成功。
+            ② 喺 Apps Script 執行 <code>showApiKey()</code> 複製 API Key；③ 貼上面兩個格 → 儲存後撳「重新讀取」見到成員就成功。
             <div class="xs faint mt-4">填完存在旅團自己嘅資料（跟 JSON 備份走），唔會交畀第三方。
               如果想收埋條 Key 唔落前端，先設環境變數 <code>TROOP_${esc((c.unit || '0082'))}_PROGRESSBACKEND</code> /
               <code>…_PROGRESSAPIKEY</code>。</div></div>
@@ -514,6 +591,13 @@ function settingsView() {
 
     <div class="col gap-16">
       <div class="card">
+        <div class="card-head"><div class="card-title">VSBADGE 後端「直接入口」</div>
+          <div class="card-sub">呢個掣淨係閂／開 VSBADGE 嗰支後端（本系統用簽名照讀照寫，唔受影響）</div></div>
+        <div style="padding:14px 16px" class="sm muted">
+          ${doorCard()}
+        </div>
+      </div>
+      <div class="card">
         <div class="card-head"><div class="card-title">連線狀態</div></div>
         <div style="padding:14px 16px">
           ${kv([
@@ -521,6 +605,11 @@ function settingsView() {
               : c.serverSide ? '<span style="color:var(--ok)">伺服器端已設定</span>' : '<span style="color:var(--warn)">未設定</span>'],
             ['API Key', c.apiKey ? '<span style="color:var(--ok)">已填</span>'
               : c.serverSide ? '<span style="color:var(--ok)">伺服器端已設定</span>' : '<span style="color:var(--warn)">未填</span>'],
+            ['接駁方式', linkMode === 'link'
+              ? '<span style="color:var(--ok)">已接駁 VSBADGE 旅系統（簽名）</span>'
+              : linkMode === 'closed'
+                ? '<span style="color:var(--warn)">後端閂咗直接入口（要簽名）</span>'
+                : '<span>API Key 直連</span>'],
             ['考核項目', catalog ? `${Object.keys(catalog).length} 項` : '未讀取'],
             ['上次讀取', remote ? esc(remote.at) : '—'],
             ['讀到嘅成員', remote ? String((remote.data.members || []).length) : '—']
@@ -707,43 +796,10 @@ export function mount(root, params) {
     readCfg();
     const pend = Number(load()?.sync?.pending || 0);
     toast(pend > 0
-      ? '已儲存 —— 自動寫入後端中，其他裝置／無痕好快讀得到（想即刻寫就撳頂部「即刻儲存」）'
+      ? '已儲存 —— 自動寫入後端中，其他裝置／無痕好快讀得到（想即刻寫就撳頂部「儲存到後端」）'
       : '已儲存設定', 'ok');
     tab = 'overview';
     fetchAll();
-  });
-  root.querySelector('[data-act="test"]')?.addEventListener('click', async () => {
-    if (!can('progress.tick')) { toast('只有領袖／執委可以改設定', 'err'); return; }
-    readCfg();
-    checking = true; refresh();
-    const r = await probe();
-    checking = false;
-    if (r.ok) {
-      remote = { data: r.data || {}, at: new Date().toLocaleString('zh-HK', { hour12: false }) };
-      const it = await loadItems();
-      if (it.ok) catalog = flattenItems(it.data);
-      toast(`連線成功 ✓ 讀到 ${(r.data.members || []).length} 位成員、${(r.data.progress ? Object.keys(r.data.progress).length : 0)} 位有進度`, 'ok');
-    } else {
-      toast(r.error || '連線失敗', 'err');
-    }
-    refresh();
-  });
-  root.querySelector('[data-act="diag"]')?.addEventListener('click', async () => {
-    const d = await runDiag({ quiet: true });
-    if (!d) return;
-    const sum = remote
-      ? summarizeRemote(remote.data, { catalog, roster: members() })
-      : { memberCount: 0, withProgress: 0 };
-    const v = diagVerdict(d, { memberCount: sum.memberCount, withProgress: sum.withProgress });
-    const level = v.level === 'ok' ? 'ok' : 'warn';
-    await modal({
-      title: '後端資料檢查',
-      body: `<div class="note-box ${level} mb-12">${icon(v.level === 'ok' ? 'check' : 'alert', 15)}<div>
-          <b>${esc(v.title)}</b></div></div>
-        ${v.lines.length ? `<div class="sm muted col gap-4 mb-12">${v.lines.map(l => `<div>· ${esc(l)}</div>`).join('')}</div>` : ''}
-        ${v.steps.length ? `<div class="sm"><b>要做乜：</b><ol style="padding-left:18px;line-height:1.9">${v.steps.map(x => `<li>${esc(x)}</li>`).join('')}</ol></div>` : ''}`,
-      actions: [{ label: '知道', class: 'btn-primary', value: true }]
-    });
   });
   root.querySelector('[data-act="clear-cfg"]')?.addEventListener('click', async () => {
     if (!(await modal({
@@ -756,14 +812,16 @@ export function mount(root, params) {
     toast('已清除', 'ok'); refresh();
   });
 
+  /* ★ VSBADGE 開關掣（閂／開 VSBADGE 後端嘅直接入口） */
+  root.querySelector('[data-act="door-refresh"]')?.addEventListener('click', () => { refreshDoor(); });
+  root.querySelector('[data-act="door-close"]')?.addEventListener('click', () => { doorToggle(true); });
+  root.querySelector('[data-act="door-open"]')?.addEventListener('click', () => { doorToggle(false); });
+  if (tab === 'settings' && progressConfigured() && (!door || !door.at)) {
+    /* 入到設定先至靜靜讀一次門況（冇 key 就唔讀，慳一程） */
+    const c = progressCfg();
+    if (c.serverSide || c.apiKey) setTimeout(() => refreshDoor(), 30);
+  }
+
   /* 第一次入嚟：自動讀一次 */
   if (progressConfigured() && !remote && !loading && !errMsg) setTimeout(() => fetchAll({ silent: true }), 30);
-}
-/**
- * 測試連線（同 loadRemote，但唔改全域狀態）
- */
-async function probe() {
-  const started = Date.now();
-  const r = await loadRemote();
-  return { ...r, ms: Date.now() - started };
 }

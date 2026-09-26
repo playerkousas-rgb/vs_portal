@@ -356,7 +356,7 @@ function tablesDoc() {
     <div class="step"><div>開團 KEY：執行 <code>issueSetupKey()</code>（72 小時；過期再執行）</div></div>
     <div class="step"><div><b>部署 → 新增部署作業 → 網頁應用程式</b>；執行身分：我；存取權：任何人</div></div>
     <div class="step"><div>複製 <code>/exec</code> 網址，貼返「Apps Script 網址」，填旅團編號與 API Key</div></div>
-    <div class="step"><div>按「<b>測試連線</b>」→ 成功之後改動會<b>自動寫入後端</b>（想即刻寫就撳頂部「<b>即刻儲存</b>」）；唔會自動同步）</div></div>
+    <div class="step"><div>儲存設定 → 改動之後撳頂部「<b>儲存到後端</b>」就寫入；唔會自動同步</div></div>
     <div class="step"><div>專屬 Sheet 會自動建立／更新分頁：帳目、物資、團員、收支申報、通告、報名、會議、同步紀錄</div></div>
   </div>
   ${noteBox('<b>一個後端、兩個前端。</b>每個旅團一張 Google Sheet ＋ 一支 Apps Script：深資童軍管理系統同進度前端共用同一份資料（進度追蹤／其他獎章／活動履歷等分頁由 <code>initializeSheets</code> 建立）。相片唔會直接塞入 Sheet（只記數量），如果想存相就喺 Code.gs 頂部填 <code>DRIVE_FOLDER_ID</code>，相片會自動上載去 Drive 再貼連結落 Sheet。', 'brand')}
@@ -446,14 +446,14 @@ function progressDoc() {
     <div class="step"><div>如果旅團後端已經登記喺 <code>data/units.json</code>（<code>backend.gasUrl</code> / <code>apiKey</code>），'
       + '「進度」頁會自動用返佢 —— 咩都唔使填</div></div>
     <div class="step"><div>未登記就喺「<b>進度 → 設定</b>」填 <b>/exec 網址</b> ＋ <b>API Key</b>（執行 <code>showApiKey()</code> 複製）</div></div>
-    <div class="step"><div>撳「測試連線」→ 見到成員同進度就成功；之後喺「勾選進度」直接勾</div></div>
+    <div class="step"><div>儲存之後撳「重新讀取」→ 見到成員同進度就成功；之後喺「勾選進度」直接勾</div></div>
   </div>
   ${noteBox('後端要係本系統嘅 <code>Code.gs</code>（或者已經支援 <code>?action=load</code> 同 <code>action=save</code> 嘅版本）：'
     + '「系統 → 資料管理 → 總表同步」可以下載最新範本，執行一次 <code>initializeSheets</code> 會建好'
     + '「進度追蹤／其他獎章／活動履歷」等分頁。', 'info')}
   ${noteBox('<b>設好後端之後，想埋讀取進度追蹤？</b>去「進度 → 設定」：'
     + '① 貼 <code>/exec</code> 網址（Apps Script → 部署 → 管理部署） ② 貼 API Key（Apps Script 執行 '
-    + '<code>showApiKey()</code>） ③ 撳「測試連線」見到團員名單就成功。'
+    + '<code>showApiKey()</code>） ③ 儲存後撳「重新讀取」見到團員名單就成功。'
     + '兩個值存在旅團自己嘅資料（跟 JSON 備份走）。', 'info')}
 
   ${H('考核項目定義')}

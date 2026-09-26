@@ -12,7 +12,7 @@ export function gasTemplate() {
   return `/**
  * ============================================================
  *  深資童軍管理系統 · 總表同步與多旅團後端 Apps Script（Code.gs）
- *  版本：v2.8.3
+ *  版本：v2.8.4
  *
  *  ★ v2.8.1（2026-09-25，團長回報 4 項：「登入畫面睇唔到版號」／
  *    「後端分頁明明有資料但 app 話冇」／「有幾頁不停在儲存，會唔會爆量」／
@@ -154,7 +154,7 @@ var MODE = 'per-unit-sheet';   // 'per-unit-sheet' = 每個旅團獨立工作表
 var DRIVE_FOLDER_ID = '';
 
 /** 後端版本（status 會回報；APP 用嚟檢查「你張 Sheet 係咪仲行舊 code」） */
-var BACKEND_VERSION = 'v2.8.3';
+var BACKEND_VERSION = 'v2.8.4';
 
 /* ============================================================
    初始化與 API KEY 管理
@@ -185,10 +185,158 @@ function showApiKey() {
   return apiKey;
 }
 
+/* ★ v2.8.4 旅系統接駁：Sheet 選單（後備閂／開門）
+   呢個掣係**本機**嘅直接入口（post /exec 唔再收 apikey／本地登入，只收上游 sig）。 */
+function onOpen() {
+  try {
+    var ui = SpreadsheetApp.getUi();
+    ui.createMenu('🔗 旅系統')
+      .addItem('閂（只收上游 sig）', 'menuLocalLoginOff')
+      .addItem('🔓 開啟（容許本地登入）', 'menuLocalLoginOn')
+      .addToUi();
+  } catch (e) { /* headless（執行緊 script）冇 UI，靜靜略過 */ }
+}
+function menuLocalLoginOff() {
+  var ui = SpreadsheetApp.getUi();
+  var r = ui.alert('閂「直接入口」？', '閂咗之後，本地 apikey／帳戶登入都入唔到，只收上游（旅／團）簽名請求。\\n\\n本系統（呢支 /exec）只會由上游經簽名讀寫。確定？', ui.ButtonSet.OK_CANCEL);
+  if (r !== ui.Button.OK) return;
+  PropertiesService.getScriptProperties().setProperty(LINK_FLAG, 'false');
+  ui.alert('已閂', 'ALLOW_LOCAL_LOGIN=false：只收上游 sig。\\n要重開就撳「🔓 開啟（容許本地登入）」或者等上游 setLocalLogin(allow=true)。', ui.ButtonSet.OK);
+}
+function menuLocalLoginOn() {
+  var ui = SpreadsheetApp.getUi();
+  PropertiesService.getScriptProperties().setProperty(LINK_FLAG, 'true');
+  ui.alert('已開啟', 'ALLOW_LOCAL_LOGIN=true：本地 apikey／登入恢復。', ui.ButtonSet.OK);
+}
+
 /** SHA-256 hex（開團 KEY 只存雜湊） */
 function sha256HexGs(s) {
   var raw = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(s || ''), Utilities.Charset.UTF_8);
   return raw.map(function (b) { return ('0' + (b & 255).toString(16)).slice(-2); }).join('');
+}
+
+/* ============================================================
+   旅系統：上下游接駁（旅 > 團 > 支部）
+   ------------------------------------------------------------
+   同 VSBADGE 一套協定（相同 LINK_SIG_PURPOSE／sig 公式），等「旅系統」出現嗰陣：
+     · 上游（旅）喺佢自己 Script Properties 登記我呢支 /exec（BACKEND）＋我條 SHEET KEY（APIKEY）；
+     · 之後上游可以經 **簽名（sig）** 讀寫我呢支後端；
+     · 我呢度 Script Properties 有旗仔 ALLOW_LOCAL_LOGIN —— 未設定＝開啟（現有旅團零影響）；
+       設成 false＝閂口，我之後只接受帶有效 sig 嘅上游請求，本地 apikey／登入一概拒。
+   開關掣搞喺呢支 GAS（Sheet「🔗 旅系統」選單）＋ 上游 setLocalLogin 兩條路。
+   登記資料、sig、nonce 只存 Script Properties / Cache，一律唔寫入工作表。
+   ============================================================ */
+var LINK_FLAG = 'ALLOW_LOCAL_LOGIN';
+var LINK_SIG_PURPOSE = 'vsbadge-troop-sig-v1';     // 同 VSBADGE 一樣（有齊兩邊就互相認得）
+var LINK_SIG_WINDOW_MS = 5 * 60 * 1000;
+var LINK_SIG_NONCE_TTL = 600;
+var LINK_MAX_SIGNED_BYTES = 900000;
+var LINK_SIG_HEX_RE = /^[0-9a-f]{64}$/i;
+var LINK_NONCE_RE = /^[0-9A-Za-z_-]{8,64}$/;
+var LINK_RESERVED_BODY_KEYS = ['sig', 'sig_ts', 'sig_nonce'];
+/* 上游可以經簽名喺我做嘅 action。本地憑證操作（登入／改密碼／申請）永不接受簽名。 */
+var LINK_SIG_READ_ACTIONS = ['load', 'getLinkState', 'getLoginMode', 'dbInfo', 'loadDb', 'loadTables', 'loadTablesPart', 'diag'];
+var LINK_SIG_WRITE_ACTIONS = ['save', 'saveOtherBadge', 'reviewRequest', 'reviewLogRequest', 'saveDb', 'saveTables', 'setLocalLogin'];
+
+function toHexGs(bytes) {
+  var out = '';
+  for (var i = 0; i < bytes.length; i++) out += ('0' + (bytes[i] & 255).toString(16)).slice(-2);
+  return out;
+}
+function hmacSha256HexGs(message, key) {
+  return toHexGs(Utilities.computeHmacSha256Signature(String(message), String(key)));
+}
+/* sig 密鑰以用途分隔方式由「本節點嘅 SHEET KEY＝API_KEY」推導（驗證入站用本機 API_KEY）。 */
+function linkSigKeyForGs(key) { return hmacSha256HexGs(LINK_SIG_PURPOSE, String(key || '')); }
+function linkSigKeyGs() { return linkSigKeyForGs(getApiKey()); }
+function linkNonceGs() { return Utilities.getUuid().replace(/-/g, ''); }
+function linkCanonicalGs(action, ts, nonce, digest) {
+  return [String(action || ''), String(ts || ''), String(nonce || ''), String(digest || '')].join('\\n');
+}
+
+/* ---- 直接入口掣（寫喺我支 GAS 自己個 Script Properties）---- */
+function localLoginAllowed() {
+  var v = String(PropertiesService.getScriptProperties().getProperty(LINK_FLAG) || '').trim().toLowerCase();
+  if (!v) return true;   // 未設定＝開啟（fail-open，同 VSBADGE 現有旅團零影響）
+  return ['1', 'true', 'yes', 'on', 'open'].indexOf(v) >= 0;   // 其他任何值＝閂（fail-closed）
+}
+function setLocalLoginAllowed(allow, actor) {
+  PropertiesService.getScriptProperties().setProperty(LINK_FLAG, allow ? 'true' : 'false');
+  return allow ? 'true' : 'false';
+}
+function linkClosedResponse(action) {
+  return {
+    success: false, ok: false, local_login: false, upstream_only: true,
+    error: '此後端的直接入口已閂（' + LINK_FLAG + '=false），只接受上游簽名（sig）請求；請由上游（旅／團）入口登入。' + (action ? '（已拒絕：' + action + '）' : '')
+  };
+}
+function getLinkState() {
+  var props = PropertiesService.getScriptProperties();
+  var flagVal = String(props.getProperty(LINK_FLAG) || '');
+  return {
+    success: true, ok: true,
+    allow_local_login: localLoginAllowed(),
+    link_flag_set: flagVal === 'false' ? 'false' : (flagVal ? 'true' : '（未設定＝開啟）'),
+    backend_version: BACKEND_VERSION
+  };
+}
+
+/* ---- sig 產生／驗證（同 VSBADGE callDownstream / verifyLinkSig 一式一樣）---- */
+function stripLinkSigFields(body) {
+  var out = {};
+  for (var k in (body || {})) {
+    if (LINK_RESERVED_BODY_KEYS.indexOf(k) >= 0) continue;
+    out[k] = (body || {})[k];
+  }
+  return out;
+}
+function readLinkSig(e, body, rawBody) {
+  var params = (e && e.parameter) || {};
+  var qSig = String(params.sig || ''), qTs = String(params.sts || ''), qNonce = String(params.snonce || '');
+  if (qSig && qTs && qNonce) return { sig: qSig, ts: qTs, nonce: qNonce, digest: sha256HexGs(String(rawBody || '')), transport: 'query' };
+  var bSig = String((body && body.sig) || ''), bTs = String((body && body.sig_ts) || ''), bNonce = String((body && body.sig_nonce) || '');
+  if (bSig && bTs && bNonce) {
+    var canonicalPayload = '';
+    try { canonicalPayload = JSON.stringify(stripLinkSigFields(body)); } catch (err) { return null; }
+    return { sig: bSig, ts: bTs, nonce: bNonce, digest: sha256HexGs(canonicalPayload), transport: 'body' };
+  }
+  return null;
+}
+function verifyLinkSig(e, body, rawBody) {
+  try {
+    var s = readLinkSig(e, body, rawBody);
+    if (!s) return false;
+    if (String(rawBody || '').length > LINK_MAX_SIGNED_BYTES) return false;
+    if (!LINK_SIG_HEX_RE.test(String(s.sig))) return false;
+    if (!LINK_NONCE_RE.test(String(s.nonce))) return false;
+    var ts = parseInt(s.ts, 10);
+    if (!isFinite(ts) || Math.abs(Date.now() - ts) > LINK_SIG_WINDOW_MS) return false;
+    var bodyAction = String((body && body.action) || '');
+    var expected = linkSigKeyGs();
+    var got = hmacSha256HexGs(linkCanonicalGs(bodyAction, s.ts, s.nonce, s.digest), expected);
+    if (got !== String(s.sig)) return false;
+    /* 防重放：同一 nonce 只可用一次（CacheService；冇就用唔到嘅環境照放行） */
+    var cache = null;
+    try { cache = (typeof CacheService !== 'undefined') ? CacheService.getScriptCache() : null; } catch (err) { cache = null; }
+    if (cache) {
+      var nonceKey = 'v82-link-nonce:' + sha256HexGs(String(s.nonce)).substring(0, 40);
+      if (cache.get(nonceKey)) return false;
+      cache.put(nonceKey, '1', LINK_SIG_NONCE_TTL);
+    }
+    return true;
+  } catch (err) { return false; }
+}
+
+/* ---- 上游簽名請求路由（閂咗口都入到；行 body.action 白名單）---- */
+function handleSignedRequest(e, body, rawBody) {
+  var a = String((body && body.action) || '');
+  if (LINK_SIG_READ_ACTIONS.indexOf(a) < 0 && LINK_SIG_WRITE_ACTIONS.indexOf(a) < 0) {
+    return json({ success: false, ok: false, error: '上游簽名請求不接受此操作：' + a });
+  }
+  /* 執住 SHEET KEY＝執委／上游身份：簽名已驗，將呢次操作當成「有 key」批落去，照舊行現有邏輯。 */
+  var signedBody = stripLinkSigFields(body);
+  signedBody.apikey = getApiKey();
+  return dispatchBody(e, signedBody);
 }
 
 /* PBKDF2-HMAC-SHA256：支部帳戶密碼用；hash／salt 只會留喺後端資料。
@@ -345,13 +493,16 @@ function initializeSheets() {
 var SUPPORTED_ACTIONS = ['ping', 'test', 'status', 'sync', 'claim', 'claimDecision', 'noticeSignup', 'noticeSubscribe', 'noticeSubscriptions', 'loan', 'loanDecision',
   'authLogin', 'authChangePassword', 'authResetPassword', 'authDeleteAccount', 'authRestoreAccount', 'authCreateAccount', 'authForgotPassword', 'authResetByToken', 'saveDb', 'loadDb', 'loadDbPart', 'dbInfo', 'saveDbPart', 'saveDbCommit', 'verifySetupKey',
   'uploadPhotos', 'constitution', 'notices',
+  'load',
   'save', 'saveOtherBadge', 'reviewRequest', 'reviewLogRequest', 'addRequest', 'myRequests',
   /* ★ v2.7.1：「人讀到、進度全空」自查（見 diagnoseBackendTabs） */
   'diag',
   /* ★ v2.7.2：一鍵修復（清垃圾／舊版本段）＋ 強制覆蓋（人手搶救） */
   'repairDb', 'saveDbForce',
   /* ★ v2.8.0：簡單寫入（逐表寫／逐表讀）—— 見下面 saveTables／loadTables／loadTablesPart */
-  'saveTables', 'loadTables', 'loadTablesPart', 'syncCheck'];
+  'saveTables', 'loadTables', 'loadTablesPart', 'syncCheck',
+  /* ★ v2.8.4：旅系統接駁 —— 讀／寫「直接入口」掣（旅 > 團 > 支部） */
+  'getLinkState', 'setLocalLogin'];
 
 /**
  * BUILD §1／§2：敏感 action 必須由 server-side API_KEY 明確授權。
@@ -375,7 +526,7 @@ function requireAuth(expectedKey, suppliedKey) {
    又慢又燒配額。寫入／登入／批核／重設密碼等會改嘢嘅 action 照樣逐次記。 */
 var AUDIT_SKIP_ACTIONS = { ping: 1, test: 1, status: 1, load: 1,
   loadDb: 1, loadDbPart: 1, loadTables: 1, loadTablesPart: 1, dbInfo: 1, diag: 1,
-  notices: 1, constitution: 1, myRequests: 1 };
+  notices: 1, constitution: 1, myRequests: 1, getLinkState: 1 };
 function auditAccess(body, result) {
   try {
     if (AUDIT_SKIP_ACTIONS[textOf(body && body.action)]) return;
@@ -395,8 +546,26 @@ function auditAccess(body, result) {
 /** 收到 POST 時處理 */
 function doPost(e) {
   try {
-    var body = JSON.parse((e && e.postData && e.postData.contents) || '{}');
+    var rawBody = String((e && e.postData && e.postData.contents) || '{}');
+    var body = JSON.parse(rawBody || '{}');
     auditAccess(body, 'received');
+    /* ★ 旅系統接駁（旅 > 團 > 支部）：上游簽名（sig）請求優先路由——
+       喺「直接入口」掣同 API Key 核對**之前**先驗簽名，等閂咗口（ALLOW_LOCAL_LOGIN=false）
+       嗰陣上游照樣入到，本地 apikey 就唔得。 */
+    if (verifyLinkSig(e, body, rawBody)) return handleSignedRequest(e, body, rawBody);
+    if (!localLoginAllowed()) return json(linkClosedResponse(textOf(body && body.action)));
+    return dispatchBody(e, body);
+  } catch (err) {
+    if (err && err.code === 'LOCK_BUSY') {
+      return json({ ok: false, success: false, error: '系統繁忙，請稍後重試', code: 'LOCK_BUSY' });
+    }
+    return json({ ok: false, error: String(err) });
+  }
+}
+
+/** doPost 實質派發（閂口／簽名檢查已喺 doPost 做咗；呢度係原本嘅既有邏輯） */
+function dispatchBody(e, body) {
+  try {
     var expectedKey = PropertiesService.getScriptProperties().getProperty('API_KEY');
     // 兩個前端都會用同一條 key（大寫 apiKey / 細寫 apikey 都收）
     var key = body.apiKey || body.apikey || '';
@@ -870,6 +1039,16 @@ function doPost(e) {
         error: ld.error || '' });
     }
 
+    /* ---- 進度追蹤：POST 讀（doGet ?action=load 之外，仲要 POST 版 ——
+       上游（旅系統）簽名讀進度嗰陣都係 POST；同一條 API Key 授權）---- */
+    if (body.action === 'load') {
+      var loadAuth = requireAuth(expectedKey, key);
+      if (!loadAuth.ok) return json(loadAuth);
+      var lpData = loadProgressData();
+      lpData.success = true; lpData.ok = true;
+      return json(lpData);
+    }
+
     /* ---- 進度追蹤（同進度前端共用同一個後端；API Key＝執委身份）---- */
     if (body.action === 'save' || body.action === 'saveOtherBadge') {
       var progressAuth = requireAuth(expectedKey, key);
@@ -1068,6 +1247,26 @@ function doPost(e) {
       dg2.success = true; dg2.ok = true;
       return json(dg2);
     }
+    /* ★ v2.8.4：旅系統接駁 —— 讀／寫我呢支後端嘅「直接入口」掣。
+       要 API Key（＝自己條 SHEET KEY）先做得；上游（旅／團）就會調咁調：
+       callDownstream(id, 'setLocalLogin', { allow: 'true'|'false' }) 經簽名閂／開我。 */
+    if (body.action === 'getLinkState') {
+      var lsAuth = requireAuth(expectedKey, key);
+      if (!lsAuth.ok) return json(lsAuth);
+      return json(getLinkState());
+    }
+    if (body.action === 'setLocalLogin') {
+      var slAuth = requireAuth(expectedKey, key);
+      if (!slAuth.ok) return json(slAuth);
+      var rawAllow = String(body.allow || '').trim().toLowerCase();
+      var allow = ['1', 'true', 'yes', 'on', 'open'].indexOf(rawAllow) >= 0;
+      if (!allow && ['0', 'false', 'no', 'off', 'close', 'closed'].indexOf(rawAllow) < 0) {
+        return json({ success: false, ok: false, error: '開關值唔正確（allow: true 開、false 閂）' });
+      }
+      PropertiesService.getScriptProperties().setProperty(LINK_FLAG, allow ? 'true' : 'false');
+      return json({ success: true, ok: true, allow_local_login: allow,
+        message: allow ? '直接入口已開啟' : '直接入口已閂，只收上游 sig' });
+    }
     // 兼容：冇 action 但係 82venture 嘅資料（當 sync）
     if (!body.action && body.tables) {
       var c2 = syncAll(body);
@@ -1090,6 +1289,10 @@ function doGet(e) {
     action = String((e && e.parameter && e.parameter.action) || '');
     supplied = String((e.parameter && (e.parameter.apikey || e.parameter.apiKey)) || '');
   } catch (err0) { action = ''; }
+  /* ★ v2.8.4 旅系統接駁：閂咗口，本地 apikey GET 讀一律拒（公開通告／團章照出街） */
+  if (action !== 'notices' && action !== 'constitution' && !localLoginAllowed()) {
+    return json(linkClosedResponse(action));
+  }
   if (action === 'notices') return json({ success: true, ok: true, unit: textOf((e.parameter && e.parameter.unit) || ''), notices: loadPublicNotices(textOf((e.parameter && e.parameter.unit) || '')) });
   if (action === 'constitution') {
     var consG = publicConstitution(textOf((e.parameter && e.parameter.unit) || ''));

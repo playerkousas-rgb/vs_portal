@@ -130,7 +130,7 @@ meetings.json       ← 會議（可選）
 
 > **要埋讀取進度追蹤？** 喺「進度 → 設定」填兩個值就得：
 > ① `/exec` 網址（Apps Script → 部署 → 管理部署） ② API Key（Apps Script 執行 `showApiKey()`）。
-> 撳「測試連線」見到團員名單＝成功；兩個值存喺旅團自己嘅資料。
+> 撳「儲存」再撳「**重新讀取**」見到團員名單＝成功；兩個值存喺旅團自己嘅資料。
 > 想收埋條 Key 唔落前端：先設 env `TROOP_<id>_PROGRESSBACKEND` / `_PROGRESSAPIKEY` / `_PROGRESSCATALOG`（可選覆蓋）。
 
 ---

@@ -59,7 +59,11 @@ const ALLOWED_ACTIONS = new Set([
   'notices',
   /* 公開團章（v2.5.0）：免登入讀旅團後端「資料庫」入面已發布嘅 constitution */
   'constitution',
-  'submitRegistration'
+  'submitRegistration',
+  /* ★ 2026-09-25 團長：「加個求救制，有咩大問題 SEND 去問 ADMIN，當回報問題處理」
+     同 submitRegistration 一條路，送去中央 ADMIN 收件匣（appType 照係 82venture），
+     ADMIN 收到登記做「問題回報」再轉寄返報告者 Email。 */
+  'submitIssue'
 ]);
 
 /* 呢啲 action 會夾帶資料庫／相片 base64 上去，body 可以幾 MB ——
@@ -156,6 +160,39 @@ export default async function handler(req, res) {
     } catch (e) {
       const timeout = e && e.name === 'TimeoutError';
       return sendJson(res, timeout ? 504 : 502, { success: false, error: timeout ? '提交逾時，請稍後重試' : '申請未能送達管理員' });
+    }
+  }
+
+  // ===== 特殊：求救／問題回報（同新旅團申請一樣，送中央管理員收件匣）=====
+  // ★ 對正 Scout Admin「問題回報（TICK）」合約：admin GAS 嘅 doPost 只認
+  //   type:'issue' 先會寫入「問題回報」工作表（圖書館同各 APP 都係用呢張）。
+  if (action === 'submitIssue') {
+    if (!isTrustedExecUrl(SCOUT_ADMIN_API)) {
+      safeLog({ result: 'admin_api_misconfig', ms: Date.now() - t0 });
+      return sendJson(res, 500, { success: false, error: '伺服器設定錯誤，請聯絡管理員' });
+    }
+    const issuePayload = {
+      type: 'issue',
+      sourceApp: '82venture',
+      title: String(body.title || '').substring(0, 120),
+      desc: String(body.desc || '').substring(0, 2000),
+      severity: ['低', '中', '高', '緊急'].includes(body.severity) ? body.severity : '高',
+      troopId: String(body.troopId || body.unit || '').substring(0, 32),
+      name: String(body.name || '').substring(0, 120),
+      contact: String(body.contact || '').substring(0, 120)
+    };
+    try {
+      const up = await callUpstream(SCOUT_ADMIN_API, issuePayload);
+      const said = (up.json && typeof up.json === 'object') ? up.json : null;
+      if (said && said.status === 'error') {
+        safeLog({ result: 'admin_upstream_refused', status: up.status, ms: Date.now() - t0 });
+        return sendJson(res, 502, { success: false, error: said.message || '管理員收件匣話收唔到呢份報告' });
+      }
+      safeLog({ result: 'issue_sent', status: up.status, json: !!up.json, ms: Date.now() - t0 });
+      return sendJson(res, 200, { success: true, message: '報告已提交', delivered: 'sent', receipt: false });
+    } catch (e) {
+      const timeout = e && e.name === 'TimeoutError';
+      return sendJson(res, timeout ? 504 : 502, { success: false, error: timeout ? '提交逾時，請稍後重試' : '報告未能送達管理員' });
     }
   }
 

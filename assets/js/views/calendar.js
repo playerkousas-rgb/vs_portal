@@ -1,11 +1,13 @@
-/* 行事曆（活動，唔係會議）—— 團員可見／執委內部、RSVP、點名、出席統計 */
+/* 行事曆（活動，唔係會議）—— 團員可見／執委內部、RSVP、點名、出席統計 ＋ 請假 */
 import { collection, find, add, update, remove } from '../lib/store.js';
 import { memberName, RSVP, rsvpCounts, attendanceStats, activeMembers } from '../lib/model.js';
 import { esc, icon, uid, todayISO, toast, modal, confirmDlg } from '../lib/util.js';
 import { go } from '../lib/router.js';
-import { can } from '../lib/auth.js';
+import { can, current, displayName } from '../lib/auth.js';
 import { pageHead, tabs, stat, empty, noteBox, visSelect } from './ui.js';
 import { contentVis } from '../lib/public-profile.js';
+import { allAbsences, absenceCounts, reviewAbsence, absencesCsv, ABSENCE_STATUS, ABSENCE_SLOTS } from '../lib/absence.js';
+import { download } from '../lib/exporter.js';
 
 let tab = 'cal';
 let cursor = todayISO().slice(0, 7);
@@ -34,7 +36,7 @@ const KINDS = { assembly: '集會', activity: '活動', ec: '執委會', other: 
 function list() { return collection('events'); }
 
 export function render(params) {
-  if (['cal', 'list', 'stats'].includes(params.id)) tab = params.id;
+  if (['cal', 'list', 'stats', 'absence'].includes(params.id)) tab = params.id;
   else if (params.id === 'new') return editor(null, params.query);
   else if (params.id && params.action === 'edit') return editor(find('events', params.id), params.query);
   else if (params.id) return detail(params.id, params.query);
@@ -44,8 +46,8 @@ export function render(params) {
     sub: '活動／集會：團員可見或只限執委＋領袖。所有活動都有回覆同點名。',
     actions: can('calendar.edit') ? `<button class="btn btn-sm btn-primary" data-go="#/calendar/new">${icon('plus', 15)} 新增活動</button>` : ''
   })}
-  ${tabs([['cal', '月曆'], ['list', '清單', list().length], ['stats', '出席統計']], tab)}
-  ${tab === 'stats' ? statsView() : tab === 'list' ? listView() : monthView()}`;
+  ${tabs([['cal', '月曆'], ['list', '清單', list().length], ['stats', '出席統計'], ['absence', '請假', absenceCounts().pending]], tab)}
+  ${tab === 'stats' ? statsView() : tab === 'list' ? listView() : tab === 'absence' ? absenceView() : monthView()}`;
 }
 
 function monthView() {
@@ -141,6 +143,84 @@ function statsView() {
       <td><div class="bar"><span style="width:${r.rate}%"></span></div><div class="xs faint">${r.rate}%</div></td>
     </tr>`).join('')}</tbody>
   </table></div></div>`;
+}
+
+/* ---------- 行請假（團員自行申報 → 覆核） ---------- */
+function absenceView() {
+  const c = absenceCounts();
+  const rows = allAbsences();
+  return `
+  <div class="note-box mb-16">${icon('note', 15)}<div>
+    團員喺<b>團員入口 → 我的請假</b>自己申報；喺呢度<b>覆核</b>（接受／拒絕）。覆核完先計入出席。<br>
+    <span class="xs">你唔使幫佢哋代填 —— 個預設機制只係覆核，就算唔嚟都需要申請。</span>
+  </div></div>
+  <div class="grid g-4 mb-16">
+    ${stat('待覆核', String(c.pending), '', c.pending ? 'warn' : '')}
+    ${stat('已接受', String(c.approved), '', c.approved ? 'ok' : '')}
+    ${stat('已拒絕', String(c.rejected), '', c.rejected ? 'danger' : '')}
+    ${stat('總數', String(c.total), '張請假單', '')}
+  </div>
+  <div class="row gap-8 mb-12" style="justify-content:flex-end">
+    <button class="btn btn-sm" data-act="abs-export" ${rows.length ? '' : 'disabled'}>${icon('download', 15)} 輸出 CSV</button>
+  </div>
+  ${rows.length ? `<div class="card"><div class="scroll-x"><table class="table">
+    <thead><tr><th>日期</th><th>時段</th><th>團員</th><th>原因</th><th>狀態</th><th style="width:200px">覆核</th></tr></thead>
+    <tbody>${rows.map(a => {
+      const st = ABSENCE_STATUS[a.status] || ABSENCE_STATUS.pending;
+      return `<tr>
+        <td class="mono sm">${esc(a.date)}</td>
+        <td class="sm">${esc((ABSENCE_SLOTS.find(x => x.id === a.slot) || {}).label || a.slot || '全日')}</td>
+        <td class="semibold sm">${esc(memberName(a.memberId))}</td>
+        <td class="sm" style="max-width:360px"><span style="white-space:pre-wrap">${esc(a.reason || '')}</span></td>
+        <td><span class="badge ${st.cls}"><span class="dot"></span>${st.label}${a.reviewNote ? '<div class="xs muted mt-4">' + esc(a.reviewNote) + '</div>' : ''}</span></td>
+        <td class="row gap-6 wrap" style="justify-content:flex-end">${a.reviewedBy ? `<span class="xs faint">${esc(a.reviewedBy)}</span>` : `<button class="btn btn-xs" data-abs="ok" data-id="${a.id}">接受</button>
+          <button class="btn btn-xs btn-danger" data-abs="no" data-id="${a.id}">拒絕</button>`}</td>
+      </tr>`; }).join('')}</tbody>
+  </table></div></div>` : empty('note', '暫時未有請假單', '團員喺團員入口「我的請假」自己交。')}`;
+}
+
+function bindAbsence(root) {
+  root.querySelectorAll('[data-abs="ok"]').forEach(b => b.addEventListener('click', async () => {
+    const id = b.dataset.id;
+    const note = await modal({
+      title: '接受請假',
+      body: `<div class="field"><label class="label">備註（可空）</label>
+          <input class="input" id="ab-note" placeholder="例：已記名，返嚟補一下集會"></div>`,
+      actions: [
+        { label: '取消', class: 'btn', value: null },
+        { label: '接受', class: 'btn-primary', value: true }
+      ]
+    }).then(async ok => {
+      if (ok === true) return root.querySelector('#ab-note')?.value?.trim() || '';
+      return undefined;
+    });
+    if (note === undefined) return;
+    const res = reviewAbsence(id, { decision: 'approved', note, reviewer: displayName() || current()?.name || current()?.username || '' });
+    if (!res.ok) return toast(res.error, 'err');
+    toast('已接受請假', 'ok');
+  }));
+  root.querySelectorAll('[data-abs="no"]').forEach(b => b.addEventListener('click', async () => {
+    const id = b.dataset.id;
+    const note = await modal({
+      title: '拒絕請假',
+      body: `<div class="field"><label class="label">原因（可空）</label>
+          <input class="input" id="ab-note" placeholder="例：呢個係全團必須出席的大會"></div>`,
+      actions: [
+        { label: '取消', class: 'btn', value: null },
+        { label: '拒絕', class: 'btn-danger', value: true }
+      ]
+    }).then(async ok => {
+      if (ok === true) return root.querySelector('#ab-note')?.value?.trim() || '';
+      return undefined;
+    });
+    if (note === undefined) return;
+    const res = reviewAbsence(id, { decision: 'rejected', note, reviewer: displayName() || current()?.name || current()?.username || '' });
+    if (!res.ok) return toast(res.error, 'err');
+    toast('已拒絕請假', 'err');
+  }));
+  root.querySelector('[data-act="abs-export"]')?.addEventListener('click', () => {
+    download(`請假紀錄_${todayISO().replace(/-/g, '')}.csv`, '\ufeff' + absencesCsv(memberName), 'text/csv;charset=utf-8');
+  });
 }
 
 function peopleOf(ev, key) {
@@ -333,6 +413,7 @@ export function mount(root, params) {
   }));
   /* 點名（草稿制 —— 確定先一次過寫入；局部重繪，唔會彈上去頂） */
   bindRollPane(root, params);
+  bindAbsence(root);
   root.querySelector('[data-act="edit"]')?.addEventListener('click', () => go('#/calendar/' + params.id + '/edit'));
   if (params.action === 'edit' && params.id) {
     /* fall through save on editor if we rendered editor via id/edit — handled below if render used editor */

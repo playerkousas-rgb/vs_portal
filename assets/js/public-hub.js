@@ -24,7 +24,8 @@ import { loadMe, saveMe } from './lib/member-me.js';
 import { loadHubAuth, saveHubAuth, clearHubAuth } from './lib/hub-session.js';
 import { loginMember, changeMemberOwnPassword, TEMP_PASSWORD } from './lib/auth.js';
 import { progressConfigured, loadRemote, loadItems, flattenItems, memberDetail, submitProgressRequest, loadMyRequests } from './lib/progress.js';
-import { esc, icon, toast, todayISO, modal } from './lib/util.js';
+import { absencesOf, submitAbsence, withdrawAbsence, allAbsences, ABSENCE_STATUS, ABSENCE_SLOTS, absenceCounts } from './lib/absence.js';
+import { esc, icon, toast, todayISO, modal, confirmDlg } from './lib/util.js';
 
 const app = document.getElementById('app');
 let syncReady = false;      /* 後端拉完（或者確定唔使拉）先畀登入 */
@@ -160,6 +161,7 @@ function paint() {
         <div id="hubSync" style="margin-left:auto"></div>
       </div>
       <div class="xs" style="opacity:.85;margin-top:6px">你好，<b>${esc(auth.name)}</b>（YMIS ${esc(auth.ymis || '—')}）
+        · <button class="btn btn-xs" type="button" id="hubSOS" style="color:#fff;border-color:rgba(255,255,255,.35)">${icon('megaphone', 13)} 求救</button>
         · <button class="btn btn-xs" type="button" id="hubLogout" style="color:#fff;border-color:rgba(255,255,255,.35)">登出</button></div>
     </div>
   </div>
@@ -167,11 +169,13 @@ function paint() {
     ${sec === 'cal' && id ? eventDetail(id, auth)
       : sec === 'quiz' && id ? quizFill(id, auth)
       : sec === 'progress' ? progressPage(auth)
+      : sec === 'absence' ? absencePage(auth)
       : home(auth)}
   </div>`;
   bind(auth);
   paintSyncBadge();
   if (sec === 'progress') fillProgressPage(auth);
+  if (sec === 'absence') bindAbsenceHub(auth);
 }
 
 function paintGate() {
@@ -184,7 +188,8 @@ function paintGate() {
         <div style="font-size:22px;font-weight:800">${esc(p.name || '深資童軍團')}</div>
         <div id="hubSync" style="margin-left:auto"></div>
       </div>
-      <div class="xs" style="opacity:.85;margin-top:6px">外人入唔到。首次密碼係 ${TEMP_PASSWORD}，入去要改。</div>
+      <div class="xs" style="opacity:.85;margin-top:6px">外人入唔到。首次密碼係 ${TEMP_PASSWORD}，入去要改。
+        · <button class="btn btn-xs" type="button" id="hubSOS" style="color:#fff;border-color:rgba(255,255,255,.35)">${icon('megaphone', 13)} 求救</button></div>
     </div>
   </div>
   <div class="hub-wrap">
@@ -203,6 +208,7 @@ function paintGate() {
     </form>
   </div>`;
   paintSyncBadge();
+  app.querySelector('#hubSOS')?.addEventListener('click', () => openHubSOS(null));
   app.querySelector('#hubLogin')?.addEventListener('submit', async e => {
     e.preventDefault();
     const err = app.querySelector('#hErr');
@@ -358,6 +364,7 @@ function home(auth) {
   const u = code();
   const tools = [
     { href: '#/progress', icon: 'target', title: '我的進度', desc: '睇自己獎章進度，仲可以申報完成咗邊項' },
+    { href: '#/absence', icon: 'calendar', title: '我的請假', desc: '嚟唔到？寫低邊日同原因，等覆核' },
     { href: publicPageUrl('entry.html', { u }), icon: 'camera', title: '影單據／記一筆', desc: '墊支或代收，影相交司庫' },
     { href: publicPageUrl('borrow.html', { u }), icon: 'grid', title: '借物資', desc: '申請借用旅團物資' },
     { href: publicPageUrl('constitution.html', { u }), icon: 'book', title: '團章', desc: '免登入閱讀' }
@@ -448,7 +455,7 @@ function withName(url, auth) {
 function whoAmI(auth) {
   if (auth?.id) {
     const m = activeMembers().find(x => x.id === auth.id) || null;
-    return { id: auth.id, name: m?.name || auth.name || '' };
+    return { id: auth.id, name: m?.name || auth.name || '', email: m?.email || '' };
   }
   return null;
 }
@@ -458,6 +465,18 @@ function myRsvp(e, auth) {
   if (!ident?.id) return '';
   const v = (e.rsvp || {})[ident.id];
   return v?.status || v || '';
+}
+
+/** 已回覆嗰行嘅摘要（遲到／早退帶時間，不出席帶原因） */
+function myRsvpLine(e, auth) {
+  const ident = whoAmI(auth);
+  if (!ident?.id) return '';
+  const v = (e.rsvp || {})[ident.id] || {};
+  const st = v.status || '';
+  const lab = RSVP[st]?.label || st;
+  if (st === 'late' || st === 'early') return `${lab}${v.time ? `（${v.time}）` : ''}`;
+  if (st === 'absent') return `${lab}${v.reason ? `：${v.reason}` : ''}`;
+  return lab;
 }
 
 function eventDetail(id, auth) {
@@ -475,11 +494,11 @@ function eventDetail(id, auth) {
         ? `<div class="badge b-grey mt-16">活動已結束</div>`
         : `<div class="semibold sm mt-16">我會…</div>
       <div class="row wrap gap-8 mt-8">
-        ${Object.entries(RSVP).map(([k, v]) =>
-          `<button class="btn btn-sm ${st === k ? 'btn-primary' : ''}" type="button" data-eid="${e.id}" data-rsvp="${k}">${v.label}</button>`).join('')}
+        <button class="btn btn-sm ${st === 'present' ? 'btn-primary' : ''}" type="button" data-eid="${e.id}" data-rsvp="present">${RSVP.present.label}</button>
+        <button class="btn btn-sm ${st === 'absent' ? 'btn-primary' : ''}" type="button" data-eid="${e.id}" data-rsvp="absent">${RSVP.absent.label}</button>
       </div>
-      ${st ? `<div class="xs mt-10"><span class="badge ${RSVP[st]?.cls || ''}">已回覆：${esc(RSVP[st]?.label || st)}</span>
-        <span class="faint">· 撳另一個掣可以改</span></div>` : ''}`}
+      ${st ? `<div class="xs mt-10"><span class="badge ${RSVP[st]?.cls || ''}">已回覆：${esc(myRsvpLine(e, auth))}</span>
+        <button class="btn btn-xs btn-ghost" type="button" data-eid="${e.id}" data-rsvp="edit">改一改</button></div>` : ''}`}
     </div>`;
 }
 
@@ -492,6 +511,97 @@ function progressPage(auth) {
   return `<button class="btn btn-ghost btn-sm mb-12" type="button" data-open="#/home">${icon('chevronL', 14)} 返回</button>
   <div id="progressBody"><div class="card card-pad muted">載入緊進度…</div></div>`;
 }
+
+/* ============================================================
+   我的請假（團員自己申報 → 領袖／執委覆核）
+   ------------------------------------------------------------
+   團員喺呢度填「邊日、咩時段、點解要請假」；寫入本機，跟「儲存到後端」
+   一齊上後端，領袖／執委喺管理系統行事曆「請假」tab 覆核。
+   ============================================================ */
+function absencePage(auth) {
+  const memberId = String(auth?.id || '');
+  const ymis = String(auth?.ymis || '');
+  const cn = absenceCounts();
+  const mine = absencesOf(memberId, ymis).slice().sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
+  return `<button class="btn btn-ghost btn-sm mb-12" type="button" data-open="#/home">${icon('chevronL', 14)} 返回</button>
+  <div class="card card-pad">
+    <div class="row-between mb-12">
+      <div>
+        <div class="semibold">我的請假</div>
+        <div class="xs muted mt-4">寫低邊日嚟唔到同原因，等領袖／執委覆核；覆核通過先計數。</div>
+      </div>
+      <button class="btn btn-sm btn-primary" type="button" id="abNew">${icon('calendar', 14)} 請假</button>
+    </div>
+    ${mine.length
+      ? mine.map(a => {
+          const st = ABSENCE_STATUS[a.status] || ABSENCE_STATUS.pending;
+          return `<div class="list-item">
+            <span class="stat-ic">${icon('calendar', 15)}</span>
+            <div class="li-main">
+              <div class="li-t">${esc(a.date)} · ${esc((ABSENCE_SLOTS.find(x => x.id === a.slot) || {}).label || a.slot || '全日')} <span class="badge ${st.cls}">${esc(st.label)}</span></div>
+              <div class="li-s xs muted" style="white-space:pre-wrap">${esc(a.reason || '')}</div>
+              ${a.plan ? `<div class="li-s xs">補救／出席：${esc(a.plan)}</div>` : ''}
+              ${a.status === 'rejected' && a.reviewNote ? `<div class="li-s xs" style="color:var(--danger)">覆核：${esc(a.reviewNote)}</div>` : ''}
+              ${(a.status === 'approved' && a.reviewNote) ? `<div class="li-s xs" style="color:var(--ok)">覆核：${esc(a.reviewNote)}</div>` : ''}
+            </div>
+            ${a.status === 'pending' ? `<button class="btn btn-xs btn-danger" type="button" data-abwithdraw="${esc(a.id)}">撤回</button>` : ''}
+          </div>`;
+        }).join('')
+      : `<div class="xs muted">仲未交過請假。撳右上「請假」寫第一張。</div>`}
+    <div class="xs faint mt-12">已交 ${mine.length} 張 · 待覆核 ${mine.filter(a => a.status === 'pending').length} 張 · 全旅團共 ${cn.total} 張</div>
+  </div>`;
+}
+
+async function bindAbsenceHub(auth) {
+  const memberId = String(auth?.id || '');
+  const ymis = String(auth?.ymis || '');
+  app.querySelector('#abNew')?.addEventListener('click', async () => {
+    const r = await modal({
+      title: '請假',
+      sub: '寫低邊日嚟唔到同原因；覆核通過先計數',
+      body: `<div class="grid g-2" style="gap:12px">
+          <div class="field"><label class="label">日子 <span class="req">*</span></label>
+            <input class="input" type="date" id="ab-date" value="${esc(todayISO())}"></div>
+          <div class="field"><label class="label">時段</label>
+            <select class="select" id="ab-slot">${ABSENCE_SLOTS.map(s => `<option value="${s.id}" ${s.id === 'full' ? 'selected' : ''}>${s.label}</option>`).join('')}</select></div>
+        </div>
+        <div class="field mt-12"><label class="label">原因 <span class="req">*</span></label>
+          <textarea class="textarea" id="ab-reason" rows="3" maxlength="2000" placeholder="例：屋企有事／學校補課／唔舒服"></textarea></div>
+        <div class="field mt-12"><label class="label">補救／出席（可選）</label>
+          <input class="input" id="ab-plan" maxlength="500" placeholder="例：下個禮拜點名補返"></div>`,
+      actions: [
+        { label: '取消', class: 'btn', value: false },
+        {
+          label: '提交', class: 'btn-primary',
+          onClick: el => {
+            const date = el.querySelector('#ab-date')?.value || '';
+            const slot = el.querySelector('#ab-slot')?.value || 'full';
+            const reason = (el.querySelector('#ab-reason')?.value || '').trim();
+            const plan = (el.querySelector('#ab-plan')?.value || '').trim();
+            if (!reason) {
+              el.querySelector('.modal-body')?.insertAdjacentHTML('afterbegin', '<div class="note-box danger mb-8"><div class="sm">請寫低原因</div></div>');
+              return false;
+            }
+            return { date, slot, reason, plan };
+          }
+        }
+      ]
+    });
+    if (!r) return;
+    const res = submitAbsence({ memberId, ymis, date: r.date, slot: r.slot, reason: r.reason, plan: r.plan });
+    if (!res.ok) { toast(res.errors[0], 'err'); return; }
+    toast('已交請假，等覆核', 'ok');
+    paint();
+  });
+  app.querySelectorAll('[data-abwithdraw]').forEach(b => b.addEventListener('click', async () => {
+    if (!(await confirmDlg({ title: '撤回請假', danger: true, okText: '撤回', message: '確定撤回呢張請假單？' }))) return;
+    const res = withdrawAbsence(b.dataset.abwithdraw, memberId);
+    toast(res.ok ? '已撤回' : (res.error || '撤回唔到'), res.ok ? 'ok' : 'err');
+    paint();
+  }));
+}
+
+
 
 async function fillProgressPage(auth) {
   const box = app.querySelector('#progressBody');
@@ -617,9 +727,17 @@ function bind(auth) {
     clearHubAuth(code());
     paint();
   });
+  app.querySelector('#hubSOS')?.addEventListener('click', () => openHubSOS(auth));
   app.querySelectorAll('[data-open]').forEach(b => b.addEventListener('click', () => { location.hash = b.dataset.open; paint(); }));
   app.querySelectorAll('[data-rsvp]').forEach(b => b.addEventListener('click', () => rsvp(b.dataset.eid, b.dataset.rsvp, auth)));
   app.querySelector('[data-quiz-submit]')?.addEventListener('click', () => submitQuiz(location.hash.split('/')[2] || location.hash.split('/')[1], auth));
+}
+
+/** 團員入口求救 —— 同管理系統走同一條 ADMIN「問題回報」（圖書館嗰張表）。 */
+async function openHubSOS(auth) {
+  const { openMemberSOS } = await import('./lib/onboard.js');
+  const m = auth?.id ? activeMembers().find(x => x.id === auth.id) : null;
+  openMemberSOS({ troopId: code(), name: m?.name || auth?.name || '', contact: m?.email || '' });
 }
 
 function rsvp(eid, status, auth) {
@@ -627,12 +745,84 @@ function rsvp(eid, status, auth) {
   if (!ident) { toast('請先登入再回覆', 'warn'); return; }
   const e = (load().events || []).find(x => x.id === eid);
   if (!e) return;
+  const cur = (e.rsvp || {})[ident.id] || {};
+
+  /* 撳「出席」／「改一改」＝開小表單，可以揀 出席／遲到／早退（揀時間）／不出席（填原因） */
+  if (status !== 'absent') {
+    openRsvpForm(e, ident, cur, `
+      <div class="field">
+        <label class="label">揀一個</label>
+        <select class="select" id="rv-kind">
+          <option value="present" ${cur.status === 'present' ? 'selected' : ''}>出席</option>
+          <option value="late" ${cur.status === 'late' ? 'selected' : ''}>遲到</option>
+          <option value="early" ${cur.status === 'early' ? 'selected' : ''}>早走</option>
+          <option value="absent" ${cur.status === 'absent' ? 'selected' : ''}>不出席</option>
+        </select>
+      </div>
+      <div class="field mt-12" id="rv-late-wrap"><label class="label">遲到幾點到？（揀時間）</label>
+        <input class="input" type="time" id="rv-late-time" value="${esc(cur.status === 'late' ? cur.time : '19:30')}"></div>
+      <div class="field mt-12" id="rv-early-wrap"><label class="label">早走幾點走？（揀時間）</label>
+        <input class="input" type="time" id="rv-early-time" value="${esc(cur.status === 'early' ? cur.time : '21:00')}"></div>
+      <div class="field mt-12" id="rv-reason-wrap"><label class="label">原因 <span class="req">*</span>（不出席要寫，等領袖／執委知）</label>
+        <textarea class="textarea" id="rv-reason" rows="3" placeholder="例：屋企有事／唔舒服／學校補課">${esc(cur.reason || '')}</textarea></div>`,
+    (el) => {
+      const syncWrap = () => {
+        const k = el.querySelector('#rv-kind')?.value;
+        const lw = el.querySelector('#rv-late-wrap'), ew = el.querySelector('#rv-early-wrap'), rw = el.querySelector('#rv-reason-wrap');
+        if (lw) lw.style.display = k === 'late' ? '' : 'none';
+        if (ew) ew.style.display = k === 'early' ? '' : 'none';
+        if (rw) rw.style.display = k === 'absent' ? '' : 'none';
+      };
+      el.querySelector('#rv-kind')?.addEventListener('change', syncWrap);
+      syncWrap();
+    });
+  } else {
+    /* 不出席 → 直接問原因（等 EC 知） */
+    openRsvpForm(e, ident, cur, `
+      <div class="field">
+        <label class="label">原因 <span class="req">*</span>（等領袖／執委知）</label>
+        <textarea class="textarea" id="rv-reason" rows="3" placeholder="例：屋企有事／唔舒服／學校補課">${esc(cur.reason || '')}</textarea>
+      </div>`);
+  }
+}
+
+async function openRsvpForm(e, ident, cur, fieldsHtml, onMount) {
+  const r = await modal({
+    title: '回覆出席',
+    sub: `${e.title}（${e.date}${e.time ? ' ' + e.time : ''}）`,
+    body: fieldsHtml,
+    onMount,
+    actions: [
+      { label: '取消', class: 'btn', value: null },
+      { label: '儲存', class: 'btn-primary', onClick: el => {
+        const kind = el.querySelector('#rv-kind')?.value || '';
+        const lateTime = el.querySelector('#rv-late-time')?.value || '';
+        const earlyTime = el.querySelector('#rv-early-time')?.value || '';
+        const reason = (el.querySelector('#rv-reason')?.value || '').trim();
+        if ((kind || cur.status) === 'absent' && !reason) {
+          el.querySelector('.modal-body')?.insertAdjacentHTML('afterbegin',
+            '<div class="note-box danger mb-8"><div class="sm">不出席要填原因，等領袖／執委知。</div></div>');
+          return false;
+        }
+        return { kind, lateTime, earlyTime, reason };
+      } }
+    ]
+  });
+  if (!r || r === null) return;
+  const name = ident.name;
+  const rec = { at: todayISO(), name };
+  const kind = (r && r.kind) || '';
+  if (kind) rec.status = kind;
+  if (kind === 'late') rec.time = r.lateTime;
+  if (kind === 'early') rec.time = r.earlyTime;
+  if ((r || {}).reason) rec.reason = r.reason.slice(0, 500);
+  if (!rec.status) rec.status = 'present';
   const map = { ...(e.rsvp || {}) };
-  map[ident.id] = { status, at: todayISO(), name: ident.name };
-  update('events', eid, { rsvp: map });
-  toast('已回覆：' + RSVP[status].label, 'ok');
+  map[ident.id] = rec;
+  update('events', e.id, { rsvp: map });
+  toast('已回覆：' + (RSVP[rec.status]?.label || rec.status), 'ok');
   paint();
-  pushSubmit('出席回覆');   // 入站資料：即刻寫後端，唔可以困喺團員部機
+  pushSubmit('出席回覆');
 }
 
 function submitQuiz(id, auth) {

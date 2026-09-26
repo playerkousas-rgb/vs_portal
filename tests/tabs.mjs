@@ -118,7 +118,7 @@ const SUITES = [
      'list' 唔入嚟：TAB_AT_ROOT 令「用戶名冊」就係 #/members 本身（唔係 #/members/list）。 */
   { name: '用戶與身份', home: '#/members', tabs: ['accounts', 'perms', 'birthdays'] },
   { name: '通告', home: '#/notices', tabs: ['signups', 'settings'] },
-  { name: '資料管理（原表格與同步）', home: '#/tables', tabs: ['source', 'sync', 'data'] },
+  { name: '資料管理（原表格與同步）', home: '#/tables', tabs: ['sync', 'source', 'data'] },
   /* ★ 2026-09-24 團長：「公開資料其實唔係要填嘢嘅，係方便了解有乜嘢而家正喺度公開」
      → 分頁由「社交／相簿／連結（三個填嘢位）」變成「一覽 ／ 團員入口（分享）」。 */
   { name: '公開資料（原成員連結）', home: '#/links', tabs: ['overview', 'hub'] },
@@ -155,6 +155,13 @@ for (const [home, tab, needle] of RENDER) {
   const txt = doc.getElementById('view')?.textContent || '';
   ok(`撳完 ${home}/${tab} 見到「${needle}」`, txt.includes(needle),
     txt.replace(/\s+/g, ' ').slice(0, 90));
+}
+/* ★ 2026-09-25：「資料管理」開版即係「總表同步」（最常用行先，唔再兜去「插入 Sheet」） */
+{
+  await goTo('#/tables');
+  await wait(200);
+  const txt = doc.getElementById('view')?.textContent || '';
+  ok('開「資料管理」（#/tables）預設就係「總表同步」', /總表同步/.test(txt) && /儲存到後端/.test(txt), txt.replace(/\s+/g, ' ').slice(0, 90));
 }
 
 /* ============================================================

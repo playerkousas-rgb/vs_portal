@@ -97,6 +97,11 @@ if (process.argv[2] === 'device') {
       const { seedRosterRoles } = await import('./_roles.mjs');
       await seedRosterRoles(store, auth);
       note('名冊種子（個人身份）', (store.tryLoad()?.members || []).map(m => `${m.name}:${m.identity}`).join('、'));
+      /* 2026-09-26 登入畫面分兩種：未有用户出「開團 KEY」、有用户出登入框。
+         名冊種完之後要重繪一次，畫面先會由「開團」換做「登入」（同真用户開完户返嚟一樣）。 */
+      window.dispatchEvent(new window.Event('v82:refresh'));
+      await wait(300);
+      note('種好名冊後登入表單出現未', !!doc.querySelector('#loginForm'));
     }
 
     /* ---- 登入（同真用戶一樣：打自己嘅電郵／自訂帳號 ＋ 密碼） ---- */
@@ -279,7 +284,9 @@ const A = await runDevice({ addMember: '陳大文', addTx: '團費收入', save:
 ok('裝置 A 全程冇爆', A.ok === true, A.error || '');
 show(A);
 ok('開機真係出到登入頁（＝後端答到，硬閘通過；連唔到會停喺連線閘）',
-  got(A, '開機後係咪停喺連線閘（連唔到後端）') === false && got(A, '登入頁有冇「一個入口」嘅登入表單') === true);
+  got(A, '開機後係咪停喺連線閘（連唔到後端）') === false);
+ok('開團 KEY（未有用户）→ 種好名冊之後出現登入表單（有用户＝登入框）',
+  got(A, '種好名冊後登入表單出現未') === true, String(got(A, '種好名冊後登入表單出現未')));
 ok('用 leader／8202 登入到主控頁', got(A, '登入有冇入到主控頁（見到頂部狀態 chip）') === true);
 const toastA = String(got(A, '★ 用戶撳完「儲存到後端」見到嘅提示（toast）') || '');
 ok('★ 撳「儲存到後端」之後用戶見到「已儲存到後端」', /已儲存到後端/.test(toastA), toastA.slice(0, 200));

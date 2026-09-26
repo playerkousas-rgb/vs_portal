@@ -10,7 +10,7 @@
     "lint": "node scripts/lint.mjs",
     "build": "node scripts/build-gas.mjs && node scripts/build-units.mjs",
     "check": "npm run lint && npm run build && npm test",
-    "test": "node scripts/build-gas.mjs && node tests/smoke.mjs && node tests/public.mjs && node tests/gate.mjs && node tests/gate-env.mjs && node tests/bake.mjs && node tests/api.mjs && node tests/progress.mjs && node tests/pdftext.mjs && node tests/login.mjs && node tests/merge3.mjs && node tests/remote.mjs && node tests/selfserve.mjs && node tests/syncorder.mjs && node tests/tabs.mjs && node tests/gas.mjs && node tests/e2ereal.mjs && node tests/usersim.mjs && node tests/hub.mjs && node tests/accountsync.mjs && node tests/reality.mjs && node tests/simplewrite.mjs",
+    "test": "node scripts/build-gas.mjs && node tests/smoke.mjs && node tests/public.mjs && node tests/gate.mjs && node tests/gate-env.mjs && node tests/bake.mjs && node tests/api.mjs && node tests/progress.mjs && node tests/pdftext.mjs && node tests/login.mjs && node tests/merge3.mjs && node tests/drafts.mjs && node tests/remote.mjs && node tests/selfserve.mjs && node tests/syncorder.mjs && node tests/tabs.mjs && node tests/gas.mjs && node tests/e2ereal.mjs && node tests/usersim.mjs && node tests/hub.mjs && node tests/accountsync.mjs && node tests/pendinglogin.mjs && node tests/reality.mjs && node tests/simplewrite.mjs",
     "test:api": "node tests/api.mjs && node tests/progress.mjs",
     "test:public": "node tests/public.mjs",
     "test:gate": "node tests/gate.mjs",
@@ -20,6 +20,7 @@
     "test:pdftext": "node tests/pdftext.mjs",
     "build:gas": "node scripts/build-gas.mjs",
     "test:merge3": "node tests/merge3.mjs",
+    "test:drafts": "node tests/drafts.mjs",
     "test:remote": "node tests/remote.mjs",
     "test:selfserve": "node tests/selfserve.mjs",
     "test:syncorder": "node tests/syncorder.mjs",
@@ -31,6 +32,7 @@
     "test:hub": "node tests/hub.mjs",
     "test:reality": "node tests/reality.mjs",
     "test:accountsync": "node tests/accountsync.mjs",
+    "test:pendinglogin": "node tests/pendinglogin.mjs",
     "test:simplewrite": "node tests/simplewrite.mjs"
   },
   "devDependencies": {

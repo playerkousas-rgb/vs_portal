@@ -659,14 +659,13 @@ section('只有一個儲存方式（原始碼守門：冇自動寫、冇 poll、
   ok('★ 總表同步頁已經冇「自動寫入」開關 —— 淨低「儲存到後端」',
     !/toggle-autosave/.test(tablesSrc) && /儲存到後端/.test(tablesSrc) && /冇自動寫入/.test(tablesSrc));
   ok('main.js 開機**等**後端載入完先出登入頁（await syncBoot）', /await syncBoot\(\)/.test(mainSrc));
-  ok('開機後端失敗會停喺連線閘（唔會落入登入頁）',
-    /const bootSync = await syncBoot\(\)/.test(mainSrc)
-    && /if \(!bootSync\?\.ok\)[\s\S]*?renderBackendGate\(bootSync\)/.test(mainSrc)
-    && /function renderBackendGate/.test(mainSrc));
-  ok('連線閘只顯示普通用家可明白嘅重試／揀旅團操作',
-    /暫時未能連線，請稍後再試/.test(mainSrc)
-    && /id="btnRetryBackend"/.test(mainSrc) && /id="btnChangeUnit"/.test(mainSrc)
-    && !/input[^>]+(?:exec|API Key)/i.test((mainSrc.match(/function renderBackendGate[\s\S]*?function renderFatal/) || [''])[0]));
+  ok('開機後端暫時連唔到都照出登入頁（唔會成頁吞咗畫面；登入一刻先硬閘）',
+    /const bootSync = await syncBoot\(\)/.test(mainSrc) === false
+    && /await syncBoot\(\);[\s\S]*?if \(current\(\)\)[\s\S]*?renderLogin\(\)/.test(mainSrc)
+    && !/function renderBackendGate/.test(mainSrc));
+  ok('連線閘維修已簡化：冇成頁「檢查／修復／上載」嗰類掣', /暫時未能連線，請稍後再試/.test(mainSrc)
+    && /id="btnRetrySync"/.test(mainSrc)
+    && !/btnBackendHealth|btnBackendRepair|btnBackendUpload|btnBackendReadWrite/.test(mainSrc));
   /* 2026-09-20 改：以前呢度係 `freshenBeforeLogin()`（ensureFresh，「連唔到都照登入」）。
      團長質疑「既然都同後端對咗帳戶密碼，點可能入去之後話冇連上後端」之後，
      改成硬閘 —— 後端答唔到就唔准入。所以呢條斷言要跟著改。 */
@@ -678,8 +677,7 @@ section('只有一個儲存方式（原始碼守門：冇自動寫、冇 poll、
   ok('beforeunload 只提醒、唔寫後端', /beforeunload/.test(mainSrc) && !/flush\(\)/.test(mainSrc));
   ok('team 員入口：開機 loadFromBackend、交嘢 saveToBackend（唔係 flush）、冇 poll',
     /loadFromBackend\(/.test(hubSrc) && /saveToBackend\(\{ policy: 'mine'/.test(hubSrc) && !/flush\(|startPolling|startVisibilityWatch/.test(hubSrc));
-  const testSyncBlock = (tablesSrc.match(/act === 'test-sync'\)([\s\S]*?)if \(act === 'push-sync'\)/) || ['', ''])[1];
-  ok('總表同步：「測試連線」淨係讀（唔會 pushToMaster）', testSyncBlock.length > 0 && !/pushToMaster/.test(testSyncBlock) && /testConnection/.test(testSyncBlock));
+  ok('總表同步：「測試連線」掣已清理（唔會再有淨讀嘅測試掣）', !/act === 'test-sync'/.test(tablesSrc));
   ok('總表同步：報表同步唔會夾帶整個 db、唔會清 pending', /payload\.skipDb = true/.test(tablesSrc) && !/payload\.db = db/.test(tablesSrc) && !/pending: 0, lastPushAt/.test(tablesSrc));
   ok('總表同步：冇咗「會議模式」開關', !/y-poll/.test(tablesSrc));
   ok('狀態 badge 撳擊仍去「總表同步」詳情', /tables\/sync/.test(mainSrc));
@@ -689,8 +687,8 @@ section('只有一個儲存方式（原始碼守門：冇自動寫、冇 poll、
     /too_big/.test(remoteSrc) && /CHUNKED_ABOVE/.test(remoteSrc) && /saveDbPart/.test(remoteSrc) && /40000000/.test(remoteSrc));
   ok('大 db 對舊後端會退返單件路（唔會靜靜地死）',
     /未知 action/.test(remoteSrc) && /改用單一件儲存/.test(remoteSrc));
-  ok('總表同步有「體積檢查」同「相片瘦身」掣',
-    /size-check/.test(tablesSrc) && /size-slim/.test(tablesSrc) && /slimClaimPhotos/.test(tablesSrc));
+  ok('總表同步已經冇「體積檢查／相片瘦身」掣（清理診斷嘢）',
+    !/size-check|size-slim/.test(tablesSrc));
   const financeSrc = fs.readFileSync(path.join(ROOT, 'assets/js/views/finance.js'), 'utf8');
   ok('APP 內申報相片會先試 uploadPhotos 上 Drive（失敗先本地存）',
     /uploadPhotos\(photos/.test(financeSrc) && /photosOnDrive/.test(financeSrc));
@@ -1029,28 +1027,15 @@ section('API Key 由伺服器端注入（前端唔應該知）');
 }
 
 /* ============================================================
-   ⑦ 搬遷檢查：清走前端資料之前，要證實後端真係有齊嘢
-   ------------------------------------------------------------
-   0082 原本係「靜態檔 + localStorage」嘅系統，要搬入後端。
-   清嘢係不可逆，所以「搬遷檢查」必須喺以下情況擋住：
-     · 後端仲係空（未推過）
-     · 本機有嘢未寫入後端（pending）
-     · 兩邊筆數對唔上
+   ⑦ 搬遷檢查（已清理）：「檢查／修復／上載／診斷」呢組診斷工具
+   團長話已經完成晒、用家用唔着，全部剷走 —— 呢度驗證真係剷咗。
    ============================================================ */
-section('搬遷檢查（清前端之前要對數）');
+section('搬遷檢查／診斷掣已清理');
 {
   const src = fs.readFileSync(path.join(ROOT, 'assets/js/views/tables.js'), 'utf8');
-  ok('「總表同步」有「搬遷檢查」掣', /data-act="migrate-check"/.test(src));
-  ok('檢查會 pullDb 攞成份後端資料落嚟逐項數（唔淨係信 dbInfo 個 count）',
-    /act === 'migrate-check'/.test(src) && /remote\.pullDb\(\)/.test(src));
-  ok('後端空 → 明確叫人唔好清', /後端仲係空/.test(src) && /千祈唔好/.test(src));
-  ok('有 pending → 擋住', /pendingCount\(\)/.test(src) && /未寫入後端/.test(src));
-  ok('筆數唔夾 → 唔畀清', /未可以清/.test(src));
-  ok('全部夾 → 先至講可以安全清走', /可以安全清走前端資料/.test(src));
-  ok('對數範圍唔止 6 項（連團章／團費／申報／預算／借用都數）',
-    /團章章節/.test(src) && /團費紀錄/.test(src) && /收支申報/.test(src)
-    && /活動預算/.test(src) && /物資借用/.test(src));
-  ok('建議次序有叫人先做 JSON 備份', /匯出 JSON 備份/.test(src));
+  ok('「總表同步」已經冇「搬遷檢查」掣', !/data-act="migrate-check"/.test(src));
+  ok('…已經冇「檢查／修復／上載」嗰組掣', !/backend-health|backend-repair|backend-upload/.test(src));
+  ok('…已經冇「同步診斷」掣', !/data-act="diagnose"/.test(src));
 }
 
 /* ============================================================
@@ -1711,8 +1696,8 @@ section('★ 登入硬閘：後端答唔到就唔准入主控頁');
     `${g2.reason} / ${String(g2.error || '').slice(0, 80)}`);
   ok('封鎖原因如實講出後端嘅問題（唔係含糊嘅「同步失敗」）',
     String(g2.error || '').length > 10, String(g2.error || '').slice(0, 100));
-  ok('★ main.js 會喺原因前面加「登入已封鎖」（用家唔會以為係密碼錯）',
-    /function gateMessage/.test(mainSrc) && /登入已封鎖/.test(mainSrc));
+  ok('★ main.js 會喺原因前面加「暫時未能連線，請稍後再試」（用家唔會以為係密碼錯）',
+    /function gateMessage/.test(mainSrc) && /暫時未能連線，請稍後再試/.test(mainSrc));
 
   /* 真係未設定後端（冇 proxy 又冇 /exec）→ 明確講「未有後端設定」，唔好扮「密碼錯」 */
   mode = 'ok';
@@ -1737,8 +1722,8 @@ section('★ 登入硬閘：後端答唔到就唔准入主控頁');
     /if \(!gate\.ok\) \{[\s\S]{0,400}?return;/.test(mainSrc));
   ok('★ 舊嗰條「連唔到都照登入」嘅 freshenBeforeLogin 已經冇咗（淨低嘅只係歷史註解）',
     !/freshenBeforeLogin/.test(stripComments(mainSrc)));
-  ok('登入頁橫額講明「登入已封鎖」（唔係淨係警告）',
-    /登入已封鎖/.test(mainSrc));
+  ok('登入頁橫額講「暫時未能連線，請稍後再試」而**唔收埋**登入表單',
+    /暫時未能連線，請稍後再試/.test(mainSrc) && /id="loginSyncWarn"/.test(mainSrc));
   ok('登入頁會顯示帳戶來源（答團長「咁啱先係登入咗乜」）',
     /帳戶來源/.test(mainSrc));
   {
@@ -1893,13 +1878,13 @@ section('★ 搶救三寶（前端契約：後端讀唔到 → 檢查 → 修復
     JSON.stringify({ t: hDown.title, s: hDown.steps }));
 
   /* ---- ⑥ 破壞性動作要有人肯撳、而且要打字確認（介面守門） ---- */
-  ok('★ 登入閘有三粒掣：檢查／修復／上載',
-    ['#btnBackendHealth', '#btnBackendRepair', '#btnBackendUpload'].every(id => mainSrc3.includes(id)));
-  ok('★ 上載要打字確認（打「上載」兩個字）先做得',
-    /上載/.test(mainSrc3) && /typeConfirm|打字|確認/.test(mainSrc3) && /runBackendUpload/.test(mainSrc3));
-  ok('★ 「儲存狀態」卡都有同一組搶救掣（唔使特登去登入閘）',
-    /backend-health/.test(tablesSrc3) && /backend-repair/.test(tablesSrc3) && /backend-upload/.test(tablesSrc3));
-  ok('★ 代理白名單放行三個新動作（舊 action 一個都冇拆）',
+  /* ★ 2026-09-26 團長：「檢查／修復／上載嗰堆都唔想要，我哋應該解決咗嗰個問題」——
+     連線閘（連唔到嗰頁）簡化做「暫時未能連線」；連「總表同步 → 儲存狀態」卡
+     嗰組「檢查／修復／覆蓋」掣都一齊剷走（登入咗都唔再見到）。 */
+  ok('★ 登入閘已經冇「檢查／修復／上載」嗰組掣', ['#btnBackendHealth', '#btnBackendRepair', '#btnBackendUpload'].every(id => !mainSrc3.includes(id)));
+  ok('★ 連線提示留低「重試連線」（喺登入表單頂，唔再係成頁閘）', /id="btnRetrySync"/.test(mainSrc3));
+  ok('★ 「儲存狀態」卡嗰組搶救掣都一齊清走', !/backend-health|backend-repair|backend-upload/.test(tablesSrc3));
+  ok('★ 代理白名單照舊放行 repairDb／saveDbForce／diag（後端能力未拆，只係介面唔再迫人用）',
     /'repairDb'/.test(proxSrc3) && /'saveDbForce'/.test(proxSrc3) && /'diag'/.test(proxSrc3));
 
   globalThis.fetch = memFetch3;

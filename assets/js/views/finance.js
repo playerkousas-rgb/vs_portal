@@ -1472,9 +1472,12 @@ export function mount(root, params) {
 
   /* 年度設定頁：輸入先暫存喺瀏覽器，撳「儲存」先寫入（防呆） */
   if (tab === 'settings') {
-    bindDraftAutosave(root, 'fin-settings', load().unitCode);
+    const autosave = bindDraftAutosave(root, 'fin-settings', load().unitCode);
     const rec = readDraft('fin-settings', load().unitCode);
-    if (rec) applyDraft(root, 'fin-settings', load().unitCode);
+    if (rec) {
+      applyDraft(root, 'fin-settings', load().unitCode);
+      autosave.markDirty();   // 回填入版前舊草稿＝有內容，唔係「一隻未掂過嘅分頁」
+    }
     /* 用舊帳嘅數字填返**對應年度**：8,803.28 係 2025-26 嘅期初，
        佢嘅期末 7,846.64 先係 2026-27 嘅期初 —— 唔會再填錯年度 */
     root.querySelector('[data-act="use-ref-opening"]')?.addEventListener('click', () => {
@@ -2246,7 +2249,7 @@ export async function claimForm(preset = null) {
      db 入面淨係留連結。以前 dataURL（每張可達 300KB+）會將「資料庫」
      分頁撐爆 9MB，成個同步寫唔入。
      上載唔到（離線／未接後端）→ 照舊本地存（唔會蝕資料），
-     遲啲喺「總表同步 → 體積檢查」可以再瘦身。 */
+     遲啲喺「資料管理 → 儲存與備份」撳「清理已入帳嘅相片」可以再瘦身。 */
   let photos = r.photos || [];
   let photosOnDrive = false;
   const cid = uid('c');

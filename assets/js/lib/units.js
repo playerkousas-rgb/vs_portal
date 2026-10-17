@@ -85,7 +85,10 @@ async function fetchBakedUnits() {
     return {};
   };
   try {
-    const r = await fetch(GEN_URL + '?_=' + Date.now(), { cache: 'no-store' });
+    /* 靜態檔（build 時由 scripts/build-units.mjs 生成，每次部署先會變）
+       —— 交畀 CDN／瀏覽器 cache（見 vercel.json 嘅 /data/(.*)\.json 規則），
+          唔好再自己加 ?_= 打穿 cache。 */
+    const r = await fetch(GEN_URL);
     if (!r.ok) return fail();
     const j = await r.json();
     const units = (j && j.units && typeof j.units === 'object') ? j.units : {};
@@ -100,12 +103,15 @@ async function fetchBakedUnits() {
 
 /** 由 /api/units 攞伺服器端（環境變數）定義嘅旅團；靜態部署／未設定就回傳空物件 */
 async function fetchServerUnits() {
-  const url = API_UNITS_URL + '?_=' + Date.now();
+  /* /api/units 係純環境變數（旅團登記）＋ data/units.json，要重新部署先會變。
+     回應自帶 `public, max-age=300, s-maxage=3600, stale-while-revalidate=86400`，
+     所以**唔可以**再夾 `?_=`：每次唔同 URL ＝ 永遠打穿 Edge cache，變相每人每次都開一個 Function。 */
+  const url = API_UNITS_URL;
   let lastErr = '';
   let lastCode = 0;
   for (let attempt = 0; attempt < 2; attempt++) {          // 一次重試：redeploy 中／冷啟動
     try {
-      const r = await fetch(url, { cache: 'no-store' });
+      const r = await fetch(url);
       if (r.ok) {
         const j = await r.json();
         const units = (j && j.units && typeof j.units === 'object') ? j.units : {};
@@ -170,7 +176,7 @@ export async function loadRegistry(force = false) {
   let fromFile = null;
   let fileFailed = false;
   try {
-    const r = await fetch(REG_URL + '?_=' + Date.now(), { cache: 'no-store' });
+    const r = await fetch(REG_URL);
     if (r.ok) {
       fromFile = await r.json();
       regReachable = true;
@@ -358,7 +364,8 @@ export async function fetchUnitData(code, file) {
   const base = dataPathOf(code);
   if (!base) return null;
   try {
-    const r = await fetch(`${base}${file}?_=${Date.now()}`, { cache: 'no-store' });
+    /* 靜態 JSON（data/units/<編號>/xxx.json）—— 由 CDN cache 管，唔好自己 cache-bust */
+    const r = await fetch(`${base}${file}`);
     if (!r.ok) return null;
     return await r.json();
   } catch (e) { return null; }

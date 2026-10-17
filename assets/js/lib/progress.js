@@ -106,7 +106,8 @@ export async function loadItems() {
   const c = progressCfg();
   if (!c.catalogUrl) {
     try {
-      const res = await fetch(DEFAULT_CATALOG_URL, { cache: 'no-store' });
+      /* 內建考核項目係靜態檔（data/progress/items.json）：交畀 CDN cache（vercel.json /data/(.*)\.json） */
+      const res = await fetch(DEFAULT_CATALOG_URL);
       if (!res.ok) throw new Error('HTTP ' + res.status);
       const json = await res.json();
       return { ok: true, local: true, data: json };

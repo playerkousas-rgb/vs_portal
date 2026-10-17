@@ -37,7 +37,10 @@ const localKey = () => `venture82.borrow.${unitCode}`;
 const localRows = () => { try { return JSON.parse(localStorage.getItem(localKey()) || '[]'); } catch { return []; } };
 
 async function loadJson(url) {
-  const r = await fetch(url + (url.includes('?') ? '&' : '?') + '_=' + Date.now(), { cache: 'no-store' });
+  /* 靜態 JSON（data/units.json、data/units/<編號>/*.json）／純環境變數嘅 /api/units
+     —— 一律交畀 CDN cache（vercel.json）：cache-bust 嘅 `?_=` 同 `cache: 'no-store'`
+        會令每個訪客每次開頁都打穿 Edge，白白開一堆 Serverless Function。 */
+  const r = await fetch(url);
   if (!r.ok) throw new Error('HTTP ' + r.status);
   return r.json();
 }

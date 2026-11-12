@@ -257,5 +257,129 @@ ok(deps.length === 0, 'package.json 冇執行期 dependencies（零依賴原則�
 const buildTools = ['vite', 'tailwindcss', 'esbuild', 'webpack', 'rollup', 'typescript'];
 ok(buildTools.every(t => !(pkg.dependencies || {})[t]), '建構工具冇混入 dependencies');
 
+/* ============================================================
+   ⑥ 版號單一來源（V1／F15）
+   ------------------------------------------------------------
+   version.js 嘅註解一直聲稱「lint 會擋住唔一致」，但其實冇呢個檢查 ——
+   於是 Code.gs 檔頭可以同 BACKEND_VERSION 唔同（2026-11-12 升到 v2.8.5 嗰陣
+   就係咁樣紅咗 tests/remote.mjs）。而家補返真正嘅閘門。
+   ============================================================ */
+section('⑥ 版號一致性（前後端同步發版）');
+{
+  const verSrc = fs.readFileSync(path.join(ROOT, 'assets/js/lib/version.js'), 'utf8');
+  const appVer = (verSrc.match(/APP_VERSION\s*=\s*'(v\d+\.\d+\.\d+)'/) || [])[1] || '';
+  ok(!!appVer, 'version.js 有 APP_VERSION 常數', verSrc.slice(0, 80));
+
+  const gen = fs.readFileSync(path.join(ROOT, 'apps-script', 'Code.gs'), 'utf8');
+  const backendVer = (gen.match(/var BACKEND_VERSION = '(v\d+\.\d+\.\d+)'/) || [])[1] || '';
+  const headerVer = (gen.match(/\*\s*版本：(v\d+\.\d+\.\d+)/) || [])[1] || '';
+  ok(!!backendVer && backendVer === appVer,
+    'Code.gs BACKEND_VERSION = 前端 APP_VERSION', `backend=${backendVer} app=${appVer}`);
+  ok(!!headerVer && headerVer === appVer,
+    'Code.gs 檔頭版號 = APP_VERSION（唔准獨立寫死）', `header=${headerVer} app=${appVer}`);
+
+  /* 生成檔必須同範本一致（V4：唔准人手改生成檔） */
+  const tplSrc = fs.readFileSync(path.join(ROOT, 'assets/js/lib/gastemplate.js'), 'utf8');
+  ok(/版本：\$\{APP_VERSION\}/.test(tplSrc) && /var BACKEND_VERSION = '\$\{APP_VERSION\}'/.test(tplSrc),
+    '範本由 APP_VERSION 推導版號（單一來源，冇第二處可以寫漏）');
+}
+
+/* ============================================================
+   ⑦ ★ 孤兒 action 守門（2026-11-12 精簡之後加）
+   ------------------------------------------------------------
+   上面 ④ 守住嘅係「前端有 call → 白名單／後端一定要有」，
+   方向係前端 → 後端。但腫脹係另一個方向積出嚟嘅：
+   後端有 handler、白名單又放行，但係前端根本冇人 call。
+   呢啲「孤兒 action」唔會令任何測試紅燈，所以可以一直靜靜雞累積。
+
+   2026-11-12 實測：咁樣積咗 6 個孤兒（claimDecision／loanDecision／
+   noticeSubscribe／noticeSubscriptions／authChangePassword／
+   authResetByToken）＋ 一個 diag 自查鏈，合共約 250 行 GS 死碼。
+   全部刪走之後加呢個守門：新孤兒一出現就紅燈，要嘛接返前端，
+   要嘛喺下面登記做「刻意向後兼容／人手逃生門」並寫低原因。
+   ============================================================ */
+section('⑦ 孤兒 action 守門（後端有、前端冇人 call ＝ 死碼）');
+{
+  /* 刻意保留嘅冇前端呼叫者 action —— 每個都要有原因，唔准就咁加個名落去。
+     ping／status／test：部署同 CI 探活（dev-server、tests、人手 GET /exec）。
+     repairDb／saveDbForce：DEPLOY_GUIDE_FOR_TROOPS.md 嘅人手搶救步驟。
+     syncCheck：後端自證「寫得入＋讀得返」能力，tests/e2ereal.mjs 直接經 proxy 驗。 */
+  const INTENTIONAL_NO_CALLER = new Map([
+    ['ping', '部署探活（人手 GET /exec、CI）'],
+    ['status', '部署探活＋初始化狀態（人手／CI）'],
+    ['test', 'status 別名（舊部署相容）'],
+    ['repairDb', '人手搶救：清暫存垃圾＋舊版本段（部署指南）'],
+    ['saveDbForce', '人手搶救：用留住資料嗰部機強制覆蓋（部署指南）'],
+    ['syncCheck', '後端寫入＋讀回自證（tests/e2ereal.mjs 經 proxy 驗）']
+  ]);
+  const feActions = new Set();
+  for (const f of ALL.filter(f => /^assets\/js\//.test(rel(f)) && /\.js$/.test(f))) {
+    const s = fs.readFileSync(f, 'utf8');
+    for (const m of s.matchAll(/action:\s*'([a-zA-Z]+)'/g)) feActions.add(m[1]);
+  }
+  const orphans = [...gasHandles].filter(a => !feActions.has(a)).sort();
+  const unregistered = orphans.filter(a => !INTENTIONAL_NO_CALLER.has(a));
+  ok(unregistered.length === 0,
+    `冇未登記嘅孤兒 action（後端 ${gasHandles.size} 個 handler，${orphans.length} 個冇前端呼叫者但已登記）`,
+    `呢啲 action 後端有 handler 但前端冇人 call：${unregistered.join(', ')}\n`
+    + '      要嘛接返前端 UI，要嘛刪除 handler＋白名單，\n'
+    + '      要嘛喺 scripts/lint.mjs ⑦ INTENTIONAL_NO_CALLER 登記並寫低原因。');
+  /* 登記冊本身都唔可以腫：登記咗但已經不存在／已經有前端呼叫者 → 要清走 */
+  const staleEntries = [...INTENTIONAL_NO_CALLER.keys()].filter(a => !orphans.includes(a));
+  ok(staleEntries.length === 0, '孤兒登記冊冇過期項目（已刪或已接返前端嘅要移除）',
+    staleEntries.join(', '));
+}
+
+/* ============================================================
+   ⑧ 導覽文字唔可以指去唔存在嘅路（★ 2026-11-12 UI 簡化）
+   ------------------------------------------------------------
+   背景：用家「東指西指」。「資料管理」本來係「系統」底下嘅中轉分頁，
+   於是全個 repo 有 40+ 處教人「系統 → 資料管理 → …」。
+   2026-11-12 把「資料管理」升做側欄獨立入口之後，呢啲指示全部變咗錯。
+   第一輪改咗 48 處 JS；發佈前反查再發現 README 同現行操作手冊仲有舊路，
+   所以守門要同時掃 app 文案同現行 Markdown（歷史記錄除外）。
+   ============================================================ */
+section('⑧ 導覽指示唔可以指去已拆走嘅路');
+{
+  const STALE_TEXT = [
+    ['系統 → 資料管理', '「資料管理」已經係側欄獨立入口，唔再喺「系統」入面'],
+    ['系統→資料管理', '同上（冇空格寫法）'],
+    ['管理 → 資料管理', '舊「管理」指路已拆；而家直接去「資料管理」'],
+    ['財務 → 財政年度報告', '年度報告分頁已拆（重複入口）；而家係「財務 → 年結報告」頂欄掣'],
+    ['財務 → 匯入舊帳', '匯入工具已併入「財務 → 設定 → 匯入舊帳」'],
+    ['表格與同步', '舊主項目已改名「資料管理」'],
+    ['系統 → 帳戶', '帳戶已搬到「用戶與身份 → 身份與帳號」'],
+    ['財務 → 年度設定', '分頁而家叫「財務 → 設定」'],
+    ['用戶 → 生日', '主項目同分頁而家叫「用戶與身份 → 生日表」'],
+    ['通告 → 所有報名', '分頁而家叫「通告 → 報名紀錄」'],
+    ['立即儲存到後端', '按鈕而家叫「儲存到後端」']
+  ];
+  const STALE_CODE = [
+    ...STALE_TEXT,
+    ['data-go="#/admin/data"', '內部按鈕要直去 #/tables；舊 hash 只留畀外部書籤轉址'],
+    ['href="#/admin/data"', '內部連結要直去 #/tables；舊 hash 只留畀外部書籤轉址']
+  ];
+  const bad = [];
+  const scan = (f, stale) => {
+    const text = fs.readFileSync(f, 'utf8');
+    text.split('\n').forEach((line, i) => {
+      for (const [needle, why] of stale) {
+        if (line.includes(needle)) bad.push(`${rel(f)}:${i + 1}  「${needle}」 —— ${why}`);
+      }
+    });
+  };
+  for (const f of ALL.filter(f => /^assets\/js\//.test(rel(f)) && /\.js$/.test(f))) scan(f, STALE_CODE);
+  /* 現行操作文件要守；歷史更新、CHANGELOG 同審核報告會刻意記低舊路，唔應該假紅。 */
+  const currentDocs = ALL.filter(f => {
+    const r = rel(f);
+    return /\.md$/.test(r)
+      && r !== 'CHANGELOG.md'
+      && r !== 'UI_AUDIT_2026-11-12.md'
+      && !/^docs\/UPDATES_/.test(r);
+  });
+  currentDocs.forEach(f => scan(f, STALE_TEXT));
+  ok(bad.length === 0, 'app 文案同現行手冊冇指去已拆走嘅導覽路徑', bad.slice(0, 12).join('\n      '));
+}
+
 console.log(`\n──────── lint 結果：${checks - fails} 通過 / ${fails} 失敗 ────────`);
 process.exit(fails ? 1 : 0);

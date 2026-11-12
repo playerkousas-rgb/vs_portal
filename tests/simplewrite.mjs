@@ -283,7 +283,7 @@ try {
     { op: 'addTx', date: '2026-09-25', type: 'income', item: '團費', amount: 360 },
     { op: 'push' },
     { op: 'info' },
-    { op: 'reality' }
+    { op: 'verify' }
   ] });
   const pushV = stepOf(V, 'push');
   ok('★ 儲存成功', pushV?.ok === true, JSON.stringify(pushV).slice(0, 240));
@@ -299,10 +299,13 @@ try {
   ok('★ 16 個表全部寫齊（一個唔少）',
     Object.keys(rawRows.versions || {}).length >= 16, JSON.stringify(Object.keys(rawRows.versions || {})));
   ok('★ dbInfo 報後端程式版本 v2.8.1', infoV?.backendVersion === 'v2.8.1', JSON.stringify({ v: infoV?.backendVersion }));
-  const realV = stepOf(V, 'reality');
-  ok('★ 後端實況判「對得上」', realV?.level === 'ok', JSON.stringify({ lv: realV?.level, t: realV?.title }));
-  ok('★ 後端實況見到真相欄位', realV?.mode === 'simple' && realV?.backendVersion === 'v2.8.1',
-    JSON.stringify({ m: realV?.mode, v: realV?.backendVersion }));
+  /* 2026-11-12：backendReality() 已刪（冇 UI 用）。改用 live 嘅
+     verifyAgainstBackend()：同樣驗「對得上」＋ mode／版本真相欄位。 */
+  const realV = stepOf(V, 'verify');
+  ok('★ 儲存後核對判「對得上」', realV?.matched === true, JSON.stringify({ m: realV?.matched, e: realV?.error }));
+  ok('★ 核對見到真相欄位（版本同 dbInfo 一致）',
+    realV?.mode === 'simple' && realV?.backendVersion === infoV?.backendVersion,
+    JSON.stringify({ m: realV?.mode, v: realV?.backendVersion, info: infoV?.backendVersion }));
 } finally {
   v281.stop();
 }
@@ -386,13 +389,17 @@ section('⑧ 靜態守門（唔會重演「action 漏咗喺白名單」嗰單事
   /* ★ v2.8.1：自證＋真相＋版號（唔會重演「假成功／登入見唔到版號」） */
   ok('★ 逐表寫一定要過自證或讀回驗證（否則唔算成功）',
     /confirmed\s*!==\s*true/.test(remoteSrc));
-  ok('★ gastemplate.js 後端版本係 v2.8.4',
-    fs.readFileSync(path.join(ROOT, 'assets', 'js', 'lib', 'gastemplate.js'), 'utf8').includes("BACKEND_VERSION = 'v2.8.4'"));
-  ok('★ Code.gs 係由 v2.8.4 gastemplate 起出嚟（唔係舊 build）',
-    gasSrc.includes("BACKEND_VERSION = 'v2.8.4'"));
+  /* ★ 版號由單一來源 version.js 推導（唔寫死 vX.Y.Z）：
+     驗嘅係「三邊一致」，而唔係「等於某個特定舊版號」。 */
+  const expectVer = (fs.readFileSync(path.join(ROOT, 'assets', 'js', 'lib', 'version.js'), 'utf8')
+    .match(/APP_VERSION\s*=\s*'(v\d+\.\d+\.\d+)'/) || [])[1] || '';
+  const tplSrc = fs.readFileSync(path.join(ROOT, 'assets', 'js', 'lib', 'gastemplate.js'), 'utf8');
+  ok('★ gastemplate.js 由 APP_VERSION 推導後端版號（單一來源）',
+    /BACKEND_VERSION = '\$\{APP_VERSION\}'/.test(tplSrc) && /import \{ APP_VERSION \}/.test(tplSrc));
+  ok('★ Code.gs 係由現行 gastemplate 起出嚟（唔係舊 build）',
+    !!expectVer && gasSrc.includes(`BACKEND_VERSION = '${expectVer}'`), expectVer);
   ok('★ 有版本單一來源（version.js）＋登入閘用緊佢',
-    fs.readFileSync(path.join(ROOT, 'assets', 'js', 'lib', 'version.js'), 'utf8').includes("APP_VERSION = 'v2.8.4'")
-    && fs.readFileSync(path.join(ROOT, 'assets', 'js', 'main.js'), 'utf8').includes('APP_VERSION'));
+    !!expectVer && fs.readFileSync(path.join(ROOT, 'assets', 'js', 'main.js'), 'utf8').includes('APP_VERSION'));
 }
 
 console.log(`\n──────── 簡單寫入測試結果：${pass} 通過 / ${fail} 失敗（${Date.now() - t0} ms）────────\n`);

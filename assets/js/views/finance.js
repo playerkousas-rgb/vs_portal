@@ -43,7 +43,13 @@ export function render(params) {
   const id = params.id;
   if (id === 'new') return txPage(null);
   if (id === 'edit') return txPage(params.action);
-  if (['reports', 'fees', 'claims', 'budgets', 'import', 'settings', 'history'].includes(id)) tab = id;
+  /* ★ 2026-11-12：分頁由 8 → 6（用戶定案）：
+     ①「年度報告」本來同時有頂部掣 + 分頁（重複入口）→ 只留頂部「年結報告」掣；
+     ②「匯入舊帳」併入「設定」——
+     佢係一次性搬舊數嘅工具，唔係日常操作，唔值得佔一整粒分頁。
+     舊連結 #/finance/import 照樣認得，會落到設定頁嘅匯入區（唔會斷書籤）。 */
+  if (id === 'import') tab = 'settings';
+  else if (['reports', 'fees', 'claims', 'budgets', 'settings', 'history'].includes(id)) tab = id;
   else if (id !== 'new' && id !== 'edit') tab = params?.query?.tab || 'ledger';
   if (params.query?.period) feePeriod = params.query.period;
 
@@ -61,19 +67,16 @@ export function render(params) {
   ${tabs([
     ['ledger', `帳目（${fy}）`, txInYear(fy).length],
     ['history', '過往紀錄'],
-    ['reports', '財政年度報告'],
     ['fees', '團費', feeStats().unpaidCount],
     ['claims', '收支申報', pendingClaims().length],
     ['budgets', '活動預算', budgets().length],
-    ['import', '匯入舊帳'],
     ['settings', '設定']
   ], tab)}
   ${tab === 'reports' ? reportsView()
     : tab === 'fees' ? feesView()
     : tab === 'claims' ? claimsView()
     : tab === 'budgets' ? budgetsView()
-    : tab === 'import' ? importView()
-    : tab === 'settings' ? settingsView()
+    : tab === 'settings' ? settingsView() + importSection()
     : tab === 'history' ? historyView()
     : ledgerView()}`;
 }
@@ -138,7 +141,7 @@ function filterBar({ withMonth = false, monthValue = '', monthOptions = [], mont
 
 function ledgerTable(list) {
   const inc = sumBy(list, 'income'), exp = sumBy(list, 'expense');
-  if (!list.length) return empty('wallet', '呢個範圍未有帳目', '可以按「新增收支」記一筆，或者去「匯入舊帳」');
+  if (!list.length) return empty('wallet', '呢個範圍未有帳目', '可以按「新增收支」記一筆，或者去「設定 → 匯入舊帳」');
   return `<div class="scroll-x"><table class="table">
     <thead><tr><th style="width:96px">日期</th><th>項目</th><th>分類</th><th>方式 / 經手</th>
       <th class="right">收入</th><th class="right">支出</th><th></th></tr></thead>
@@ -630,7 +633,7 @@ function feesView() {
           <li>有人交錢：喺佢一行按「<b>標記已收</b>」→ 自動入帳（可以揀日期／方式）</li>
           <li>追人：按「<b>複製催繳名單</b>」→ 直接貼落 WhatsApp 群</li>
           <li>要收據：按 🖨 → 即刻列印／存 PDF</li>
-          <li>年結：去「財政年度報告」出兩條數（旅年度 ＋ 童軍年度）</li>
+          <li>年結：去「財務 → 年結報告」出兩條數（旅年度 ＋ 童軍年度）</li>
         </ol>
       </div>
     </div>
@@ -945,8 +948,23 @@ function settingsView() {
 }
 
 /* ============================================================
-   6. 匯入舊帳
+   6. 匯入舊帳（★ 2026-11-12：併入「設定」分頁，唔再佔一整粒）
+   ------------------------------------------------------------
+   一次性搬舊數嘅工具，唔係日常操作。收喺設定頁底部一個 <details>，
+   要用嘅時候展開，唔會日日阻住畫面。
+   舊連結 #/finance/import 會落到設定頁並自動展開（下面 importSection 用 parse().id 判斷）。
    ============================================================ */
+function importSection() {
+  return `
+  <details class="card mt-16" id="fin-import"${parse().id === 'import' ? ' open' : ''}>
+    <summary class="card-head" style="cursor:pointer">
+      <div><div class="card-title">${icon('upload', 15)} 匯入舊帳（由舊 Google Sheet 搬入嚟）</div></div>
+      <span class="btn btn-xs">展開／收合</span>
+    </summary>
+    <div style="padding:16px 18px">${importView()}</div>
+  </details>`;
+}
+
 function importView() {
   const ref = load().reference || {};
   return `
@@ -977,10 +995,10 @@ function importView() {
 
       <div class="card">
         <div class="card-head"><div><div class="card-title">由本系統備份還原</div>
-          <div class="card-sub">管理 → 資料管理 → 匯入備份</div></div></div>
+          <div class="card-sub">資料管理 → 儲存與備份</div></div></div>
         <div style="padding:16px 18px">
-          <p class="sm muted">如果想還原整個旅團嘅資料（包括會議、物資、團章），請去「管理」頁。</p>
-          <button class="btn btn-sm mt-8" data-go="#/admin">${icon('shield', 15)} 去管理頁</button>
+          <p class="sm muted">如果想還原整個旅團嘅資料（包括會議、物資、團章），請去「資料管理 → 儲存與備份」。</p>
+          <button class="btn btn-sm mt-8" data-go="#/tables/data">${icon('cloud', 15)} 去儲存與備份</button>
         </div>
       </div>
     </div>
@@ -1698,7 +1716,7 @@ export function mount(root, params) {
             <div class="card" style="padding:10px 12px">
               <div class="sm">${(s.agmDates || []).filter(a => a.date).map(a => `<span class="tag">${esc(a.year)} · ${esc(a.date)}${agmIsDefault(a.year, s.agmDates) ? '（未確認）' : ''}</span>`).join(' ') || '<span class="faint">未設定</span>'}</div>
             </div>
-            <div class="hint">旅財政年度由 AGM 起計到下一年 AGM 前一日。呢度唔改住都得，返「財政年度報告」頁可以逐年輸入。</div></div>`,
+            <div class="hint">旅財政年度由 AGM 起計到下一年 AGM 前一日。呢度唔改住都得，返「財務 → 年結報告」頁可以逐年輸入。</div></div>`,
         actions: [{ label: '取消', class: 'btn', value: null },
           { label: '儲存', class: 'btn-primary', onClick: el => ({
             openingBalance: Number(el.querySelector('#s-open').value) || 0,
@@ -2045,7 +2063,7 @@ async function feeSettings() {
   const { apply, ...settingsPatch } = r;
   const db = load();
   db.settings = { ...db.settings, ...settingsPatch };
-  /* v2.4.0：呢個 modal 係針對某一期（period）改團費 → 寫入逐年 map（默認同上年嘅機制用） */
+  /* 自 v2.4.0 起：呢個 modal 係針對某一期（period）改團費 → 寫入逐年 map（默認同上年嘅機制用） */
   const per = feePeriod || feePeriodOf(todayISO());
   db.settings.feePerYearMap = { ...(db.settings.feePerYearMap || {}), [per]: Number(settingsPatch.feePerYear) || 0 };
   commit();

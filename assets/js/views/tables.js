@@ -10,7 +10,7 @@
       由 Script 寫入後端「總 Sheet」（一張 Sheet 統管整個 Venture）
    ============================================================ */
 
-import { load, commit, commitMeta, collection, add, update, remove, find, getBase } from '../lib/store.js';
+import { load, commit, commitMeta, collection, add, update, remove, find, getBase, exportAll, importAll, resetToSeed, wipe, audit, currentUnit } from '../lib/store.js';
 import { esc, icon, modal, confirmDlg, toast, uid, nf, todayISO, nowStamp, download, copyText } from '../lib/util.js';
 import { toCSV, toWord, download as dlFile, stamp } from '../lib/exporter.js';
 import { go, parse, setQuery } from '../lib/router.js';
@@ -186,7 +186,7 @@ function cellText(row, f) {
 /* ============================================================
    畫面
    ============================================================ */
-export function title() { return '表格與同步'; }
+export function title() { return '資料管理'; }
 
 /* ============================================================
    欄位設計（可以由**每個分頁**直接打開）
@@ -293,22 +293,34 @@ export function openFieldDesigner(key, { onSaved = null } = {}) {
   });
 }
 
-/* ★ 2026-09-24 團長：「總表同步／表格與同步 太複雜」「我設定好他們就用，統一化前端會更好」
-   → 呢一頁而家淨係三樣嘢（同「系統 → 資料管理」一樣）：
+/* ★ 2026-09-24 團長：「總表同步嗰頁太複雜」「我設定好他們就用，統一化前端會更好」
+   → 呢一頁而家淨係三樣嘢（同「資料管理」一樣）：
         ① 插入自己嘅 Sheet　② 總表同步　③ 儲存與備份
    逐個表嘅欄位設計已經搬去各自嘅分頁（財務／用戶／物資／通告／會議 都有「欄位」掣），
    呢度唔再重複列一次 —— 少咗十幾個分頁，就少咗十幾個撳錯嘅機會。 */
 const DATA_TABS = [['sync', '總表同步'], ['source', '插入自己嘅 Sheet'], ['data', '儲存與備份']];
 
 export function render(params) {
+  /* ★ 2026-11-12：無權就唔准入（用戶定案）。main.js 路由已經擋咗，
+     呢度再擋一次（防守深層）：萬一將來有人直接 call render，都唔會
+     出一個「欄位打得到字但其實冇權」嘅假畫面。 */
+  if (!can('admin.data')) {
+    return `<div class="card" style="max-width:560px;margin:40px auto">
+      <div class="card-head"><div><div class="card-title">資料管理需要領袖權限</div></div></div>
+      <div style="padding:18px" class="col gap-12">
+        <p class="sm">呢一頁改嘅係全團共用嘅嘢（後端接駁、備份還原），只有團長／領袖開得到。</p>
+        <div><button class="btn btn-primary" data-go="#/dashboard">${icon('home', 15)} 返儀表板</button></div>
+      </div>
+    </div>`;
+  }
   if (params.id && DATA_TABS.some(([k]) => k === params.id)) tab = params.id;
   else if (!DATA_TABS.some(([k]) => k === tab)) tab = 'sync';
 
   return `
   ${pageHead({
-    title: '資料管理',
-    sub: '三樣嘢：總表同步、插入自己嘅 Sheet、儲存與備份',
-    actions: `<button class="btn btn-sm" data-go="#/admin/data">${icon('chevronL', 15)} 返回系統</button>`
+    /* 副標題唔再重複讀一次分頁名（下面 3 粒分頁已經寫咗）；
+       「返回系統」掣亦刪走 —— 資料管理而家係側欄獨立入口，唔係系統嘅附屬頁。 */
+    title: '資料管理'
   })}
 
   ${tabs(DATA_TABS, tab)}
@@ -690,21 +702,39 @@ function payloadSample() {
    4. 儲存與備份
    ============================================================ */
 function dataView() {
+  const db = load();
+  const n = a => Array.isArray(a) ? a.length : 0;
   return `
   <div class="grid g-2">
+    <div class="card" style="grid-column:1/-1"><div class="card-head"><div><div class="card-title">全份備份（JSON）</div>
+      <div class="card-sub">換機、換瀏覽器或者後端出問題時，可以還原成個旅團</div></div></div>
+      <div style="padding:16px 18px" class="col gap-10">
+        <div class="row gap-8 wrap">
+          <button class="btn btn-primary" data-act="export-json">${icon('download', 15)} 匯出全部（JSON）</button>
+          <button class="btn" data-act="import-json">${icon('upload', 15)} 匯入備份</button>
+        </div>
+        <div class="xs faint">現有資料：團員 ${n(db.members)} · 帳目 ${n(db.transactions)} · 物資 ${n(db.invItems)} · 通告 ${n(db.notices)} · 會議 ${n(db.meetings)} · 帳戶 ${n(db.accounts)}</div>
+        <details class="mt-8"><summary class="btn btn-xs">危險動作（重設／清空）</summary>
+          <div class="row gap-8 wrap mt-8">
+            <button class="btn btn-sm" data-act="reset-seed">${icon('refresh', 15)} 還原初始資料</button>
+            <button class="btn btn-sm btn-danger" data-act="wipe">${icon('trash', 15)} 清空本旅團所有資料</button>
+          </div>
+          <div class="hint mt-8">「還原」會用 <code>${esc(db.meta?.seedSource || 'data/units/…/')}</code> 重新種入（本機改動會消失）；「清空」會留低空嘅資料庫。做之前請先匯出 JSON。</div>
+        </details>
+      </div>
+    </div>
     <div class="card"><div class="card-head"><div><div class="card-title">瀏覽器儲存</div>
-      <div class="card-sub">相片最佔位；可以喺下面壓縮、清理或匯出</div></div></div>
+      <div class="card-sub">相片最佔位；可以喺下面清理已入帳相片</div></div></div>
       <div style="padding:16px 18px">
-        ${storageBar(load())}
+        ${storageBar(db)}
         <div class="col gap-8 mt-12">
           <button class="btn btn-sm btn-block" data-act="strip-photos">${icon('trash', 15)} 清理已入帳嘅相片（保留記錄）</button>
-          <button class="btn btn-sm btn-block" data-go="#/admin/data">${icon('shield', 15)} 去「資料管理」備份／還原</button>
         </div>
       </div>
     </div>
-    <div class="card"><div class="card-head"><div><div class="card-title">全部表格（CSV）</div></div></div>
+    <div class="card"><div class="card-head"><div><div class="card-title">逐個表格匯出（CSV）</div></div></div>
       <div style="padding:16px 18px" class="col gap-6">
-        ${Object.entries(tableDefs()).map(([k, d]) => `<button class="btn btn-sm btn-block" data-exp-one="${k}">${icon('download', 15)} ${esc(d.label)}（${(load()[d.collection] || []).length} 筆）</button>`).join('')}
+        ${Object.entries(tableDefs()).map(([k, d]) => `<button class="btn btn-sm btn-block" data-exp-one="${k}">${icon('download', 15)} ${esc(d.label)}（${(db[d.collection] || []).length} 筆）</button>`).join('')}
       </div>
     </div>
   </div>`;
@@ -944,6 +974,9 @@ export async function pushToMaster({ silent = false } = {}) {
    mount
    ============================================================ */
 export function mount(root, params) {
+  /* ★ 2026-11-12：整頁要 admin.data。冇權就唔綁任何 handler ——
+     render() 已經出咗「需要領袖權限」畫面，呢度防止殘留掣被撳到。 */
+  if (!can('admin.data')) return;
   const key = Object.keys(tableDefs()).includes(params.id) ? params.id : null;
 
   /* ---- 欄位設計 ---- */
@@ -1189,6 +1222,10 @@ export function mount(root, params) {
     root.querySelectorAll('[data-act]').forEach(b => b.addEventListener('click', async () => {
       const act = b.dataset.act;
       if (act === 'save-sync') {
+        /* ★ 2026-11-12：本來完全冇權限檢查 —— 執委（table.sync=false）
+           照樣改到自己部機嘅連線設定，之後自己睇唔到資料（幽靈故障）。
+           只寫本機、唔會上後端，但都要同其他頁一致 fail-closed。 */
+        if (!can('table.sync')) return toast('呢個設定只有團長／領袖改得', 'err');
         const db = load();
         const url = root.querySelector('#y-url').value.trim();
         db.sync = {
@@ -1278,7 +1315,7 @@ export function mount(root, params) {
         toast('已下載欄位對應表', 'ok');
       }
       if (act === 'copy-guide') {
-        const txt = `【總表同步設定】\n1. 開你嘅 Google Sheet → 擴充功能 → Apps Script\n2. 貼上下載嘅 Code.gs（或 app 內「下載 Code.gs」）\n3. 部署 → 新增部署作業 → 類型：網頁應用程式\n4. 執行身分：我；具有存取權的使用者：任何人\n5. 複製 /exec 網址，貼返「表格 → 總表同步 → Apps Script 網址」\n6. 儲存設定，之後就可以撳頂部「儲存到後端」\n第 7 步（可選）：設定 API Key 加強保護。`;
+        const txt = `【總表同步設定】\n1. 開你嘅 Google Sheet → 擴充功能 → Apps Script\n2. 貼上下載嘅 Code.gs（或 app 內「下載 Code.gs」）\n3. 部署 → 新增部署作業 → 類型：網頁應用程式\n4. 執行身分：我；具有存取權的使用者：任何人\n5. 複製 /exec 網址，貼返「資料管理 → 總表同步 → Apps Script 網址」\n6. 儲存設定，之後就可以撳頂部「儲存到後端」\n第 7 步（可選）：設定 API Key 加強保護。`;
         if (await copyText(txt)) toast('已複製部署步驟', 'ok');
       }
     }));
@@ -1286,6 +1323,53 @@ export function mount(root, params) {
 
   /* ---- 儲存與備份 ---- */
   if (params.id === 'data') {
+    /* ★ 2026-11-12 補漏：舊系統入面嗰個「資料管理」雖然主要係指路頁，
+       但入面其實仲有 JSON 備份／匯入／重設／清空四個真動作。
+       刪指路頁時要將真功能搬到呢個真正分頁，唔可以連功能一齊刪。 */
+    root.querySelectorAll('[data-act="export-json"], [data-act="import-json"], [data-act="reset-seed"], [data-act="wipe"]')
+      .forEach(b => b.addEventListener('click', async () => {
+        const act = b.dataset.act;
+        if (act === 'export-json') {
+          dlFile(`ecportal_${currentUnit()}_備份_${stamp()}.json`, exportAll(), 'application/json');
+          toast('已匯出備份', 'ok'); audit('匯出備份'); return;
+        }
+        if (act === 'import-json') {
+          const r = await modal({
+            title: '匯入備份', sub: '會覆蓋目前旅團所有資料',
+            body: `<div class="field"><label class="label">貼上備份 JSON</label>
+                <textarea class="textarea" id="q-json" style="min-height:180px;font-family:var(--mono);font-size:12px" placeholder='{"schema":2,…}'></textarea></div>
+              <div id="q-err" class="err mt-8"></div>`,
+            actions: [{ label: '取消', class: 'btn', value: null },
+              { label: '匯入', class: 'btn-primary', onClick: el => el.querySelector('#q-json').value }]
+          });
+          if (!r) return;
+          try {
+            importAll(r);
+            toast('已匯入，重新載入…', 'ok');
+            setTimeout(() => location.reload(), 600);
+          } catch (e) { toast('匯入失敗：' + e.message, 'err'); }
+          return;
+        }
+        if (act === 'reset-seed') {
+          if (await confirmDlg({
+            title: '還原初始資料', danger: true, okText: '確定還原',
+            message: '本機所有改動會消失，還原做 <b>data/</b> 檔案嘅初始內容，並會登出。建議先匯出備份。'
+          })) {
+            await resetToSeed();
+            toast('已還原，重新載入…', 'ok');
+            setTimeout(() => { location.href = location.pathname + location.search; }, 700);
+          }
+          return;
+        }
+        if (act === 'wipe' && await confirmDlg({
+          title: '清空本旅團資料', danger: true, okText: '確定清空',
+          message: '所有團員、帳目、物資、團章改動會<b>全部清空</b>。'
+        })) {
+          wipe(); toast('已清空', 'ok');
+          setTimeout(() => location.reload(), 600);
+        }
+      }));
+
     root.querySelectorAll('[data-exp-one]').forEach(b => b.addEventListener('click', () => {
       const k = b.dataset.expOne;
       const d = tableDefs()[k];

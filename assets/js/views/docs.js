@@ -105,10 +105,12 @@ function startDoc() {
     <tbody>
       <tr><td>儀表板</td><td>提示中心（生日／團費／申報／借用／會議行動）、結餘、快況</td></tr>
       <tr><td>會議</td><td>議程、點名、會議記錄、決議行動</td></tr>
-      <tr><td>財務</td><td>帳目、雙財政年度報告、團費、收支申報、預算、匯入舊帳</td></tr>
+      <tr><td>財務</td><td>帳目、過往紀錄、團費、收支申報、活動預算、設定（含匯入舊帳）；年結報告喺頂部</td></tr>
       <tr><td>團員</td><td>名冊、生日表、出席率、個人紀錄</td></tr>
       <tr><td>物資</td><td>物資登記、借用批核（自動加減庫存）、借用單</td></tr>
-      <tr><td>團章 / 進度 / 系統</td><td>團章編輯輸出、讀寫進度紀錄、帳戶及資料管理</td></tr>
+      <tr><td>團章 / 進度</td><td>團章編輯輸出、讀寫進度紀錄</td></tr>
+      <tr><td>資料管理</td><td>總表同步、插入自己嘅 Sheet、儲存與備份（領袖限定）</td></tr>
+      <tr><td>系統</td><td>旅團設定、操作紀錄（領袖限定）</td></tr>
     </tbody>
   </table>
 `;
@@ -170,13 +172,13 @@ function financeDoc() {
   ${H('兩條數：點解')}
   ${P(`<b>旅團（童軍）財政年度</b>：每年 4 月 1 日至 3 月 31 日。<br>
         <b>旅財政年度</b>：由當年 AGM 起計，到下一年 AGM 前一日（本團多數喺暑假開 AGM）。`)}
-  ${P('所以同一批帳目會有兩個結論。系統內建兩個引擎，喺「財政年度報告」可以：')}
+  ${P('所以同一批帳目會有兩個結論。系統內建兩個引擎，喺「財務 → 年結報告」可以：')}
   <ul>
     <li>分別揀年度，同時見到 <b>期初結餘 → 收入 → 支出 → 淨額 → 期末結餘</b></li>
     <li>「兩條數對照」一表睇齊兩個制嘅結果</li>
     <li>輸出 Word／PDF：可以一份文件同時載兩份報告（AGM 用），亦可以只出一份</li>
   </ul>
-  ${noteBox(`<b>AGM 日期每年都唔同</b>：喺「財政年度報告 → 逐年輸入 AGM 日期」逐年填。
+  ${noteBox(`<b>AGM 日期每年都唔同</b>：喺「財務 → 年結報告 → 逐年輸入 AGM 日期」逐年填。
     未填／未確認嘅年份會標示「未確認」，報告頁同儀表板都會提醒你；確認之後報告就用你填嘅日期起計。`, 'info')}
   ${H('日常記帳')}
   <div class="steps">
@@ -262,7 +264,7 @@ function dailyDoc() {
 
   ${H('年結（AGM 前）')}
   <div class="steps">
-    <div class="step"><div>財務 → 財政年度報告 → 揀「旅財政年度（AGM 起計）」</div></div>
+    <div class="step"><div>財務 → 年結報告 → 揀「旅財政年度（AGM 起計）」</div></div>
     <div class="step"><div>逐年確認 AGM 日期（未確認會有黃色提示）</div></div>
     <div class="step"><div>按「Word（兩份報告一份文件）」或「PDF」→ 就有齊期初、收入、支出、淨額、期末結餘</div></div>
     <div class="step"><div>同時出「童軍年度（4/1–3/31）」嗰份交總會／存檔</div></div>
@@ -292,14 +294,14 @@ function mobileDoc() {
     <div class="step"><div>成員照住做：揀欄目（例：活動／交通／膳食／團費收入）、影低單據、打金額同理姓名</div></div>
     <div class="step"><div>送出之後：如果旅團設定咗 Apps Script，紀錄<b>直接寫入總 Sheet</b>；未設定就存喺成員自己部手機，佢可以按「複製內容」傳畀司庫</div></div>
   </div>
-  ${noteBox('想完全自動：喺「財務 → 收支申報 → 畀成員自己填」貼上 Apps Script <code>/exec</code> 網址（同「系統 → 資料管理 → 總表同步」可以共用同一個），成員一送出就入總表嘅「待批申報」分頁，仲可以順手存埋相片去 Google Drive。', 'brand')}
+  ${noteBox('想完全自動：喺「財務 → 收支申報 → 畀成員自己填」貼上 Apps Script <code>/exec</code> 網址（同「資料管理 → 總表同步」可以共用同一個），成員一送出就入總表嘅「待批申報」分頁，仲可以順手存埋相片去 Google Drive。', 'brand')}
 
   ${H('執委／領袖喺 APP 內填')}
   <div class="steps">
     <div class="step"><div><b>儀表板 → 「影相記一筆」</b>：最快，開門就係申報表</div></div>
     <div class="step"><div>或者 <b>財務 → 收支申報 → 我要申報</b>：一樣有相機、日期、分類</div></div>
     <div class="step"><div>批核：喺「收支申報」按「<b>批准並入帳</b>」→ 自動寫入帳目（金額、分類、日期、相片一齊跟）</div></div>
-    <div class="step"><div>相片太佔位？去「系統 → 資料管理 → 儲存用量」按「清理已入帳嘅相片（保留記錄）」</div></div>
+    <div class="step"><div>相片太佔位？去「資料管理 → 儲存與備份」按「清理已入帳嘅相片（保留記錄）」</div></div>
   </div>
 
   ${H('通告：一撳 WhatsApp 分享 ＋ QR 報名')}
@@ -324,7 +326,7 @@ function mobileDoc() {
 function tablesDoc() {
   return `
   ${H('一句話：成個系統就係一張大表，欄位自己話事')}
-  ${P('想改欄位就去<b>嗰個分頁</b>按「<b>欄位</b>」掣（財務／用戶／物資／通告／會議 都有）：可以改名、加欄、改類型、隱藏、排次序 —— 好似內建一個 Google Sheet。進階嘅「插入自己嘅 Sheet」同「總表同步」喺「<b>系統 → 資料管理</b>」。')}
+  ${P('想改欄位就去<b>嗰個分頁</b>按「<b>欄位</b>」掣（財務／用戶／物資／通告／會議 都有）：可以改名、加欄、改類型、隱藏、排次序 —— 好似內建一個 Google Sheet。進階嘅「插入自己嘅 Sheet」同「總表同步」喺「<b>資料管理</b>」。')}
 
   ${H('① 改欄位（改名／加減）')}
   <div class="steps">
@@ -340,7 +342,7 @@ function tablesDoc() {
   ${P('如果旅團本身已經有一張帳目表或者物資表，唔需要重新入過：')}
   <div class="steps">
     <div class="step"><div>Google Sheet → 共用 → 改為「<b>知道連結嘅任何人均可檢視</b>」（只讀）</div></div>
-    <div class="step"><div>系統 → 資料管理 → <b>插入自己嘅 Sheet</b> → 貼上連結（記得帶 <code>gid=</code>，即係你停留嘅分頁）</div></div>
+    <div class="step"><div>資料管理 → <b>插入自己嘅 Sheet</b> → 貼上連結（記得帶 <code>gid=</code>，即係你停留嘅分頁）</div></div>
     <div class="step"><div>按「讀取欄位」→ 系統自動幫你對應（日期→日期、金額→金額、付款人→經手人…）</div></div>
     <div class="step"><div>對應唔啱就逐個下拉改；可以剔「匯入前清空該表」避免重複</div></div>
     <div class="step"><div>按「匯入」→ 有預覽筆數；之後可以「儲存做同步來源」，隨時再按「同步」拉最新版本</div></div>
@@ -449,7 +451,7 @@ function progressDoc() {
     <div class="step"><div>儲存之後撳「重新讀取」→ 見到成員同進度就成功；之後喺「勾選進度」直接勾</div></div>
   </div>
   ${noteBox('後端要係本系統嘅 <code>Code.gs</code>（或者已經支援 <code>?action=load</code> 同 <code>action=save</code> 嘅版本）：'
-    + '「系統 → 資料管理 → 總表同步」可以下載最新範本，執行一次 <code>initializeSheets</code> 會建好'
+    + '「資料管理 → 總表同步」可以下載最新範本，執行一次 <code>initializeSheets</code> 會建好'
     + '「進度追蹤／其他獎章／活動履歷」等分頁。', 'info')}
   ${noteBox('<b>設好後端之後，想埋讀取進度追蹤？</b>去「進度 → 設定」：'
     + '① 貼 <code>/exec</code> 網址（Apps Script → 部署 → 管理部署） ② 貼 API Key（Apps Script 執行 '
@@ -498,7 +500,7 @@ function multiUnitOnboardSteps() {
   ${H('新旅團點接入（推薦：用申請表）')}
   ${P('<b>每個旅團用自己嘅 Google Sheet 做後端</b>，唔係共用一張總表。流程：')}
   <div class="steps">
-    <div class="step"><div><b>起後端</b> —— 「系統 → 資料管理 → 總表同步」下載 <code>Code.gs</code> → 建一張新 Google Sheet → 擴充功能 → Apps Script → 貼上</div></div>
+    <div class="step"><div><b>起後端</b> —— 「資料管理 → 總表同步」下載 <code>Code.gs</code> → 建一張新 Google Sheet → 擴充功能 → Apps Script → 貼上</div></div>
     <div class="step"><div>執行 <code>initializeSheets</code>（會建好全部分頁），複製 <b>API Key</b></div></div>
     <div class="step"><div>部署做<b>網頁應用程式</b>（執行身分：我；存取權：任何人），複製 <code>/exec</code> 網址</div></div>
     <div class="step"><div>旅團喺登入前嘅旅團閘撳「<b>新旅團申請接入</b>」（或者直接將 <code>/exec</code> ＋ Key 交畀你）</div></div>
@@ -632,7 +634,7 @@ function backupDoc() {
       <tr><td>財務</td><td>雙年度報告（Word / PDF）、逐筆帳目（CSV / Word / PDF）、團費（Word / CSV）</td></tr>
       <tr><td>團員／生日</td><td>名冊（CSV / Word）、生日表（Word / PDF / CSV / .ics 日曆）</td></tr>
       <tr><td>物資</td><td>物資清單（Word）、借用紀錄（Word）、借用單（PDF 列印）</td></tr>
-      <tr><td>全站備份</td><td>JSON（系統 → 資料管理）</td></tr>
+      <tr><td>全站備份</td><td>JSON（資料管理）</td></tr>
     </tbody>
   </table>
   ${H('備份（重要）')}

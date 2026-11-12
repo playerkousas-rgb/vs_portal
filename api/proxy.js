@@ -35,7 +35,7 @@ const SCOUT_ADMIN_API = process.env.SCOUT_ADMIN_API ||
   'https://script.google.com/macros/s/AKfycbxj5BDDGgjs559smkK4Z5aYImWYeXbN5af8U1ObON0z9WnsN6QJW4I1XWolhs5kQ_H-UQ/exec';
 
 const ALLOWED_ACTIONS = new Set([
-  'ping', 'status', 'test', 'authLogin', 'authChangePassword', 'authResetPassword', 'authDeleteAccount', 'authRestoreAccount', 'authCreateAccount', 'authForgotPassword', 'authResetByToken', 'sync', 'claim', 'claimDecision', 'loan', 'noticeSignup', 'noticeSubscribe', 'noticeSubscriptions', 'loanDecision',
+  'ping', 'status', 'test', 'authLogin', 'authResetPassword', 'authDeleteAccount', 'authRestoreAccount', 'authCreateAccount', 'authForgotPassword', 'sync', 'claim', 'loan', 'noticeSignup',
   /* 整份資料庫讀／寫 —— app 嘅真正儲存（換機／清 cache 都唔會冇咗）。
      saveDbPart／saveDbCommit ＝ v2.4.0 分件儲存（大資料庫拆件上，冇硬天花板）
      loadDbPart            ＝ v2.6.0 分段讀取（大資料庫分段落，唔會撞 Vercel 4.5MB 回應上限） */
@@ -44,10 +44,11 @@ const ALLOWED_ACTIONS = new Set([
      saveTables＝逐表寫、loadTables＝逐表讀、loadTablesPart＝成份太大嗰陣一個表一個表攞。
      舊嘅 saveDb／loadDb 照樣放行做後備（後端 Code.gs 未升級就自動跌返去用）。 */
   'saveTables', 'loadTables', 'loadTablesPart', 'syncCheck',
-  /* ★ v2.7.2：搶救路線 —— diag（後端自查）／repairDb（清垃圾同舊版本段）／
-     saveDbForce（強制用呢部機嘅資料覆蓋後端）。三個都要後端 API Key（由本代理注入），
-     前端唔會見到 Key。用途：後端資料讀唔到、所有人都入唔到嘅時候，由留住資料嗰部機救返。 */
-  'diag', 'repairDb', 'saveDbForce',
+  /* ★ v2.7.2：搶救路線 —— repairDb（清垃圾同舊版本段）／
+     saveDbForce（強制用呢部機嘅資料覆蓋後端）。兩個都要後端 API Key（由本代理注入），
+     前端唔會見到 Key。用途：後端資料讀唔到、所有人都入唔到嘅時候，由留住資料嗰部機救返。
+     （diag 已於 2026-11-12 移除：對應 UI 喺 2026-09-26 拆走，後端再冇 handler。） */
+  'repairDb', 'saveDbForce',
   /* 單據相片直上 Drive（v2.3.0 體積治理）—— db 入面只留連結。
      ★ 2026-09-20 事故：呢個 action 一直漏咗喺白名單，代理一律回 400
      「不支援的操作」，前端 finance.js 於是跌返落「本地存做後備」，

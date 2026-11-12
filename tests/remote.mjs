@@ -152,7 +152,7 @@ section('Apps Script 範本（Code.gs）');
   ok('doGet 都讀得（換機時用瀏覽器直接開都拎得返）', /action === 'loadDb' \|\| action === 'dbInfo'/.test(code));
   ok('寫入用 LockService 包住（兩個執委同時改都唔會爛）',
     /withLock\(function \(\) \{ return saveDb\(body\); \}\)/.test(code));
-  /* v2.6.2：刪行邏輯統一咗入 deleteRowRuns()（以前 saveDb／saveDbPart／
+  /* 自 v2.6.2 起：刪行邏輯統一咗入 deleteRowRuns()（以前 saveDb／saveDbPart／
      cleanStaging 各自砌一梳，cleanStaging 嗰份砌錯 —— 一梳連續行只刪到一行）。
      呢度**唔淨係** grep 原始碼，仲真係行一次 Code.gs 驗行為。 */
   ok('寫入前會刪走舊段（統一用 deleteRowRuns，唔會殘留舊資料）',
@@ -1103,7 +1103,9 @@ section('總表同步經同源代理（唔填 /exec 都得）');
   ok('冇代理又冇網址 → 明確話連唔到代理', r3.ok === false && /同源代理/.test(String(r3.msg || '')),
     String(r3.msg || '').slice(0, 120));
 
-  /* remote.testConnection 一樣唔可以強制要本地網址 */
+  /* 2026-11-12：remote.testConnection() 已刪（冇 UI 用）。
+     原本要守住嘅規則改用 live 嘅 remoteCfg／remoteConfigured 驗：
+     有同源代理＋旅團編號就算接得通，唔可以強制要前端填 /exec。 */
   globalThis.fetch = async (url) => {
     const clean = String(url).split('?')[0].replace(/^\.?\//, '');
     if (clean === 'api/proxy') {
@@ -1112,8 +1114,12 @@ section('總表同步經同源代理（唔填 /exec 都得）');
     return { ok: false, status: 404, text: async () => '404' };
   };
   const remote = await import('../assets/js/lib/remote.js');
-  const t = await remote.testConnection();
-  ok('remote.testConnection 經代理都 test 到（唔使本地網址）', t.ok === true, JSON.stringify(t).slice(0, 160));
+  const cfgT = remote.remoteCfg();
+  ok('★ 經代理就算接得通，唔使本地填 /exec（純環境變數開團嘅旅團）',
+    remote.remoteConfigured() === true && cfgT.viaProxy === true && !cfgT.url,
+    JSON.stringify({ configured: remote.remoteConfigured(), viaProxy: cfgT.viaProxy, url: cfgT.url }));
+  const t = await remote.syncState();
+  ok('★ syncState 讀得到（唔會因為冇本地網址而報未設定）', typeof t === 'object' && t !== null, JSON.stringify(t).slice(0, 160));
 
   globalThis.fetch = memFetch;
 }
@@ -1580,10 +1586,11 @@ section('v2.6.0：大資料庫分段讀取（兩邊視窗對得到料）');
   ok('dev-server 本機模擬 Vercel 4.5MB 回應上限',
     /VERCEL_RESPONSE_LIMIT/.test(devSrc) && /FUNCTION_RESPONSE_PAYLOAD_TOO_LARGE/.test(devSrc));
 
-  /* ---- ③ 「同步診斷」要有「整份資料庫讀取」呢一格 ----
+  /* ---- ③ 5MB 資料庫一定要行分段讀得返 ----
      上面幾格全部 ok 都一樣可以讀唔返成份資料（登記好、連到、讀寫權正常，
-     但資料庫大過 4.5MB）—— 用家見到「全部綠燈」却兩邊對唔到料，
-     所以診斷一定要真係讀一次、話你知幾大、有冇行分段。 */
+     但資料庫大過 4.5MB）—— 用家見到「全部綠燈」卻兩邊對唔到料。
+     2026-11-12：原本經 remoteDiagnose() 驗（函數已刪，UI 冇用）。
+     改成直接叫 live 嘅 pullDb()：驗嘅係真正嗰條分段讀路徑，更硬。 */
   globalThis.fetch = async (url, init = {}) => {
     const u = String(url).split('?')[0];
     if (u.endsWith('api/units')) {
@@ -1607,17 +1614,15 @@ section('v2.6.0：大資料庫分段讀取（兩邊視窗對得到料）');
     }
     return { ok: false, status: 400, text: async () => JSON.stringify({ ok: false, error: '不支援的操作' }) };
   };
-  const diag = await remote.remoteDiagnose();
-  const dbread = (diag.stages || []).find(s => s.id === 'dbread');
-  ok('★ 「同步診斷」有「整份資料庫讀取」一格', !!dbread, (diag.stages || []).map(s => s.id).join(','));
-  ok('呢格會講體積（幾多 MB）', /\d+\.\d\d MB/.test(String(dbread?.detail || '')), String(dbread?.detail || ''));
-  ok('呢格會話你知大過 Vercel 4.5MB 回應上限',
-    /4\.5MB/.test(String(dbread?.detail || '')), String(dbread?.detail || ''));
-  ok('呢格會話你知有冇行分段讀取', /分段/.test(String(dbread?.detail || '')), String(dbread?.detail || ''));
-  ok('★ 5MB 資料庫：登記／連線／讀寫權全綠都唔會呃人「冇後端」',
-    (diag.stages || []).filter(s => ['unit', 'registry', 'status', 'write'].includes(s.id)).every(s => s.state === 'ok'),
-    (diag.stages || []).map(s => `${s.id}:${s.state}`).join(','));
-  ok('分段讀返 → 呢格唔係 bad（資料讀得到，只係要提示瘦身）', dbread?.state !== 'bad', String(dbread?.state));
+  const pulled = await remote.pullDb();
+  ok('★ 5MB 資料庫：整份讀取撞上限之後，分段讀返成功', pulled.ok === true && pulled.found === true,
+    JSON.stringify({ ok: pulled.ok, found: pulled.found, error: String(pulled.error || '').slice(0, 80) }));
+  ok('★ 真係行咗分段（segmented）', pulled.segmented === true, JSON.stringify({ seg: pulled.segmented }));
+  ok('★ 分段讀返嘅資料完整（bytes 同後端一樣）', Number(pulled.bytes) === bigText.length,
+    JSON.stringify({ got: pulled.bytes, want: bigText.length }));
+  ok('★ 讀得返真正內容（JSON 砌得返、有 members）', !!pulled.db && Array.isArray(pulled.db.members),
+    JSON.stringify(Object.keys(pulled.db || {}).slice(0, 6)));
+  ok('★ 版本對得上（之後樂觀鎖先至有用）', String(pulled.version) === VERSION, String(pulled.version));
 
   globalThis.fetch = memFetch;
 }
@@ -1736,158 +1741,37 @@ section('★ 登入硬閘：後端答唔到就唔准入主控頁');
   }
 }
 
-section('★ 搶救三寶（前端契約：後端讀唔到 → 檢查 → 修復 → 用呢部機上載）');
-{
-  const { JSDOM } = await import('jsdom');
-  const dom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost:8080/?u=0082', pretendToBeVisual: true });
-  const { window } = dom;
-  for (const k of ['window', 'document', 'navigator', 'localStorage', 'location', 'HTMLElement',
-    'CustomEvent', 'Event', 'Node', 'getComputedStyle', 'URL', 'URLSearchParams']) {
-    try { Object.defineProperty(globalThis, k, { value: window[k], configurable: true, writable: true }); } catch { /* 唯讀 */ }
-  }
-  globalThis.window = window;
+/* ============================================================
+   ★ 搶救介面已拆（2026-09-26 團長定案），但後端逃生門要留
+   ------------------------------------------------------------
+   團長原話：「檢查／修復／上載嗰堆都唔想要，我哋應該解決咗嗰個問題」。
+   所以登入閘簡化做「暫時未能連線」，「總表同步 → 儲存狀態」卡嗰組
+   「檢查／修復／覆蓋」掣全部剷走。
 
-  /* ⚠️ 一定要用**冇 query**嗰份（同 remote.js 內部 import 嘅係同一個 module instance）——
-     用 `?rescue=1` 只會換到另一個 state 物件，remote 內部照樣睇住舊嗰個（2026-09-24 撞到）。 */
-  const store3 = await import('../assets/js/lib/store.js');
-  await store3.init({ mode: 'real', unit: '0082' });
-  const remote3 = await import('../assets/js/lib/remote.js');
+   2026-11-12：對應嘅前端函數（backendHealth / repairBackend /
+   forcePushBackend）既然冇 UI 呼叫，已經連屍體一齊刪走。
+   呢一節因此由「驗三寶函數輸出」改為驗**真正仲要守住嘅兩件事**：
+     ① 介面唔可以再靜靜雞加返嗰組掣（防止屍體翻生）；
+     ② 後端逃生門 repairDb／saveDbForce 仍然放行 —— 部署指南嘅人手
+        搶救步驟靠佢，唔可以因為前端拆掣而順手拆埋後端能力。
+   ============================================================ */
+section('★ 搶救介面已拆：唔可以加返掣，但後端逃生門要留');
+{
   const mainSrc3 = fs.readFileSync(path.join(ROOT, 'assets', 'js', 'main.js'), 'utf8');
   const tablesSrc3 = fs.readFileSync(path.join(ROOT, 'assets', 'js', 'views', 'tables.js'), 'utf8');
   const proxSrc3 = fs.readFileSync(path.join(ROOT, 'api', 'proxy.js'), 'utf8');
+  const remoteSrc3 = fs.readFileSync(path.join(ROOT, 'assets', 'js', 'lib', 'remote.js'), 'utf8');
 
-  /* 本機有一份資料（＝「留住資料嗰部機」）——屋企名冊 2 位 */
-  const local3 = store3.load();
-  local3.members = [
-    { id: 'm1', name: '陳大文', ymis: '8202000001', identity: 'chief' },
-    { id: 'm2', name: '李小美', ymis: '8202000002', identity: 'member' }
-  ];
-  store3.commit();
-
-  let hits = [];
-  let mode3 = 'broken';   // broken／healthy／down
-  const memFetch3 = globalThis.fetch;
-  globalThis.fetch = async (url, init = {}) => {
-    const clean = String(url).split('?')[0].replace(/^\.?\//, '');
-    if (clean !== 'api/proxy') return { ok: false, status: 404, text: async () => '404' };
-    const body = JSON.parse(init.body || '{}');
-    hits.push(body.action);
-    if (mode3 === 'down') return { ok: false, status: 500, text: async () => 'FUNCTION_RESPONSE_PAYLOAD_TOO_LARGE' };
-    if (body.action === 'status') {
-      return { ok: true, status: 200, text: async () => JSON.stringify({
-        ok: true, msg: '深資童軍管理系統 後端正常', backendVersion: 'v2.7.2', spreadsheet: 'VS 第八十二旅 資料庫' }) };
-    }
-    if (body.action === 'dbInfo') {
-      const broken = mode3 === 'broken';
-      return { ok: true, status: 200, text: async () => JSON.stringify({
-        ok: true, found: true, bytes: 4096, version: 'V1', counts: { members: 2 },
-        versions: broken ? 2 : 1, staleRows: broken ? 1 : 0, stagingRows: broken ? 3 : 0, stagingBytes: broken ? 12000 : 0 }) };
-    }
-    if (body.action === 'loadDb' || body.action === 'loadDbPart') {
-      return mode3 === 'broken'
-        ? { ok: true, status: 200, text: async () => JSON.stringify({ ok: false, error: 'Unexpected token } in JSON' }) }
-        : { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, found: true, version: 'V1', bytes: 2048, db: { schema: 2, unitCode: '0082', members: [{ id: 'm1', name: '陳大文' }] } }) };
-    }
-    if (body.action === 'repairDb') {
-      mode3 = 'healthy';
-      return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, repaired: {
-        ok: true, unit: '0082', before: { versions: 2, stagingRows: 3, staleRows: 1 },
-        removedStaging: 3, removedOldVersions: 1, keptVersions: 1, skippedUnits: [],
-        after: { versions: 1, stagingRows: 0, staleRows: 0 }, loadOk: true, loadError: '', members: 2 } }) };
-    }
-    if (body.action === 'saveDbForce') {
-      return { ok: true, status: 200, text: async () => JSON.stringify({
-        ok: true, success: true, forced: true, version: 'V-NEW', overwroteVersion: 'V1', bytes: 5120, chunks: 1 }) };
-    }
-    return { ok: false, status: 400, text: async () => JSON.stringify({ ok: false, error: '不支援的操作' }) };
-  };
-
-  /* ---- ① 壞後端：一睇就知發生咩事，而且有兩條救路 ---- */
-  hits = []; mode3 = 'broken';
-  const hBad = await remote3.backendHealth();
-  ok('★ 檢查後端（壞後端 ＋ 本機有料）→ 判 bad', hBad.level === 'bad', JSON.stringify({ level: hBad.level, title: hBad.title }));
-  ok('★ 講得出「讀唔到」＋ 有得救（唔係一句「同步失敗」）', /讀唔到/.test(hBad.title) && /修復/.test(hBad.title), hBad.title);
-  ok('★ 講出邊支腳本／邊張 Sheet（答「係唔係指錯咗」）',
-    hBad.lines.some(l => /第八十二旅/.test(l)) && hBad.lines.some(l => /v2\.7\.2/.test(l)), JSON.stringify(hBad.lines));
-  ok('★ 講出死因：幾套版本段 ＋ 幾行暫存垃圾',
-    hBad.lines.some(l => /2 套版本段/.test(l)) && hBad.lines.some(l => /3 行暫存垃圾/.test(l)), JSON.stringify(hBad.lines));
-  ok('★ 有得修復（canRepair）＋ 可以用呢部機上載（canForce，本機有料）',
-    hBad.canRepair === true && hBad.canForce === true && hBad.hasLocalData === true,
-    JSON.stringify({ r: hBad.canRepair, f: hBad.canForce, l: hBad.hasLocalData }));
-  ok('★ 步驟教人撳修復（唔使人自己入 Apps Script）',
-    hBad.steps.some(x => /修復後端/.test(x)) && hBad.steps.some(x => /呢部機嘅資料上載/.test(x)), JSON.stringify(hBad.steps));
-  ok('★ 檢查只係「睇」——冇偷偷寫後端（冇 saveDb／repairDb／saveDbForce）',
-    hits.every(a => ['status', 'dbInfo', 'loadDb', 'loadDbPart'].includes(a)) && hits.includes('status') && hits.includes('dbInfo'),
-    hits.join(','));
-
-  /* ---- ② 一鍵修復（經 /api/proxy，後端 API Key 由代理注入） ---- */
-  hits = [];
-  const rep = await remote3.repairBackend();
-  ok('★ 修復後端 → 打 repairDb（經同源代理）', hits.includes('repairDb'), hits.join(','));
-  ok('★ 修復回報清走幾多行（垃圾 3 ＋ 舊段 1）＋ 之後讀得返',
-    rep.ok === true && rep.removedStaging === 3 && rep.removedOldVersions === 1 && rep.loadOk === true && rep.members === 2,
-    JSON.stringify(rep).slice(0, 200));
-  ok('★ 修復文案係人話（唔係 JSON）', /清走暫存垃圾 3 行/.test(rep.text) && /2 位用戶/.test(rep.text), rep.text);
-
-  /* ---- ③ 最後一招：用呢部機嘅資料強制覆蓋 ---- */
-  hits = [];
-  const forced = await remote3.forcePushBackend();
-  ok('★ 強制上載 → 打 saveDbForce', hits.includes('saveDbForce'), hits.join(','));
-  ok('★ 上載嘅係「呢部機」手上嗰份（本機 2 位，唔會空空如也）',
-    forced.ok === true && forced.members === 2 && /2 位用戶/.test(forced.text), JSON.stringify(forced).slice(0, 200));
-  ok('★ 回報覆蓋咗邊個舊版本（有事都追得返）',
-    forced.overwroteVersion === 'V1' && forced.version === 'V-NEW', JSON.stringify(forced).slice(0, 160));
-
-  /* ---- ③b 「讀得到但分頁有垃圾」→ 唔可以嚇人話「讀唔到」（要如實講「仲頂得住」） ---- */
-  hits = []; mode3 = 'broken-junkonly';
-  {
-    /* 頭先修復完已經清乾淨，所以呢度砌返「讀得到 ＋ 有舊段」嘅實況 */
-    const memF = globalThis.fetch;
-    globalThis.fetch = async (url, init = {}) => {
-      const clean = String(url).split('?')[0].replace(/^\.?\//, '');
-      if (clean !== 'api/proxy') return { ok: false, status: 404, text: async () => '404' };
-      const body = JSON.parse(init.body || '{}');
-      hits.push(body.action);
-      if (body.action === 'status') return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, msg: '深資童軍管理系統 後端正常', backendVersion: 'v2.7.2', spreadsheet: 'VS 第八十二旅 資料庫' }) };
-      if (body.action === 'dbInfo') return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, found: true, bytes: 4096, version: 'V1', counts: { members: 2 }, versions: 2, staleRows: 1, stagingRows: 0 }) };
-      return { ok: true, status: 200, text: async () => JSON.stringify({ ok: true, found: true, version: 'V1', bytes: 2048, db: { schema: 2, unitCode: '0082', members: [{ id: 'm1', name: '陳大文' }] } }) };
-    };
-    const hJunk = await remote3.backendHealth();
-    globalThis.fetch = memF;
-    ok('★ 讀得到但分頁有舊段／垃圾 → 判 warn（唔會嚇人話「讀唔到」）',
-      hJunk.level === 'warn' && /讀得到/.test(hJunk.title) && !/讀唔到|讀唔到（/.test(hJunk.title.replace('唔清遲早會讀唔到', '')),
-      JSON.stringify({ level: hJunk.level, title: hJunk.title }));
-    ok('★ 提醒仍然叫人修復（趁未壞）', hJunk.canRepair === true && hJunk.steps.some(x => /修復後端/.test(x)), JSON.stringify(hJunk.steps));
-  }
-
-  /* ---- ④ 後端健康 → 唔應該叫人多此一舉 ---- */
-  hits = []; mode3 = 'healthy';
-  const hOk = await remote3.backendHealth();
-  ok('★ 健康後端 → 判 ok、標題講「資料喺後端，唔係困喺某部機」',
-    hOk.level === 'ok' && /唔係困喺某部機/.test(hOk.title), JSON.stringify({ level: hOk.level, title: hOk.title }));
-  ok('★ 健康時唔會亂叫（canRepair／canForce 都 false）', hOk.canRepair === false && hOk.canForce === false,
-    JSON.stringify({ r: hOk.canRepair, f: hOk.canForce }));
-  ok('★ 健康時教「其他裝置係舊 cache，重新連線就得」',
-    hOk.steps.some(x => /cache|重新/.test(x)), JSON.stringify(hOk.steps));
-
-  /* ---- ⑤ 連唔到後端 ---- */
-  hits = []; mode3 = 'down';
-  const hDown = await remote3.backendHealth();
-  ok('★ 連唔到後端 → 如實講「連唔到」＋教查部署權限（唔會扮正常）',
-    hDown.level === 'bad' && /連唔到/.test(hDown.title) && hDown.steps.some(x => /部署|存取權/.test(x)),
-    JSON.stringify({ t: hDown.title, s: hDown.steps }));
-
-  /* ---- ⑥ 破壞性動作要有人肯撳、而且要打字確認（介面守門） ---- */
-  /* ★ 2026-09-26 團長：「檢查／修復／上載嗰堆都唔想要，我哋應該解決咗嗰個問題」——
-     連線閘（連唔到嗰頁）簡化做「暫時未能連線」；連「總表同步 → 儲存狀態」卡
-     嗰組「檢查／修復／覆蓋」掣都一齊剷走（登入咗都唔再見到）。 */
   ok('★ 登入閘已經冇「檢查／修復／上載」嗰組掣', ['#btnBackendHealth', '#btnBackendRepair', '#btnBackendUpload'].every(id => !mainSrc3.includes(id)));
   ok('★ 連線提示留低「重試連線」（喺登入表單頂，唔再係成頁閘）', /id="btnRetrySync"/.test(mainSrc3));
   ok('★ 「儲存狀態」卡嗰組搶救掣都一齊清走', !/backend-health|backend-repair|backend-upload/.test(tablesSrc3));
-  ok('★ 代理白名單照舊放行 repairDb／saveDbForce／diag（後端能力未拆，只係介面唔再迫人用）',
-    /'repairDb'/.test(proxSrc3) && /'saveDbForce'/.test(proxSrc3) && /'diag'/.test(proxSrc3));
-
-  globalThis.fetch = memFetch3;
+  ok('★ 代理白名單仍然放行 repairDb／saveDbForce（人手搶救靠佢，後端能力未拆）',
+    /'repairDb'/.test(proxSrc3) && /'saveDbForce'/.test(proxSrc3));
+  /* 防止屍體翻生：已刪嘅前端函數唔可以静静雞加返（要加就要有真實 UI 需要） */
+  ok('★ 已刪嘅搶救前端函數冇翻生',
+    !/export\s+(async\s+)?function\s+(backendHealth|repairBackend|forcePushBackend|backendReality|syncProbe|remoteDiagnose|testConnection|testReadWrite)\b/.test(remoteSrc3));
+  /* diag 已經冇後端 handler → 白名單唔應該再放行（唔可以留死表面） */
+  ok('★ diag 已移除：代理白名單唔再放行冇 handler 嘅 action', !/'diag'/.test(proxSrc3));
 }
 
 console.log(`\n──────── 後端儲存測試結果：${pass} 通過 / ${fail} 失敗（${Date.now() - t0} ms）────────\n`);

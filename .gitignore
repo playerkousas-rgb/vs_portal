@@ -3,5 +3,7 @@ node_modules/
 *.log
 .env
 .env.*
+# 例外：.env.example 只有 key 名、冇真值，一定要入 Git（A1 / F12 / VL2）
+!.env.example
 # 部署時由 TROOP_* 焗出嚟嘅公開名單（Vercel build 生成，唔入 Git，免得有份過期嘅喺 repo 誤導人）
 data/units.generated.json

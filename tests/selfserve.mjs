@@ -152,7 +152,7 @@ const A = await runDevice({ steps: [
   { op: 'addMember', name: '陳大文', ymis: '2026000001' },
   { op: 'addTx', date: '2026-09-19', type: 'income', item: '團費', amount: 360 },
   { op: 'push' },
-  { op: 'diagnose' },
+  { op: 'info' },
   { op: 'links' }
 ] });
 {
@@ -194,23 +194,24 @@ section('③ 無痕視窗（全新 process／全新 localStorage）拉到同一�
     !!snaps[1]?.lastSyncedVersion, JSON.stringify(snaps[1]));
 }
 
-/* ---- ⑤ 同步診斷 ---- */
-section('⑤ 「同步診斷」逐格講清楚邊格斷');
+/* ---- ⑤ 後端資訊（自助路線仍然讀得到） ---- */
+section('⑤ 「後端資訊」自助路線照樣問得到後端');
 {
-  const d = step(A, 'diagnose');
-  ok('診斷跑得到', !!d.stages, JSON.stringify(d).slice(0, 200));
-  ok('诊断話你知成條鏈正常（自助路線）', d.ok === true, JSON.stringify(d));
-  ok('診斷講明行緊「自己貼嘅 /exec」', d.route === 'direct', String(d.route));
-  ok('診斷攞到後端版本號（v2.8.1）', d.backendVersion === 'v2.8.1', String(d.backendVersion));
-  ok('診斷照樣指出平台未登記（warn，唔係當冇事）',
-    (d.stages || []).includes('registry:warn') || (d.stages || []).includes('registry:bad'), JSON.stringify(d.stages));
+  /* 2026-11-12：remoteDiagnose() 已刪（UI 喺 2026-09-26 拆走，只剩測試叫佢）。
+     改用仍然 live 嘅 remoteInfo()：驗同一件事 —— 自己貼 /exec 之後，
+     唔經平台登記都問得到後端；未貼嗰陣要辨得出「未設定」而唔係訛稱成功。 */
+  const d = step(A, 'info');
+  ok('★ 自助路線問得到後端（ok）', d.ok === true, JSON.stringify(d).slice(0, 200));
+  ok('★ 攞到後端版本號', !!d.backendVersion, String(d.backendVersion));
+  ok('★ 讀得到後端實際內容（found）', d.found === true, JSON.stringify(d));
 
-  /* 未貼 /exec 嗰陣，診斷要指得出「平台登記」嗰格斷咗 */
-  const C = await runDevice({ steps: [{ op: 'diagnose' }] });
-  const dc = step(C, 'diagnose');
-  ok('未接後端嗰陣，診斷指得出斷點', dc.ok === false && (dc.blockers || []).length > 0, JSON.stringify(dc));
-  ok('斷點係「平台登記」，唔係一句「同步失敗」',
-    (dc.blockers || []).includes('registry'), JSON.stringify(dc.blockers));
+  /* 未貼 /exec 嗰陣，要指得出「未設定」，唔可以扮連到 */
+  const C = await runDevice({ steps: [{ op: 'info' }] });
+  const dc = step(C, 'info');
+  /* 未登記嘅真正 reason 係 not_registered（平台冇該旅團後端，連結亦冇帶網址）——
+     同原本診斷指「registry 斷咗」係同一件事，而且更精確。 */
+  ok('★ 未接後端嗰陣，指得出係「平台未登記」而唔係扮連到',
+    dc.ok === false && dc.reason === 'not_registered', JSON.stringify(dc));
 }
 
 /* ---- ⑥ 公開連結 ---- */

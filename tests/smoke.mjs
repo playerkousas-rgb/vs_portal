@@ -873,7 +873,7 @@ section('通告詳情頁（同步到公開頁 ＝ 行同一條「儲存到後端
   doc.querySelector('#view [data-act="sync-notice"]')?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
   await new Promise(r => setTimeout(r, 400));
   ok('失敗都有 toast（唔會靜靜地冇反應）', /儲存失敗/.test(lastToast()), lastToast());
-  ok('失敗提示去「帳號與系統 → 資料管理 → 總表同步」檢查 /exec 同 API Key',
+  ok('失敗提示去「資料管理 → 總表同步」檢查 /exec 同 API Key',
     /總表同步/.test(lastToast()) && /\/exec/.test(lastToast()) && /API Key/.test(lastToast()), lastToast());
   ok('讀唔到後端版本 → 一個 saveDb 都冇送出', !sent.some(x => x?.action === 'saveDb'), JSON.stringify(sent.map(x => x?.action)));
 
@@ -2178,8 +2178,13 @@ section('欄位設定（每頁自己改）');
   window.dispatchEvent(new window.HashChangeEvent('hashchange'));
   await new Promise(r => setTimeout(r, 90));
   const av = doc.getElementById('view');
-  ok('「帳號與系統 → 資料管理」有表格與同步入口',
-    !!av.querySelector('[data-go="#/tables/sync"]') && !!av.querySelector('[data-go="#/tables/source"]'));
+  /* ★ 2026-11-12：「系統 → 資料管理」嗰個主要係指路嘅中轉頁已刪（3 張卡淨係叫人
+     去 #/tables 嗰 3 個分頁 = 兜圈）。而家「資料管理」係側欄獨立入口。
+     呢度改驗真正嘅入口：舊 hash 要轉址，而且真嘅分頁掣要喺度。 */
+  ok('舊 #/admin/data 自動轉址去 #/tables（唔會斷書籤）',
+    window.location.hash.startsWith('#/tables'), window.location.hash);
+  ok('「資料管理」有真嘅總表同步／插入 Sheet 分頁掣（唔係指路卡）',
+    !!av.querySelector('[data-tab="sync"]') && !!av.querySelector('[data-tab="source"]'));
   ok('有講明欄位改動去返各自分頁',
     /欄位/.test(av.textContent) && /分頁/.test(av.textContent));
 

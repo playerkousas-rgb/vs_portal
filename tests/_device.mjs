@@ -86,10 +86,17 @@ try {
       store.wipe();
       out.steps.push({ op: 'wipe', members: store.load().members.length });
     }
+    /* 2026-11-12：remote.testReadWrite() 已刪（前端冇 UI 用）。
+       呢個 op 保留 —— 直接經真 proxy 打 GAS `syncCheck`（真正寫入＋讀回＋清理），
+       驗嘅係同一條後端能力，唔係前端包裝。 */
     if (step.op === 'checkReadWrite') {
-      const r = await remote.testReadWrite();
-      out.steps.push({ op: 'checkReadWrite', ok: r.ok, sheet: r.sheet || '',
-        version: r.version || '', error: r.error || '', via: r.via || '' });
+      const r = await (await fetch(`${BASE}/api/proxy`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'syncCheck', unit: '0082' })
+      })).json();
+      const d = r.data || r;
+      out.steps.push({ op: 'checkReadWrite', ok: r.ok === true && d.wrote === true && d.readBack === true,
+        sheet: d.spreadsheet || '', version: d.backendVersion || '', error: r.error || d.error || '', via: 'proxy' });
     }
     if (step.op === 'addMember') {
       /* identity 可以指定（2026-09-24 團員入口要測「邊個睇到」——
@@ -256,15 +263,6 @@ try {
       const cfg = remote.remoteCfg();
       out.steps.push({ op: 'setSync', url: cfg.url, hasKey: !!cfg.apiKey, viaProxy: cfg.viaProxy, ok: cfg.ok, pending: pendingN() });
     }
-    /* 「同步診斷」：逐格驗成條鏈 */
-    if (step.op === 'diagnose') {
-      const d = await remote.remoteDiagnose();
-      out.steps.push({
-        op: 'diagnose', ok: d.ok, route: d.route, backendVersion: d.backendVersion,
-        summary: d.summary || '', blockers: (d.blockers || []).map(b => b.id),
-        stages: (d.stages || []).map(s => `${s.id}:${s.state}`)
-      });
-    }
     /* 「儲存到後端」—— 唯一寫入路（核對版本 → 三方比對 → 撞就問 resolver） */
     /* ★ v2.8.0：人手切返舊嘅「整份寫入」—— 用來證明後備路仲行得 */
     if (step.op === 'useBlobMode') {
@@ -380,19 +378,6 @@ try {
         members: Number(j.counts?.members || 0), version: String(j.version || '')
       });
     }
-    /* ★ 2026-09-24：「後端實況」—— 只讀核對（本機 vs 後端） */
-    if (step.op === 'reality') {
-      const r = await remote.backendReality();
-      out.steps.push({
-        op: 'reality', ok: !!r.ok, found: !!r.found, route: r.route || '', sheet: r.sheet || '',
-        backendVersion: r.backendVersion || '', version: String(r.version || ''), bytes: Number(r.bytes || 0),
-        mode: r.mode || '', simpleRows: Number(r.simpleRows || 0), blobRows: Number(r.blobRows || 0), broken: r.broken || [],
-        counts: r.counts || null, local: r.local || null, rows: r.rows || [],
-        pending: Number(r.pending || 0), pendingAccounts: Number(r.pendingAccounts || 0),
-        level: r.verdict?.level || '', title: r.verdict?.title || '', detail: r.verdict?.detail || '',
-        error: r.error || '', hint: (r.hint || '').slice(0, 400)
-      });
-    }
     /* ★ 2026-09-24：儲存之後即刻核對（寫咗去邊、後端有冇） */
     if (step.op === 'verify') {
       /* 冇指定就用「後端上次寫入畀嘅版本」—— 同 saveWithDialog 傳 r.version 一樣 */
@@ -402,19 +387,10 @@ try {
         expectedVersion: String(r.expectedVersion || ''), versionOk: !!r.versionOk, countsOk: !!r.countsOk,
         sheet: r.sheet || '', bytes: Number(r.bytes || 0), rows: r.rows || [],
         backendVersion: r.backendVersion || '', mode: r.mode || '', simpleRows: Number(r.simpleRows || 0), blobRows: Number(r.blobRows || 0), broken: r.broken || [],
-        backend: r.backend || null, local: r.local || null, error: r.error || ''
-      });
-    }
-    /* ★ 2026-09-24：一寫一讀驗證（寫個記號落後端再讀返出嚟對） */
-    if (step.op === 'probe') {
-      const r = await remote.syncProbe({ cleanup: step.cleanup !== false });
-      out.steps.push({
-        op: 'probe', ok: !!r.ok, matched: !!r.matched, nonce: String(r.nonce || ''), seen: String(r.seen || ''),
-        savedVersion: String(r.savedVersion || ''), readVersion: String(r.readVersion || ''),
-        cleanedUp: !!r.cleanedUp, cleanupError: String(r.cleanupError || ''),
-        writeMs: Number(r.writeMs || 0), readMs: Number(r.readMs || 0),
-        wroteButCannotRead: !!r.wroteButCannotRead, error: r.error || '', hint: (r.hint || '').slice(0, 400),
-        pending: pendingN()
+        backend: r.backend || null, local: r.local || null, error: r.error || '',
+        /* 2026-11-12：found／hint 本來就已經計好，只係之前冇透出嚟。
+           backendReality() 刪咗之後，「後端係空」同「修復提示」由呢度驗。 */
+        found: !!r.found, hint: r.hint || ''
       });
     }
     /* 「公開資料」頁會派出去嘅公開連結（驗 ?be= 自助後端附埋入 link） */

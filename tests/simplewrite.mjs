@@ -283,7 +283,7 @@ try {
     { op: 'addTx', date: '2026-09-25', type: 'income', item: '團費', amount: 360 },
     { op: 'push' },
     { op: 'info' },
-    { op: 'reality' }
+    { op: 'verify' }
   ] });
   const pushV = stepOf(V, 'push');
   ok('★ 儲存成功', pushV?.ok === true, JSON.stringify(pushV).slice(0, 240));
@@ -299,10 +299,13 @@ try {
   ok('★ 16 個表全部寫齊（一個唔少）',
     Object.keys(rawRows.versions || {}).length >= 16, JSON.stringify(Object.keys(rawRows.versions || {})));
   ok('★ dbInfo 報後端程式版本 v2.8.1', infoV?.backendVersion === 'v2.8.1', JSON.stringify({ v: infoV?.backendVersion }));
-  const realV = stepOf(V, 'reality');
-  ok('★ 後端實況判「對得上」', realV?.level === 'ok', JSON.stringify({ lv: realV?.level, t: realV?.title }));
-  ok('★ 後端實況見到真相欄位', realV?.mode === 'simple' && realV?.backendVersion === 'v2.8.1',
-    JSON.stringify({ m: realV?.mode, v: realV?.backendVersion }));
+  /* 2026-11-12：backendReality() 已刪（冇 UI 用）。改用 live 嘅
+     verifyAgainstBackend()：同樣驗「對得上」＋ mode／版本真相欄位。 */
+  const realV = stepOf(V, 'verify');
+  ok('★ 儲存後核對判「對得上」', realV?.matched === true, JSON.stringify({ m: realV?.matched, e: realV?.error }));
+  ok('★ 核對見到真相欄位（版本同 dbInfo 一致）',
+    realV?.mode === 'simple' && realV?.backendVersion === infoV?.backendVersion,
+    JSON.stringify({ m: realV?.mode, v: realV?.backendVersion, info: infoV?.backendVersion }));
 } finally {
   v281.stop();
 }

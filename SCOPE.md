@@ -114,6 +114,32 @@
   「GS 已更新但未初始化」vs「已初始化且版本相符」。
 - 守護測試：`tests/init-preserve.mjs`（前後逐表快照對比）。
 
+## 4b. 唔准積死碼（★ 2026-11-12 加，抄模版嘅分支一樣守）
+
+用戶定案：**「襯未真正有人用之前先把 GS 內多餘的代碼刪掉，不然會越來越腫」**。
+
+### 規則
+1. **後端加 action = 要同時有前端呼叫者**。加咗 handler＋白名單但前端冇接
+   → `scripts/lint.mjs` ⑦ **紅燈**。唔准「留返日後可能有用」。
+2. 真係要保留冇前端呼叫者嘅 action（探活／人手逃生門），要喺
+   `INTENTIONAL_NO_CALLER` **登記＋寫低原因**；登記冊有過期檢查。
+3. **拆 UI 嗰陣要一併拆後端函數**（或者即刻登記做人手逃生門）。
+   2026-09-26 拆掣只拆前端，結果留咗 8 個前端屍體函數 ＋ 6 個孤兒 action
+   ＋ `diag` 鏈，到 2026-11-12 先清（`Code.gs` −256 行、`remote.js` −652 行）。
+4. **刪測試唔等於綠燈**。如果測試用某函數做「驗證手段」去測其他真實行為，
+   要改用生還路徑重建同等覆蓋，唔可以就咁刪斷言。
+
+### 唔准當死碼刪嘅嘢（零呼叫者 ≠ 死）
+| 類別 | 例子 | 原因 |
+|---|---|---|
+| 平台入口 | `onOpen`／`doGet`／`doPost` | GAS 平台呼叫，唔會有 code 引用 |
+| 人手入口 | `initializeSheets`／`showApiKey`／`issueSetupKey` | 部署指南叫人喺編輯器執行 |
+| 人手搶救 | `repairDb`／`saveDbForce`／`cleanStaleStaging`／`pruneOldDbVersions` | 部署指南嘅救機步驟 |
+| 舊資料 fallback | `saveDb`／`dbRawText`／`loadDbPart`（blob 路） | `dbReadRaw` 會 fallback；`0082` 已登記，刪咗讀唔返現有資料 |
+| 後端自證 | `syncCheck`／`checkSheetWriteRead` | 寫入＋讀回證明；`saveTables` 內部亦用 |
+
+**落刀之前**：剝走註解／字串再數真實呼叫點（naive grep 會數埋註解同文檔，害你誤刪）。
+
 ## 5. 已知豁免／偏離（如實登記，唔靜靜過）
 
 | ID | 事項 | 原因 | 補償 |

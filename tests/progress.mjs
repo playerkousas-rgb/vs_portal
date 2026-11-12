@@ -7,12 +7,16 @@
      · catalog（自訂考核項目）只准公開 https（擋 localhost / 內網）
      · 審批中心：reviewRequest / reviewLogRequest 照樣帶 apikey 轉發，業務錯誤唔會當成功
      · 伺服器端 registry（TROOP_<id>_PROGRESS*）優先，API Key 唔使經前端
-     · 後端自查 diag（★ 2026-09-24「人讀到、但個個都冇進度」）：一次過問
-       根網址（邊張 Sheet）＋ ?action=diag（認唔認得／分頁同行數）
+     · 已移除嘅 action（diag）唔可以再放行 —— 白名單唔留死表面
      · 唔會 log API Key
    ============================================================ */
 
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import progressHandler from '../api/progress.js';
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 let pass = 0, fail = 0;
 function ok(name, cond, extra = '') {
@@ -235,50 +239,18 @@ ok('GAS /dev 網址都會被擋',
   delete process.env.TROOP_0082_PROGRESSCATALOG;
 }
 
-/* ---------- 7b. ★ 後端自查 diag（「人讀到、但個個都冇進度」） ---------- */
+/* ---------- 7b. ★ 已移除嘅 diag 唔可以再放行 ----------
+   2026-11-12：GAS `diag` action 連 diagnoseBackendTabs() 一齊刪走
+   （對應 UI 喺 2026-09-26 已經拆咗，得返測試夾具叫佢）。
+   白名單如果仲放行 diag，等於留咗個冇 handler 嘅死表面 —— 呢度釘死佢。
+   （原本呢節驗嘅兩條網址守衛：backend_missing／backend_not_allowed，
+     喺上面第 65–69 行已經用 live 嘅 load 驗過，覆蓋冇減少。） */
 {
-  /* diag 會問後端兩次：① 根網址（唔使 Key）→ 睇下係邊支腳本／邊張 Sheet；
-     ② ?action=diag（要 Key）→ 分頁、行數、YMIS。上游按 URL 分野回應。 */
-  const upstreamByUrl = {
-    root: { ok: true, msg: '深資童軍管理系統 後端正常', spreadsheet: '第82旅總表', backendVersion: 'v2.7.1' },
-    diag: { ok: true, success: true, spreadsheet: '第82旅總表', version: 'v2.7.1',
-      progress: { rows: 3, ymis: 1, items: 3, blank: 0, matchedWithMemberList: 1, notInMemberList: 0,
-        sample: [{ ymis: '1234567890', item: 'L1-ACT-01', date: '2026-09-01', confirmer: '團長' }] },
-      memberList: { rows: 1, ymis: 1, sample: [{ ymis: '1234567890', name: '陳大文' }] },
-      tabs: [{ name: '進度追蹤', rows: 3 }, { name: '成員名單', rows: 1 }], missingTabs: [] }
-  };
-  globalThis.fetch = async (target, init = {}) => {
-    const url = String(target);
-    calls.push({ target: url, method: init.method || 'GET', body: init.body ? JSON.parse(init.body) : null });
-    const payload = url.includes('action=diag') ? upstreamByUrl.diag : upstreamByUrl.root;
-    return { status: 200, async text() { return JSON.stringify(payload); } };
-  };
-
-  const noBackend = await call({ action: 'diag' });
-  ok('diag 冇後端網址 → 提示去設定（唔會亂連）', noBackend.body?.reason === 'backend_missing');
-  ok('diag 一樣擋非 GAS 網址', (await call({ action: 'diag', backend: 'https://evil.example.com/exec' })).body?.reason === 'backend_not_allowed');
-
-  const r = await call({ action: 'diag', unit: '0082', backend: BACKEND, apikey: API_KEY });
-  ok('diag 回 200 同 ok:true', r.statusCode === 200 && r.body.ok === true, JSON.stringify(r.body).slice(0, 120));
-  ok('diag 認得「管理系統嘅後端」（detail 有 progress）', r.body.data?.recognized === true, JSON.stringify(r.body.data?.recognized));
-  ok('diag 帶埋自報（邊張 Sheet）同分頁／行數',
-    r.body.data?.detail?.spreadsheet === '第82旅總表' && r.body.data?.detail?.progress?.rows === 3,
-    JSON.stringify(r.body.data?.detail?.progress));
-  ok('diag 帶埋「進度同名冊對唔對得上」', r.body.data?.detail?.progress?.matchedWithMemberList === 1);
-  const dCalls = calls.slice(-2);
-  ok('diag 先問根網址、再問 ?action=diag（唔會改任何嘢）',
-    dCalls[0].method === 'GET' && !dCalls[0].target.includes('action=')
-    && dCalls[1].method === 'GET' && dCalls[1].target.includes('action=diag') && dCalls[1].target.includes('apikey='),
-    dCalls.map(c => c.target.slice(-40)).join(' | '));
-
-  /* 另一種情況：後端唔認得 diag（＝唔係管理系統嘅後端，例如舊版／進度前端自己嗰支） */
-  upstreamByUrl.diag = { success: false, error: 'Unknown action' };
-  const r2 = await call({ action: 'diag', unit: '0082', backend: BACKEND, apikey: API_KEY });
-  ok('後端唔認得 diag → recognized:false（app 會講「呢支 /exec 唔係管理系統嘅後端」）',
-    r2.statusCode === 200 && r2.body.ok === true && r2.body.data?.recognized === false, JSON.stringify(r2.body.data?.recognized));
-  ok('就算唔認得，仍然回晒自報資料俾 app 交代',
-    r2.body.data?.self?.msg === '深資童軍管理系統 後端正常' && r2.body.data?.detail?.error === 'Unknown action');
-  upstreamJson = { success: true, members: [], progress: {} };
+  const gone = await call({ action: 'diag', unit: '0082', backend: BACKEND, apikey: API_KEY });
+  ok('★ diag 已移除 → 代理拒绝（400 bad_action），唔會轉發去後端',
+    gone.statusCode === 400, JSON.stringify({ status: gone.statusCode, body: gone.body }).slice(0, 140));
+  const src = fs.readFileSync(path.join(ROOT, 'api', 'progress.js'), 'utf8');
+  ok('★ 進度代理白名單冇留低 diag', !/'diag'/.test(src));
 }
 
 /* ---------- 7c. ★ VSBADGE 旅系統接駁（閂咗直接入口 → 轉簽名 POST） ---------- */

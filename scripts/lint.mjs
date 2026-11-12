@@ -284,5 +284,51 @@ section('⑥ 版號一致性（前後端同步發版）');
     '範本由 APP_VERSION 推導版號（單一來源，冇第二處可以寫漏）');
 }
 
+/* ============================================================
+   ⑦ ★ 孤兒 action 守門（2026-11-12 精簡之後加）
+   ------------------------------------------------------------
+   上面 ④ 守住嘅係「前端有 call → 白名單／後端一定要有」，
+   方向係前端 → 後端。但腫脹係另一個方向積出嚟嘅：
+   後端有 handler、白名單又放行，但係前端根本冇人 call。
+   呢啲「孤兒 action」唔會令任何測試紅燈，所以可以一直靜靜雞累積。
+
+   2026-11-12 實測：咁樣積咗 6 個孤兒（claimDecision／loanDecision／
+   noticeSubscribe／noticeSubscriptions／authChangePassword／
+   authResetByToken）＋ 一個 diag 自查鏈，合共約 250 行 GS 死碼。
+   全部刪走之後加呢個守門：新孤兒一出現就紅燈，要嘛接返前端，
+   要嘛喺下面登記做「刻意向後兼容／人手逃生門」並寫低原因。
+   ============================================================ */
+section('⑦ 孤兒 action 守門（後端有、前端冇人 call ＝ 死碼）');
+{
+  /* 刻意保留嘅冇前端呼叫者 action —— 每個都要有原因，唔准就咁加個名落去。
+     ping／status／test：部署同 CI 探活（dev-server、tests、人手 GET /exec）。
+     repairDb／saveDbForce：DEPLOY_GUIDE_FOR_TROOPS.md 嘅人手搶救步驟。
+     syncCheck：後端自證「寫得入＋讀得返」能力，tests/e2ereal.mjs 直接經 proxy 驗。 */
+  const INTENTIONAL_NO_CALLER = new Map([
+    ['ping', '部署探活（人手 GET /exec、CI）'],
+    ['status', '部署探活＋初始化狀態（人手／CI）'],
+    ['test', 'status 別名（舊部署相容）'],
+    ['repairDb', '人手搶救：清暫存垃圾＋舊版本段（部署指南）'],
+    ['saveDbForce', '人手搶救：用留住資料嗰部機強制覆蓋（部署指南）'],
+    ['syncCheck', '後端寫入＋讀回自證（tests/e2ereal.mjs 經 proxy 驗）']
+  ]);
+  const feActions = new Set();
+  for (const f of ALL.filter(f => /^assets\/js\//.test(rel(f)) && /\.js$/.test(f) && !/gastemplate\.js$/.test(f))) {
+    const s = fs.readFileSync(f, 'utf8');
+    for (const m of s.matchAll(/action:\s*'([a-zA-Z]+)'/g)) feActions.add(m[1]);
+  }
+  const orphans = [...gasHandles].filter(a => !feActions.has(a)).sort();
+  const unregistered = orphans.filter(a => !INTENTIONAL_NO_CALLER.has(a));
+  ok(unregistered.length === 0,
+    `冇未登記嘅孤兒 action（後端 ${gasHandles.size} 個 handler，${orphans.length} 個冇前端呼叫者但已登記）`,
+    `呢啲 action 後端有 handler 但前端冇人 call：${unregistered.join(', ')}\n`
+    + '      要嘛接返前端 UI，要嘛刪除 handler＋白名單，\n'
+    + '      要嘛喺 scripts/lint.mjs ⑦ INTENTIONAL_NO_CALLER 登記並寫低原因。');
+  /* 登記冊本身都唔可以腫：登記咗但已經不存在／已經有前端呼叫者 → 要清走 */
+  const staleEntries = [...INTENTIONAL_NO_CALLER.keys()].filter(a => !orphans.includes(a));
+  ok(staleEntries.length === 0, '孤兒登記冊冇過期項目（已刪或已接返前端嘅要移除）',
+    staleEntries.join(', '));
+}
+
 console.log(`\n──────── lint 結果：${checks - fails} 通過 / ${fails} 失敗 ────────`);
 process.exit(fails ? 1 : 0);

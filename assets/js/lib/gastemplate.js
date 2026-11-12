@@ -240,7 +240,7 @@ var LINK_SIG_HEX_RE = /^[0-9a-f]{64}$/i;
 var LINK_NONCE_RE = /^[0-9A-Za-z_-]{8,64}$/;
 var LINK_RESERVED_BODY_KEYS = ['sig', 'sig_ts', 'sig_nonce'];
 /* 上游可以經簽名喺我做嘅 action。本地憑證操作（登入／改密碼／申請）永不接受簽名。 */
-var LINK_SIG_READ_ACTIONS = ['load', 'getLinkState', 'getLoginMode', 'dbInfo', 'loadDb', 'loadTables', 'loadTablesPart', 'diag'];
+var LINK_SIG_READ_ACTIONS = ['load', 'getLinkState', 'getLoginMode', 'dbInfo', 'loadDb', 'loadTables', 'loadTablesPart'];
 var LINK_SIG_WRITE_ACTIONS = ['save', 'saveOtherBadge', 'reviewRequest', 'reviewLogRequest', 'saveDb', 'saveTables', 'setLocalLogin'];
 
 function toHexGs(bytes) {
@@ -254,7 +254,6 @@ function hmacSha256HexGs(message, key) {
 /* sig 密鑰以用途分隔方式由「本節點嘅 SHEET KEY＝API_KEY」推導（驗證入站用本機 API_KEY）。 */
 function linkSigKeyForGs(key) { return hmacSha256HexGs(LINK_SIG_PURPOSE, String(key || '')); }
 function linkSigKeyGs() { return linkSigKeyForGs(getApiKey()); }
-function linkNonceGs() { return Utilities.getUuid().replace(/-/g, ''); }
 function linkCanonicalGs(action, ts, nonce, digest) {
   return [String(action || ''), String(ts || ''), String(nonce || ''), String(digest || '')].join('\\n');
 }
@@ -264,10 +263,6 @@ function localLoginAllowed() {
   var v = String(PropertiesService.getScriptProperties().getProperty(LINK_FLAG) || '').trim().toLowerCase();
   if (!v) return true;   // 未設定＝開啟（fail-open，同 VSBADGE 現有旅團零影響）
   return ['1', 'true', 'yes', 'on', 'open'].indexOf(v) >= 0;   // 其他任何值＝閂（fail-closed）
-}
-function setLocalLoginAllowed(allow, actor) {
-  PropertiesService.getScriptProperties().setProperty(LINK_FLAG, allow ? 'true' : 'false');
-  return allow ? 'true' : 'false';
 }
 function linkClosedResponse(action) {
   return {
@@ -598,13 +593,12 @@ function initializeSheets() {
      scripts/lint.mjs 會逐個比對，漏咗／多咗都會紅燈。
      （2026-09-20 之前呢句係手寫死嘅字串，一直漏咗 constitution，
        加咗 loadDbPart 之後更加唔可以再靠人手記得改。） */
-var SUPPORTED_ACTIONS = ['ping', 'test', 'status', 'sync', 'claim', 'claimDecision', 'noticeSignup', 'noticeSubscribe', 'noticeSubscriptions', 'loan', 'loanDecision',
-  'authLogin', 'authChangePassword', 'authResetPassword', 'authDeleteAccount', 'authRestoreAccount', 'authCreateAccount', 'authForgotPassword', 'authResetByToken', 'saveDb', 'loadDb', 'loadDbPart', 'dbInfo', 'saveDbPart', 'saveDbCommit', 'verifySetupKey',
+var SUPPORTED_ACTIONS = ['ping', 'test', 'status', 'sync', 'claim', 'noticeSignup', 'loan',
+  'authLogin', 'authResetPassword', 'authDeleteAccount', 'authRestoreAccount', 'authCreateAccount', 'authForgotPassword', 'saveDb', 'loadDb', 'loadDbPart', 'dbInfo', 'saveDbPart', 'saveDbCommit', 'verifySetupKey',
   'uploadPhotos', 'constitution', 'notices',
   'load',
   'save', 'saveOtherBadge', 'reviewRequest', 'reviewLogRequest', 'addRequest', 'myRequests',
-  /* ★ v2.7.1：「人讀到、進度全空」自查（見 diagnoseBackendTabs） */
-  'diag',
+  ,
   /* ★ v2.7.2：一鍵修復（清垃圾／舊版本段）＋ 強制覆蓋（人手搶救） */
   'repairDb', 'saveDbForce',
   /* ★ v2.8.0：簡單寫入（逐表寫／逐表讀）—— 見下面 saveTables／loadTables／loadTablesPart */
@@ -776,43 +770,6 @@ function dispatchBody(e, body) {
     }
 
     /* ---- 支部帳戶自己改密碼：舊密碼正確先可寫入新 PBKDF2 record ---- */
-    if (body.action === 'authChangePassword') {
-      var changeAuth = requireAuth(expectedKey, key);
-      if (!changeAuth.ok) return json(changeAuth);
-      var changeSession = requireAuthSession(body);
-      if (!changeSession.ok) return json({ ok: false, success: false, error: changeSession.error, code: 'SESSION_REQUIRED' });
-      var changed = withLock(function () {
-        var current = loadDb(textOf(body.unit));
-        var loginName2 = textOf(body.username || body.email || body.ymis).toLowerCase();
-        var rec2 = null;
-        (current.db && current.db.accounts || []).some(function (a) {
-          if (a && a.active !== false && (textOf(a.username).toLowerCase() === loginName2 || textOf(a.email).toLowerCase() === loginName2)) { rec2 = a; return true; }
-          return false;
-        });
-        if (!rec2) (current.db && current.db.members || []).some(function (m) {
-          if (m && m.status !== 'alumni' && (textOf(m.ymis).toLowerCase() === loginName2 || textOf(m.email).toLowerCase() === loginName2 || textOf(m.loginId).toLowerCase() === loginName2)) { rec2 = m; return true; }
-          return false;
-        });
-        if (!rec2 || (!changeSession.portal && changeSession.id !== textOf(rec2.id))) return { success: false, error: '登入帳戶與操作帳戶不一致' };
-        var oldRecord = rec2 && (rec2.pw || rec2.hubPw);
-        var oldOk = false;
-        if (rec2 && oldRecord && oldRecord.algo === 'pbkdf2-sha256') oldOk = verifyPasswordRecord(oldRecord, textOf(body.oldPassword));
-        else if (rec2 && oldRecord && oldRecord.algo === 'sha256') oldOk = sha256HexGs(oldRecord.salt + '::' + textOf(body.oldPassword)) === textOf(oldRecord.hash);
-        else if (rec2 && !oldRecord && textOf(body.oldPassword) === '1234') oldOk = true;
-        if (!oldOk) return { success: false, error: '舊密碼不正確' };
-        var next = makePasswordRecord(textOf(body.newPassword), false);
-        if (!next.ok) return { success: false, error: next.error };
-        if (rec2.hubPw !== undefined || rec2.ymis !== undefined) {
-          rec2.hubPw = next.pw; rec2.hubMustChangePw = false; delete rec2.hubPassword;
-        } else {
-          rec2.pw = next.pw; rec2.mustChangePw = false; rec2.defaultPw = false; delete rec2.password;
-        }
-        var saved2 = saveDb({ unit: textOf(body.unit), db: current.db, baseVersion: current.version, refreshReports: false });
-        if (saved2.success === true) revokeAuthSessions(body.unit, rec2.id);
-        return saved2.success === true ? { success: true, version: saved2.version || '' } : saved2;
-      });
-      return json({ ok: changed.success === true, success: changed.success === true, version: changed.version || '', error: changed.error || '' });
-    }
 
     /* ---- 領袖替成員重設密碼：由 server-side 重新核對領袖身份 ---- */
     if (body.action === 'authResetPassword') {
@@ -1009,33 +966,6 @@ function dispatchBody(e, body) {
       return json({ ok: true, success: true, message: '如果電郵已登記，重設連結會寄出。' });
     }
 
-    if (body.action === 'authResetByToken') {
-      var tokenAuth = requireAuth(expectedKey, key);
-      if (!tokenAuth.ok) return json(tokenAuth);
-      var token = textOf(body.token);
-      var tokenHash2 = sha256HexGs(token);
-      var tokenKey2 = 'PWD_RESET_' + textOf(body.unit) + '_' + tokenHash2;
-      var tokenRaw = PropertiesService.getScriptProperties().getProperty(tokenKey2);
-      var tokenInfo = null;
-      try { tokenInfo = tokenRaw ? JSON.parse(tokenRaw) : null; } catch (tokenErr) { tokenInfo = null; }
-      if (!tokenInfo || Number(tokenInfo.exp || 0) < Date.now()) {
-        if (tokenRaw) PropertiesService.getScriptProperties().deleteProperty(tokenKey2);
-        return json({ ok: false, success: false, error: '重設連結無效或已過期' });
-      }
-      var tokenDb = loadDb(textOf(body.unit));
-      var tokenTarget = null;
-      var tokenList = tokenInfo.kind === 'member' ? (tokenDb.db && tokenDb.db.members || []) : (tokenDb.db && tokenDb.db.accounts || []);
-      tokenList.some(function (r) { if (r && textOf(r.id) === textOf(tokenInfo.id)) { tokenTarget = r; return true; } return false; });
-      var tokenPw = makePasswordRecord(textOf(body.newPassword), true);
-      if (!tokenTarget) return json({ ok: false, success: false, error: '帳戶不存在' });
-      if (!tokenPw.ok) return json({ ok: false, success: false, error: tokenPw.error });
-      if (tokenInfo.kind === 'member') { tokenTarget.hubPw = tokenPw.pw; tokenTarget.hubMustChangePw = true; delete tokenTarget.hubPassword; }
-      else { tokenTarget.pw = tokenPw.pw; tokenTarget.mustChangePw = true; tokenTarget.defaultPw = textOf(body.newPassword) === '1234'; delete tokenTarget.password; }
-      var tokenSaved = saveDb({ unit: textOf(body.unit), db: tokenDb.db, baseVersion: tokenDb.version, refreshReports: false });
-      if (tokenSaved.success !== true) return json({ ok: false, success: false, error: tokenSaved.error || '重設失敗，請重新申請' });
-      PropertiesService.getScriptProperties().deleteProperty(tokenKey2);
-      return json({ ok: true, success: true, mustChangePw: true });
-    }
 
     /* ---- 管理員／團長新增支部帳戶 ---- */
     if (body.action === 'authCreateAccount') {
@@ -1211,55 +1141,12 @@ function dispatchBody(e, body) {
     }
     if (body.action === 'ping') return json({ ok: true, msg: 'pong', unit: body.unit, at: body.at });
     /* ---- 個人化通告訂閱：只保存帳戶自己的訂閱偏好，不接受前端 memberId 冒認 ---- */
-    if (body.action === 'noticeSubscribe' || body.action === 'noticeSubscriptions') {
-      var subAuth = requireAuth(expectedKey, key);
-      if (!subAuth.ok) return json(subAuth);
-      var subSession = requireAuthSession(body);
-      if (!subSession.ok) return json({ ok:false, success:false, error:subSession.error, code:'SESSION_REQUIRED' });
-      var subResult = withLock(function () {
-        var subDb = loadDb(textOf(body.unit));
-        subDb.db.noticeSubscriptions = subDb.db.noticeSubscriptions || [];
-        var owner = textOf(subSession.id || body.actorUsername);
-        if (!owner) return { success:false, error:'登入身份無效' };
-        if (body.action === 'noticeSubscriptions') return { success:true, subscriptions:subDb.db.noticeSubscriptions.filter(function(x){ return x && textOf(x.ownerId) === owner; }) };
-        var noticeId = textOf(body.noticeId);
-        var notice = (subDb.db.notices || []).filter(function(n){ return n && textOf(n.id) === noticeId && textOf(n.status) === 'published'; })[0];
-        if (!notice) return { success:false, error:'通告不存在或未公開' };
-        var rows = subDb.db.noticeSubscriptions;
-        var found = rows.filter(function(x){ return x && textOf(x.ownerId) === owner && textOf(x.noticeId) === noticeId; })[0];
-        if (body.enabled === false) { subDb.db.noticeSubscriptions = rows.filter(function(x){ return !(x && textOf(x.ownerId) === owner && textOf(x.noticeId) === noticeId); }); }
-        else if (found) { found.enabled = true; found.updatedAt = new Date().toISOString(); }
-        else rows.push({ id:'ns_' + Utilities.getUuid().replace(/-/g,'').slice(0,12), ownerId:owner, noticeId:noticeId, channel:textOf(body.channel || 'inapp'), enabled:true, createdAt:new Date().toISOString(), updatedAt:new Date().toISOString() });
-        var saved = saveDb({ unit:textOf(body.unit), db:subDb.db, baseVersion:subDb.version, refreshReports:false });
-        return saved.success === true ? { success:true, version:saved.version || '' } : saved;
-      });
-      return json({ ok:subResult.success === true, success:subResult.success === true, subscriptions:subResult.subscriptions || [], version:subResult.version || '', error:subResult.error || '' });
-    }
 
     if (body.action === 'noticeSignup') {
       /* 自 v2.5.0 起：報名除咗寫「報名」分頁，仲會寫入資料庫（APP 執委端先至睇得到） */
       var sgn = withLock(function () { return appendSignup(body); });
       return json({ ok: sgn.success !== false, success: sgn.success !== false,
         msg: sgn.duplicate ? '已經記錄過呢份報名' : '已記錄報名', duplicate: !!sgn.duplicate });
-    }
-    if (body.action === 'claimDecision') {
-      var claimAuth = requireAuth(expectedKey, key); if (!claimAuth.ok) return json(claimAuth);
-      var claimSession = requireAuthSession(body); if (!claimSession.ok) return json({ ok:false, success:false, error:claimSession.error, code:'SESSION_REQUIRED' });
-      var claimResult = withLock(function () {
-        var claimDb = loadDb(textOf(body.unit));
-        var actor = (claimDb.db.accounts || []).filter(function(a){ return a && a.active !== false && textOf(a.id) === textOf(claimSession.id); })[0];
-        var role = claimSession.portal ? textOf(claimSession.role).toLowerCase() : textOf(actor && (actor.role || actor.identity)).toLowerCase();
-        if (!claimSession.portal && !actor) return { success:false, error:'管理員帳戶不存在' };
-        if (['chief','leader','admin','exco'].indexOf(role) < 0) return { success:false, error:'你沒有權限批核財務申報' };
-        var claim = (claimDb.db.claims || []).filter(function(c){ return c && textOf(c.id) === textOf(body.claimId); })[0];
-        if (!claim) return { success:false, error:'搵唔到財務申報' };
-        var decision = textOf(body.decision).toLowerCase();
-        if (['approved','rejected','cancelled'].indexOf(decision) < 0) return { success:false, error:'批核狀態無效' };
-        claim.status = decision; claim.decidedBy = textOf(claimSession.id || body.actorUsername); claim.decidedAt = nowStampGs();
-        var savedClaim = saveDb({ unit:textOf(body.unit), db:claimDb.db, baseVersion:claimDb.version, refreshReports:false });
-        return savedClaim.success === true ? { success:true, version:savedClaim.version || '', status:decision } : savedClaim;
-      });
-      return json({ ok:claimResult.success === true, success:claimResult.success === true, status:claimResult.status || '', version:claimResult.version || '', error:claimResult.error || '' });
     }
 
     if (body.action === 'claim') {
@@ -1272,25 +1159,6 @@ function dispatchBody(e, body) {
       var upPhotos = (body.payload && body.payload.photos) || [];
       var links = savePhotos(upPhotos, textOf(body.unit), textOf(body.payload && body.payload.id) || 'x', textOf(body.folderId));
       return json({ ok: true, links: links, saved: links.length, asked: upPhotos.length });
-    }
-    if (body.action === 'loanDecision') {
-      var loanAuth = requireAuth(expectedKey, key); if (!loanAuth.ok) return json(loanAuth);
-      var loanSession = requireAuthSession(body); if (!loanSession.ok) return json({ ok:false, success:false, error:loanSession.error, code:'SESSION_REQUIRED' });
-      var loanResult = withLock(function () {
-        var loanDb = loadDb(textOf(body.unit));
-        var actor = (loanDb.db.accounts || []).filter(function(a){ return a && a.active !== false && textOf(a.id) === textOf(loanSession.id); })[0];
-        var role = loanSession.portal ? textOf(loanSession.role).toLowerCase() : textOf(actor && (actor.role || actor.identity)).toLowerCase();
-        if (!loanSession.portal && !actor) return { success:false, error:'管理員帳戶不存在' };
-        if (['chief','leader','admin','exco'].indexOf(role) < 0) return { success:false, error:'你沒有權限批核物資借用' };
-        var loan = (loanDb.db.invLoans || []).filter(function(l){ return l && textOf(l.id) === textOf(body.loanId); })[0];
-        if (!loan) return { success:false, error:'搵唔到借用申請' };
-        var decision = textOf(body.decision).toLowerCase();
-        if (['approved','rejected','cancelled','returned'].indexOf(decision) < 0) return { success:false, error:'批核狀態無效' };
-        loan.status = decision; loan.approvedBy = textOf(loanSession.id || body.actorUsername); loan.decidedAt = nowStampGs();
-        var savedLoan = saveDb({ unit:textOf(body.unit), db:loanDb.db, baseVersion:loanDb.version, refreshReports:false });
-        return savedLoan.success === true ? { success:true, version:savedLoan.version || '', status:decision } : savedLoan;
-      });
-      return json({ ok:loanResult.success === true, success:loanResult.success === true, status:loanResult.status || '', version:loanResult.version || '', error:loanResult.error || '' });
     }
 
     if (body.action === 'loan') {
@@ -1358,14 +1226,6 @@ function dispatchBody(e, body) {
       var forcedSaved = withLock(function () { return saveDb({ unit: textOf(body.unit), db: body.db, baseVersion: '', force: true }); });
       return json(forcedSaved);
     }
-    /* ★ v2.7.1：後端自查（GET 同 POST 兩條路都通；見 diagnoseBackendTabs） */
-    if (body.action === 'diag') {
-      var diagAuth = requireAuth(expectedKey, key);
-      if (!diagAuth.ok) return json(diagAuth);
-      var dg2 = diagnoseBackendTabs(textOf(body.unit));
-      dg2.success = true; dg2.ok = true;
-      return json(dg2);
-    }
     /* ★ v2.8.4：旅系統接駁 —— 讀／寫我呢支後端嘅「直接入口」掣。
        要 API Key（＝自己條 SHEET KEY）先做得；上游（旅／團）就會調咁調：
        callDownstream(id, 'setLocalLogin', { allow: 'true'|'false' }) 經簽名閂／開我。 */
@@ -1428,13 +1288,6 @@ function doGet(e) {
   }
   /* ★ v2.7.1：後端現況自查 —— 答「點解人讀到、進度一條都冇？」。
      要 API Key（有設就一定核對；比 load 嚴，因為會報分頁名同行數）： */
-  if (action === 'diag') {
-    var expectedDiag = PropertiesService.getScriptProperties().getProperty('API_KEY');
-    if (expectedDiag && supplied !== expectedDiag) return json({ success: false, ok: false, error: '未授權：API Key 唔正確' });
-    var dg = diagnoseBackendTabs(textOf((e.parameter && e.parameter.unit) || ''));
-    dg.success = true; dg.ok = true;
-    return json(dg);
-  }
   if (action === 'loadDb' || action === 'dbInfo') {
     var expectedDb = PropertiesService.getScriptProperties().getProperty('API_KEY');
     if (expectedDb && supplied !== expectedDb) return json({ success: false, ok: false, error: '未授權：API Key 唔正確' });
@@ -1458,7 +1311,7 @@ function doGet(e) {
     msg: '深資童軍管理系統 後端已啟動',
     spreadsheet: (function () { try { return SpreadsheetApp.getActiveSpreadsheet().getName(); } catch (err) { return '(未綁定試算表)'; } })(),
     tabs: SHEET_TABS,
-    api: ['ping', 'status', 'sync', 'saveDb', 'loadDb', 'dbInfo', 'claim', 'claimDecision', 'noticeSignup', 'noticeSubscribe', 'noticeSubscriptions', 'loan', 'loanDecision', 'load', 'save', 'saveOtherBadge'],
+    api: ['ping', 'status', 'sync', 'saveDb', 'loadDb', 'dbInfo', 'claim', 'noticeSignup', 'loan', 'load', 'save', 'saveOtherBadge'],
     usage: 'APP 內「系統 → 資料管理 → 總表同步」填呢個 /exec 網址即可'
   });
 }
@@ -2825,115 +2678,6 @@ function dateOf(v) {
    清楚：邊張 Sheet、有邊啲分頁、每張幾多行、進度同名冊對唔對得上。
    要 API Key（會報分頁名同行數，唔應該公開）。
    ============================================================ */
-function diagnoseBackendTabs(unit) {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var tabs = [], i;
-  var all = ss.getSheets();
-  for (i = 0; i < all.length; i++) {
-    var nm = all[i].getName();
-    var n = -1;
-    try { n = Math.max(0, all[i].getLastRow() - 1); } catch (e0) { n = -1; }
-    tabs.push({ name: nm, rows: n });
-  }
-  function rowsOf(tab) {
-    var sh = ss.getSheetByName(tab);
-    if (!sh) return -1;
-    try { return Math.max(0, sh.getLastRow() - 1); } catch (e1) { return -1; }
-  }
-  var progress = { rows: rowsOf('進度追蹤'), ymis: 0, items: 0, blank: 0, sample: [] };
-  var pSheet = ss.getSheetByName('進度追蹤');
-  if (pSheet) {
-    var pr = pSheet.getDataRange().getValues();
-    var seenY = {}, seenI = {};
-    for (i = 1; i < pr.length; i++) {
-      var y = textOf(pr[i][0]), it = textOf(pr[i][1]);
-      if (!y || !it) { progress.blank++; continue; }
-      seenY[y] = 1; seenI[it] = 1;
-      if (progress.sample.length < 5) {
-        progress.sample.push({ ymis: y, item: it, date: dateOf(pr[i][2]), confirmer: textOf(pr[i][4]) });
-      }
-    }
-    progress.ymis = Object.keys(seenY).length;
-    progress.items = Object.keys(seenI).length;
-  }
-  var memberList = { rows: rowsOf('成員名單'), ymis: 0, sample: [] };
-  var mSheet = ss.getSheetByName('成員名單');
-  if (mSheet) {
-    var mr = mSheet.getDataRange().getValues();
-    var seenM = {};
-    for (i = 1; i < mr.length; i++) {
-      var my = textOf(mr[i][0]);
-      if (!my) continue;
-      seenM[my] = 1;
-      if (memberList.sample.length < 5) memberList.sample.push({ ymis: my, name: textOf(mr[i][1]) });
-    }
-    memberList.ymis = Object.keys(seenM).length;
-  }
-  /* 進度同名冊對唔對得上（另一個「讀到人、但睇落冇進度」嘅成因係 YMIS 唔一致） */
-  progress.matchedWithMemberList = 0;
-  progress.notInMemberList = 0;
-  if (pSheet) {
-    var listY = {};
-    if (mSheet) {
-      var mr2 = mSheet.getDataRange().getValues();
-      for (i = 1; i < mr2.length; i++) {
-        var ly = textOf(mr2[i][0]);
-        if (ly) listY[ly] = 1;
-      }
-    }
-    var pr2 = pSheet.getDataRange().getValues();
-    var counted = {};
-    for (i = 1; i < pr2.length; i++) {
-      var y2 = textOf(pr2[i][0]);
-      if (!y2 || counted[y2]) continue;
-      counted[y2] = 1;
-      if (listY[y2]) progress.matchedWithMemberList++; else progress.notInMemberList++;
-    }
-  }
-
-  var loaded = loadProgressData();
-  /* 缺咗就真係會有症狀嘅分頁（'設定' 呢類唔係 initializeSheets 建嘅，唔算缺） */
-  var requiredTabs = ['資料庫', '團員', '成員名單', '進度追蹤', '其他獎章', '待批完成', '活動履歷', '待批履歷'];
-  var missingTabs = [];
-  for (i = 0; i < requiredTabs.length; i++) {
-    if (!ss.getSheetByName(requiredTabs[i])) missingTabs.push(requiredTabs[i]);
-  }
-  /* ★ v2.8.1：呢個旅團喺正本分頁嘅現況（唔係成張 Sheet 嘅總行數） */
-  var simpleDiag = loadTables(textOf(unit));
-  var blobDiag = dbRawText(textOf(unit));
-  return {
-    version: 'v2.8.1',
-    backendVersion: BACKEND_VERSION,
-    simpleWrite: true,
-    spreadsheet: ss.getName(),
-    unit: textOf(unit),
-    mode: simpleDiag.found ? 'simple' : (blobDiag.found ? 'blob' : 'empty'),
-    simpleRows: simpleDiag.rowCount || 0,
-    blobRows: blobDiag.unitRows || 0,
-    broken: simpleDiag.broken || [],
-    tabs: tabs,
-    missingTabs: missingTabs,
-    progress: progress,
-    memberList: memberList,
-    dbRows: rowsOf('資料庫'),
-    pendingRows: rowsOf('待批完成'),
-    otherBadgeRows: rowsOf('其他獎章'),
-    logRows: rowsOf('活動履歷'),
-    logRequestRows: rowsOf('待批履歷'),
-    loadSummary: {
-      members: (loaded.members || []).length,
-      withProgress: Object.keys(loaded.progress || {}).length,
-      ticks: (function () {
-        var n = 0, pp = loaded.progress || {};
-        for (var k in pp) { if (pp.hasOwnProperty(k)) n += Object.keys(pp[k] || {}).length; }
-        return n;
-      })(),
-      pendingRequests: (loaded.pendingRequests || []).length,
-      otherBadges: Object.keys(loaded.otherBadges || {}).length,
-      logs: (loaded.logs || []).length
-    }
-  };
-}
 
 function progressMembers() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();

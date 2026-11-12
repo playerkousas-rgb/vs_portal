@@ -152,22 +152,29 @@ section('支部帳戶 PBKDF2 密碼基礎');
   ok('authLogin 由 GAS 核對 PBKDF2，不回傳 hash', login.ok === true && login.account?.role === 'leader' && !JSON.stringify(login).includes(account.pw.hash));
   const denied = g.post({ action: 'authLogin', unit: '0082', username: 'leader@example.com', password: 'wrong' });
   ok('authLogin 錯密碼拒絕', denied.ok === false);
-  const changed = g.post({ action: 'authChangePassword', unit: '0082', username: 'leader@example.com', oldPassword: 'abcd', newPassword: '1234', sessionToken: login.sessionToken });
-  ok('authChangePassword 由 GAS 寫入新 hash', changed.ok === true, JSON.stringify(changed));
-  const oldLogin = g.post({ action: 'authLogin', unit: '0082', username: 'leader@example.com', password: 'abcd' });
-  const newLogin = g.post({ action: 'authLogin', unit: '0082', username: 'leader@example.com', password: '1234' });
-  ok('改密碼後舊密碼失效、新密碼標記 mustChangePw', oldLogin.ok === false && newLogin.ok === true && newLogin.mustChangePw === true);
-  const staleAction = g.post({ action: 'authChangePassword', unit: '0082', username: 'leader@example.com', oldPassword: '1234', newPassword: 'abcd', sessionToken: login.sessionToken });
-  ok('改密碼後舊 session 立即失效', staleAction.code === 'SESSION_REQUIRED');
-  const reset = g.post({ action: 'authResetPassword', unit: '0082', actorUsername: 'leader@example.com', actorPassword: '1234', targetYmis: '1000000001', newPassword: '1234', sessionToken: newLogin.sessionToken });
+  /* 2026-11-12：authChangePassword 已刪（前端 auth.js 嘅改密碼係純本機，
+     从来冇 call 過呢個 action）。原本靠佢驗嘅「重設密碼後舊 session 立即失效」
+     改由仍然 live 嘅 authResetPassword 驗 —— revokeAuthSessions() 係同一條機制，
+     保安覆蓋冇減少。領袖密碼全程維持 'abcd'。 */
+  const reset = g.post({ action: 'authResetPassword', unit: '0082', actorUsername: 'leader@example.com', actorPassword: 'abcd', targetYmis: '1000000001', newPassword: '1234', sessionToken: login.sessionToken });
   ok('領袖可由 server-side 重設成員密碼', reset.ok === true, JSON.stringify(reset));
   const memberLogin = g.post({ action: 'authLogin', unit: '0082', ymis: '1000000001', password: '1234' });
   ok('被重設成員首次登入要改密碼', memberLogin.ok === true && memberLogin.mustChangePw === true);
-  const deleted = g.post({ action: 'authDeleteAccount', unit: '0082', actorUsername: 'leader@example.com', actorPassword: '1234', targetUsername: 'exco@example.com', sessionToken: newLogin.sessionToken });
+  /* ★ 重設密碼一定要即刻踢走舊 session（唔可以留返個舊票據繼續用得） */
+  const beforeRevoke = g.post({ action: 'authResetPassword', unit: '0082', actorUsername: 'leader@example.com', actorPassword: 'abcd', targetYmis: '1000000001', newPassword: '1234', sessionToken: memberLogin.sessionToken });
+  ok('未重設前，成員自己張 session 係有效嘅（對照組）', beforeRevoke.code !== 'SESSION_REQUIRED', JSON.stringify(beforeRevoke).slice(0, 140));
+  const revokeAgain = g.post({ action: 'authResetPassword', unit: '0082', actorUsername: 'leader@example.com', actorPassword: 'abcd', targetYmis: '1000000001', newPassword: '5678', sessionToken: login.sessionToken });
+  ok('領袖再重設一次成員密碼', revokeAgain.ok === true, JSON.stringify(revokeAgain));
+  const staleAction = g.post({ action: 'authResetPassword', unit: '0082', actorUsername: 'leader@example.com', actorPassword: 'abcd', targetYmis: '1000000001', newPassword: '1234', sessionToken: memberLogin.sessionToken });
+  ok('★ 重設密碼後舊 session 立即失效', staleAction.code === 'SESSION_REQUIRED', JSON.stringify(staleAction).slice(0, 140));
+  const reLogin = g.post({ action: 'authLogin', unit: '0082', ymis: '1000000001', password: '5678' });
+  ok('★ 新密碼登得入、舊密碼失效', reLogin.ok === true
+    && g.post({ action: 'authLogin', unit: '0082', ymis: '1000000001', password: '1234' }).ok === false);
+  const deleted = g.post({ action: 'authDeleteAccount', unit: '0082', actorUsername: 'leader@example.com', actorPassword: 'abcd', targetUsername: 'exco@example.com', sessionToken: login.sessionToken });
   ok('團長可由 server-side 刪除執委帳戶', deleted.ok === true, JSON.stringify(deleted));
   const excoLogin = g.post({ action: 'authLogin', unit: '0082', username: 'exco@example.com', password: 'exco-pass' });
   ok('已刪除帳戶不能再登入', excoLogin.ok === false);
-  const restored = g.post({ action: 'authRestoreAccount', unit: '0082', actorUsername: 'leader@example.com', actorPassword: '1234', targetEmail: 'exco@example.com', sessionToken: newLogin.sessionToken });
+  const restored = g.post({ action: 'authRestoreAccount', unit: '0082', actorUsername: 'leader@example.com', actorPassword: 'abcd', targetEmail: 'exco@example.com', sessionToken: login.sessionToken });
   ok('管理員可以由保留嘅成員資料復原帳戶', restored.ok === true, JSON.stringify(restored));
   const restoredLogin = g.post({ action: 'authLogin', unit: '0082', username: 'exco@example.com', password: '1234' });
   ok('復原帳戶使用 1234 並強制改密碼', restoredLogin.ok === true && restoredLogin.mustChangePw === true);
@@ -431,69 +438,6 @@ section('★ v2.7.2：修復安全網（唔會誤刪唯一一套好資料）');
   ok('★ 冇版本欄嘅舊資料唔會刪', pr3.removed === 0 && dbTab._rows.length === 2, JSON.stringify(pr3));
 }
 
-/* ============================================================
-   ③a ★ v2.7.1 後端自查（團長 2026-09-24 第二輪）：
-   「無痕讀取不了後端／入咗 URL API KEY 都睇唔到進度，
-     人係讀到但係個個都冇進度」
-   ------------------------------------------------------------
-   前端（進度 → 設定 → 後端資料檢查）要靠後端答得出：
-     ① 你填嘅 /exec 係邊張 Sheet
-     ② 有邊啲分頁、每張幾多行
-     ③ 「進度追蹤」有幾多 YMIS／項目、同「成員名單」對唔對得上
-   呢個測試釘死呢個契約（同埋要 API Key 先答）。
-   ============================================================ */
-section('★ v2.7.1：後端自查 diag（「人讀到、個個都冇進度」）');
-{
-  const g = makeGas({ apiKey: 'diag_key' });
-  g.sandbox.initializeSheets();
-  const KEY = g.props.get('API_KEY');
-
-  /* 種：兩個團員、一個有人有進度、一個冇 */
-  const ml = g.sheets.get('成員名單');
-  ml._rows.length = 0;
-  ml.appendRow(['YMIS', '姓名', '加入日期', '支部', '聯絡']);
-  ml.appendRow(['8202001', '陳大文', '', '', '']);
-  ml.appendRow(['8202002', '李小明', '', '', '']);
-  const pt = g.sheets.get('進度追蹤');
-  pt._rows.length = 0;
-  pt.appendRow(['YMIS', '項目', '日期', '記錄時間', '確認人', '備註']);
-  pt.appendRow(['8202001', 'L1-ACT-01', '2026-09-01', new Date(), '團長', '']);
-  pt.appendRow(['8202001', 'L1-UND-02', '2026-09-02', new Date(), '領袖', '']);
-  pt.appendRow(['9999999999', 'L1-ACT-01', '2026-09-03', new Date(), '團長', '']);   // 唔喺名冊
-
-  const noKey = g.get({ action: 'diag' });
-  ok('diag 冇 API Key → 拒（會報分頁名同行數，唔可以公開）', noKey.ok === false, JSON.stringify(noKey).slice(0, 80));
-
-  const d = g.get({ action: 'diag', apikey: KEY, unit: '0082' });
-  ok('diag 有 Key → ok', d.ok === true && d.success === true, JSON.stringify(d).slice(0, 120));
-  ok('diag 報邊張 Sheet 同後端版本', typeof d.spreadsheet === 'string' && /^v\d/.test(String(d.version || '')), JSON.stringify({ sheet: d.spreadsheet, v: d.version }));
-  ok('diag 報「進度追蹤」行數／YMIS／項目（3 行、2 個 YMIS、2 個項目）',
-    d.progress?.rows === 3 && d.progress?.ymis === 2 && d.progress?.items === 2,
-    JSON.stringify(d.progress));
-  ok('diag 報「進度同名冊對唔對得上」（1 個對得上、1 個唔喺名冊）',
-    d.progress?.matchedWithMemberList === 1 && d.progress?.notInMemberList === 1, JSON.stringify(d.progress));
-  ok('diag 報「成員名單」有 2 人', d.memberList?.rows === 2 && d.memberList?.ymis === 2, JSON.stringify(d.memberList));
-  ok('diag 報分頁清單（有「進度追蹤」同行數）',
-    (d.tabs || []).some(t => t.name === '進度追蹤' && t.rows === 3), JSON.stringify((d.tabs || []).slice(0, 4)));
-  ok('diag 報缺咗嘅分頁（空 ＝ 齊）', Array.isArray(d.missingTabs) && d.missingTabs.length === 0, JSON.stringify(d.missingTabs));
-  /* 進度追蹤有 2 個 YMIS（其中一個唔喺名冊）、3 格 —— 摘要要照實報 */
-  ok('diag 附帶 load 摘要（2 位成員、2 個 YMIS 有進度、3 格）',
-    d.loadSummary?.members === 2 && d.loadSummary?.withProgress === 2 && d.loadSummary?.ticks === 3,
-    JSON.stringify(d.loadSummary));
-
-  /* 分頁唔見咗（＝舊版 Code.gs 刪過／未 initializeSheets）→ 要講得出 */
-  const ss = g.sandbox.SpreadsheetApp.getActiveSpreadsheet();
-  ss.deleteSheet(ss.getSheetByName('進度追蹤'));
-  const d2 = g.get({ action: 'diag', apikey: KEY, unit: '0082' });
-  ok('「進度追蹤」唔見咗 → rows:-1 同列入 missingTabs（app 會教執行 initializeSheets）',
-    d2.progress?.rows === -1 && (d2.missingTabs || []).includes('進度追蹤'), JSON.stringify({ rows: d2.progress?.rows, missing: d2.missingTabs }));
-
-  /* POST 路線一樣通（api/progress 用 GET，但後端兩條路都要得） */
-  const viaPost = g.post({ action: 'diag', unit: '0082', apiKey: KEY });
-  ok('diag 亦可以經 POST 叫（同一份判斷）', viaPost.ok === true && viaPost.progress?.rows === -1, JSON.stringify(viaPost).slice(0, 100));
-  const viaPostNoKey = g.post({ action: 'diag', unit: '0082', apiKey: 'wrong' });
-  ok('diag POST 錯 Key → 拒', viaPostNoKey.ok === false);
-}
 
 /* ============================================================
    ③b ★ v2.7.0 團長回報（2026-09-24）：
@@ -1244,9 +1188,9 @@ section('★ v2.8.1：自證＋報表合併＋真相欄位＋止血');
   const lt = g.post({ action: 'loadTables', unit: '0082', apiKey: KEY });
   ok('⑥ 清完照讀到 2 個團員', (lt.db?.members || []).length === 2);
 
-  /* ⑦ diag 真相欄位 */
-  const dg = g.post({ action: 'diag', unit: '0082', apiKey: KEY });
-  ok('⑦ ★ diag 有 backendVersion／mode／simpleRows',
+  /* ⑦ 真相欄位（2026-11-12：diag 已刪，改驗 live 嘅 dbInfo —— 同一批欄位） */
+  const dg = g.post({ action: 'dbInfo', unit: '0082', apiKey: KEY });
+  ok('⑦ ★ dbInfo 有 backendVersion／mode／simpleRows',
     dg.backendVersion === EXPECTED_VERSION && dg.mode === 'simple' && dg.simpleRows === 8,
     JSON.stringify({ v: dg.backendVersion, m: dg.mode, s: dg.simpleRows }));
 }

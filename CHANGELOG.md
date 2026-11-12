@@ -5,6 +5,74 @@
 
 ---
 
+## v2.8.6 — 2026-11-12
+
+**GS 死碼精簡（襯未真正有人用之前拆走，唔會越積越腫）**
+
+背景：`Code.gs` 已經 3545 行。實測發現一批「後端有 handler、白名單又放行，
+但前端根本冇人 call」嘅孤兒代碼 —— 呢啲唔會令任何測試紅燈，所以一直靜靜雞累積。
+對應 UI 大部分喺 2026-09-26 團長要求拆掣時已經拆走，但後端函數同測試夾具留咗度。
+
+### 刪除（GS）
+- **2 個真死函數**：`linkNonceGs()`、`setLocalLoginAllowed()`（邏輯早已內聯喺
+  `menuLocalLoginOff/On` ＋ `setLocalLogin` handler，冇任何呼叫者）。
+- **6 個孤兒 action**（handler ＋ `SUPPORTED_ACTIONS` ＋ 兩個代理白名單）：
+  `claimDecision`、`loanDecision`、`noticeSubscribe`、`noticeSubscriptions`、
+  `authChangePassword`、`authResetByToken`。
+  前端對應功能係純本機（例如 `auth.js` 改密碼），從來冇 call 過呢啲 action。
+- **`diag` 自查鏈**：`diagnoseBackendTabs()`（109 行）＋ `doPost`／`doGet` 分支
+  ＋ `api/progress.js` 嘅 diag 分支（35 行）＋ 白名單 entry。
+
+### 刪除（前端 `assets/js/lib/remote.js`）
+- 8 個屍體函數：`remoteDiagnose`、`backendHealth`、`backendReality`、`syncProbe`、
+  `repairBackend`、`forcePushBackend`、`testConnection`、`testReadWrite`
+  ＋ 只服務佢哋嘅 `FIX_ENV`／`firstBlocker` ＋ 未用嘅 `shortExec` import。
+
+### 刻意保留（唔係死碼）
+- **舊 blob 讀寫路**（`saveDb`／`dbRawText`／`loadDbPart`…）：`dbReadRaw` 仍然會
+  fallback 去呢條路，而 `0082` 已經登記咗 —— 刪落去隨時讀唔返現有用戶資料。
+- **人手逃生門**：`repairDb`／`saveDbForce`／`cleanStaleStaging`／`pruneOldDbVersions`
+  ／`syncCheck` —— `DEPLOY_GUIDE_FOR_TROOPS.md` 嘅搶救步驟靠佢哋。
+- `verifyAgainstBackend()`（`syncdialog.js` 用緊）、`checkSheetWriteRead()`（`saveTables` 用緊）。
+
+### 新增守門（防止再腫）
+- `scripts/lint.mjs` **⑦ 孤兒 action 守門**：後端有 handler 但前端冇人 call → **紅燈**。
+  要保留就要喺 `INTENTIONAL_NO_CALLER` 登記＋寫低原因（而家登記咗 6 個：
+  `ping`／`status`／`test` 探活、`repairDb`／`saveDbForce` 人手搶救、`syncCheck` 自證）。
+  登記冊本身亦有過期檢查（已刪或已接返前端嘅要移走）。
+  已實測：注入一個假孤兒 handler → 即時紅燈；移除後回復綠燈。
+  （原本 ④ 只守「前端有 call → 後端要有」，方向相反，捉唔到呢類腫脹。）
+
+### 測試（唔係刪測試就當綠）
+凡是原本用死函數做「驗證手段」去測其他真實行為嘅，全部改用生還嘅路徑重建，
+覆蓋冇減少，有啲更硬：
+- `tests/e2ereal.mjs`：diag 斷言 → **直接讀 Sheet**（`/_tabs`）＋ `status`
+  （唔再信後端自我報告，改驗真正寫咗落去資料）；`checkReadWrite` fixture
+  → 直接經真 proxy 打 `syncCheck`；同步診斷 → `remoteInfo` ＋ `verifyAgainstBackend`。
+- `tests/reality.mjs`：改用 live `verifyAgainstBackend()`，仍然驗齊
+  「未撳掣對唔上 → 撳咗對得上 → 第二部機讀得返 → Key 錯要拒且唔盲寫」。
+- `tests/remote.mjs`：5MB 分段讀 → 直接叫 live `pullDb()`（驗真正嗰條路）；
+  搶救三寶一節 → 改驗「介面唔可以加返掣」＋「後端逃生門仍放行」＋「屍體唔准翻生」。
+- `tests/gas.mjs`：「重設密碼後舊 session 立即失效」由已刪嘅 `authChangePassword`
+  搬去 live `authResetPassword`（同一個 `revokeAuthSessions()` 機制），並加對照組。
+- `tests/progress.mjs`：diag 一節 → 釘死「已移除嘅 action 唔可以再放行」。
+- `tests/selfserve.mjs` / `tests/simplewrite.mjs`：診斷／實況 → `remoteInfo`／`verifyAgainstBackend`。
+
+### 實測結果
+- `Code.gs`：**3545 → 3289 行**（−256 行，−8.0%；204092 → 187730 bytes）。
+- `assets/js/lib/remote.js`：**1870 → 1218 行**（−652 行，−34.9%）。
+- 全部閘門綠：lint **20/0**、guard **PASS 17**、repo_health **8/2/0**（2 個 WARN 係既定版權保留）、
+  `npm test` **exit 0 / 0 失敗**、`build:gas` sha256 可重現。
+- **用戶資料／API Key 零影響**：純刪冇呼叫者嘅代碼，冇改任何寫入路徑或金鑰邏輯。
+
+### 抓到的自身錯誤（如實記錄）
+一次性刪除腳本用 `^function name(...)...^}` 正则，對**單行**函數 `linkNonceGs()`
+會一路食到下一個行首 `}`，連帶刪走咗 live 嘅 `linkCanonicalGs()`（簽名驗證要用）。
+`tests/gas.mjs` 簽名測試即刻 7 紅 → 已還原該函數，並用「全函數清單＋逐個函數體比對」
+核實最終只有預期嘅 3 個頂層函數消失、其餘函數體一字不變。
+
+---
+
 ## v2.8.5 — 2026-11-12
 
 **按真理倉 README 對齊 ＋ 初始化資料保全（本 repo 係其他支部系統嘅參考模版）**

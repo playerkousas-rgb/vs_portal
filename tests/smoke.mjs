@@ -2178,7 +2178,7 @@ section('欄位設定（每頁自己改）');
   window.dispatchEvent(new window.HashChangeEvent('hashchange'));
   await new Promise(r => setTimeout(r, 90));
   const av = doc.getElementById('view');
-  /* ★ 2026-11-12：「系統 → 資料管理」嗰個純指路頁已刪（3 張卡淨係叫人
+  /* ★ 2026-11-12：「系統 → 資料管理」嗰個主要係指路嘅中轉頁已刪（3 張卡淨係叫人
      去 #/tables 嗰 3 個分頁 = 兜圈）。而家「資料管理」係側欄獨立入口。
      呢度改驗真正嘅入口：舊 hash 要轉址，而且真嘅分頁掣要喺度。 */
   ok('舊 #/admin/data 自動轉址去 #/tables（唔會斷書籤）',

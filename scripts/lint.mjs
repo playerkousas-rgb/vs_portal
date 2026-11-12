@@ -333,33 +333,52 @@ section('⑦ 孤兒 action 守門（後端有、前端冇人 call ＝ 死碼）'
 /* ============================================================
    ⑧ 導覽文字唔可以指去唔存在嘅路（★ 2026-11-12 UI 簡化）
    ------------------------------------------------------------
-   背景：用家「東指西指」。「資料管理」本來係「系統」底下嘅指路分頁，
+   背景：用家「東指西指」。「資料管理」本來係「系統」底下嘅中轉分頁，
    於是全個 repo 有 40+ 處教人「系統 → 資料管理 → …」。
-   2026-11-12 把「資料管理」升做側欄獨立入口之後，呢啲指示全部變咗錯 ——
-   用戶照住撳會撳唔到。改咗 48 處，加呢個守門防止再積。
-
-   同時守：說明文字唔可以再出現「系統 → 資料管理」呢條已經唔存在嘅路。
+   2026-11-12 把「資料管理」升做側欄獨立入口之後，呢啲指示全部變咗錯。
+   第一輪改咗 48 處 JS；發佈前反查再發現 README 同現行操作手冊仲有舊路，
+   所以守門要同時掃 app 文案同現行 Markdown（歷史記錄除外）。
    ============================================================ */
 section('⑧ 導覽指示唔可以指去已拆走嘅路');
 {
-  const STALE = [
+  const STALE_TEXT = [
     ['系統 → 資料管理', '「資料管理」已經係側欄獨立入口，唔再喺「系統」入面'],
     ['系統→資料管理', '同上（冇空格寫法）'],
     ['管理 → 資料管理', '舊「管理」指路已拆；而家直接去「資料管理」'],
+    ['財務 → 財政年度報告', '年度報告分頁已拆（重複入口）；而家係「財務 → 年結報告」頂欄掣'],
+    ['財務 → 匯入舊帳', '匯入工具已併入「財務 → 設定 → 匯入舊帳」'],
+    ['表格與同步', '舊主項目已改名「資料管理」'],
+    ['系統 → 帳戶', '帳戶已搬到「用戶與身份 → 身份與帳號」'],
+    ['財務 → 年度設定', '分頁而家叫「財務 → 設定」'],
+    ['用戶 → 生日', '主項目同分頁而家叫「用戶與身份 → 生日表」'],
+    ['通告 → 所有報名', '分頁而家叫「通告 → 報名紀錄」'],
+    ['立即儲存到後端', '按鈕而家叫「儲存到後端」']
+  ];
+  const STALE_CODE = [
+    ...STALE_TEXT,
     ['data-go="#/admin/data"', '內部按鈕要直去 #/tables；舊 hash 只留畀外部書籤轉址'],
-    ['href="#/admin/data"', '內部連結要直去 #/tables；舊 hash 只留畀外部書籤轉址'],
-    ['財務 → 財政年度報告', '年度報告分頁已拆（重複入口）；而家係「財務 → 年結報告」頂欄掣']
+    ['href="#/admin/data"', '內部連結要直去 #/tables；舊 hash 只留畀外部書籤轉址']
   ];
   const bad = [];
-  for (const f of ALL.filter(f => /^assets\/js\//.test(rel(f)) && /\.js$/.test(f))) {
-    const s = fs.readFileSync(f, 'utf8');
-    s.split('\n').forEach((line, i) => {
-      for (const [needle, why] of STALE) {
+  const scan = (f, stale) => {
+    const text = fs.readFileSync(f, 'utf8');
+    text.split('\n').forEach((line, i) => {
+      for (const [needle, why] of stale) {
         if (line.includes(needle)) bad.push(`${rel(f)}:${i + 1}  「${needle}」 —— ${why}`);
       }
     });
-  }
-  ok(bad.length === 0, '冇指示指去已拆走嘅導覽路徑', bad.slice(0, 8).join('\n      '));
+  };
+  for (const f of ALL.filter(f => /^assets\/js\//.test(rel(f)) && /\.js$/.test(f))) scan(f, STALE_CODE);
+  /* 現行操作文件要守；歷史更新、CHANGELOG 同審核報告會刻意記低舊路，唔應該假紅。 */
+  const currentDocs = ALL.filter(f => {
+    const r = rel(f);
+    return /\.md$/.test(r)
+      && r !== 'CHANGELOG.md'
+      && r !== 'UI_AUDIT_2026-11-12.md'
+      && !/^docs\/UPDATES_/.test(r);
+  });
+  currentDocs.forEach(f => scan(f, STALE_TEXT));
+  ok(bad.length === 0, 'app 文案同現行手冊冇指去已拆走嘅導覽路徑', bad.slice(0, 12).join('\n      '));
 }
 
 console.log(`\n──────── lint 結果：${checks - fails} 通過 / ${fails} 失敗 ────────`);

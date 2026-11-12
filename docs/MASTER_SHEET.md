@@ -28,7 +28,7 @@ https://script.google.com/macros/s/AKfycbySGLBg5KuWzgM9EySiOIppqnzrL0QASIYLlhbCI
 ```
 
 * **總表同步**、**成員手機記帳（entry.html）**、**通告報名（notice.html）** 三條路都預設用呢條 `/exec`
-* APP 內「表格與同步 → 總表同步」已經預填好，狀態會顯示「**後端已連接**」
+* APP 內「資料管理 → 總表同步」已經預填好，狀態會顯示「**後端已連接**」
 * 其他旅團都會自動用同一個後端（要分開嘅話，喺 `data/units.json` 自己嗰個 entry 加 `"backend": { "gasUrl": "…" }`）
 * **示範（MOCK）模式永遠唔會送出街** —— 示範資料只留喺瀏覽器
 
@@ -45,7 +45,7 @@ https://script.google.com/macros/s/AKfycbySGLBg5KuWzgM9EySiOIppqnzrL0QASIYLlhbCI
 
 1. 開一個 **Google Sheet**（例：`深資童軍管理系統 總表`）。
 2. 選單「**擴充功能 → Apps Script**」。
-3. APP 內去「**表格與同步 → 總表同步 → 下載 Code.gs**」，將內容**全部取代**貼上。
+3. APP 內去「**資料管理 → 總表同步 → 下載 Code.gs**」，將內容**全部取代**貼上。
 4. （可選）改頂部兩個設定：
    * `API_KEY = 'v82-demo-key'` —— 改做你自己嘅字串，APP 內「總表同步 → API Key」要填同一個
    * `DRIVE_FOLDER_ID = ''` —— 填 Google Drive 資料夾 ID，成員影嘅單據相片就會自動上載去 Drive
@@ -54,7 +54,7 @@ https://script.google.com/macros/s/AKfycbySGLBg5KuWzgM9EySiOIppqnzrL0QASIYLlhbCI
    * 說明：`深資童軍管理系統 sync`
    * 執行身分：**我**
    * 具有存取權的使用者：**任何人** ← 一定要，否則 APP 送唔到資料
-6. 複製 **`/exec` 網址**，返到 APP：「表格與同步 → 總表同步」——你嘅網址**已經預填**
+6. 複製 **`/exec` 網址**，返到 APP：「資料管理 → 總表同步」——你嘅網址**已經預填**
    （如果換咗網址就先貼上新嘅，並確認「同一條網址共用」有剔），然後撳「**儲存設定**」。
 7. 撳頂部「**儲存到後端**」—— 收到「**已寫入後端（已核對）**」收據即係連通成功；
    成份資料庫會寫入總 Sheet 嘅「**資料庫**」分頁
@@ -121,14 +121,14 @@ https://script.google.com/macros/s/AKfycbySGLBg5KuWzgM9EySiOIppqnzrL0QASIYLlhbCI
 如果另一個旅團本身已經有帳目表／物資表，唔需要重新入過：
 
 1. 佢哋嘅 Google Sheet → 共用 →「**知道連結嘅任何人均可檢視**」。
-2. APP 內「**表格與同步 → 插入自己嘅 Sheet**」：
+2. APP 內「**資料管理 → 插入自己嘅 Sheet**」：
    * 貼上連結（要帶 `gid=`，即係佢停留嘅分頁）
    * 揀「匯入到」（帳目／物資／團員…）→ 按「**讀取欄位**」
    * 系統會**自動對應**（日期→日期、金額→金額、付款人→經手人…），下拉可以逐個改
    * 可以剔「匯入前清空該表」避免重複
    * 按「**匯入**」；或者「**儲存做同步來源**」，之後隨時按「同步」拉最新版
 3. 冇公開連結都得：喺 Sheet 選範圍 Ctrl+C → APP 內按「**改為貼上 CSV**」。
-4. 想改欄位名（例：把「經手人」改成「負責人」）：**表格設計** 直接改字，全 APP 即時跟住；
+4. 想改欄位名（例：把「經手人」改成「負責人」）：去相應模組頁右上撳「**欄位**」直接改字，全 APP 即時跟住；
    加欄位、改類型、設必填、隱藏、排序、還原預設都喺同一頁。
 
 ---
@@ -158,5 +158,5 @@ https://script.google.com/macros/s/AKfycbySGLBg5KuWzgM9EySiOIppqnzrL0QASIYLlhbCI
 - [ ] 開一張測試通告 → 手機掃 QR → 報到名 → APP 見到報名名單
 - [ ] （可選）`DRIVE_FOLDER_ID` 填咗，單據相片有上載去 Drive
 
-有問題睇 APP 內「**教學 → 手機記帳與通告／表格設計與總表同步**」，
+有問題睇 APP 內「**教學 → 手機記帳與通告**」同「**教學 → 插入自己嘅 Sheet 與總表同步**」，
 或者「總表同步 → 同步紀錄」睇每次同步嘅 HTTP 結果。

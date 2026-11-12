@@ -116,6 +116,10 @@ await loginAs('leader');
   ok('教學唔再佔側欄一格（已搬頂欄）', !items.includes('docs'), JSON.stringify(items));
   ok('頂欄有「教學」掣（執委都搵得到說明）', !!doc.querySelector('.topbar [data-go="#/docs"], .topbar [data-nav="docs"]'));
   ok('側欄冇重複項目', new Set(items).size === items.length);
+  await goTo('#/tables');
+  ok('資料管理頂欄同側欄同名（唔再殘留舊名「表格與同步」)',
+    (doc.querySelector('.topbar .tb-title')?.textContent || '').trim() === '資料管理',
+    doc.querySelector('.topbar .tb-title')?.textContent || '');
 }
 
 /* ============================================================
@@ -238,6 +242,18 @@ for (const role of ['leader', 'chief']) {
   ok(role + '：側欄有 系統 ＋ 資料管理', items.includes('admin') && items.includes('tables'), JSON.stringify(items));
   await goTo('#/tables/sync');
   ok(role + '：總表同步開得到（有輸入欄）', !!doc.querySelector('#view input'), vtext().slice(0, 80));
+  if (role === 'leader') {
+    await goTo('#/tables/data');
+    const backupActs = ['export-json', 'import-json', 'reset-seed', 'wipe'];
+    ok('刪指路頁冇刪真功能：JSON 備份／匯入／重設／清空四粒掣齊晒',
+      backupActs.every(a => !!doc.querySelector(`#view [data-act="${a}"]`)),
+      backupActs.filter(a => !doc.querySelector(`#view [data-act="${a}"]`)).join(', '));
+    doc.querySelector('#view [data-act="export-json"]')?.dispatchEvent(
+      new window.MouseEvent('click', { bubbles: true }));
+    await wait(120);
+    ok('「匯出全部（JSON）」唔係死掣：撳完有成功回覆',
+      [...doc.querySelectorAll('.toast')].some(t => /已匯出備份/.test(t.textContent || '')));
+  }
   await goTo('#/admin/unit');
   ok(role + '：旅團設定開得到', /旅團編號|本旅團資料/.test(vtext()), vtext().slice(0, 80));
 }

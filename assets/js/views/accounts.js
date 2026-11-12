@@ -6,7 +6,7 @@
      ② 入面嘅「**身份與帳號**」分頁成個搬去「**用戶與身份**」
         （#/members/accounts，見 views/members-accounts.js）
      所以呢一頁淨係剩返：**旅團設定 / 操作紀錄**。
-   ★ 2026-11-12：「資料管理」唔再係呢頁嘅分頁 —— 佢本來係純指路頁，
+   ★ 2026-11-12：「資料管理」唔再係呢頁嘅分頁 —— 佢本來主要係指路中轉頁，
      而家直接係側欄一個入口（#/tables），唔使兜兩層。
    規則（依實際需要）：
      超管：可改領袖、執委任何帳戶密碼，可開／刪帳戶
@@ -15,14 +15,13 @@
    超管帳戶：唔會出現在任何名單，任何人都唔可以改佢密碼。
    ============================================================ */
 
-import { load, commit, add, exportAll, importAll, resetToSeed, wipe, audit, currentUnit, switchUnit } from '../lib/store.js';
+import { load, commit, add, audit, currentUnit, switchUnit } from '../lib/store.js';
 import { ROLES, accounts, can, changeOwnPassword, currentRole, isSuper, displayName } from '../lib/auth.js';
-import { profile, settings, members, tx, invItems } from '../lib/model.js';
+import { profile, settings, members } from '../lib/model.js';
 import * as fiscalLib from '../lib/fiscal.js';
 import { unitList, isLocalUnit, saveLocalUnit, removeLocalUnit, loadRegistry, registry } from '../lib/units.js';
 import { envUnitTemplate } from '../lib/onboard.js';
-import { esc, icon, modal, confirmDlg, toast, download, copyText } from '../lib/util.js';
-import { download as dlFile, toCSV, stamp } from '../lib/exporter.js';
+import { esc, icon, modal, confirmDlg, toast, copyText } from '../lib/util.js';
 import { go } from '../lib/router.js';
 import { pageHead, tabs, empty, kv, stat, noteBox } from './ui.js';
 import { renderPublicLinksEditor, mountPublicLinksEditor } from './public-links-editor.js';
@@ -47,7 +46,7 @@ export function render(params) {
      ②「身份與帳號」都搬埋去「用戶與身份」（#/members/accounts，見 views/members-accounts.js）
      → 呢一頁（「系統」）淨係剩返 旅團設定／操作紀錄 兩樣。
      舊連結 #/admin/accounts 會喺 main.js 自動導去 #/members/accounts。 */
-  /* ★ 2026-11-12：「資料管理」分頁已刪 —— 佢係純指路頁（3 張卡叫你去
+  /* ★ 2026-11-12：「資料管理」分頁已刪 —— 佢主要係指路中轉頁（3 張卡叫你去
      #/tables 嗰 3 個分頁），而 tables 本身已經有嗰 3 個分頁 = 兜圈。
      舊連結 #/admin/data 由 main.js 自動導去 #/tables。 */
   if (['unit', 'audit'].includes(params.id)) tab = params.id;
@@ -255,69 +254,6 @@ export function mount(root) {
       toast('已新增，切換後即可使用', 'ok'); refresh(); return;
     }
 
-    /* --- 資料 --- */
-    if (act === 'export-json') {
-      dlFile(`ecportal_${currentUnit()}_備份_${stamp()}.json`, exportAll(), 'application/json');
-      toast('已匯出備份', 'ok'); audit('匯出備份'); return;
-    }
-    if (act === 'import-json') {
-      const r = await modal({
-        title: '匯入備份', sub: '會覆蓋目前旅團所有資料',
-        body: `<div class="field"><label class="label">貼上備份 JSON</label>
-            <textarea class="textarea" id="q-json" style="min-height:180px;font-family:var(--mono);font-size:12px" placeholder='{"schema":2,…}'></textarea></div>
-          <div id="q-err" class="err mt-8"></div>
-        `,
-        actions: [{ label: '取消', class: 'btn', value: null },
-          { label: '匯入', class: 'btn-primary', onClick: el => el.querySelector('#q-json').value }]
-      });
-      if (!r) return;
-      try {
-        importAll(r);
-        toast('已匯入，重新載入…', 'ok');
-        setTimeout(() => location.reload(), 600);
-      } catch (e) {
-        toast('匯入失敗：' + e.message, 'err');
-      }
-      return;
-    }
-    if (act === 'export-csv') {
-      toCSV({
-        filename: `帳目_${currentUnit()}_${stamp()}.csv`,
-        headers: ['日期', '類型', '項目', '金額', '分類', '方式', '經手人', '單據', '備註'],
-        rows: tx().map(t => [t.date, t.type === 'income' ? '收入' : '支出', t.item, t.amount, t.category || '', t.method || '', t.byName || '', t.receipt ? '有' : '', t.note || ''])
-      });
-      toast('已匯出 CSV', 'ok'); return;
-    }
-    if (act === 'export-members') {
-      toCSV({
-        filename: `團員_${currentUnit()}_${stamp()}.csv`,
-        headers: ['姓名', '英文名', '生日', '職位', '電話', '電郵', '入團', '狀態'],
-        rows: members().map(m => [m.name, m.eng || '', m.birthday || '', m.role || '', m.phone || '', m.email || '', m.join || '', m.status])
-      });
-      toast('已匯出 CSV', 'ok'); return;
-    }
-    if (act === 'reset-seed') {
-      if (await confirmDlg({
-        title: '還原初始資料', danger: true, okText: '確定還原',
-        message: '本機所有改動會消失，還原做 <b>data/</b> 檔案嘅初始內容，並會登出。建議先匯出備份。'
-      })) {
-        await resetToSeed();
-        toast('已還原，重新載入…', 'ok');
-        setTimeout(() => { location.href = location.pathname + location.search; }, 700);
-      }
-      return;
-    }
-    if (act === 'wipe') {
-      if (await confirmDlg({
-        title: '清空本旅團資料', danger: true, okText: '確定清空',
-        message: '所有團員、帳目、物資、團章改動會<b>全部清空</b>。'
-      })) {
-        wipe(); toast('已清空', 'ok');
-        setTimeout(() => location.reload(), 600);
-      }
-      return;
-    }
-    if (act === 'own-pw') return ownPasswordForm();
 
   }));
 

@@ -4,7 +4,12 @@
    （一張 Sheet 統管整個 Venture，支援多旅團獨立 Sheet 或合併 Sheet）。
    ============================================================ */
 
-/* ★ v2.8.0：「資料表」＝簡單寫入（逐表寫）嘅正本；「資料庫」＝舊嘅整份 blob（留底／後備） */
+/* ★ 版號單一來源（V1／F15）：Code.gs 檔頭同 BACKEND_VERSION 都由 version.js 推導。
+   以前檔頭字串係獨立寫死，升 BACKEND_VERSION 嗰陣會漏改檔頭 —— tests/remote.mjs 會紅。
+   而家冇第二個地方可以寫漏。 */
+import { APP_VERSION } from './version.js';
+
+/* ★ 自 v2.8.0 起：「資料表」＝簡單寫入（逐表寫）嘅正本；「資料庫」＝舊嘅整份 blob（留底／後備） */
 export const SHEET_TABS = ['資料表', '資料庫', '帳目', '物資', '團員', '收支申報', '通告', '通告全文', '報名', '物資借用', '會議', '設定', '同步紀錄',
   '進度追蹤', '其他獎章', '待批完成', '活動履歷', '待批履歷', '成員名單'];   // 後 6 個 = 同進度前端共用嘅分頁
 
@@ -12,7 +17,7 @@ export function gasTemplate() {
   return `/**
  * ============================================================
  *  深資童軍管理系統 · 總表同步與多旅團後端 Apps Script（Code.gs）
- *  版本：v2.8.4
+ *  版本：${APP_VERSION}
  *
  *  ★ v2.8.1（2026-09-25，團長回報 4 項：「登入畫面睇唔到版號」／
  *    「後端分頁明明有資料但 app 話冇」／「有幾頁不停在儲存，會唔會爆量」／
@@ -154,7 +159,7 @@ var MODE = 'per-unit-sheet';   // 'per-unit-sheet' = 每個旅團獨立工作表
 var DRIVE_FOLDER_ID = '';
 
 /** 後端版本（status 會回報；APP 用嚟檢查「你張 Sheet 係咪仲行舊 code」） */
-var BACKEND_VERSION = 'v2.8.4';
+var BACKEND_VERSION = '${APP_VERSION}';
 
 /* ============================================================
    初始化與 API KEY 管理
@@ -416,13 +421,89 @@ function verifySetupKey(key) {
   return { ok: true, success: true, hoursLeft: Math.round((exp - Date.now()) / 3600000) };
 }
 
-/** 初始化試算表：建立所有必要分頁、設定棗紅標題列及凍結頂列 */
+/* ============================================================
+   初始化資料保全（★ 學 VSBADGE ensureUserColumns / v9.1 定案）
+   ------------------------------------------------------------
+   鐵律：**每次更新 Code.gs 之後都可以安心行一次 initializeSheets()**。
+     · 只補：缺失分頁、缺失欄位（加喺最右）、缺失設定預設值
+     · 絕不：改寫／刪除／重排／重新編號任何現有用戶資料
+     · 絕不：更換現有 API_KEY
+     · idempotent：連跑兩次，第二次零改動
+   點解要補欄：舊寫法只在 getLastRow() === 0 先寫 header，
+   即係一張已有資料嘅舊 Sheet **永遠加唔到新欄位** —— 升級後新欄靜靜缺失。
+   而家逐欄比對 header 名，只把缺少嘅補喺最右邊（唔郁現有欄位位置，
+   因為進度前端係按欄位位置讀共用分頁，重排會即刻讀錯）。
+   守護測試：tests/init-preserve.mjs（前後逐表快照對比）。
+   ============================================================ */
+var INITIALIZED_VERSION_PROP = 'INITIALIZED_VERSION';
+
+/** 補齊一個分頁嘅結構；只加唔改。回傳做咗乜（畀報告用）。 */
+function ensureSheetStructure_(ss, cfg, brandColor, headerColor) {
+  var name = cfg.name, headers = cfg.headers;
+  var sh = ss.getSheetByName(name);
+  if (!sh) {
+    sh = ss.insertSheet(name);
+    sh.appendRow(headers);
+    sh.getRange(1, 1, 1, headers.length)
+      .setFontWeight('bold').setBackground(brandColor).setFontColor(headerColor);
+    sh.setFrozenRows(1);
+    return { tab: name, created: true, addedColumns: [] };
+  }
+  /* 分頁已存在但完全空 → 只寫標題列，唔會掂到任何資料（本來就冇）。 */
+  if (sh.getLastRow() === 0) {
+    sh.appendRow(headers);
+    sh.getRange(1, 1, 1, headers.length)
+      .setFontWeight('bold').setBackground(brandColor).setFontColor(headerColor);
+    sh.setFrozenRows(1);
+    return { tab: name, created: false, headerWritten: true, addedColumns: [] };
+  }
+  /* 已有資料：只喺最右補缺失欄位，現有每一格一律唔郁。 */
+  var lastCol = sh.getLastColumn();
+  var existing = sh.getRange(1, 1, 1, Math.max(lastCol, 1)).getValues()[0] || [];
+  var seen = {}, hasKnown = false, nonEmpty = 0;
+  for (var i = 0; i < existing.length; i++) {
+    var h = String(existing[i] === undefined || existing[i] === null ? '' : existing[i]).trim();
+    if (h) { nonEmpty++; seen[h] = true; }
+  }
+  for (var k = 0; k < headers.length; k++) { if (seen[headers[k]]) { hasKnown = true; break; } }
+  /* 防呆：第一行唔似標題列（全空，或者一個預期欄名都認唔到）→ 唔敢喺嗰行加嘢，
+     寧願如實報 skipped，都唔好可能污染用戶嘅資料行。 */
+  if (!nonEmpty || !hasKnown) {
+    return { tab: name, created: false, addedColumns: [], skipped: 'first-row-not-header' };
+  }
+  var missing = [];
+  for (var j = 0; j < headers.length; j++) { if (!seen[headers[j]]) missing.push(headers[j]); }
+  if (missing.length) {
+    sh.getRange(1, lastCol + 1, 1, missing.length).setValues([missing])
+      .setFontWeight('bold').setBackground(brandColor).setFontColor(headerColor);
+  }
+  return { tab: name, created: false, addedColumns: missing };
+}
+
+/** 初始化狀態（status 會回報）：分清楚「GS 已更新」同「已行初始化」。 */
+function initializationStatus() {
+  var done = '';
+  try { done = String(PropertiesService.getScriptProperties().getProperty(INITIALIZED_VERSION_PROP) || ''); }
+  catch (e) { done = ''; }
+  return {
+    backendVersion: BACKEND_VERSION,
+    initializedVersion: done,
+    initializationCurrent: done === BACKEND_VERSION,
+    initializeRequired: done !== BACKEND_VERSION
+  };
+}
+
+/** 初始化試算表：建立所有必要分頁、設定棗紅標題列及凍結頂列。
+ *  ★ 可以重跑：只補缺失結構，絕不改寫現有用戶資料／API Key（見上面鐵律）。 */
 function initializeSheets() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var brandColor = '#7B2233'; // 82venture 棗紅主色
   var headerColor = '#FFFFFF';
 
   var sheetConfigs = [
+    /* 「資料表」＝ 逐表寫入（saveTables）嘅正本目標。
+       以前只靠 simpleSheet() 懶建立，初始化清單漏咗佢 —— 而家補齊。 */
+    { name: '資料表', headers: ['旅團', '表名', '段號', '內容(JSON)', '更新時間', '版本'] },
     /* 「資料庫」＝ 真正嘅資料主體（app 嘅完整資料庫，分段存 JSON）。
        其他分頁係由佢攤平出嚟畀人睇／畀你自己用公式嘅「報表」。
        唔好人手改呢個分頁 —— 改咗會令 app 讀唔返。 */
@@ -448,37 +529,64 @@ function initializeSheets() {
     { name: '成員名單', headers: ['YMIS', '姓名', '加入日期', '支部', '聯絡'] }
   ];
 
+  /* 逐個分頁補結構（只加唔改；每一格現有資料都唔會掂）。 */
+  var report = [];
   sheetConfigs.forEach(function(cfg) {
-    var sh = ss.getSheetByName(cfg.name);
-    if (!sh) sh = ss.insertSheet(cfg.name);
-    if (sh.getLastRow() === 0) {
-      sh.appendRow(cfg.headers);
-      sh.getRange(1, 1, 1, cfg.headers.length)
-        .setFontWeight('bold')
-        .setBackground(brandColor)
-        .setFontColor(headerColor);
-      sh.setFrozenRows(1);
-    }
+    report.push(ensureSheetStructure_(ss, cfg, brandColor, headerColor));
   });
 
-  // 確保取得 API Key
+  /* 確保取得 API Key —— getApiKey() 只會喺冇 key 時生成，
+     已有 key 一律原樣保留（初始化唔准換 key，否則全部裝置即刻斷線）。 */
   var apiKey = getApiKey();
+
+  /* 成功完成後寫初始化標記（學 VSBADGE VS_GS_INITIALIZED_VERSION）：
+     咁先分得清「淨係貼咗新 Code.gs」同「真係行咗初始化」。 */
+  try {
+    PropertiesService.getScriptProperties().setProperty(INITIALIZED_VERSION_PROP, BACKEND_VERSION);
+  } catch (e) { /* ScriptProperties 配額／權限問題唔應該令初始化本身失敗 */ }
+
+  var created = report.filter(function(r) { return r.created; }).map(function(r) { return r.tab; });
+  var widened = report.filter(function(r) { return (r.addedColumns || []).length; });
+  var skipped = report.filter(function(r) { return r.skipped; });
+  var summary = '已檢查 ' + report.length + ' 個分頁：新建 ' + created.length +
+    '、補欄 ' + widened.length + '。現有資料一行都冇改，API Key 不變。';
+
   var ui = null;
   try { ui = SpreadsheetApp.getUi(); } catch (e) { /* headless */ }
   if (ui) {
+    var detail = widened.length
+      ? '\\n\\n補咗新欄位（加喺最右，舊欄位置不變）：\\n' +
+        widened.map(function(r) { return '· ' + r.tab + '：' + r.addedColumns.join('、'); }).join('\\n')
+      : '';
+    var warn = skipped.length
+      ? '\\n\\n⚠ 有分頁第一行唔似標題列，為安全起見冇自動加欄（請人手核對）：\\n' +
+        skipped.map(function(r) { return '· ' + r.tab; }).join('\\n')
+      : '';
     ui.alert(
-      '初始化完成！',
-      '深資童軍管理系統 所有分頁已建立成功（包括進度追蹤／其他獎章／活動履歷 —— 同進度前端共用同一個後端）！\\n\\n' +
+      '初始化完成（' + BACKEND_VERSION + '）',
+      summary + detail + warn + '\\n\\n' +
       '你嘅 API Key 為：\\n' + apiKey + '\\n\\n' +
       '下一步：\\n' +
-      '1. 點擊「部署」→「新增部署作業」\\n' +
+      '1. 點擊「部署」→「管理部署作業」→ 編輯 → 版本揀「新版本」\\n' +
       '2. 選擇「網頁應用程式」（執行身分：我；存取權：任何人）\\n' +
-      '3. 複製 /exec 網址並連同 API Key 交予 Git 管理員登記。',
+      '3. /exec 網址不變；首次部署先需要將網址＋API Key 交予 Git 管理員登記。',
       ui.ButtonSet.OK
     );
   }
-  Logger.log('深資童軍管理系統 initialized successfully. API Key: ' + apiKey);
-  return { ok: true, apiKey: apiKey };
+  Logger.log('深資童軍管理系統 ' + BACKEND_VERSION + ' initialized. ' + summary + ' API Key: ' + apiKey);
+  return {
+    ok: true, success: true, apiKey: apiKey,
+    backendVersion: BACKEND_VERSION,
+    initializedVersion: BACKEND_VERSION,
+    initializationCurrent: true,
+    initializeRequired: false,
+    preservedExistingData: true,
+    created: created,
+    addedColumns: widened,
+    skipped: skipped,
+    report: report,
+    msg: summary
+  };
 }
 
 /* ============================================================
@@ -994,7 +1102,7 @@ function dispatchBody(e, body) {
         var sv = withLock(function () { return saveDb(body); });
         return json({ ok: sv.success === true, success: sv.success === true, conflict: sv.conflict === true,
           chunks: sv.chunks || 0, bytes: sv.bytes || 0, at: sv.at || '', version: sv.version || '', error: sv.error || '',
-          /* v2.6.3：報表分頁係咪喺同一次請求入面一齊刷新咗（前端就唔使再發第二次）。
+          /* 自 v2.6.3 起：報表分頁係咪喺同一次請求入面一齊刷新咗（前端就唔使再發第二次）。
              呢個欄位一定要**明確列出**—— 呢度係逐個欄位砌回應，漏咗就會靜靜地冇咗。 */
           reports: sv.reports || null });
       }
@@ -1024,7 +1132,7 @@ function dispatchBody(e, body) {
              → 前端照行舊嘅整份 saveDb，唔使改設定、唔會斷。 */
           simpleWrite: true, mode: nfo.mode || 'blob', broken: nfo.broken || [] });
       }
-      /* v2.6.0：分段讀取 —— 每次淨係回一段純文字，唔會撞代理 4.5MB 回應上限 */
+      /* 自 v2.6.0 起：分段讀取 —— 每次淨係回一段純文字，唔會撞代理 4.5MB 回應上限 */
       if (body.action === 'loadDbPart') {
         var lp = loadDbPart(textOf(body.unit), body.partIdx);
         return json({ ok: lp.success === true, success: lp.success === true, found: !!lp.found,
@@ -1129,7 +1237,7 @@ function dispatchBody(e, body) {
     }
 
     if (body.action === 'noticeSignup') {
-      /* v2.5.0：報名除咗寫「報名」分頁，仲會寫入資料庫（APP 執委端先至睇得到） */
+      /* 自 v2.5.0 起：報名除咗寫「報名」分頁，仲會寫入資料庫（APP 執委端先至睇得到） */
       var sgn = withLock(function () { return appendSignup(body); });
       return json({ ok: sgn.success !== false, success: sgn.success !== false,
         msg: sgn.duplicate ? '已經記錄過呢份報名' : '已記錄報名', duplicate: !!sgn.duplicate });
@@ -1222,7 +1330,18 @@ function dispatchBody(e, body) {
       return json(checked);
     }
     if (body.action === 'status' || body.action === 'test') {
-      return json({ ok: true, msg: '深資童軍管理系統 後端正常', spreadsheet: SpreadsheetApp.getActiveSpreadsheet().getName(), tabs: SHEET_TABS, backendVersion: BACKEND_VERSION, simpleWrite: true, at: new Date() });
+      /* ★ 初始化狀態（學 VSBADGE）：分清楚「貼咗新 Code.gs」同「真係行咗 initializeSheets()」。
+         淨貼新 code 唔會自動寫 INITIALIZED_VERSION，所以 initializeRequired 會係 true。 */
+      var initSt = initializationStatus();
+      return json({
+        ok: true, msg: '深資童軍管理系統 後端正常',
+        spreadsheet: SpreadsheetApp.getActiveSpreadsheet().getName(),
+        tabs: SHEET_TABS, backendVersion: BACKEND_VERSION, simpleWrite: true,
+        initializedVersion: initSt.initializedVersion,
+        initializationCurrent: initSt.initializationCurrent,
+        initializeRequired: initSt.initializeRequired,
+        at: new Date()
+      });
     }
     /* ★ v2.7.2：一鍵修復（清暫存垃圾行 ＋ 舊版本段）—— 見上面 repairDb。
        要 API Key（會刪行，雖然只刪垃圾）。 */
@@ -1372,7 +1491,7 @@ function dbSheet() {
 }
 
 /** 寫入整份資料庫（原子：先驗版本，再刪舊段，再寫新段）
- *  v2.2.0 樂觀鎖：body.baseVersion = 呢部機「上一次見過嘅後端版本」。
+ *  自 v2.2.0 起 樂觀鎖：body.baseVersion = 呢部機「上一次見過嘅後端版本」。
  *  後端已有版本而 baseVersion 對唔上（包括舊 app 冇送 baseVersion）
  *  → 拒絕寫入回 conflict:true，等 app 拉後端合併完再嚟。
  *  咁樣過時裝置（例如離線咗幾日嘅瀏覽器）就永遠唔會把另一部機
@@ -1413,7 +1532,7 @@ function saveDb(body) {
   }
   var overwroteVersion = forced ? curVersion : '';
 
-  /* v2.3.0：舊段成梳一次過刪（deleteRows）—— 以前逐行 deleteRow，
+  /* 自 v2.3.0 起：舊段成梳一次過刪（deleteRows）—— 以前逐行 deleteRow，
      200 段資料 = 200 次調用（每次成頁 shift），GAS 配額同時間都燒好快。
      v2.6.2：改用全後端唯一嘅 deleteRowRuns（同 cleanStaging 同一套邏輯）。 */
   var oldRows = [];
@@ -1424,7 +1543,7 @@ function saveDb(body) {
   /* 舊 blob 留到新版本寫好並驗收先刪，避免寫到一半時整份資料變空。 */
 
   var now = new Date();
-  /* v2.2.0：版本由**伺服器**派（ISO 時間＋隨機尾數）。
+  /* 自 v2.2.0 起：版本由**伺服器**派（ISO 時間＋隨機尾數）。
      唔好用 db.meta.updatedAt 做版本 —— 佢只有分鐘精度，兩部機同一分鐘內
      先後存，版本字串會撞到一樣，樂觀鎖就會誤判「無衝突」，過時資料
      又可以盲蓋上去（2026-09-18 事故嘅隱藏版）。 */
@@ -1467,7 +1586,7 @@ function saveDb(body) {
 }
 
 /** 由「資料庫」分頁把某旅團嘅所有段讀出嚟、拼返成份 JSON 純文字。
- *  v2.6.0 抽出嚟做共用：loadDb（一次過回成份）同 loadDbPart（分段回）
+ *  自 v2.6.0 起 抽出嚟做共用：loadDb（一次過回成份）同 loadDbPart（分段回）
  *  一定要用**同一套**讀法，否則分段讀返嘅同整份讀返嘅會唔同 —— 咁樣
  *  「大資料庫分段讀」就會靜靜地讀到另一份資料，比讀唔到更危險。 */
 function dbRawText(unit, strict) {
@@ -1475,7 +1594,7 @@ function dbRawText(unit, strict) {
   var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(DB_TAB);
   if (!sh) return { found: false, text: '', at: '', version: '', stagingRows: 0, stagingBytes: 0, staleRows: 0, versions: 0, brokenNewer: 0, unitRows: 0 };
   var rows = sh.getDataRange().getValues();
-  /* v2.6.2：順手數一數「暫存垃圾行」—— 舊版 cleanStaging 漏刪留低嘅行
+  /* 自 v2.6.2 起：順手數一數「暫存垃圾行」—— 舊版 cleanStaging 漏刪留低嘅行
      （每行 45000 字）會令分頁越嚟越大，最後 saveDb／loadDb 撞 GAS
      執行時間／記憶體上限（症狀：儲存同讀取一齊死，但 status 話正常）。
      呢度本來就要讀成份分頁，所以順手数數係零成本；dbInfo 會報上去，
@@ -1496,7 +1615,7 @@ function dbRawText(unit, strict) {
   var staleRows = 0;
   for (var i = 1; i < rows.length; i++) {
     var u = textOf(rows[i][0]);
-    if (u === '__staging__') {           // v2.4.0：分件暫存唔係正式資料
+    if (u === '__staging__') {           // 自 v2.4.0 起：分件暫存唔係正式資料
       stagingRows++;
       stagingBytes += String(rows[i][2] == null ? '' : rows[i][2]).length;
       continue;
@@ -1600,7 +1719,7 @@ function loadDb(unit) {
   }
 }
 
-/* v2.6.0 分段讀取：Vercel 代理單一回應有 4.5MB 硬上限，
+/* 自 v2.6.0 起 分段讀取：Vercel 代理單一回應有 4.5MB 硬上限，
    loadDb 一次過回成份 JSON，資料庫一大就會 500 FUNCTION_RESPONSE_PAYLOAD_TOO_LARGE
    （純文字，前端當「唔係 JSON」→ 誤判「呢個部署冇 /api」→ 對用家講「未設定後端網址」）。
    每段淨係回 LOAD_PART_CHARS 字純文字（約 1MB，留足水位），前端逐段拼返。
@@ -1632,7 +1751,7 @@ function loadDbPart(unit, partIdx) {
   };
 }
 
-/* v2.4.0 分件儲存：前端把 db 拆成 N 件逐件送（每件 < 3MB），
+/* 自 v2.4.0 起 分件儲存：前端把 db 拆成 N 件逐件送（每件 < 3MB），
    件寫入「資料庫」分頁嘅暫存行（unit='__staging__'，version=saveId，
    seq = partIdx*100000 + chunkIdx），全部到齊後 saveDbCommit 原子式拼合。
    好處：旅團用幾十年、db 幾十 MB 都照存得到（行現有所有路徑，包括 proxy）。 */
@@ -1778,7 +1897,7 @@ function saveDbCommit(body) {
     blobVersion: version, parts: parts, reports: reports2 };
 }
 
-/* v2.6.2：把一批行號計成一梳一梳、由最底嗰梳刪起（全後端唯一嘅刪行方法）。
+/* 自 v2.6.2 起：把一批行號計成一梳一梳、由最底嗰梳刪起（全後端唯一嘅刪行方法）。
    一次過 deleteRows 而唔係逐行 deleteRow：200 段資料逐行刪 ＝ 200 次調用
    （每次成頁 shift），GAS 配額同執行時間都燒好快（v2.3.0 起）。
 
@@ -1813,7 +1932,7 @@ function cleanStaging(sh, rowsArr) {
   return deleteRowRuns(sh, (rowsArr || []).map(function (r) { return r.row; }));
 }
 
-/** v2.6.2 逃生門：一次過清走「資料庫」分頁入面所有 __staging__ 暫存行。
+/** 自 v2.6.2 起 逃生門：一次過清走「資料庫」分頁入面所有 __staging__ 暫存行。
  *  舊版（v2.6.1 之前）cleanStaging 漏刪留低嘅垃圾行，每行 45000 字 ——
  *  分件儲存存過幾次，「資料庫」分頁就會塞滿成份資料庫嘅複製品，
  *  每次 getValues() 越嚟越慢，最後 saveDb／loadDb 撞 GAS 執行時間／記憶體上限
@@ -2015,7 +2134,7 @@ function repairDb(unit) {
 }
 
 /** 只睇 meta：後端有冇資料、幾時更新（唔會傳成份資料庫落嚟）。
- *  v2.3.0：附帶逐分頁體積（sizes，只計 JSON 字元長度）同相片 bytes ——
+ *  自 v2.3.0 起：附帶逐分頁體積（sizes，只計 JSON 字元長度）同相片 bytes ——
  *  app 用嚟畫「體積檢查」，等成團人用嗰陣知道邊個分頁食緊嘢。 */
 /* ============================================================
    ★ v2.8.0「簡單寫入」—— 逐表寫、逐表讀
@@ -2412,7 +2531,7 @@ function dbInfo(unit) {
     sizes: b.sizes, photoBytes: b.photoBytes, counts: b.counts,
     broken: broken, simpleRows: simpleRows, blobRows: blobRows,
     backendVersion: BACKEND_VERSION,
-    /* v2.6.2：舊版留低嘅暫存垃圾行（正常應該係 0）—— app 嘅「同步診斷」
+    /* 自 v2.6.2 起：舊版留低嘅暫存垃圾行（正常應該係 0）—— app 嘅「同步診斷」
        見到就會話你知要更新 Code.gs ＋ 執行 cleanStaleStaging() 清走。 */
     stagingRows: blob.stagingRows || 0, stagingBytes: blob.stagingBytes || 0,
     /* ★ v2.7.0：舊版本段（正常應該係 0）。讀取已經只讀最新一套，所以
@@ -2512,7 +2631,7 @@ function syncAll(body) {
     if (logRows > 550) log.deleteRows(2, logRows - 501);
   } catch (capErr) { /* 封頂失敗唔阻斷同步 */ }
 
-  // v2.6.1：順手清走舊版留低嘅後綴分身（物資·0082、帳目·0082、團員·0082、
+  // 自 v2.6.1 起：順手清走舊版留低嘅後綴分身（物資·0082、帳目·0082、團員·0082、
   // 收支申報·0082、通告·0082、報名·0082、物資借用·0082、會議·0082）。
   // 查實啲資料頭先已經寫返落無後綴分頁，呢啲只係舊 code 遺物；唔刪佢，
   // 團長下次同步仲會見到「物資82」嗰啲分頁。
@@ -2598,7 +2717,7 @@ function writeNoticesFull(ss, unit, notices) {
  * 讀公開通告（免登入）：只回 published
  * 兩個前端共用一個後端 —— 公開頁唔使等改 Git，同步完就見到新通告
  *
- * v2.5.0：改為由「資料庫」分頁（APP 儲存嘅正本）讀 ——
+ * 自 v2.5.0 起：改為由「資料庫」分頁（APP 儲存嘅正本）讀 ——
  * 以前淨係讀「通告全文」分頁，但嗰分頁要手動撳「總表同步」先會更新，
  * APP 新開／改完嘅通告喺公開頁會一直見唔到（團長回報「其他功能成唔成唔知」嘅死因之一）。
  * 「通告全文」分頁留返做後備（舊資料／從未同步過嘅旅團）。
@@ -2837,7 +2956,7 @@ function progressMembers() {
     if (nm === '團員' || nm.indexOf('團員·') === 0) { tSheet = all[k]; break; }
   }
   if (tSheet) {
-    /* v2.6.1（2026-09-20 團長回報「成員進度重複」）：
+    /* 自 v2.6.1 起（2026-09-20 團長回報「成員進度重複」）：
        以前寫死「第 2 欄＝ymis、第 4 欄＝姓名」（嗰個係 initializeSheets 嘅次序），
        但報表同步（writeTab）係用前端 schema 次序寫（…,name,…,identity,…,ymis,…），
        兩套唔同結果讀錯欄——每人多咗一行「ymis=姓名、name=身份」。
@@ -3257,7 +3376,7 @@ function appendClaim(body) {
     p.category || '', p.item || '', Number(p.amount) || 0, p.byName || '', p.note || '',
     (p.photos || []).length, links.join('\\n'), p.id || ''
   ]);
-  /* v2.5.0：同時寫入資料庫（APP「財務 → 收支申報」待批清單即刻見到） */
+  /* 自 v2.5.0 起：同時寫入資料庫（APP「財務 → 收支申報」待批清單即刻見到） */
   var dbR = appendIntoDb(body.unit || '', function (db) {
     if (!Array.isArray(db.claims)) db.claims = [];
     if (db.claims.some(function (c) { return c && String(c.id) === String(p.id || ''); })) return false;   // 防重送
@@ -3283,7 +3402,7 @@ function appendClaim(body) {
 }
 
 /** 將 base64 相片存去 Drive（未設定資料夾就只記數量） */
-/** v2.3.0 單據 Drive 資料夾：優先次序
+/** 自 v2.3.0 起 單據 Drive 資料夾：優先次序
  *  ① 前端明確指定（APP 內「財務 → 設定」填嘅 settings.receiptDrive，uploadPhotos 帶上嚟）
  *  ② 該旅團資料庫 settings.receiptDrive（團員入口 entry.html 走呢條路）
  *  ③ Apps Script Script Property DRIVE_FOLDER_ID（部署時設定嘅預設）
@@ -3338,7 +3457,7 @@ function appendLoan(body) {
     body.unit || '', new Date(), p.byName || '', p.contact || '', p.itemCode || '', p.itemName || '',
     Number(p.qty) || 1, p.fromDate || '', p.toDate || '', p.purpose || '', '待批核', p.id || ''
   ]);
-  /* v2.5.0：同時寫入資料庫（APP「物資 → 借用與批核」即刻見到） */
+  /* 自 v2.5.0 起：同時寫入資料庫（APP「物資 → 借用與批核」即刻見到） */
   var dbR = appendIntoDb(body.unit || '', function (db) {
     if (!Array.isArray(db.invLoans)) db.invLoans = [];
     if (db.invLoans.some(function (l) { return l && String(l.id) === String(p.id || ''); })) return false;   // 防重送
@@ -3406,7 +3525,7 @@ function appendSignup(body) {
    ============================================================ */
 
 function sheetName(base, unit) {
-  /* v2.6.1（2026-09-20 團長回報）：總表本身**就係**一個旅團嘅 Sheet。
+  /* 自 v2.6.1 起（2026-09-20 團長回報）：總表本身**就係**一個旅團嘅 Sheet。
      initializeSheets() 建嘅係無後綴分頁（物資／帳目／團員…），
      以前呢度喺 per-unit-sheet 模式照樣回「分頁名·旅團編號」（物資·0082），
      同 initializeSheets 兩套名對唔上，結果每次同步都**多生一張**「物資·0082」。

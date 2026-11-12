@@ -2045,7 +2045,7 @@ async function feeSettings() {
   const { apply, ...settingsPatch } = r;
   const db = load();
   db.settings = { ...db.settings, ...settingsPatch };
-  /* v2.4.0：呢個 modal 係針對某一期（period）改團費 → 寫入逐年 map（默認同上年嘅機制用） */
+  /* 自 v2.4.0 起：呢個 modal 係針對某一期（period）改團費 → 寫入逐年 map（默認同上年嘅機制用） */
   const per = feePeriod || feePeriodOf(todayISO());
   db.settings.feePerYearMap = { ...(db.settings.feePerYearMap || {}), [per]: Number(settingsPatch.feePerYear) || 0 };
   commit();

@@ -257,5 +257,32 @@ ok(deps.length === 0, 'package.json 冇執行期 dependencies（零依賴原則�
 const buildTools = ['vite', 'tailwindcss', 'esbuild', 'webpack', 'rollup', 'typescript'];
 ok(buildTools.every(t => !(pkg.dependencies || {})[t]), '建構工具冇混入 dependencies');
 
+/* ============================================================
+   ⑥ 版號單一來源（V1／F15）
+   ------------------------------------------------------------
+   version.js 嘅註解一直聲稱「lint 會擋住唔一致」，但其實冇呢個檢查 ——
+   於是 Code.gs 檔頭可以同 BACKEND_VERSION 唔同（2026-11-12 升到 v2.8.5 嗰陣
+   就係咁樣紅咗 tests/remote.mjs）。而家補返真正嘅閘門。
+   ============================================================ */
+section('⑥ 版號一致性（前後端同步發版）');
+{
+  const verSrc = fs.readFileSync(path.join(ROOT, 'assets/js/lib/version.js'), 'utf8');
+  const appVer = (verSrc.match(/APP_VERSION\s*=\s*'(v\d+\.\d+\.\d+)'/) || [])[1] || '';
+  ok(!!appVer, 'version.js 有 APP_VERSION 常數', verSrc.slice(0, 80));
+
+  const gen = fs.readFileSync(path.join(ROOT, 'apps-script', 'Code.gs'), 'utf8');
+  const backendVer = (gen.match(/var BACKEND_VERSION = '(v\d+\.\d+\.\d+)'/) || [])[1] || '';
+  const headerVer = (gen.match(/\*\s*版本：(v\d+\.\d+\.\d+)/) || [])[1] || '';
+  ok(!!backendVer && backendVer === appVer,
+    'Code.gs BACKEND_VERSION = 前端 APP_VERSION', `backend=${backendVer} app=${appVer}`);
+  ok(!!headerVer && headerVer === appVer,
+    'Code.gs 檔頭版號 = APP_VERSION（唔准獨立寫死）', `header=${headerVer} app=${appVer}`);
+
+  /* 生成檔必須同範本一致（V4：唔准人手改生成檔） */
+  const tplSrc = fs.readFileSync(path.join(ROOT, 'assets/js/lib/gastemplate.js'), 'utf8');
+  ok(/版本：\$\{APP_VERSION\}/.test(tplSrc) && /var BACKEND_VERSION = '\$\{APP_VERSION\}'/.test(tplSrc),
+    '範本由 APP_VERSION 推導版號（單一來源，冇第二處可以寫漏）');
+}
+
 console.log(`\n──────── lint 結果：${checks - fails} 通過 / ${fails} 失敗 ────────`);
 process.exit(fails ? 1 : 0);

@@ -386,13 +386,17 @@ section('⑧ 靜態守門（唔會重演「action 漏咗喺白名單」嗰單事
   /* ★ v2.8.1：自證＋真相＋版號（唔會重演「假成功／登入見唔到版號」） */
   ok('★ 逐表寫一定要過自證或讀回驗證（否則唔算成功）',
     /confirmed\s*!==\s*true/.test(remoteSrc));
-  ok('★ gastemplate.js 後端版本係 v2.8.4',
-    fs.readFileSync(path.join(ROOT, 'assets', 'js', 'lib', 'gastemplate.js'), 'utf8').includes("BACKEND_VERSION = 'v2.8.4'"));
-  ok('★ Code.gs 係由 v2.8.4 gastemplate 起出嚟（唔係舊 build）',
-    gasSrc.includes("BACKEND_VERSION = 'v2.8.4'"));
+  /* ★ 版號由單一來源 version.js 推導（唔寫死 vX.Y.Z）：
+     驗嘅係「三邊一致」，而唔係「等於某個特定舊版號」。 */
+  const expectVer = (fs.readFileSync(path.join(ROOT, 'assets', 'js', 'lib', 'version.js'), 'utf8')
+    .match(/APP_VERSION\s*=\s*'(v\d+\.\d+\.\d+)'/) || [])[1] || '';
+  const tplSrc = fs.readFileSync(path.join(ROOT, 'assets', 'js', 'lib', 'gastemplate.js'), 'utf8');
+  ok('★ gastemplate.js 由 APP_VERSION 推導後端版號（單一來源）',
+    /BACKEND_VERSION = '\$\{APP_VERSION\}'/.test(tplSrc) && /import \{ APP_VERSION \}/.test(tplSrc));
+  ok('★ Code.gs 係由現行 gastemplate 起出嚟（唔係舊 build）',
+    !!expectVer && gasSrc.includes(`BACKEND_VERSION = '${expectVer}'`), expectVer);
   ok('★ 有版本單一來源（version.js）＋登入閘用緊佢',
-    fs.readFileSync(path.join(ROOT, 'assets', 'js', 'lib', 'version.js'), 'utf8').includes("APP_VERSION = 'v2.8.4'")
-    && fs.readFileSync(path.join(ROOT, 'assets', 'js', 'main.js'), 'utf8').includes('APP_VERSION'));
+    !!expectVer && fs.readFileSync(path.join(ROOT, 'assets', 'js', 'main.js'), 'utf8').includes('APP_VERSION'));
 }
 
 console.log(`\n──────── 簡單寫入測試結果：${pass} 通過 / ${fail} 失敗（${Date.now() - t0} ms）────────\n`);

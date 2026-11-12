@@ -223,7 +223,7 @@ export async function saveWithDialog({ silent = false, toastOk = true, receipt =
        而家一粒掣做齊兩處（仍然只有一條 db 寫入路：pushToMaster 帶 skipDb，唔會碰 db）。 */
     const backendReports = (r.reports && typeof r.reports === 'object') ? r.reports : null;
     if (backendReports && backendReports.ok === true) {
-      /* v2.6.3 之後嘅 Code.gs 喺同一次請求入面已經刷新晒報表分頁 ——
+      /* 自 v2.6.3 起 之後嘅 Code.gs 喺同一次請求入面已經刷新晒報表分頁 ——
          唔使再發第二次（慳一半 GAS 配額，亦都唔會出現「兩邊寫法唔同」）。 */
       const counts = backendReports.counts || {};
       r.reportOk = true;

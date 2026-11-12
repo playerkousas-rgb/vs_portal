@@ -1,0 +1,53 @@
+name: guard
+
+# 依據真理倉 templates/github/guard.yml，但按 PREFLIGHT.md 建議收窄觸發：
+# 只用 pull_request + 每週 schedule + 手動，唔用 push:['**']（避免每個 branch push 都跑）。
+on:
+  pull_request:
+  schedule:
+    - cron: '17 3 * * 1'   # 每週一 HKT 11:17 掃一次，防止「靜靜變肥」
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # A16：Actions 釘 commit SHA（tag 可以被人移位）；版號註解畀 Dependabot 認得再升。
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '20'
+
+      - name: Install (dev deps needed for jsdom tests)
+        run: npm ci --include=dev --no-audit --no-fund
+
+      - name: Lint (syntax / action allowlist / deploy manifest)
+        run: npm run lint
+
+      - name: Build GAS from single source (V4 - must be reproducible)
+        run: |
+          npm run build:gas
+          git diff --exit-code -- apps-script/Code.gs \
+            || { echo "::error::apps-script/Code.gs 同 gasTemplate() 唔一致 — 請跑 npm run build:gas 並 commit"; exit 1; }
+
+      - name: Guard (S/F/A/W/V - secrets / size / links / version)
+        run: node scripts/guard.mjs --ci
+
+      - name: Repo health (12 starter files)
+        run: node scripts/repo_health_v1.0.mjs .
+
+      - name: Init preservation guard (★ template rule - never destroy user data)
+        run: node tests/init-preserve.mjs
+
+      - name: System-tree boundary guard (no cross-branch links)
+        run: node tests/boundary.mjs
+
+      - name: Full test suite
+        run: npm test
+
+      - name: Dependency audit (A16)
+        run: npm audit --audit-level=high

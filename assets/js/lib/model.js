@@ -772,7 +772,7 @@ export function feeOf(memberId, period) {
 }
 /** 團費收款表：每位（非舊團員、非免收）團員 × 某一期 */
 export function feeGrid(period = feePeriodOf(todayISO()), { includeAlumni = false } = {}) {
-  const fallback = standardFee(period);   // v2.4.0：跟嗰期嘅年度團費（冇設定就跟上年）
+  const fallback = standardFee(period);   // 自 v2.4.0 起：跟嗰期嘅年度團費（冇設定就跟上年）
   return members()
     .filter(m => (includeAlumni || m.status !== 'alumni') && !feeExempt(m))
     .map(m => {

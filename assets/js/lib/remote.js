@@ -1822,7 +1822,7 @@ async function pushPayload(payload, { baseVersion, unit, silent, tables: changed
     const r = await callBackend({ action: 'saveDb', db: payload, baseVersion });
     return { ...r, bytes: r.bytes || bytes, parts: 0 };
   }
-  /* v2.4.0 分件：拆件 → 逐件送（任何一件撞版即停）→ commit 拼合 */
+  /* 自 v2.4.0 起 分件：拆件 → 逐件送（任何一件撞版即停）→ commit 拼合 */
   const parts = splitDbIntoParts(payload, PART_MAX_BYTES);
   const saveId = `${unit}-stg-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
   for (let i = 0; i < parts.length; i++) {

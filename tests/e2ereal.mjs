@@ -100,7 +100,7 @@ const backendTruth = async () => {
   return {
     http: r.status, ok: !!j.ok, found: !!j.found, error: String(j.error || ''),
     members: Number(j.counts?.members || 0), bytes: Number(j.bytes || 0),
-    /* v2.6.2 起 dbInfo 會報「舊版留低嘅暫存垃圾行」（app 嘅同步診斷靠佢） */
+    /* 自 v2.6.2 起 起 dbInfo 會報「舊版留低嘅暫存垃圾行」（app 嘅同步診斷靠佢） */
     stagingRows: Number(j.stagingRows || 0), stagingBytes: Number(j.stagingBytes || 0),
     version: String(j.version || '')
   };

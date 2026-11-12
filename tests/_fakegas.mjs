@@ -88,7 +88,7 @@ function reviewRequest(body) {
 function saveDb(body) {
   const unit = String(body.unit || 'UNKNOWN');
   const text = JSON.stringify(body.db);
-  /* v2.2.0 樂觀鎖（同真 Code.gs 一致）：後端已有版本而 baseVersion 對唔上
+  /* 自 v2.2.0 起 樂觀鎖（同真 Code.gs 一致）：後端已有版本而 baseVersion 對唔上
      → 拒收回 conflict，等 app 自動拉後端合併。 */
   const cur = [...sheet].reverse().find(r => r[0] === unit);
   const curVersion = cur ? String(cur[4] || '') : '';
@@ -112,7 +112,7 @@ function saveDb(body) {
   return { ok: true, success: true, bytes: text.length, chunks: Math.ceil(text.length / DB_CHUNK), at: now, version };
 }
 
-/* v2.4.0 分件：暫存行 unit='__staging__'，version=saveId，載入時一律 skip */
+/* 自 v2.4.0 起 分件：暫存行 unit='__staging__'，version=saveId，載入時一律 skip */
 function saveDbPart(body) {
   const unit = String(body.unit || 'UNKNOWN');
   const saveId = String(body.saveId || '');
@@ -479,7 +479,7 @@ http.createServer((req, res) => {
       });
       out = { ok: true, success: true, total: rows.length, byTable, versions };
     }
-    /* v2.5.0 公開團章：由「資料庫」抽 constitution（同真 Code.gs 一樣） */
+    /* 自 v2.5.0 起 公開團章：由「資料庫」抽 constitution（同真 Code.gs 一樣） */
     else if (a === 'constitution') {
       const r = loadDb(String(body.unit || ''));
       const db = (r.found && r.db) || {};
@@ -489,7 +489,7 @@ http.createServer((req, res) => {
           unitName: (db.profile && db.profile.name) || (db.unit && db.unit.name) || '', version: c.version || '' };
       } else out = { ok: true, success: true, found: false, constitution: null };
     }
-    /* v2.5.0 公開通告：由「資料庫」讀（同真 Code.gs 一樣） */
+    /* 自 v2.5.0 起 公開通告：由「資料庫」讀（同真 Code.gs 一樣） */
     else if (a === 'notices') {
       const r = loadDb(String(body.unit || ''));
       /* ★ 同真 Code.gs（gastemplate.js loadPublicNotices）一致：
@@ -498,7 +498,7 @@ http.createServer((req, res) => {
         ? r.db.notices.filter(n => n && n.status === 'published' && n.id && String(n.vis || 'other') === 'other') : [];
       out = { ok: true, success: true, notices: fromDb };
     }
-    /* v2.5.0 公開頁報名：寫入資料庫（同真 Code.gs 一樣，同名防重複） */
+    /* 自 v2.5.0 起 公開頁報名：寫入資料庫（同真 Code.gs 一樣，同名防重複） */
     else if (a === 'noticeSignup') {
       const p = body.payload || {};
       const v = p.values || {};
@@ -519,7 +519,7 @@ http.createServer((req, res) => {
       }
       out = { ok: true, success: true, duplicate: dup, dbSaved: saved, msg: dup ? '已經記錄過呢份報名' : '已記錄報名' };
     }
-    /* v2.5.0 公開收支申報／物資借用：寫入資料庫 */
+    /* 自 v2.5.0 起 公開收支申報／物資借用：寫入資料庫 */
     else if (a === 'claim' || a === 'loan') {
       const p = body.payload || {};
       const r = loadDb(String(body.unit || ''));

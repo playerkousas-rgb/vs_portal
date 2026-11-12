@@ -22,15 +22,15 @@
 # ============================================================
 
 # ---- 版本控制／套件（Vercel 本身都會跳，寫返出嚟係為咗清楚＋CLI deploy 都受控）----
-.git
-node_modules
-.vercel
+.git/
+node_modules/
+.vercel/
 
 # ---- 測試（546 KB／17 檔）：上到部署完全冇用，仲會被人由網址直接讀到 ----
-tests
+tests/
 
 # ---- 文檔（230 KB）：留喺 Git 就夠，唔係網頁產物 ----
-docs
+docs/
 README.md
 MD
 DEPLOY_GUIDE_FOR_TROOPS.md
@@ -41,7 +41,7 @@ dev-server.mjs
 # ---- 建置產物／複製本：apps-script/Code.gs 由 gasTemplate() 生成，
 #      APP 內「下載 Code.gs」係喺瀏覽器即刻生成（lib/onboard.js → gasTemplate()），
 #      **唔會** fetch 呢個檔 —— 所以佢對部署係死重（74 KB）。 ----
-apps-script
+apps-script/
 
 # ---- 開發過程遺留嘅備份／暫存／日誌 ----
 *.bak
@@ -59,6 +59,6 @@ apps-script
 .env.*
 
 # ---- 測試上傳資料夾（單據正路係直上 Drive；萬一有人本機試上載留低咗）----
-uploads
-tmp
-.cache
+uploads/
+tmp/
+.cache/

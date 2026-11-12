@@ -22,6 +22,10 @@ import { fileURLToPath } from 'url';
 import { makeGas, makeSheet } from './_gasvm.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+/* ★ 期望版號由单一來源 version.js 推導 —— 唔好寫死 'v2.8.x'，
+   否則每次升版都要人手改一堆斷言，漏一個就假紅（2026-11-12 教訓）。 */
+const EXPECTED_VERSION = (fs.readFileSync(path.join(ROOT, 'assets/js/lib/version.js'), 'utf8')
+  .match(/APP_VERSION\s*=\s*'(v\d+\.\d+\.\d+)'/) || [])[1] || '';
 const t0 = Date.now();
 let pass = 0, fail = 0;
 
@@ -82,7 +86,7 @@ section('API Key 代理式獨立讀寫測試（無資料、無登入也能驗證
   ok('第一次測試真的寫入並讀回相同記號', first.ok === true && first.wrote === true && first.readBack === true,
     JSON.stringify(first));
   ok('回應顯示實際試算表、後端版號，不回傳 Key',
-    !!first.spreadsheet && first.backendVersion === 'v2.8.4' && !JSON.stringify(first).includes('test-sync-secret'));
+    !!first.spreadsheet && first.backendVersion === EXPECTED_VERSION && !JSON.stringify(first).includes('test-sync-secret'));
   ok('測試行已清走，不影響正式資料庫',
     g.sheets.get('連線測試')._rows.length === 1 && !g.sheets.has('資料表') && !g.sheets.has('資料庫'));
   const second = g.post({ action: 'syncCheck', unit: '0099' });
@@ -271,7 +275,7 @@ section('v2.6.1 團長回報：同步生分身分頁＋成員進度重複');
   ok('② 清後綴分身唔會誤刪「名啱好 4 個字」嘅分頁（進度追蹤／待批完成…）',
     missing().length === 0, missing().join(', ') || '全部仲在');
 
-  /* v2.6.3：saveDb 一次過寫齊兩處（資料庫＋報表分頁），一樣唔可以誤刪。
+  /* 自 v2.6.3 起：saveDb 一次過寫齊兩處（資料庫＋報表分頁），一樣唔可以誤刪。
      用**另一個 sandbox** —— 呢度寫入嘅團員會入「團員」分頁，
      留喺同一個 sandbox 會污染後面「成員無重複（2 人）」嗰個斷言。 */
   {
@@ -1209,7 +1213,7 @@ section('★ v2.8.1：自證＋報表合併＋真相欄位＋止血');
     JSON.stringify({ f: info.found, m: info.mode }));
   ok('③ dbInfo 版本對得上寫入版本', info.version === sv2.version, `${info.version} vs ${sv2.version}`);
   ok('③ ★ dbInfo 報分頁原行數＋後端版本',
-    info.simpleRows === 8 && info.blobRows === 0 && info.backendVersion === 'v2.8.4',
+    info.simpleRows === 8 && info.blobRows === 0 && info.backendVersion === EXPECTED_VERSION,
     JSON.stringify({ s: info.simpleRows, b: info.blobRows, v: info.backendVersion }));
 
   /* ④ 全部表壞晒 → found:false，但行數＋壞表如實報（唔再係齋「空」） */
@@ -1243,7 +1247,7 @@ section('★ v2.8.1：自證＋報表合併＋真相欄位＋止血');
   /* ⑦ diag 真相欄位 */
   const dg = g.post({ action: 'diag', unit: '0082', apiKey: KEY });
   ok('⑦ ★ diag 有 backendVersion／mode／simpleRows',
-    dg.backendVersion === 'v2.8.4' && dg.mode === 'simple' && dg.simpleRows === 8,
+    dg.backendVersion === EXPECTED_VERSION && dg.mode === 'simple' && dg.simpleRows === 8,
     JSON.stringify({ v: dg.backendVersion, m: dg.mode, s: dg.simpleRows }));
 }
 

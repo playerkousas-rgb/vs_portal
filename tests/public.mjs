@@ -48,9 +48,28 @@ globalThis.fetch = async (url) => {
   if (!file.startsWith(ROOT) || !fs.existsSync(file)) {
     return { ok: false, status: 404, json: async () => { throw new Error('404 ' + clean); } };
   }
-  const text = fs.readFileSync(file, 'utf8');
+  let text = fs.readFileSync(file, 'utf8');
+  /* ★ 滾動日期（2026-11-12）：fixture 嘅通告日期唔可以寫死。
+     寫死咗（例如 deadline 2026-09-28）一過咗今日，公開頁就當「已截止」→ 唔渲染報名表
+     → `form` 係 null → 呢個 suite 中途 crash → 後面所有 suite 一次都跑唔到。
+     所以喺讀 fixture 嗰一刻，將「可報名」通告嘅日期平移去相對今日嘅未來，
+     保持測試任何一日跑都有效（產品邏輯一個字都冇改）。 */
+  if (/notices\.json$/.test(clean)) text = rollNoticeDates(text);
   return { ok: true, status: 200, text: async () => text, json: async () => JSON.parse(text) };
 };
+
+/** 將 needSignup 通告嘅 deadline／eventDate 平移去未來（保留其他欄位原樣）。 */
+function rollNoticeDates(text) {
+  const data = JSON.parse(text);
+  const day = 86400000;
+  const iso = (offset) => new Date(Date.now() + offset * day).toISOString().slice(0, 10);
+  for (const n of data.notices || []) {
+    if (!n.needSignup) continue;
+    n.deadline = iso(14);          // 兩星期後截止 → 一定仲可報名
+    n.eventDate = iso(21);         // 三星期後舉行
+  }
+  return JSON.stringify(data);
+}
 
 /* ---------- 用真實嘅 constitution.html 做底 ---------- */
 const html = fs.readFileSync(path.join(ROOT, 'constitution.html'), 'utf8');

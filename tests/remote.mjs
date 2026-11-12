@@ -152,7 +152,7 @@ section('Apps Script 範本（Code.gs）');
   ok('doGet 都讀得（換機時用瀏覽器直接開都拎得返）', /action === 'loadDb' \|\| action === 'dbInfo'/.test(code));
   ok('寫入用 LockService 包住（兩個執委同時改都唔會爛）',
     /withLock\(function \(\) \{ return saveDb\(body\); \}\)/.test(code));
-  /* v2.6.2：刪行邏輯統一咗入 deleteRowRuns()（以前 saveDb／saveDbPart／
+  /* 自 v2.6.2 起：刪行邏輯統一咗入 deleteRowRuns()（以前 saveDb／saveDbPart／
      cleanStaging 各自砌一梳，cleanStaging 嗰份砌錯 —— 一梳連續行只刪到一行）。
      呢度**唔淨係** grep 原始碼，仲真係行一次 Code.gs 驗行為。 */
   ok('寫入前會刪走舊段（統一用 deleteRowRuns，唔會殘留舊資料）',

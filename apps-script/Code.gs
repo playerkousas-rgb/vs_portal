@@ -1,7 +1,7 @@
 /**
  * ============================================================
  *  深資童軍管理系統 · 總表同步與多旅團後端 Apps Script（Code.gs）
- *  版本：v2.8.6
+ *  版本：v2.8.7
  *
  *  ★ v2.8.1（2026-09-25，團長回報 4 項：「登入畫面睇唔到版號」／
  *    「後端分頁明明有資料但 app 話冇」／「有幾頁不停在儲存，會唔會爆量」／
@@ -143,7 +143,7 @@ var MODE = 'per-unit-sheet';   // 'per-unit-sheet' = 每個旅團獨立工作表
 var DRIVE_FOLDER_ID = '';
 
 /** 後端版本（status 會回報；APP 用嚟檢查「你張 Sheet 係咪仲行舊 code」） */
-var BACKEND_VERSION = 'v2.8.6';
+var BACKEND_VERSION = 'v2.8.7';
 
 /* ============================================================
    初始化與 API KEY 管理
@@ -1296,7 +1296,7 @@ function doGet(e) {
     spreadsheet: (function () { try { return SpreadsheetApp.getActiveSpreadsheet().getName(); } catch (err) { return '(未綁定試算表)'; } })(),
     tabs: SHEET_TABS,
     api: ['ping', 'status', 'sync', 'saveDb', 'loadDb', 'dbInfo', 'claim', 'noticeSignup', 'loan', 'load', 'save', 'saveOtherBadge'],
-    usage: 'APP 內「系統 → 資料管理 → 總表同步」填呢個 /exec 網址即可'
+    usage: 'APP 內「資料管理 → 總表同步」填呢個 /exec 網址即可'
   });
 }
 

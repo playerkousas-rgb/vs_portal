@@ -111,8 +111,10 @@ const SUITES = [
   /* 「mock」分頁係 super 限定（下面特登驗：leader 見唔到、super 見到）
      ★ 2026-09-24 團長：「權限總表由身份與帳號 移去 用戶與身份」→ perms 唔再喺 #/admin */
   /* ★ 2026-09-24 團長：「身份與帳號」搬去「用戶與身份」（#/members/accounts），
-     「身份與系統」改名「系統」→ 呢度淨係剩返 旅團設定／資料管理／操作紀錄 */
-  { name: '系統', home: '#/admin', tabs: ['unit', 'data', 'audit'] },
+     「身份與系統」改名「系統」；2026-11-12 再刪「資料管理」指路分頁
+     → 呢度淨係剩返 旅團設定／操作紀錄 */
+  /* ★ 2026-11-12：「資料管理」分頁已刪（純指路頁，直接係側欄 #/tables 一個入口） */
+  { name: '系統', home: '#/admin', tabs: ['audit'] },
   /* ★ 2026-09-24 團長：「身份與系統內的身份與帳號 移去 用戶與身份」
      → 「用戶與身份」要有 名冊／身份與帳號／權限總表／生日表 四個分頁。
      'list' 唔入嚟：TAB_AT_ROOT 令「用戶名冊」就係 #/members 本身（唔係 #/members/list）。 */
@@ -122,7 +124,9 @@ const SUITES = [
   /* ★ 2026-09-24 團長：「公開資料其實唔係要填嘢嘅，係方便了解有乜嘢而家正喺度公開」
      → 分頁由「社交／相簿／連結（三個填嘢位）」變成「一覽 ／ 團員入口（分享）」。 */
   { name: '公開資料（原成員連結）', home: '#/links', tabs: ['overview', 'hub'] },
-  { name: '財政', home: '#/finance', tabs: ['reports', 'fees', 'claims', 'budgets', 'import'] },
+  /* ★ 2026-11-12：8 → 6 分頁。reports 本來同時有頂部掣＋分頁（重複）→ 只留頂部掣；
+     import 併入 settings（一次性工具，收喺 <details>）。舊 hash 仍然認得。 */
+  { name: '財政', home: '#/finance', tabs: ['fees', 'claims', 'budgets', 'settings'] },
   { name: '物資', home: '#/inventory', tabs: ['loans', 'audits'] }
 ];
 
@@ -143,8 +147,8 @@ for (const s of SUITES) {
 section('撳完分頁，畫面真係換咗');
 const RENDER = [
   ['#/admin', 'unit', '旅團'],
-  ['#/admin', 'data', '備份'],
-  ['#/tables', 'sync', '總表同步'],
+  ['#/tables', 'data', '備份'],
+  ['#/tables', 'sync', '總表同步'],   // sync 放最後：tables 分頁係「記住上次」，下面「預設＝sync」斷言要乾淨狀態
   ['#/links', 'overview', '公開緊'],
   ['#/links', 'hub', '團員入口'],
   ['#/notices', 'signups', '報名']
@@ -209,8 +213,9 @@ section('★ MOCK 分頁已經拆走');
   await goTo('#/');
   await goTo('#/admin');
   ok('★ super 都見唔到 mock 分頁（已經拆走）', !doc.querySelector('#view [data-tab="mock"]'));
-  ok('★ 分頁列得返 旅團設定／資料管理／操作紀錄（身份與帳號已搬去「用戶與身份」）',
-    ['unit', 'data', 'audit'].every(t => !!doc.querySelector(`#view [data-tab="${t}"]`))
+  ok('★ 分頁列得返 旅團設定／操作紀錄（資料管理已係獨立入口；身份與帳號喺用戶與身份）',
+    ['unit', 'audit'].every(t => !!doc.querySelector(`#view [data-tab="${t}"]`))
+    && !doc.querySelector('#view [data-tab="data"]')
     && !doc.querySelector('#view [data-tab="accounts"]')
     && !doc.querySelector('#view [data-tab="mock"]'));
   auth.logout();
@@ -304,7 +309,7 @@ section('唔好搶：meetings 詳情頁嘅 local 分頁');
    ④ 分頁入面啲掣冇 runtime error
    ============================================================ */
 section('系統（＋用戶與身份 → 身份與帳號）：每版嘅掣都撳得，冇 runtime error');
-for (const [hash, label] of [['#/members/accounts', '身份與帳號'], ['#/admin/unit', '旅團設定'], ['#/admin/data', '資料管理']]) {
+for (const [hash, label] of [['#/members/accounts', '身份與帳號'], ['#/admin/unit', '旅團設定'], ['#/tables/data', '資料管理']]) {
   await goTo(hash);
   const before = errors.length;
   const btns = [...doc.querySelectorAll('#view [data-act]')]

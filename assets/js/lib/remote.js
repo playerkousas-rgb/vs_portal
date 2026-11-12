@@ -270,7 +270,7 @@ async function callBackend(payload, { timeoutMs = 60000 } = {}) {
 const SELF_SERVE_HINT =
   '平台伺服器端未登記你旅團嘅後端（TROOP_<旅團編號>_BACKEND / _APIKEY 未設定，或者變數名打錯）。'
   + '兩個選擇：① 叫平台管理員喺 Vercel 加返嗰兩個環境變數再 Redeploy；'
-  + '② 自己即刻救返 —— 去「系統 → 資料管理 → 總表同步 → 同步設定」，'
+  + '② 自己即刻救返 —— 去「資料管理 → 總表同步 → 同步設定」，'
   + '貼你嘅 Apps Script /exec 網址＋API Key（喺 Apps Script 執行 showApiKey() 攞），撳「儲存設定」，'
   + '然後再試一次。';
 
@@ -279,7 +279,7 @@ const SELF_SERVE_HINT =
 const NO_ROUTE_HINT =
   '呢個部署讀唔到同源代理（/api/proxy），而你自己都未貼 /exec，所以兩條路都行唔到。'
   + '兩個選擇：① 用正式部署（有 /api 嗰個），並確認平台管理員喺 Vercel 設咗 '
-  + 'TROOP_<旅團編號>_BACKEND / _APIKEY；② 即刻自救 —— 去「系統 → 資料管理 → '
+  + 'TROOP_<旅團編號>_BACKEND / _APIKEY；② 即刻自救 —— 去「資料管理 → '
   + '總表同步 → 同步設定」，貼你嘅 Apps Script /exec 網址＋API Key'
   + '（喺 Apps Script 執行 showApiKey() 攞），撳「儲存設定」。';
 
@@ -351,7 +351,7 @@ export const SEGMENT_ABOVE_BYTES = 3_000_000;
 /* 後端要更新先有分段讀取 —— 呢段提示唔可以再講「未設定後端網址」（後端明明登記好） */
 const UPDATE_GS_HINT =
   '後端仲行緊 v2.5.0 之前嘅版本，未支援分段讀取（loadDbPart）。'
-  + '去「系統 → 資料管理 → 總表同步 → 後端 Apps Script 範本」撳「下載 Code.gs」'
+  + '去「資料管理 → 總表同步 → 後端 Apps Script 範本」撳「下載 Code.gs」'
   + ' → 貼入 Apps Script（全部取代）→ 儲存 →「部署 → 管理部署作業 → 編輯（鉛筆）'
   + ' → 版本：新版本 → 部署」。/exec 網址唔會變，前端設定唔使改。';
 /* 分段讀嘅安全閘：段數上限（防後端回錯 parts 令前端無限讀落去） */

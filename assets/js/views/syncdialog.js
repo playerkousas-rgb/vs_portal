@@ -210,7 +210,7 @@ export async function showSaveReceipt(r) {
 export async function saveWithDialog({ silent = false, toastOk = true, receipt = false } = {}) {
   const remote = await import('../lib/remote.js');
   if (!remote.remoteConfigured()) {
-    toast('未設定後端 —— 去「系統 → 資料管理 → 總表同步」', 'err');
+    toast('未設定後端 —— 去「資料管理 → 總表同步」', 'err');
     return { ok: false, reason: 'not_configured' };
   }
   const r = await remote.saveToBackend({ policy: 'ask', resolver: resolveConflictsDialog, silent });

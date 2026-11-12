@@ -1312,7 +1312,7 @@ function doGet(e) {
     spreadsheet: (function () { try { return SpreadsheetApp.getActiveSpreadsheet().getName(); } catch (err) { return '(未綁定試算表)'; } })(),
     tabs: SHEET_TABS,
     api: ['ping', 'status', 'sync', 'saveDb', 'loadDb', 'dbInfo', 'claim', 'noticeSignup', 'loan', 'load', 'save', 'saveOtherBadge'],
-    usage: 'APP 內「系統 → 資料管理 → 總表同步」填呢個 /exec 網址即可'
+    usage: 'APP 內「資料管理 → 總表同步」填呢個 /exec 網址即可'
   });
 }
 

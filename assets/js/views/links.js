@@ -39,7 +39,9 @@ export function render(params = {}) {
   return `
   ${pageHead({
     title: '公開資料',
-    sub: '而家公開緊啲乜 —— 邊個睇得到，一覽就知（要改去「旅團設定」或各自嘅頁）',
+    /* ★ 2026-11-12：副標題唔再叫人「去邊度改」（東指西指）——
+       每張卡自己已經有掣，一覽就係一覽。 */
+    sub: '而家公開緊啲乜 —— 邊個睇得到，一覽就知',
     actions: `<button class="btn btn-sm" data-act="settings">${icon('settings', 15)} 公開頁網址</button>
       <button class="btn btn-sm btn-primary" data-act="preview">${icon('external', 15)} 預覽對外專頁</button>`
   })}

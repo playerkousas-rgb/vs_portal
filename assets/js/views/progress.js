@@ -96,7 +96,7 @@ function needSetup() {
         + '唔會連去任何其他網站。', 'brand')}
       <ol style="padding-left:18px;line-height:1.95" class="mt-8">
         <li>打開旅團嘅 Google Sheet → 擴充功能 → Apps Script</li>
-        <li>如果未有後端：貼上「系統 → 資料管理 → 總表同步」下載嘅 <code>Code.gs</code>，執行 <code>initializeSheets</code>
+        <li>如果未有後端：貼上「資料管理 → 總表同步」下載嘅 <code>Code.gs</code>，執行 <code>initializeSheets</code>
           （會建好 進度追蹤／其他獎章／活動履歷 等分頁）</li>
         <li>複製 <b>API Key</b>（執行 <code>showApiKey()</code>）同 <b>網頁應用程式 /exec 網址</b></li>
         <li>返嚟喺「<b>設定</b>」填入（或者叫管理員登記喺 <code>data/units.json</code>，就唔使每次填）</li>
@@ -105,7 +105,7 @@ function needSetup() {
       ${c.backend && !c.apiKey ? `<div class="hint mt-8">已有後端網址（${esc(maskUrl(c.backend))}），欠 API Key。</div>` : ''}
       <div class="row gap-8 mt-12 wrap">
         <button class="btn btn-primary" data-act="settings">${icon('settings', 16)} 去設定</button>
-        <button class="btn" data-go="#/admin/data">${icon('cloud', 16)} 下載 Code.gs</button>
+        <button class="btn" data-go="#/tables/sync">${icon('cloud', 16)} 下載 Code.gs</button>
       </div>
     </div>
   </div>`;

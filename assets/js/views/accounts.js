@@ -1,11 +1,13 @@
 /* ============================================================
-   accounts.js — 系統（旅團設定、資料管理、操作紀錄）
+   accounts.js — 系統（旅團設定、操作紀錄）
    ------------------------------------------------------------
    ★ 2026-09-24 團長定案：
      ① 側邊欄「**身份與系統**」改名做「**系統**」
      ② 入面嘅「**身份與帳號**」分頁成個搬去「**用戶與身份**」
         （#/members/accounts，見 views/members-accounts.js）
-     所以呢一頁淨係剩返三樣嘢：**旅團設定 / 資料管理 / 操作紀錄**。
+     所以呢一頁淨係剩返：**旅團設定 / 操作紀錄**。
+   ★ 2026-11-12：「資料管理」唔再係呢頁嘅分頁 —— 佢本來係純指路頁，
+     而家直接係側欄一個入口（#/tables），唔使兜兩層。
    規則（依實際需要）：
      超管：可改領袖、執委任何帳戶密碼，可開／刪帳戶
      領袖：可改自己同執委帳戶密碼，可開／刪執委帳戶
@@ -43,23 +45,24 @@ export function render(params) {
   /* ★ 2026-09-24 團長：
      ①「權限總表」早已搬去「用戶與身份」（#/members/perms）
      ②「身份與帳號」都搬埋去「用戶與身份」（#/members/accounts，見 views/members-accounts.js）
-     → 呢一頁（「系統」）淨係剩返 旅團設定／資料管理／操作紀錄 三樣。
+     → 呢一頁（「系統」）淨係剩返 旅團設定／操作紀錄 兩樣。
      舊連結 #/admin/accounts 會喺 main.js 自動導去 #/members/accounts。 */
-  if (['data', 'unit', 'audit'].includes(params.id)) tab = params.id;
+  /* ★ 2026-11-12：「資料管理」分頁已刪 —— 佢係純指路頁（3 張卡叫你去
+     #/tables 嗰 3 個分頁），而 tables 本身已經有嗰 3 個分頁 = 兜圈。
+     舊連結 #/admin/data 由 main.js 自動導去 #/tables。 */
+  if (['unit', 'audit'].includes(params.id)) tab = params.id;
+  else if (tab === 'data') tab = 'unit';
   return `
   ${pageHead({
     title: '系統',
-    sub: `${profile().name || ''} · 目前身份：${displayName()}（${ROLES[currentRole()]?.name || ''}）· 旅團設定／資料管理／操作紀錄`,
-    actions: `${can('docs.view') ? `<button class="btn btn-sm" data-go="#/docs">${icon('note', 15)} 教學</button>` : ''}`
+    /* 副標題只留動態身份；分頁名唔再重複讀一次，教學已搬去頂欄（唔再重複一粒掣） */
+    sub: `${displayName()}（${ROLES[currentRole()]?.name || ''}）`
   })}
   ${tabs([
     ['unit', '旅團設定'],
-    ['data', '資料管理'],
     ['audit', '操作紀錄']
   ], tab)}
-  ${tab === 'unit' ? unitView()
-    : tab === 'data' ? dataView()
-    : auditView()}`;
+  ${tab === 'audit' ? auditView() : unitView()}`;
 }
 
 /* ============================================================
@@ -154,79 +157,6 @@ function unitView() {
   </div>`;
 }
 
-/* ============================================================
-   資料管理
-   ============================================================ */
-/* ★ 2026-09-24 團長：「資料管理 只須要三樣嘢」
-   ① 插入自己嘅 Sheet　② 總表同步　③ 儲存與備份
-   其餘嘅嘢（重設、統計、改密碼、備份提醒）已經收埋或者搬走 ——
-   呢一頁唔應該再係一個百寶袋。 */
-function dataView() {
-  const db = load();
-  const s = db.sync || {};
-  const pendAcc = s.pendingAccounts || 0;
-  const wired = !!db.backend?.url;
-  const n = (a) => (Array.isArray(a) ? a.length : 0);
-  return `
-  <div class="note-box mb-16">${icon('cloud', 15)}<div>
-    <b>呢一頁淨係三樣嘢。</b>設定一次之後，全團用同一套 —— 唔使每人自己set。
-    <div class="xs mt-4">① <b>插入自己嘅 Sheet</b>＝把舊 Google Sheet 嘅資料搬入嚟　
-      ② <b>總表同步</b>＝接駁後端（Apps Script）　
-      ③ <b>儲存與備份</b>＝匯出／匯入 JSON</div>
-    ${wired ? '' : '<div class="xs mt-4" style="color:var(--warn)">⚠ 未接駁後端 —— 資料而家只存喺呢部機嘅瀏覽器。</div>'}
-  </div></div>
-
-  <div class="grid g-3">
-    <div class="card">
-      <div class="card-head"><div><div class="card-title">① 插入自己嘅 Sheet</div>
-        <div class="card-sub">把旅團現有嘅 Google Sheet 搬入嚟</div></div></div>
-      <div style="padding:16px 18px" class="col gap-10">
-        <p class="sm muted">貼上你嘅 Sheet 連結，揀邊個工作表對邊個表（團員／帳目／物資…），
-          系統會自動對應欄位。對應唔到嘅欄位會留空，唔會亂填。</p>
-        <button class="btn btn-block btn-primary" data-go="#/tables/source">${icon('link', 16)} 打開「插入自己嘅 Sheet」</button>
-        <div class="hint">只做一次。之後改欄位去各自分頁撳「<b>欄位</b>」掣。</div>
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="card-head"><div><div class="card-title">② 總表同步</div>
-        <div class="card-sub">接駁 Google Sheet 後端（Apps Script）</div></div></div>
-      <div style="padding:16px 18px" class="col gap-10">
-        <p class="sm muted">資料真正嘅家。<b>寫入後端只有一條路</b>：頂部嗰粒「<b>儲存到後端</b>」。
-          其他任何時候，改動都只係暫存喺呢部機。</p>
-        <div class="kv-row sm"><span>後端</span><span>${wired ? `<span class="badge b-ok">已接駁</span>` : `<span class="badge b-warn">未接駁</span>`}</span></div>
-        <div class="kv-row sm"><span>未寫入後端</span><span>${s.pending ? `<b style="color:${pendAcc ? 'var(--danger)' : 'var(--warn)'}">${s.pending} 項</b>${pendAcc ? `（包括 <b>${pendAcc}</b> 個帳戶）` : ''}` : '<span class="badge b-ok">全部已儲存</span>'}</span></div>
-        <button class="btn btn-block btn-primary" data-go="#/tables/sync">${icon('cloud', 16)} 打開「總表同步」</button>
-      </div>
-    </div>
-
-    <div class="card">
-      <div class="card-head"><div><div class="card-title">③ 儲存與備份</div>
-        <div class="card-sub">匯出／匯入 JSON、逐表 CSV</div></div></div>
-      <div style="padding:16px 18px" class="col gap-10">
-        <p class="sm muted">後端係資料嘅家；JSON 備份係<b>你自己嘅保險</b>。
-          換機、換瀏覽器、或者後端出問題嗰陣用得著。</p>
-        <div class="row gap-8 wrap">
-          <button class="btn" data-act="export-json">${icon('download', 15)} 匯出全部（JSON）</button>
-          <button class="btn" data-act="import-json">${icon('upload', 15)} 匯入備份</button>
-        </div>
-        <div class="row gap-8 wrap">
-          <button class="btn btn-sm" data-act="export-csv">${icon('download', 14)} 帳目 CSV</button>
-          <button class="btn btn-sm" data-act="export-members">${icon('download', 14)} 團員 CSV</button>
-          <button class="btn btn-sm" data-go="#/tables/data">${icon('table', 14)} 逐表匯出</button>
-        </div>
-        <div class="xs faint">現有資料：團員 ${n(db.members)} · 帳目 ${n(db.transactions)} · 物資 ${n(db.invItems)} · 通告 ${n(db.notices)} · 會議 ${n(db.meetings)} · 帳戶 ${n(db.accounts)}</div>
-        <details class="mt-8"><summary class="btn btn-xs">危險動作（重設／清空）</summary>
-          <div class="row gap-8 wrap mt-8">
-            <button class="btn btn-sm" data-act="reset-seed">${icon('refresh', 15)} 還原初始資料</button>
-            <button class="btn btn-sm btn-danger" data-act="wipe">${icon('trash', 15)} 清空本旅團所有資料</button>
-          </div>
-          <div class="hint mt-8">「還原」會用 <code>${esc(db.meta?.seedSource || 'data/units/…/')}</code> 重新種入（本機改動會消失）；「清空」會留低空嘅資料庫。</div>
-        </details>
-      </div>
-    </div>
-  </div>`;
-}
 function auditView() {
   /* ★ 2026-09-24 團長：「操作紀錄不顯示超級管理員的紀錄」。
      超管係平台層（品牌通行帳號），唔屬於旅團團務 —— 佢嘅操作唔應該出現喺旅團嘅紀錄入面。
@@ -400,7 +330,10 @@ export function mount(root) {
 }
 
 /* ---------- 彈窗表單 ---------- */
-async function ownPasswordForm() {
+/* ★ 2026-11-12：頂欄「改密碼」掣直接開呢個彈窗。
+   本來 main.js 係 go('#/admin/data')（指去資料管理頁，根本冇密碼表單），
+   而家「系統」對執委封閉，如果唔改就會連自己密碼都改唔到。 */
+export async function ownPasswordForm() {
   const r = await modal({
     title: '更改我嘅密碼',
     body: `<div class="field"><label class="label">目前密碼 <span class="req">*</span></label>

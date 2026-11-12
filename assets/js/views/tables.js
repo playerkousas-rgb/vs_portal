@@ -294,21 +294,33 @@ export function openFieldDesigner(key, { onSaved = null } = {}) {
 }
 
 /* ★ 2026-09-24 團長：「總表同步／表格與同步 太複雜」「我設定好他們就用，統一化前端會更好」
-   → 呢一頁而家淨係三樣嘢（同「系統 → 資料管理」一樣）：
+   → 呢一頁而家淨係三樣嘢（同「資料管理」一樣）：
         ① 插入自己嘅 Sheet　② 總表同步　③ 儲存與備份
    逐個表嘅欄位設計已經搬去各自嘅分頁（財務／用戶／物資／通告／會議 都有「欄位」掣），
    呢度唔再重複列一次 —— 少咗十幾個分頁，就少咗十幾個撳錯嘅機會。 */
 const DATA_TABS = [['sync', '總表同步'], ['source', '插入自己嘅 Sheet'], ['data', '儲存與備份']];
 
 export function render(params) {
+  /* ★ 2026-11-12：無權就唔准入（用戶定案）。main.js 路由已經擋咗，
+     呢度再擋一次（防守深層）：萬一將來有人直接 call render，都唔會
+     出一個「欄位打得到字但其實冇權」嘅假畫面。 */
+  if (!can('admin.data')) {
+    return `<div class="card" style="max-width:560px;margin:40px auto">
+      <div class="card-head"><div><div class="card-title">資料管理需要領袖權限</div></div></div>
+      <div style="padding:18px" class="col gap-12">
+        <p class="sm">呢一頁改嘅係全團共用嘅嘢（後端接駁、備份還原），只有團長／領袖開得到。</p>
+        <div><button class="btn btn-primary" data-go="#/dashboard">${icon('home', 15)} 返儀表板</button></div>
+      </div>
+    </div>`;
+  }
   if (params.id && DATA_TABS.some(([k]) => k === params.id)) tab = params.id;
   else if (!DATA_TABS.some(([k]) => k === tab)) tab = 'sync';
 
   return `
   ${pageHead({
-    title: '資料管理',
-    sub: '三樣嘢：總表同步、插入自己嘅 Sheet、儲存與備份',
-    actions: `<button class="btn btn-sm" data-go="#/admin/data">${icon('chevronL', 15)} 返回系統</button>`
+    /* 副標題唔再重複讀一次分頁名（下面 3 粒分頁已經寫咗）；
+       「返回系統」掣亦刪走 —— 資料管理而家係側欄獨立入口，唔係系統嘅附屬頁。 */
+    title: '資料管理'
   })}
 
   ${tabs(DATA_TABS, tab)}
@@ -698,7 +710,6 @@ function dataView() {
         ${storageBar(load())}
         <div class="col gap-8 mt-12">
           <button class="btn btn-sm btn-block" data-act="strip-photos">${icon('trash', 15)} 清理已入帳嘅相片（保留記錄）</button>
-          <button class="btn btn-sm btn-block" data-go="#/admin/data">${icon('shield', 15)} 去「資料管理」備份／還原</button>
         </div>
       </div>
     </div>
@@ -944,6 +955,9 @@ export async function pushToMaster({ silent = false } = {}) {
    mount
    ============================================================ */
 export function mount(root, params) {
+  /* ★ 2026-11-12：整頁要 admin.data。冇權就唔綁任何 handler ——
+     render() 已經出咗「需要領袖權限」畫面，呢度防止殘留掣被撳到。 */
+  if (!can('admin.data')) return;
   const key = Object.keys(tableDefs()).includes(params.id) ? params.id : null;
 
   /* ---- 欄位設計 ---- */
@@ -1189,6 +1203,10 @@ export function mount(root, params) {
     root.querySelectorAll('[data-act]').forEach(b => b.addEventListener('click', async () => {
       const act = b.dataset.act;
       if (act === 'save-sync') {
+        /* ★ 2026-11-12：本來完全冇權限檢查 —— 執委（table.sync=false）
+           照樣改到自己部機嘅連線設定，之後自己睇唔到資料（幽靈故障）。
+           只寫本機、唔會上後端，但都要同其他頁一致 fail-closed。 */
+        if (!can('table.sync')) return toast('呢個設定只有團長／領袖改得', 'err');
         const db = load();
         const url = root.querySelector('#y-url').value.trim();
         db.sync = {

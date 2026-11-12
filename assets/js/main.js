@@ -42,28 +42,58 @@ import * as linksView from './views/links.js';
 import * as calendar from './views/calendar.js';
 import * as quizzes from './views/quizzes.js';
 
-const VIEWS = {
-  dashboard, meetings, finance, members, inventory, progress,
-  constitution, notices: noticesView, tables, admin: accountsView, docs, links: linksView,
-  calendar, quizzes
-};
+/* ============================================================
+   NAV REGISTRY（★ 2026-11-12 UI 簡化：F3 單一真理）
+   ------------------------------------------------------------
+   以前係兩份人手清單：VIEWS（路由）同 NAV（側欄）。結果 `tables`
+   有路由但側欄冇登記 = 孤兒頁，只可以靠其他頁嘅文字連結入去
+   （F3：「導航由 registry 自動生成」「未登記 = 唔存在」）。
 
+   而家 NAV 係唯一登記處，每項自帶：
+     · perm —— 需要嘅權限（冇權 = 側欄唔顯示，直接打 URL 亦拒）
+     · view —— 對應 module（VIEWS 由呢度推導，唔會再漂移）
+   tests/ui-ia.mjs 守住：每個 view 都要登記、層數 ≤ 2、無權要拒。
+
+   ★ 執委（exco）：用戶 2026-11-12 定案「無權就唔准入」。
+     系統（admin.units）同資料管理（admin.data）對執委 = 隱藏 + 拒絕，
+     唔再出現「打到字但儲存唔到」嘅假可編輯畫面。
+   ★ 教學（docs）：執委都有 docs.view，所以唔可以收埋入「系統」
+     （否則執委連說明都睇唔到）—— 改放頂欄一鍵入口，全部身份都搵得到。
+   ============================================================ */
 const NAV = [
-  { id: 'dashboard', label: '儀表板', icon: 'home' },
-  { id: 'calendar', label: '行事曆', icon: 'calendar' },
-  { id: 'quizzes', label: '試卷', icon: 'note' },
-  { id: 'meetings', label: '會議', icon: 'clock', badge: () => pendingMeetings().length },
-  { id: 'finance', label: '財務', icon: 'wallet', badge: () => overdueFees().length + pendingClaims().length },
-  { id: 'members', label: '用戶與身份', icon: 'users' },
-  { id: 'inventory', label: '物資', icon: 'grid', badge: () => pendingLoans().length },
-  { id: 'progress', label: '進度', icon: 'chart' },
-  { id: 'notices', label: '通告', icon: 'megaphone', badge: () => (load()?.notices || []).filter(n => n.status === 'published').length },
-  { id: 'links', label: '公開資料', icon: 'share' },   /* ★ 2026-09-24 團長：「成員連結」改名「公開資料」 */
-  { id: 'constitution', label: '團章', icon: 'book' },
-  { id: 'docs', label: '教學', icon: 'note' },
-  /* ★ 2026-09-24 團長：「身份與系統改名為系統」—— 入面嘅「身份與帳號」已經搬去「用戶與身份」 */
-  { id: 'admin', label: '系統', icon: 'shield' }
+  { id: 'dashboard', label: '儀表板', icon: 'home', view: dashboard },
+  { id: 'calendar', label: '行事曆', icon: 'calendar', view: calendar },
+  { id: 'quizzes', label: '試卷', icon: 'note', view: quizzes },
+  { id: 'meetings', label: '會議', icon: 'clock', view: meetings, badge: () => pendingMeetings().length },
+  { id: 'finance', label: '財務', icon: 'wallet', view: finance, badge: () => overdueFees().length + pendingClaims().length },
+  { id: 'members', label: '用戶與身份', icon: 'users', view: members },
+  { id: 'inventory', label: '物資', icon: 'grid', view: inventory, badge: () => pendingLoans().length },
+  { id: 'progress', label: '進度', icon: 'chart', view: progress },
+  { id: 'notices', label: '通告', icon: 'megaphone', view: noticesView, badge: () => (load()?.notices || []).filter(n => n.status === 'published').length },
+  { id: 'links', label: '公開資料', icon: 'share', view: linksView },
+  { id: 'constitution', label: '團章', icon: 'book', view: constitution },
+  /* 資料管理：本來係孤兒路由，而家正式登記；執委冇 admin.data → 唔准入 */
+  { id: 'tables', label: '資料管理', icon: 'cloud', view: tables, perm: 'admin.data' },
+  { id: 'admin', label: '系統', icon: 'shield', view: accountsView, perm: 'admin.units' }
 ];
+/* 教學：唔屬日常操作，但所有登入身份（包括執委）都要搵得到 → 頂欄入口 */
+const DOCS_NAV = { id: 'docs', label: '教學', icon: 'note', view: docs, perm: 'docs.view' };
+
+/* VIEWS 由 registry 推導（F1：唔再有第二份人手清單） */
+const VIEWS = Object.fromEntries([...NAV, DOCS_NAV].map(n => [n.id, n.view]));
+
+/** 呢個 section 要咩權限（冇登記 perm = 所有登入身份都用得） */
+function sectionPerm(section) {
+  return ([...NAV, DOCS_NAV].find(n => n.id === section) || {}).perm || '';
+}
+/** 有冇權入呢個 section（fail-closed：登記咗 perm 但冇權 = 拒） */
+function canSection(section) {
+  const p = sectionPerm(section);
+  return !p || can(p);
+}
+/** 側欄／更多選單只顯示有權嘅項目 */
+function visibleNav() { return NAV.filter(n => canSection(n.id)); }
+
 const MOBILE_MAIN = ['dashboard', 'calendar', 'finance', 'inventory'];
 
 const app = document.getElementById('app');
@@ -287,7 +317,7 @@ function paintSyncChip() {
 
 
   if (!remoteApi || !remoteApi.remoteConfigured()) {
-    el.innerHTML = `<span class="badge b-warn" title="資料淨係存喺呢部機嘅瀏覽器，換機／清 cache 就會冇咗。去「系統 → 資料管理 → 總表同步」設定後端。">
+    el.innerHTML = `<span class="badge b-warn" title="資料淨係存喺呢部機嘅瀏覽器，換機／清 cache 就會冇咗。去「資料管理 → 總表同步」設定後端。">
       ${icon('alert', 12)} 只存喺本機</span>`;
     el.onclick = () => go('#/tables/sync');
     el.style.cursor = 'pointer';
@@ -1432,6 +1462,16 @@ function render() {
     location.hash = '#/members/accounts';   // 會自己再觸發一次 hashchange → 重新 render
     return;
   }
+  /* ★ 2026-11-12：「資料管理」以前係一個純指路頁（3 張卡叫你去
+     #/tables 嗰 3 個分頁），而 tables 本身已經有嗰 3 個分頁 = 兩層入口兜圈。
+     而家直接跳去真正嗰頁；舊書籤 #/admin/data 唔會斷。 */
+  if (r.section === 'admin' && r.id === 'data') {
+    location.hash = '#/tables';
+    return;
+  }
+  /* ★ 無權就唔准入（用戶 2026-11-12 定案）—— 直接打 URL 都要拒，
+     唔再出現「欄位打到字但儲存掣 disabled、又冇解釋」嘅假畫面。 */
+  if (VIEWS[r.section] && !canSection(r.section)) return renderNoAccess(r.section);
   const view = VIEWS[r.section] || VIEWS.dashboard;
   const u = profile();
 
@@ -1452,7 +1492,7 @@ function render() {
       </div>
 
       <div class="sb-nav">
-        ${NAV.map(n => sidebarItem(n, r.section)).join('')}
+        ${visibleNav().map(n => sidebarItem(n, r.section)).join('')}
       </div>
       <div class="sb-foot">
         <div class="sb-user">
@@ -1476,6 +1516,7 @@ function render() {
         </div>
         <div class="row gap-8">
           <span id="syncChip" class="no-print"></span>
+          ${canSection('docs') ? `<button class="btn btn-ghost btn-sm no-print" data-go="#/docs" title="教學 —— 由登入到輸出文件一步一步">${icon('note', 15)} 教學</button>` : ''}
           <button class="btn btn-ghost btn-sm no-print" id="btnSOS" title="求救 —— 有咩大問題，SEND 去問 ADMIN，當回報問題處理" style="color:#B8892B">${icon('megaphone', 15)} 求救</button>
                     ${notices().length ? `<span class="badge b-warn no-print"><span class="dot"></span>${notices().length} 項提示</span>` : ''}
           <button class="btn btn-ghost btn-sm hide-desktop" id="btnPw2" title="改密碼">${icon('key', 16)}</button>
@@ -1486,7 +1527,7 @@ function render() {
     </div>
 
     <nav class="tabbar">
-      ${MOBILE_MAIN.map(id => {
+      ${MOBILE_MAIN.filter(id => canSection(id)).map(id => {
         const n = NAV.find(x => x.id === id);
         return `<button data-nav="${id}" aria-current="${r.section === id ? 'page' : 'false'}">
           <span class="ic">${icon(n.icon, 20)}</span><span>${n.label}</span></button>`;
@@ -1505,8 +1546,11 @@ function render() {
   app.querySelectorAll('#btnLogout, #btnLogout2').forEach(el => el.addEventListener('click', async () => {
     if (await confirmLogout()) doLogout();
   }));
+  /* ★ 2026-11-12 修正：本來 go('#/admin/data') —— 嗰頁根本冇密碼表單，
+     而且「系統」而家對執委封閉，會變成連自己密碼都改唔到。
+     直接開彈窗（所有身份都有 admin.pw.self）。 */
   app.querySelectorAll('#btnPw, #btnPw2').forEach(el => el.addEventListener('click', async () => {
-    go('#/admin/data');
+    await accountsView.ownPasswordForm();
   }));
   /* ★ 2026-09-25 團長：「加個求救制，有咩大問題 SEND 去問 ADMIN，當回報問題處理」—— 個掣喺頂部，任何一版都撳得到。 */
   app.querySelector('#btnSOS')?.addEventListener('click', openSOS);
@@ -1547,8 +1591,63 @@ function sidebarItem(n, active) {
   </button>`;
 }
 
+/* ============================================================
+   無權存取（★ 2026-11-12）
+   ------------------------------------------------------------
+   用戶定案「無權就唔准入」。之前執委入到「系統」，14 個框照樣打字，
+   但儲存掣 disabled 又冇解釋 —— 打完字撳唔到，唔知發生咩事。
+   而家：側欄唔顯示，直接打 URL 會見到呢頁（講清楚原因 + 有路走）。
+   仍然保留側欄同頁內返回／教學／求救按鈕，所以唔會困死喺一頁。
+   ============================================================ */
+function renderNoAccess(section) {
+  const label = ([...NAV, DOCS_NAV].find(n => n.id === section) || {}).label || '呢一頁';
+  const u = profile();
+  document.body.classList.remove('login-body');
+  app.innerHTML = `
+  <div class="shell">
+    <nav class="sidebar">
+      <div class="sb-brand">
+        <div class="logo">${esc(String(u.code || currentUnit() || '82').replace(/^0+/, '') || '82')}</div>
+        <div>
+          <div class="t truncate">${esc(u.name || '深資童軍團')}</div>
+          <div class="s truncate">深資童軍管理系統</div>
+        </div>
+      </div>
+      <div class="sb-nav">${visibleNav().map(n => sidebarItem(n, '')).join('')}</div>
+    </nav>
+    <div class="main">
+      <div class="content" id="view">
+        <div class="card" style="max-width:560px;margin:40px auto">
+          <div class="card-head"><div><div class="card-title">「${esc(label)}」需要領袖權限</div></div></div>
+          <div style="padding:18px" class="col gap-12">
+            <p class="sm">你而家嘅身份係<b>${esc(ROLES[currentRole()]?.name || currentRole() || '')}</b>。
+              呢一頁改嘅係全團共用嘅設定（旅團資料、後端接駁、備份還原），
+              所以只有<b>團長／領袖</b>開得到。</p>
+            <p class="sm muted">如果你真係需要改呢啲嘢，可以搵團長或領袖幫手，
+              或者撳「求救」直接回報畀平台管理員。</p>
+            <div class="row gap-8 wrap">
+              <button class="btn btn-primary" data-go="#/dashboard">${icon('home', 15)} 返儀表板</button>
+              ${canSection('docs') ? `<button class="btn" data-go="#/docs">${icon('note', 15)} 睇教學</button>` : ''}
+              <button class="btn" id="btnSOS">${icon('megaphone', 15)} 求救</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+  /* 呢頁冇 view.mount，只需要基本導覽綁定（唔可以困死用戶） */
+  app.querySelectorAll('[data-nav]').forEach(el => el.addEventListener('click', () => {
+    const id = el.dataset.nav;
+    if (id === 'more') return moreSheet();
+    go('#/' + id);
+  }));
+  app.querySelectorAll('[data-go]').forEach(el => el.addEventListener('click', () => go(el.dataset.go)));
+  /* 上面寫住「撳求救」，所以呢頁真係要有粒求救掣（唔可以講咗冇） */
+  app.querySelector('#btnSOS')?.addEventListener('click', openSOS);
+}
+
 function moreSheet() {
-  const items = NAV.filter(n => !MOBILE_MAIN.includes(n.id));
+  const items = visibleNav().filter(n => !MOBILE_MAIN.includes(n.id));
   modal({
     title: '更多',
     body: `<div class="grid g-2" style="gap:10px">

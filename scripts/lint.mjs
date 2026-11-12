@@ -313,7 +313,7 @@ section('⑦ 孤兒 action 守門（後端有、前端冇人 call ＝ 死碼）'
     ['syncCheck', '後端寫入＋讀回自證（tests/e2ereal.mjs 經 proxy 驗）']
   ]);
   const feActions = new Set();
-  for (const f of ALL.filter(f => /^assets\/js\//.test(rel(f)) && /\.js$/.test(f) && !/gastemplate\.js$/.test(f))) {
+  for (const f of ALL.filter(f => /^assets\/js\//.test(rel(f)) && /\.js$/.test(f))) {
     const s = fs.readFileSync(f, 'utf8');
     for (const m of s.matchAll(/action:\s*'([a-zA-Z]+)'/g)) feActions.add(m[1]);
   }
@@ -328,6 +328,38 @@ section('⑦ 孤兒 action 守門（後端有、前端冇人 call ＝ 死碼）'
   const staleEntries = [...INTENTIONAL_NO_CALLER.keys()].filter(a => !orphans.includes(a));
   ok(staleEntries.length === 0, '孤兒登記冊冇過期項目（已刪或已接返前端嘅要移除）',
     staleEntries.join(', '));
+}
+
+/* ============================================================
+   ⑧ 導覽文字唔可以指去唔存在嘅路（★ 2026-11-12 UI 簡化）
+   ------------------------------------------------------------
+   背景：用家「東指西指」。「資料管理」本來係「系統」底下嘅指路分頁，
+   於是全個 repo 有 40+ 處教人「系統 → 資料管理 → …」。
+   2026-11-12 把「資料管理」升做側欄獨立入口之後，呢啲指示全部變咗錯 ——
+   用戶照住撳會撳唔到。改咗 48 處，加呢個守門防止再積。
+
+   同時守：說明文字唔可以再出現「系統 → 資料管理」呢條已經唔存在嘅路。
+   ============================================================ */
+section('⑧ 導覽指示唔可以指去已拆走嘅路');
+{
+  const STALE = [
+    ['系統 → 資料管理', '「資料管理」已經係側欄獨立入口，唔再喺「系統」入面'],
+    ['系統→資料管理', '同上（冇空格寫法）'],
+    ['管理 → 資料管理', '舊「管理」指路已拆；而家直接去「資料管理」'],
+    ['data-go="#/admin/data"', '內部按鈕要直去 #/tables；舊 hash 只留畀外部書籤轉址'],
+    ['href="#/admin/data"', '內部連結要直去 #/tables；舊 hash 只留畀外部書籤轉址'],
+    ['財務 → 財政年度報告', '年度報告分頁已拆（重複入口）；而家係「財務 → 年結報告」頂欄掣']
+  ];
+  const bad = [];
+  for (const f of ALL.filter(f => /^assets\/js\//.test(rel(f)) && /\.js$/.test(f))) {
+    const s = fs.readFileSync(f, 'utf8');
+    s.split('\n').forEach((line, i) => {
+      for (const [needle, why] of STALE) {
+        if (line.includes(needle)) bad.push(`${rel(f)}:${i + 1}  「${needle}」 —— ${why}`);
+      }
+    });
+  }
+  ok(bad.length === 0, '冇指示指去已拆走嘅導覽路徑', bad.slice(0, 8).join('\n      '));
 }
 
 console.log(`\n──────── lint 結果：${checks - fails} 通過 / ${fails} 失敗 ────────`);

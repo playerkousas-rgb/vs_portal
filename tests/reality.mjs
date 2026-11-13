@@ -27,6 +27,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { spawn } from 'node:child_process';
 import net from 'node:net';
+import { TEST_SUPER_PASSWORD } from './_authstub.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 let pass = 0, fail = 0;
@@ -95,7 +96,7 @@ try {
     TROOP_0082_APIKEY: 'test_key_0082',
     V82_PROXY_TEST: '1',
     PORT: String(WEB_PORT),
-    SUPER_KEY: 'super_secret_test'
+    SUPER_KEY: TEST_SUPER_PASSWORD
   });
   ok('測試用假後端＋dev-server 已啟動', (await waitPort(GAS_PORT)) && (await waitPort(WEB_PORT)));
 
@@ -170,7 +171,7 @@ try {
   spawnBg([path.join(ROOT, 'dev-server.mjs')], {
     TROOP_0082_BACKEND: FAKE_EXEC,
     TROOP_0082_APIKEY: 'wrong_server_key',
-    V82_PROXY_TEST: '1', PORT: String(badPort)
+    V82_PROXY_TEST: '1', SUPER_KEY: TEST_SUPER_PASSWORD, PORT: String(badPort)
   });
   ok('錯誤伺服器 Key 測試代理啟動', await waitPort(badPort));
   const D = await runDevice({ steps: [{ op: 'verify' }, { op: 'syncNow' }] }, `http://127.0.0.1:${badPort}`);

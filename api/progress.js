@@ -9,21 +9,20 @@
    寫：POST { action:'save' | 'saveOtherBadge', … }   → POST 後端 action=save
    批：POST { action:'reviewRequest' | 'reviewLogRequest', … }
         → 審批中心：批／拒團員申報（待批完成／待批履歷），批准會寫入進度／活動履歷
-   可選：POST { action:'catalog', catalog }            → 自訂考核項目定義（公開 https）
-        （預設唔用：app 內建 data/progress/items.json，離線都讀得）
+   考核項目固定讀 app 內建 data/progress/items.json，不接受 remote override。
 
-   後端網址／API Key：**預設用前端傳上嚟嘅**（「進度 → 設定」填 /exec ＋ API Key，存喺旅團自己嘅資料）。
-   伺服器端 env（TROOP_<旅團>_PROGRESSBACKEND / _PROGRESSAPIKEY）係可選覆蓋，設咗就優先。
+   後端網址／API Key：固定使用同一旅團 Registry 的 TROOP_<旅團>_BACKEND／APIKEY。
+   瀏覽器傳入 backend／apikey 會被忽略，不能把進度改送另一支 GAS。
 
    安全：
      1. 只准 https://script.google.com/macros/s/…/exec（擋 open proxy；可用 V82_PROXY_TEST=1 放行本機 mock）
      2. payload ≤ 1 MB；上游 45 秒逾時
      3. log 只記 metadata：唔記 API Key、唔記 payload 內容、唔記完整後端網址
-     4. catalog 只准公開 https（擋 localhost／內網，防 SSRF）
    ============================================================ */
 
 import crypto from 'node:crypto';
-import { isTrustedExecUrl, getProgressRegistryEntry } from './_registry.js';
+import { isTrustedExecUrl, getProgressRegistryEntry, getTrustedUnit } from './_registry.js';
+import { verifySuperSession } from './_super-session.js';
 
 export const config = { maxDuration: 60 };
 
@@ -39,8 +38,8 @@ export const config = { maxDuration: 60 };
    自己**嘅 API_KEY（vsbadge Code.gs：linkSigKey() = HMAC-SHA256(
    "vsbadge-troop-sig-v1", getApiKey())；verifyLinkSig 用同一條 API_KEY 驗，
    doPost 喺「直接入口」掣**之前**先路由簽名請求）。所以我哋（Vercel 伺服器）
-   有嗰條 SHEET KEY（＝PROGRESSAPIKEY／TROOP_<id>_APIKEY）就出到同一款簽名，
-   唔使經旅／團中間嗰支 GAS，直接 POST 到進度後端 /exec 就入得。
+   有嗰條 SHEET KEY（＝TROOP_<id>_APIKEY）就出到同一款簽名，
+   直接 POST 到同一 Unified GAS /exec 就入得。
    key 唔落瀏覽器，仲硬淨過舊式 apikey，亦唔會再撞「閂咗口」。
 
    簽名公式（同 vsbadge Code.gs makeLinkSig / verifyLinkSig 完全一致）：
@@ -84,15 +83,14 @@ const UPSTREAM_TIMEOUT_MS = (() => {
   return Math.max(1000, Math.min(55000, v));
 })();
 const MAX_DATA_BYTES = 1024 * 1024;        // 前端送上去嘅資料上限 1MB
-const MAX_ITEMS_BYTES = 2 * 1024 * 1024;   // items.json 上限 2MB
 
 // 旅團後端（Code.gs）支援嘅 action（唔會放寬）
-const ACTIONS = new Set(['load', 'save', 'saveOtherBadge', 'catalog', 'reviewRequest', 'reviewLogRequest',
-  /* 團員入口自助進度：申報完成（寫入「待批完成」）／查自己嘅申報狀態（v2.2.0） */
-  'addRequest', 'myRequests',
-  /* ★ 2026-09-25 VSBADGE 開關掣：本系統（VS-PORTAL）代旅團閂／開 VSBADGE 後端嘅「直接入口」。
-     閂嘅係 VSBADGE 嗰邊（淨係佢自己支 GAS 嘅 Script Properties），唔會掂本系統自己。
-     getLinkState 讀話；setLocalLogin 用下面 signedPost 嗰款簽名（要 SHEET KEY＝進度後端自己嘅 API_KEY）。 */
+const ACTIONS = new Set(['load', 'save', 'saveOtherBadge', 'reviewRequest', 'reviewLogRequest',
+  /* 團員入口只可走個人 bridge：由 server session 對出 YMIS，再叫後端只回／寫本人。 */
+  'myProgress', 'addRequest', 'myRequests',
+  /* Unified 支部本地入口：getLinkState 讀狀態；現階段 setLocalLogin 只准
+     allow:true 開返，防止未有中央旅系統時把正常登入入口鎖死。GAS 保留未來
+     上游簽名控制能力，但第 4 階段旅系統會直接 server-to-server 呼叫。 */
   'getLinkState', 'setLocalLogin']);
 
 function sendJson(res, status, obj) {
@@ -125,21 +123,6 @@ async function readRawBody(req) {
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch (e) { return null; }
 }
 
-/** 只准公開 https 位址（自訂考核項目定義用）——擋 localhost / 內網 / 非 https */
-function isSafePublicUrl(raw) {
-  try {
-    const u = new URL(String(raw));
-    if (u.protocol !== 'https:') return false;
-    const host = u.hostname.toLowerCase();
-    if (host === 'localhost' || host.endsWith('.localhost')) return false;
-    if (host === '0.0.0.0' || host === '[::1]' || host === '::1') return false;
-    if (/^127\./.test(host) || /^10\./.test(host) || /^192\.168\./.test(host) || /^169\.254\./.test(host)) return false;
-    if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return false;
-    if (!host.includes('.')) return false;   // 要真域名
-    return true;
-  } catch (e) { return false; }
-}
-
 async function upstream(url, { method = 'POST', payload = null } = {}) {
   const init = { method, redirect: 'follow', signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS) };
   if (method === 'POST') {
@@ -151,6 +134,63 @@ async function upstream(url, { method = 'POST', payload = null } = {}) {
   let json = null;
   try { json = JSON.parse(text); } catch (e) { /* 非 JSON（Apps Script 錯誤頁） */ }
   return { status: up.status, json, raw: text };
+}
+
+/** 閂咗直接入口時，用同一套 link signature 做 server-to-server 請求。 */
+async function signedUpstream(url, action, payload, key) {
+  const bodyOnly = { ...(payload || {}), action };
+  const inner = makeLinkSig(action, JSON.stringify(bodyOnly), key);
+  const outgoing = { ...bodyOnly, sig: inner.sig, sig_ts: inner.ts, sig_nonce: inner.nonce };
+  const raw = JSON.stringify(outgoing);
+  if (raw.length > LINK_SIG_MAX_BODY) return { tooBig: raw.length };
+  const outer = makeLinkSig(action, raw, key);
+  const qs = new URLSearchParams({ sig: outer.sig, sts: outer.ts, snonce: outer.nonce });
+  return { resp: await upstream(url + (url.includes('?') ? '&' : '?') + qs, { method: 'POST', payload: outgoing }) };
+}
+
+const STAFF_ROLES = new Set(['chief', 'leader', 'admin', 'exco', 'super']);
+const PERSONAL_ACTIONS = new Set(['myProgress', 'addRequest', 'myRequests']);
+
+/**
+ * 將瀏覽器交來嘅 opaque session 對返旅團後端身份。
+ * client 傳嘅 role／YMIS／name 一律唔信；個人 action 只會用呢度回出嘅 subject。
+ */
+async function authenticate(unitCode, body) {
+  const superSession = verifySuperSession(body.sessionToken);
+  if (superSession) return { ok: true, role: 'super', subject: superSession.subject, ymis: '', name: '系統管理員', super: true };
+
+  const unit = getTrustedUnit(unitCode);
+  if (!unit?.gasUrl || !unit?.apiKey) {
+    return { ok: false, status: 503, reason: 'auth_backend_not_configured', error: '旅團登入後端未設定' };
+  }
+  const sessionToken = firstStr(body.sessionToken);
+  const portalToken = firstStr(body.portalToken);
+  if (!sessionToken && !portalToken) {
+    return { ok: false, status: 401, reason: 'session_required', error: '登入狀態已失效，請重新登入' };
+  }
+  const payload = {
+    action: 'authWhoAmI', unit: unit.code, apiKey: unit.apiKey,
+    ...(portalToken ? { portalToken } : { sessionToken })
+  };
+  let check = await upstream(unit.gasUrl, { method: 'POST', payload });
+  if (check.json?.upstream_only && canSign(unit.apiKey)) {
+    const signed = await signedUpstream(unit.gasUrl, 'authWhoAmI', {
+      unit: unit.code, ...(portalToken ? { portalToken } : { sessionToken })
+    }, unit.apiKey);
+    if (signed.tooBig) return { ok: false, status: 413, reason: 'auth_request_too_big', error: '登入核對請求太大' };
+    check = signed.resp;
+  }
+  const account = check.json?.account;
+  if (!check.json?.ok || !account) {
+    return { ok: false, status: 401, reason: 'session_invalid', error: check.json?.error || '登入狀態已失效，請重新登入' };
+  }
+  return {
+    ok: true,
+    role: String(account.role || 'member').toLowerCase(),
+    subject: String(account.memberId || account.id || ''),
+    ymis: String(account.ymis || '').trim(),
+    name: String(account.name || '').trim()
+  };
 }
 
 export default async function handler(req, res) {
@@ -178,47 +218,49 @@ export default async function handler(req, res) {
     return sendJson(res, 400, { ok: false, error: '旅團編號格式不正確' });
   }
 
-  // ---- 1. 後端網址 / API Key / 前端網址：伺服器端 registry 優先，其次用前端填嘅 ----
-  const reg = unit ? getProgressRegistryEntry(unit) : { backend: '', apiKey: '', catalog: '' };
-  const backend = String(reg.backend || body.backend || '').trim();
-  const apiKey = String(reg.apiKey || body.apikey || '').trim();
-  const catalogUrl = String(reg.catalog || body.catalog || '').trim();
-
-  const usingServerSide = !!(reg.backend || reg.apiKey);
-  /* 簽名根密鑰＝進度後端自己條 API_KEY（呢度嘅 apiKey 已經係 server-side 優先、
-     其次先係瀏覽器貼嘅）。有條 ≥8 字元嘅 KEY，收到 upstream_only 就兜去簽名。 */
-
-  if (action === 'catalog') {
-    /* 可選：旅團想用自己嘅考核項目定義（預設用 app 內建 data/progress/items.json，唔需要呢個） */
-    let target = catalogUrl || String(body.url || '').trim();
-    if (target && !isSafePublicUrl(target)) {
-      return sendJson(res, 400, { ok: false, reason: 'catalog_not_allowed',
-        error: '自訂考核項目網址唔安全（只准公開 https 網址，唔准 localhost／內網）' });
-    }
-    if (!target) return sendJson(res, 400, { ok: false, reason: 'catalog_missing', error: '未填自訂考核項目網址（app 內建已經可以直接用）' });
-    try {
-      const up = await fetch(target, { redirect: 'follow', signal: AbortSignal.timeout(UPSTREAM_TIMEOUT_MS) });
-      const text = await up.text();
-      if (text.length > MAX_ITEMS_BYTES) return sendJson(res, 502, { ok: false, error: '考核項目檔太大' });
-      let json = null;
-      try { json = JSON.parse(text); } catch (e) { /* ignore */ }
-      if (!json || !Array.isArray(json.badges)) {
-        safeLog({ result: 'catalog_bad_response', status: up.status, ms: Date.now() - t0 });
-        return sendJson(res, 502, { ok: false, error: '讀唔到考核項目定義（要有 badges 陣列）' });
-      }
-      safeLog({ result: 'catalog_ok', status: up.status, ms: Date.now() - t0 });
-      return sendJson(res, 200, { ok: true, data: json });
-    } catch (e) {
-      const timeout = e && (e.name === 'TimeoutError' || e.name === 'AbortError');
-      safeLog({ result: timeout ? 'catalog_timeout' : 'catalog_fetch_error', ms: Date.now() - t0 });
-      return sendJson(res, timeout ? 504 : 502, { ok: false, error: timeout ? '讀取逾時' : '無法讀取自訂考核項目' });
+  /* 第 3 階段沒有中央旅系統，關閉支部唯一正常登入入口永遠不是有效操作。
+     在 session 核對（本身亦會打 Unified GAS）之前拒絕，確保這類請求不會向
+     GAS 發出任何流量，更不可能因下游／驗證流程改動而意外關門。 */
+  if (action === 'setLocalLogin') {
+    const requested = String(data.allow ?? '').trim().toLowerCase();
+    if (['0', 'false', 'no', 'off', 'close', 'closed'].indexOf(requested) >= 0) {
+      return sendJson(res, 409, { ok: false, reason: 'phase3_local_login_required',
+        error: '現階段未有中央旅系統，支部本地入口必須保持開啟。' });
     }
   }
 
+  /* 除上述無條件拒絕的危險操作外，所有進度 action 都要先由 server session 對回可信身份。 */
+  let actor = null;
+  if (!unit) return sendJson(res, 400, { ok: false, reason: 'unit_required', error: '缺少旅團編號' });
+  try { actor = await authenticate(unit, body); }
+  catch (e) {
+    const timeout = e && (e.name === 'TimeoutError' || e.name === 'AbortError');
+    return sendJson(res, timeout ? 504 : 502, { ok: false, reason: 'auth_unavailable', error: timeout ? '登入核對逾時' : '暫時無法核對登入狀態' });
+  }
+  if (!actor.ok) return sendJson(res, actor.status || 401, { ok: false, reason: actor.reason, error: actor.error });
+  if (PERSONAL_ACTIONS.has(action)) {
+    if (!actor.ymis) return sendJson(res, 403, { ok: false, reason: 'member_ymis_missing', error: '登入帳戶未綁定 YMIS，無法讀取個人進度' });
+  } else if (!STAFF_ROLES.has(actor.role)) {
+    return sendJson(res, 403, { ok: false, reason: 'staff_required', error: '你沒有權限管理進度' });
+  }
+
+  // ---- 1. 後端網址／API Key：只用同一旅團嘅 server Registry ----
+  const reg = getProgressRegistryEntry(unit);
+  const backend = String(reg.backend || '').trim();
+  const apiKey = String(reg.apiKey || '').trim();
+
+  const usingServerSide = !!(reg.backend && reg.apiKey);
+  /* 簽名根密鑰＝同一 Unified GAS 的 API_KEY。Browser 提交的 backend／apikey
+     不參與選路或驗證；有條 ≥8 字元 KEY，收到 upstream_only 就兜去簽名。 */
+
   // ---- 2. 旅團後端（GAS /exec）驗證 ----
   if (!backend) {
-    return sendJson(res, 400, { ok: false, reason: 'backend_missing',
-      error: '未設定後端網址 —— 去「進度 → 設定」填入旅團自己嘅 Apps Script /exec 網址（或者喺 data/units.json 登記）' });
+    return sendJson(res, 503, { ok: false, reason: 'backend_missing',
+      error: '旅團未在伺服器登記 TROOP_<編號>_BACKEND' });
+  }
+  if (!apiKey) {
+    return sendJson(res, 503, { ok: false, reason: 'api_key_missing',
+      error: '旅團未在伺服器登記 TROOP_<編號>_APIKEY' });
   }
   if (!isTrustedExecUrl(backend)) {
     safeLog({ result: 'bad_backend', unit: unit.slice(0, 32), ms: Date.now() - t0 });
@@ -230,24 +272,41 @@ export default async function handler(req, res) {
   try {
     let up;
     let sentVia = 'api';
+    let targetAction = action;
+    let safeData = data;
+    if (action === 'myProgress') {
+      targetAction = 'loadMine';
+      safeData = { ymis: actor.ymis };
+    } else if (action === 'myRequests') {
+      safeData = { ymis: actor.ymis };
+    } else if (action === 'addRequest') {
+      /* 身份欄由 authWhoAmI 固定；client 偽造 ymis／name 會被丟棄。 */
+      safeData = {
+        ymis: actor.ymis, name: actor.name,
+        item_id: String(data.item_id || '').slice(0, 160),
+        item_name: String(data.item_name || '').slice(0, 240),
+        requested_date: String(data.requested_date || '').slice(0, 20),
+        evidence: String(data.evidence || '').slice(0, 2000)
+      };
+    }
     /* 純簽名 POST：閂咗直接入口嘅 vsbadge 後端 doPost 會喺「直接入口」掣之前先驗簽名。
        簽名完全照 vsbadge callDownstream：body 一組（digest 綁去 sig 欄位後嘅 body）、
        query 一組（digest 綁成支原始 body），驗收時 query 優先，兩粒 nonce 一齊消耗。 */
     const signReady = canSign(apiKey);
     /* @param targetAction 落喺 body 嘅 action（簽名 canonical 同 body 都用佢） */
     /* @param payload      除 action 外嘅業務欄位（setLocalLogin 用 {allow:true|false}） */
-    const signedPost = async (targetAction = action, payload = {}) => {
-      const bodyOnly = { ...payload, action: targetAction };
+    const signedPost = async (signedAction = targetAction, payload = safeData) => {
+      const bodyOnly = { ...payload, action: signedAction };
       const rows = JSON.stringify(bodyOnly);
-      const inner = makeLinkSig(targetAction, rows, apiKey);
+      const inner = makeLinkSig(signedAction, rows, apiKey);
       const out = { ...bodyOnly, sig: inner.sig, sig_ts: inner.ts, sig_nonce: inner.nonce };
       const rawOutgoing = JSON.stringify(out);
       /* vsbadge 驗 rawBody 長度（連 sig 欄位）, 照樣以最終 body 為準 */
       if (rawOutgoing.length > LINK_SIG_MAX_BODY) {
-        safeLog({ result: 'sig_body_too_big', action: targetAction, bytes: rawOutgoing.length, ms: Date.now() - t0 });
+        safeLog({ result: 'sig_body_too_big', action: signedAction, bytes: rawOutgoing.length, ms: Date.now() - t0 });
         return { tooBig: rawOutgoing.length };
       }
-      const outer = makeLinkSig(targetAction, rawOutgoing, apiKey);
+      const outer = makeLinkSig(signedAction, rawOutgoing, apiKey);
       const q = new URLSearchParams({ sig: outer.sig, sts: outer.ts, snonce: outer.nonce });
       const resp = await upstream(backend + (backend.includes('?') ? '&' : '?') + q.toString(), { method: 'POST', payload: out });
       return { resp };
@@ -265,30 +324,47 @@ export default async function handler(req, res) {
         }
         up = signed.resp; sentVia = 'link';
       }
+    } else if (PERSONAL_ACTIONS.has(action)) {
+      /* 個人 bridge 不可用 API Key 代替身份。上面已由 server session 固定 YMIS；
+         呢度再用支部 Key 簽 server-to-server request，GAS 只接受被簽住的 YMIS。 */
+      if (!signReady) {
+        return sendJson(res, 503, { ok: false, reason: 'no_sign_key', error: '伺服器未設定支部簽名 Key' });
+      }
+      const signed = await signedPost();
+      if (signed.tooBig) {
+        return sendJson(res, 413, { ok: false, reason: 'sig_body_too_big', error: '個人進度請求太大' });
+      }
+      up = signed.resp; sentVia = 'link';
     } else if (action === 'getLinkState' || action === 'setLocalLogin') {
-      /* ★ VSBADGE 開關掣（本系統代旅團閂／開 VSBADGE 後端嘅「直接入口」）。
-         兩個 action 都喺 vsbadge 簽名白名單（read／write），一定要簽名先入得 ——
-         冇簽名而閂咗口嗰陣就係 upstream_only；所以呢度**一律用簽名 POST**，唔行 apikey 舊路。
-         授權 = 邊個有嗰條 SHEET KEY（＝進度後端自己嘅 API_KEY）。 */
+      /* 支部本地入口狀態／復原。兩個 action 都要 server-side link signature；
+         第 3 階段只容許查狀態或 allow:true 開返，不容許由支部 browser 關閉。
+         第 4 階段旅系統建立後，才由真正上游直接簽名控制 GAS。 */
       if (!signReady) {
         return sendJson(res, 400, { ok: false, reason: 'no_sign_key',
-          error: '未設定 API Key（＝進度後端嘅 SHEET KEY），冇得閂／開 VSBADGE 後端嘅直接入口。' });
+          error: '未設定 Unified GAS API Key，無法讀取或復原支部本地入口。' });
       }
       if (action === 'setLocalLogin') {
         const raw = String(data.allow ?? '').trim().toLowerCase();
         const allow = ['1', 'true', 'yes', 'on', 'open'].indexOf(raw) >= 0;
         if (!allow && ['0', 'false', 'no', 'off', 'close', 'closed'].indexOf(raw) < 0) {
           return sendJson(res, 400, { ok: false, reason: 'bad_allow',
-            error: '開關值唔正確（要 allow: true 開、false 閂）。' });
+            error: '開關值唔正確（現階段只接受 allow: true 開返本地入口）。' });
+        }
+        /* 第 3 階段未有中央旅系統：本地帳戶係正常主入口。支部 UI/API
+           不可把自己鎖死；第 4 階段完成 SSO staging 後，旅系統會直接以
+           上游簽名控制 GAS，而不是由 browser 經呢條路關門。 */
+        if (!allow) {
+          return sendJson(res, 409, { ok: false, reason: 'phase3_local_login_required',
+            error: '現階段未有中央旅系統，支部本地入口必須保持開啟。' });
         }
       }
-      const signed = await signedPost(action, action === 'setLocalLogin' ? { allow: String(data.allow) } : {});
+      const signed = await signedPost(action, action === 'setLocalLogin' ? { allow: 'true' } : {});
       if (signed.tooBig) {
         return sendJson(res, 413, { ok: false, reason: 'sig_body_too_big', error: '資料太大，簽唔到去 VSBADGE 後端' });
       }
       up = signed.resp; sentVia = 'link';
     } else {
-      const payload = { ...data, action };
+      const payload = { ...safeData, action: targetAction };
       if (apiKey) payload.apikey = apiKey;
       up = await upstream(backend, { method: 'POST', payload });
       if (up.json && up.json.upstream_only && signReady) {

@@ -231,6 +231,9 @@ ok('改超管密碼會被拒絕', rp.ok === false, rp.msg);
   await auth.login('super', 'sheep', TEST_SUPER_PASSWORD);
   const excoId = store.load().members.find(x => x.loginId === 'exco').id;
   ok('超管可以改個人帳戶密碼', auth.canChangePasswordOf('member:' + excoId) === true);
+  /* 呢段 smoke 無 HTTP GAS；明確測未接後端的舊本機遷移 fallback。正式 server-first
+     密碼 action 已由 e2ereal／gas fixture 覆蓋，唔可因本測試而跌返 browser hash。 */
+  store.setSession({ ...auth.current(), sessionToken: '', sessionExpiresAt: 0, via: 'legacy-local-test' });
   const chg2 = await auth.setMemberHubPassword(excoId, 'exco-新密碼-1');
   ok('超管改密碼真係寫入到', chg2.ok === true, chg2.msg || '');
   const back = await auth.setMemberHubPassword(excoId, '8203');
@@ -1007,13 +1010,14 @@ google.visualization.Query.setResponse({"version":"0.6","reqId":"0","status":"ok
   ok('「下載 Code.gs」同「欄位對應表」按得（冇 error）', errors.length === errBefore,
     errors.slice(errBefore).join(' | '));
 
-  const { gasTemplate, gasGuide } = await import('../assets/js/lib/gastemplate.js');
-  const code = gasTemplate();
-  ok('Apps Script 範本有 doPost（收 POST）', /function doPost/.test(code) && /ContentService/.test(code));
-  ok('Apps Script 範本會寫入「帳目／物資／團員／報名」分頁',
-    ['帳目', '物資', '團員', '報名'].every(k => code.includes(k)));
-  ok('Apps Script 範本支援報名即時寫入', /appendSignup/.test(code));
-  ok('部署步驟教學有 6 步', gasGuide().split('\n').length === 6);
+  const { unifiedGasTemplate, UNIFIED_GAS_SHA256 } = await import('../assets/js/lib/unifiedtemplate.generated.js');
+  const code = unifiedGasTemplate();
+  ok('App 下載的是 Unified Apps Script（有唯一 doPost router）',
+    /function doPost/.test(code) && /UNIFIED_GS_VERSION/.test(code) && /PortalAdminCompat_/.test(code));
+  ok('Unified 範本會寫入行政及進度共用分頁',
+    ['帳目', '物資', '團員', '報名', '進度追蹤', '活動履歷'].every(k => code.includes(k)));
+  ok('Unified 範本支援報名即時寫入', /appendSignup/.test(code));
+  ok('App download 帶非空 generated SHA-256', /^[0-9a-f]{64}$/.test(UNIFIED_GAS_SHA256));
 }
 
 /* ---------- v3：快速記帳（手機影相＋選欄目） ---------- */
@@ -1336,7 +1340,7 @@ section('伺服器 Registry 旅團（Vercel 環境變數開）');
     ok('伺服器旅團標示 fromApi（資料由空白開始，唔會去讀 data/units/0099/）',
       units.unitEntry('0099').fromApi === true && units.dataPathOf('0099') === null);
 
-    /* 進度：伺服器端已經有 PROGRESSBACKEND＋KEY → 前端唔使填任何嘢 */
+    /* 進度固定沿用同一 BACKEND＋APIKEY → 前端唔使填任何嘢 */
     const c = progressCfg('0099');
     ok('伺服器旅團嘅進度自動用伺服器端設定（唔使填 /exec ＋ Key）',
       c.serverSide === true && c.backend === '', JSON.stringify(c));
@@ -1362,9 +1366,9 @@ section('開新旅團教學（只限超管）');
   ok('以 sheep 登入 ＝ 超級管理員身份', auth.isSuper() === true);
   const ob = await import('../assets/js/lib/onboard.js');
   const t = ob.envUnitTemplate('0081', '第八十一旅深資童軍團', 'https://script.google.com/macros/s/AKfycbTESTTESTTESTTESTTESTTESTTESTTEST/exec', 'k81');
-  ok('環境變數範本產生器（5 個變數齊）',
-    ['TROOP_0081_BACKEND', 'TROOP_0081_APIKEY', 'TROOP_0081_NAME', 'TROOP_0081_PROGRESSBACKEND', 'TROOP_0081_PROGRESSAPIKEY']
-      .every(k => t.includes(k)), t.split('\n')[0]);
+  ok('環境變數範本產生器只產生與 BADGE 相同的 3 個變數',
+    ['TROOP_0081_NAME', 'TROOP_0081_BACKEND', 'TROOP_0081_APIKEY'].every(k => t.includes(k))
+      && !/PROGRESSBACKEND|PROGRESSAPIKEY|PORTALSECRET/.test(t), t);
   ok('範本會帶入 /exec 網址同 Key', t.includes('AKfycbTEST') && t.includes('= k81'));
   ok('逐步指示提到 Redeploy 同 initializeSheets',
     ob.envUnitSteps('0081').join(' ').includes('Redeploy') && ob.envUnitSteps('0081').join(' ').includes('initializeSheets'));
@@ -1400,8 +1404,9 @@ section('開新旅團教學（只限超管）');
   envBtn?.click();
   await new Promise(r => setTimeout(r, 150));
   const dlg = doc.querySelector('.modal, [role="dialog"]');
-  ok('產生環境變數對話框有 5 個變數預覽同複製掣',
-    !!dlg && /TROOP_0081_BACKEND/.test(dlg.textContent || '')
+  ok('產生環境變數對話框只有 3 個共用變數預覽同複製掣',
+    !!dlg && /TROOP_0081_NAME/.test(dlg.textContent || '') && /TROOP_0081_BACKEND/.test(dlg.textContent || '')
+    && /TROOP_0081_APIKEY/.test(dlg.textContent || '') && !/PROGRESSBACKEND|PORTALSECRET/.test(dlg.textContent || '')
     && [...dlg.querySelectorAll('button')].some(b => /複製環境變數/.test(b.textContent || '')));
   [...doc.querySelectorAll('.modal button, [role="dialog"] button')].find(b => /關閉/.test(b.textContent || ''))?.click();
   await new Promise(r => setTimeout(r, 80));
@@ -1569,12 +1574,9 @@ section('進度紀錄（一個後端 · 兩個前端）');
   const vp = await import('../assets/js/views/progress.js');
   const lp = await import('../assets/js/lib/progress.js');
   const cfg = lp.progressCfg();
-  /* Registry 而家唔再 hardcode 任何旅團（真實旅團改用 Vercel 環境變數），
-     所以「未登記」嗰陣進度後端係空 —— 呢個先係啱嘅私隱行為。
-     有登記嘅話就要係個 /exec。 */
-  ok('進度後端：有登記就係 /exec，未登記就要係空（唔可以借人哋嘅）',
-    cfg.backend === '' || /\/exec$/.test(cfg.backend),
-    JSON.stringify({ backend: cfg.backend, registered: cfg.registered }));
+  /* Browser config 永遠唔會持有 /exec 或 Key；接線只由 server units 狀態表示。 */
+  ok('進度 browser config 不保存後端／API Key',
+    cfg.backend === '' && cfg.apiKey === '', JSON.stringify(cfg));
   ok('預設用內建考核項目定義（唔使連任何其他系統）',
     lp.DEFAULT_CATALOG_URL === 'data/progress/items.json');
   ok('不再有 portal / 外連設定（巳移除）',
@@ -1591,17 +1593,13 @@ section('進度紀錄（一個後端 · 兩個前端）');
   window.dispatchEvent(new window.HashChangeEvent('hashchange'));
   await new Promise(r => setTimeout(r, 60));
   const sv = doc.getElementById('view');
-  /* 資料接駁嘅設定**仍然只講後端**（/exec ＋ API Key 填返自己張 Sheet）；
-     另外多咗一張「VSBADGE 後端直接入口」開關卡 —— 團長 2026-09-25 要求：
-     閂 VSBADGE 門嘅掣放喺呢邊（VSBADGE 就係嗰支進度後端，唔係另一個系統），
-     閂嘅係佢嗰邊、唔會鬱到本系統。 */
-  ok('設定頁資料接駁仍只係後端（/exec ＋ API Key）',
-    !!sv.querySelector('#p-backend') && !!sv.querySelector('#p-key'));
-  ok('設定頁有「VSBADGE 後端直接入口」開關卡（閂人哋門嗰個掣喺呢邊）',
-    !!sv.querySelector('[data-act="door-refresh"]') && /VSBADGE/.test(sv.textContent));
-  ok('開關卡講明只鬱 VSBADGE 嗰支後端、本系統唔受影響',
-    /本系統（VS-PORTAL）|唔受影響|唔會掂本系統|用簽名照讀照寫/.test(sv.textContent));
-  ok('設定頁有「自訂考核項目」欄（預設留空用內建）', !!sv.querySelector('#p-catalog'));
+  ok('未接通頁只列與 BADGE 相同的 NAME／BACKEND／APIKEY 合約',
+    /TROOP_0082_NAME/.test(sv.textContent) && /TROOP_0082_BACKEND/.test(sv.textContent)
+      && /TROOP_0082_APIKEY/.test(sv.textContent));
+  ok('瀏覽器不再提供 /exec、API Key 或第二進度後端輸入欄',
+    !sv.querySelector('#p-backend') && !sv.querySelector('#p-key') && !sv.querySelector('#p-catalog'));
+  ok('未有 server Registry 時不會假裝可以操作後端入口開關',
+    !sv.querySelector('[data-act="door-refresh"]'));
 
   /* 內建考核項目檔 */
   const items = JSON.parse(fs.readFileSync(path.join(ROOT, 'data/progress/items.json'), 'utf8'));
@@ -1609,9 +1607,10 @@ section('進度紀錄（一個後端 · 兩個前端）');
   const flat = lp.flattenItems(items);
   ok('flattenItems 讀得到項目（勾選頁要用）', Object.keys(flat).length > 30, String(Object.keys(flat).length));
 
-  /* 後端（Code.gs 範本）要有同一組動作：一個後端餵兩個前端 */
-  const { gasTemplate, SHEET_TABS } = await import('../assets/js/lib/gastemplate.js');
-  const code = gasTemplate();
+  /* App 實際下載的 Unified 後端要有行政、進度及 BADGE 同一組動作。 */
+  const { SHEET_TABS } = await import('../assets/js/lib/gastemplate.js');
+  const { unifiedGasTemplate } = await import('../assets/js/lib/unifiedtemplate.generated.js');
+  const code = unifiedGasTemplate();
   ok('Code.gs 有進度分頁（進度追蹤／其他獎章／待批完成／活動履歷／待批履歷／成員名單）',
     ['進度追蹤', '其他獎章', '待批完成', '活動履歷', '待批履歷', '成員名單'].every(t => SHEET_TABS.includes(t) && code.includes("'" + t + "'")));
   ok('Code.gs 支援 ?action=load（讀進度）', /action === 'load'/.test(code) && /function loadProgressData/.test(code));
@@ -1630,8 +1629,8 @@ section('進度紀錄（一個後端 · 兩個前端）');
   ok('Code.gs 會同步成員名單（兩個前端見同一批人）', /writeMemberList/.test(code));
   ok('Code.gs 寫入用 LockService 排隊（全團同時撳都唔會撞）',
     /LockService\.getScriptLock/.test(code) && /withLock\(function/.test(code));
-  const onDisk = fs.readFileSync(path.join(ROOT, 'apps-script', 'Code.gs'), 'utf8');
-  ok('apps-script/Code.gs 同 app 內下載嘅版本一致（npm run build:gas）', onDisk === code);
+  const onDisk = fs.readFileSync(path.join(ROOT, 'apps-script', 'UnifiedCode.gs'), 'utf8');
+  ok('UnifiedCode.gs 同 app 內下載版本 byte-for-byte 一致', onDisk === code);
 }
 /* ---------- 8. 首頁帳目：現在結餘（含期初） ---------- */
 section('首頁帳目（現在結餘 · 期初結餘）');
@@ -1773,8 +1772,8 @@ console.log('\n▌期初結餘遷移（8,803.28 係 2025-26 嘅期初，唔係 2
   ok('全域係 0 就唔使搬', store.migrateOpeningBalances(mk(0)) === false);
 }
 
-/* ---------- 跨系統身份 key（federation L1） ---------- */
-console.log('\n▌跨系統身份 key（進度追蹤係獨立系統，要靠 key 對人）');
+/* ---------- 跨前端 canonical identity key ---------- */
+console.log('\n▌跨前端身份 key（同一 Unified Sheet，以 canonical YMIS 對人）');
 {
   const db4 = store.load();
   /* 呢段測試 migrateMemberKeys 本身。上面啲測試會加入新團員（新旅團由空白
@@ -1881,12 +1880,12 @@ console.log('\n▌跨系統身份 key（進度追蹤係獨立系統，要靠 key
   window.dispatchEvent(new window.HashChangeEvent('hashchange'));
   await new Promise(r => setTimeout(r, 80));
   const pv = doc.getElementById('view').textContent;
-  /* 2026-09-16（團長更正）：執委系統唔連任何其他系統，只讀寫自己嘅後端 */
-  ok('進度頁講明只係「一個後端、兩個前端」（唔會連其他系統）',
-    /一個後端/.test(pv) && /兩個前端/.test(pv) && /唔會連去任何其他網站/.test(pv));
-  ok('進度頁有「設定」入口（填後端網址 / API Key）', !!doc.querySelector('[data-act="settings"]'));
-  ok('教學有逐步指示（initializeSheets → showApiKey）',
-    /initializeSheets/.test(pv) && /showApiKey/.test(pv));
+  ok('進度頁講明管理、進度及 BADGE 共用同一 Unified GAS／Sheet',
+    /管理系統/.test(pv) && /BADGE/.test(pv) && /同一 Unified GAS／Sheet/.test(pv));
+  ok('進度頁有唯讀「接駁狀態」入口', !!doc.querySelector('[data-act="settings"]'));
+  ok('進度頁只列 server Registry 三項，不叫 browser 執行 showApiKey 貼 Key',
+    /TROOP_0082_NAME/.test(pv) && /TROOP_0082_BACKEND/.test(pv) && /TROOP_0082_APIKEY/.test(pv)
+      && !/initializeSheets/.test(pv) && !/showApiKey/.test(pv));
   ok('設定頁有身份對應說明（YMIS 對人）', (() => {
     window.location.hash = '#/progress/settings';
     window.dispatchEvent(new window.HashChangeEvent('hashchange'));
@@ -1927,6 +1926,7 @@ console.log('\n▌新旅團申請接入（送去 ADMIN 收件匣）');
   ok('缺欄位會逐項報錯', bad.ok === false && bad.errors.length >= 3, JSON.stringify(bad.errors));
   ok('唔係 GAS /exec 嘅後端網址會被擋',
     bad.errors.some(e => /\/exec/.test(e)), JSON.stringify(bad.errors));
+  ok('申請缺少同一 Unified API Key 會被擋', bad.errors.some(e => /API Key/.test(e)), JSON.stringify(bad.errors));
   ok('旅團編號格式會被驗證',
     ob.validateApplication({ troopId: '01 00!!', troopName: 'X',
       scriptUrl: 'https://script.google.com/macros/s/AKfycbTESTTESTTESTTESTTESTTESTTESTTEST/exec' })
@@ -1995,13 +1995,14 @@ console.log('\n▌新旅團申請接入（送去 ADMIN 收件匣）');
   globalThis.fetch = realFetch;
 
   const cl = ob.adminChecklist('0100');
-  ok('管理員 checklist 有列出要做嘅嘢（units.json ＋ 資料夾 ＋ 通知旅團）',
-    cl.length >= 4 && cl.some(x => x.includes('units.json')) && cl.some(x => x.includes('通知旅團')),
+  ok('管理員 checklist 有列出公開 metadata、三項 Vercel、Unified GAS 同通知支部',
+    cl.length >= 5 && cl.some(x => x.includes('units.json')) && cl.some(x => /NAME／BACKEND／APIKEY/.test(x))
+      && cl.some(x => /Unified Code\.gs/.test(x)) && cl.some(x => /通知支部/.test(x)),
     JSON.stringify(cl));
-  ok('checklist 講明進度係「一個後端、兩個前端」',
-    cl.some(x => /一個後端/.test(x) && /兩個前端/.test(x)), JSON.stringify(cl));
-  ok('checklist 講明旅團自己去「進度 → 設定」填 Script ＋ API Key',
-    cl.some(x => /進度 → 設定/.test(x) && /API Key/.test(x)), JSON.stringify(cl));
+  ok('checklist 講明管理系統、進度及 BADGE 共用同一後端／Key',
+    cl.some(x => /管理系統/.test(x) && /進度/.test(x) && /BADGE/.test(x) && /共用/.test(x)), JSON.stringify(cl));
+  ok('checklist 不會叫用戶去進度頁貼 Script／API Key',
+    !cl.some(x => /進度 → 設定/.test(x) && /API Key/.test(x)), JSON.stringify(cl));
   ok('checklist 唔再要求 portalOrigin（一個後端、兩個前端）',
     !cl.some(x => /portalOrigin/.test(x)), JSON.stringify(cl));
 
@@ -2022,15 +2023,15 @@ console.log('\n▌新旅團申請接入（送去 ADMIN 收件匣）');
   window.dispatchEvent(new window.HashChangeEvent('hashchange'));
   await new Promise(r => setTimeout(r, 80));
   const pt = doc.getElementById('view').textContent;
-  ok('教學「進度紀錄」講明一個後端、兩個前端', /一個後端/.test(pt) && /兩個前端/.test(pt));
-  ok('教學講明唔會連去任何其他系統', /唔需要連去任何其他系統/.test(pt) || /唔會連去任何其他系統/.test(pt));
-  ok('教學教後端要支援 ?action=load 同 action=save', /action=load/.test(pt) && /action=save/.test(pt));
-  ok('教學講明 API Key＝執委身份', /API Key＝執委身份/.test(pt) || /就等於/.test(pt));
-  ok('教學講明考核項目已內建（唔使連網站）', /data\/progress\/items\.json/.test(pt));
-  ok('教學有「審批中心」（批准寫入進度追蹤、拒絕唔會刪紀錄）',
-    /審批中心/.test(pt) && /reviewRequest/.test(pt) && /已拒絕/.test(pt));
-  ok('教學講明團員只專心紀錄冊、批核喺管理系統', /專心/.test(pt) && /深資童軍管理系統/.test(pt));
-  ok('教學講明團員用 YMIS、領袖用 Email', /團員／執委用 YMIS/.test(pt) && /領袖用 Email/.test(pt));
+  ok('教學「進度紀錄」講明一個 Unified 後端、兩個前端', /一個 Unified 後端/.test(pt) && /兩個前端/.test(pt));
+  ok('教學列明與 BADGE 完全相同的 NAME／BACKEND／APIKEY',
+    /NAME/.test(pt) && /BACKEND/.test(pt) && /APIKEY/.test(pt) && /BADGE/.test(pt));
+  ok('教學講明 staff／團員要由 session 固定權限', /staff session/.test(pt) && /session 固定/.test(pt));
+  ok('教學講明 API Key 不等於執委身份', /不等於執委身份/.test(pt));
+  ok('教學講明考核項目已內建（唔使第二資料後端）', /data\/progress\/items\.json/.test(pt) && /不是第二個資料後端/.test(pt));
+  ok('教學列出審批 action 並寫回同一 Sheet',
+    /reviewRequest/.test(pt) && /reviewLogRequest/.test(pt) && /同一 Sheet/.test(pt));
+  ok('教學講明所有前端用同一 YMIS 對人', /同一 YMIS/.test(pt));
 }
 
 /* ---------- 財務：領袖免收團費（2026-09-16 團長要求） ---------- */
@@ -2197,7 +2198,8 @@ section('欄位設定（每頁自己改）');
 section('進度紀錄（讀 ＋ 勾 ＋ 寫，同一個後端）');
 {
   const vp = await import('../assets/js/views/progress.js');
-  const { progressCfg, setProgressCfg } = await import('../assets/js/lib/progress.js');
+  const { progressCfg } = await import('../assets/js/lib/progress.js');
+  const units = await import('../assets/js/lib/units.js');
   const realFetch = globalThis.fetch;
   const calls = [];
   const VS = {
@@ -2217,12 +2219,24 @@ section('進度紀錄（讀 ＋ 勾 ＋ 寫，同一個後端）');
     }],
     logsSupported: true, logRequestsSupported: true, otherBadges: {}
   };
-  const CATALOG = { badges: [{ id: 'L1', name: '會員章', icon: '🥇', segments: [{ code: 'L1-ACT', name: '活動', items: [{ id: 'L1-ACT-01', name: '參加六次團集會' }, { id: 'L1-ACT-02', name: '服務一次' }] }] }] };
+  const CATALOG = { badges: [{ id: 'L1', name: '會員章', icon: '🥇', segments: [{ code: 'L1-ACT', name: '活動', items: [
+    { id: 'L1-ACT-01', name: '參加六次團集會' }, { id: 'L1-ACT-02', name: '服務一次' }
+  ] }] }] };
   globalThis.fetch = async (url, init = {}) => {
     const body = init.body ? JSON.parse(init.body) : null;
     calls.push({ url: String(url), body });
-    /* 唔係 API 呼叫＝讀 app 內建檔（data/progress/items.json），交返真檔 */
+    if (/api\/units/.test(String(url))) {
+      const entry = { code: '0082', name: '第八十二旅深資童軍團', short: '82venture',
+        progressServerSide: true, backendReady: true, noticeReady: true };
+      return { ok: true, status: 200, text: async () => JSON.stringify({ units: { '0082': entry } }),
+        json: async () => ({ units: { '0082': entry } }) };
+    }
+    /* 唔係 API 呼叫＝同源內建檔；用細 fixture 固定勾選互動的 item IDs。 */
     if (!body) {
+      if (/data\/progress\/items\.json/.test(String(url))) {
+        const text = JSON.stringify(CATALOG);
+        return { ok: true, status: 200, text: async () => text, json: async () => CATALOG };
+      }
       const file = path.join(ROOT, String(url).split('?')[0].replace(/^\.?\//, ''));
       const text = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : '{}';
       return { ok: fs.existsSync(file), status: fs.existsSync(file) ? 200 : 404,
@@ -2230,7 +2244,6 @@ section('進度紀錄（讀 ＋ 勾 ＋ 寫，同一個後端）');
     }
     let out = { ok: false, error: 'unknown_mock' };
     if (body?.action === 'load') out = { ok: true, serverSideKey: false, data: VS };
-    if (body?.action === 'catalog') out = { ok: true, data: CATALOG };
     if (body?.action === 'save') out = { ok: true, data: { processed: (body.data?.changes || []).length } };
     if (body?.action === 'reviewRequest') out = { ok: true, data: { success: true, message: body.data?.decision === 'approved' ? '已批准並寫入進度' : '已拒絕' } };
     if (body?.action === 'reviewLogRequest') out = { ok: true, data: { success: true, message: '已批准並寫入活動履歷', record_id: 'LOG_TEST' } };
@@ -2238,37 +2251,43 @@ section('進度紀錄（讀 ＋ 勾 ＋ 寫，同一個後端）');
   };
 
   try {
-    /* 未設定 API Key：應該一步一步教（唔會叫你去任何其他系統） */
-    setProgressCfg({ backend: '', apiKey: '', catalogUrl: '' });
+    /* 未有 server Registry：只交代三項合約，不收 browser Key。 */
     window.location.hash = '#/progress';
     window.dispatchEvent(new window.HashChangeEvent('hashchange'));
     await new Promise(r => setTimeout(r, 100));
-    const nsv = doc.getElementById('view').textContent;
-    ok('未設定時有逐步教學（自己嗰張 Sheet → initializeSheets → showApiKey）',
-      /initializeSheets/.test(nsv) && /showApiKey/.test(nsv));
-    ok('教學講明「一個後端、兩個前端」', /一個後端/.test(nsv) && /兩個前端/.test(nsv));
-    ok('教學唔會叫你去其他系統（冇 VSBADGE 字眼）', !/VSBADGE|vsbadge/.test(nsv));
+    const nsv = doc.getElementById('view');
+    ok('未設定時列出與 BADGE 共用的 NAME／BACKEND／APIKEY',
+      /TROOP_0082_NAME/.test(nsv.textContent) && /TROOP_0082_BACKEND/.test(nsv.textContent)
+        && /TROOP_0082_APIKEY/.test(nsv.textContent));
+    ok('未設定時都不顯示 browser /exec／API Key 輸入欄',
+      !nsv.querySelector('#p-backend') && !nsv.querySelector('#p-key'));
 
-    /* 設定：填後端 ＋ API Key */
+    /* 模擬 /api/units 告知前端三項 server 設定已齊。 */
+    await units.loadRegistry(true);
+    ok('server Registry 接通後 progress config 只見狀態，不見 secret',
+      progressCfg().serverSide === true && progressCfg().backend === '' && progressCfg().apiKey === '');
     window.location.hash = '#/progress/settings';
     window.dispatchEvent(new window.HashChangeEvent('hashchange'));
-    await new Promise(r => setTimeout(r, 100));
+    await new Promise(r => setTimeout(r, 150));
     const sv = doc.getElementById('view');
-    ok('設定頁有「點填」指示（複製 /exec ＋ showApiKey ＋ 儲存後重新讀取）',
-      /點填/.test(sv.textContent) && /showApiKey/.test(sv.textContent) && /重新讀取/.test(sv.textContent));
-    ok('設定頁有「後端 /exec 網址」同「API Key」欄',
-      !!sv.querySelector('#p-backend') && !!sv.querySelector('#p-key') && !!sv.querySelector('#p-catalog'));
-    sv.querySelector('#p-backend').value = 'https://script.google.com/macros/s/AKfycbTESTTESTTESTTESTTESTTESTTESTTEST/exec';
-    sv.querySelector('#p-key').value = 'vs_key_123';
-    sv.querySelector('#p-catalog').value = 'https://example.org/items.json';
-    sv.querySelector('[data-act="save-cfg"]').click();
-    await new Promise(r => setTimeout(r, 200));
-    ok('儲存後配置記住咗（API Key 存喺旅團自己嘅資料）',
-      progressCfg().apiKey === 'vs_key_123' && /AKfycbTEST/.test(progressCfg().backend));
+    ok('接駁狀態頁講明三項與 BADGE 相同及 API Key 不是身份',
+      /BADGE/.test(sv.textContent) && /NAME/.test(sv.textContent)
+        && /BACKEND/.test(sv.textContent) && /APIKEY/.test(sv.textContent)
+        && /不是用戶身份|唔係用戶身份/.test(sv.textContent));
+    ok('接通後仍無 browser 後端／Key／另存設定欄',
+      !sv.querySelector('#p-backend') && !sv.querySelector('#p-key') && !sv.querySelector('[data-act="save-cfg"]'));
+    ok('未有旅系統時本地入口係正常主入口，而且不提供關閉按鈕',
+      /未有旅系統/.test(sv.textContent) && /正常主入口/.test(sv.textContent)
+        && !sv.querySelector('[data-act="door-close"]'));
 
+    window.location.hash = '#/progress';
+    window.dispatchEvent(new window.HashChangeEvent('hashchange'));
+    await new Promise(r => setTimeout(r, 220));
     const loadCall = calls.find(c => c.body?.action === 'load');
-    ok('自動去讀後端（POST /api/progress · action=load）',
-      !!loadCall && /api\/progress$/.test(loadCall.url) && loadCall.body.apikey === 'vs_key_123', JSON.stringify(loadCall?.body || {}));
+    ok('自動經同源 /api/progress 讀同一後端，browser payload 只有 unit＋session',
+      !!loadCall && /api\/progress$/.test(loadCall.url)
+        && loadCall.body.unit === '0082' && !loadCall.body.backend && !loadCall.body.apikey,
+      JSON.stringify(loadCall?.body || {}));
 
     const view = () => doc.getElementById('view');
     window.location.hash = '#/progress';
@@ -2304,8 +2323,8 @@ section('進度紀錄（讀 ＋ 勾 ＋ 寫，同一個後端）');
       && saveCall?.body?.data?.changes?.[0]?.itemId === 'L1-ACT-02'
       && saveCall?.body?.data?.changes?.[0]?.uncomplete === false,
       JSON.stringify(saveCall?.body?.data?.changes || saveCall?.body || {}));
-    ok('API Key 只跟 body 去自己後端（唔會出現在網址）',
-      !/vs_key_123/.test(String(saveCall?.url || '')) && !/vs_key_123/.test(JSON.stringify(saveCall?.body?.backend || '')));
+    ok('browser 寫入 payload 不含 API Key 或 backend（由 server Registry 注入）',
+      saveCall?.body?.apikey === undefined && saveCall?.body?.backend === undefined);
 
     /* 取消勾選（uncomplete: true） */
     const cb1 = doc.getElementById('view').querySelector('[data-tick="L1-ACT-01"]');
@@ -2351,8 +2370,9 @@ section('進度紀錄（讀 ＋ 勾 ＋ 寫，同一個後端）');
     ok('批准會 POST /api/progress action=reviewRequest（帶 request_id／decision）',
       revCall?.body?.data?.request_id === 'RQ_1' && revCall?.body?.data?.decision === 'approved',
       JSON.stringify(revCall?.body?.data || {}));
-    ok('審批用同一個 API Key（唔會出現在網址）',
-      revCall?.body?.apikey === 'vs_key_123' && !/vs_key_123/.test(String(revCall?.url || '')));
+    ok('審批 browser payload 只帶 session，不會取得或傳送 API Key',
+      revCall?.body?.apikey === undefined && revCall?.body?.backend === undefined
+        && !!revCall?.body?.sessionToken);
 
     const rejBtn = doc.getElementById('view').querySelector('[data-rev-kind="log"][data-rev-decision="rejected"]');
     rejBtn.click();
@@ -2367,12 +2387,11 @@ section('進度紀錄（讀 ＋ 勾 ＋ 寫，同一個後端）');
       logRev?.body?.data?.request_id === 'LR_1' && logRev?.body?.data?.decision === 'rejected',
       JSON.stringify(logRev?.body?.data || {}));
 
-    /* 自訂考核項目（有填就用伺服器代讀） */
+    /* 統一預設只用內建靜態考核目錄，不構成第二資料後端。 */
     const catCall = calls.find(c => c.body?.action === 'catalog');
-    ok('有填自訂考核項目 → 走 /api/progress action=catalog', !!catCall,
-      JSON.stringify(calls.map(c => c.body?.action)));
-    (() => { const db = store.load(); const pb = db.profile?.progress?.backend || {};
-      pb.catalogUrl = ''; store.commit(); })();
+    ok('預設考核項目由內建靜態檔讀取，不開第二資料後端',
+      !catCall && calls.some(c => /data\/progress\/items\.json/.test(c.url)),
+      JSON.stringify(calls.map(c => c.body?.action || c.url)));
 
     /* 測試連線（唔再需要 —— 儲存設定後撳「重新讀取」就係實測） */
     window.location.hash = '#/progress/settings';
@@ -2386,7 +2405,7 @@ section('進度紀錄（讀 ＋ 勾 ＋ 寫，同一個後端）');
     ok('進度頁仍然匯出 title / render / mount', typeof vp.title === 'function' && typeof vp.render === 'function' && typeof vp.mount === 'function');
   } finally {
     globalThis.fetch = realFetch;
-    setProgressCfg({ backend: '', apiKey: '', catalogUrl: '' });
+    await units.loadRegistry(true);
     window.location.hash = '#/dashboard';
     window.dispatchEvent(new window.HashChangeEvent('hashchange'));
     await new Promise(r => setTimeout(r, 80));

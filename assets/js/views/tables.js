@@ -655,7 +655,7 @@ function syncView() {
             <br>救法：貼新版 <code>Code.gs</code> → 部署（版本揀「新版本」）→ 喺 Apps Script 編輯器揀 <code>cleanStaleStaging</code> 撳「執行」一次。
           </div></div>
           <div class="col gap-6 mt-12">
-            <button class="btn btn-sm btn-block" data-act="dl-gas">${icon('download', 15)} 下載 Code.gs（Apps Script）</button>
+            <button class="btn btn-sm btn-block" data-act="dl-gas">${icon('download', 15)} 下載 Unified Code.gs</button>
             <button class="btn btn-sm btn-block" data-act="copy-gas">${icon('copy', 15)} 複製 Code.gs 原始碼</button>
             <button class="btn btn-sm btn-block" data-act="dl-schema">${icon('download', 15)} 下載欄位對應表（CSV）</button>
             <button class="btn btn-sm btn-block" data-act="copy-guide">${icon('copy', 15)} 複製部署步驟</button>
@@ -892,6 +892,10 @@ function canUseProxy() {
 export async function pushToMaster({ silent = false } = {}) {
   const s = load().sync || {};
   const payload = buildPayload();
+  /* sync 係行政寫入；API Key 只作 server routing，身份必須跟已核實 session。 */
+  const actor = current();
+  if (actor?.sessionToken) payload.sessionToken = actor.sessionToken;
+  else if (actor?.portalToken) payload.portalToken = actor.portalToken;
   /* 冇填本地 /exec？先試同源代理 —— Vercel 登記嘅旅團正路係咁：
      後端網址同 API Key 留喺伺服器端（TROOP_*），前端淨係送旅團編號。
      （2026-09-17 0082 事件：純環境變數開團嘅旅團呢度永遠「未設定網址」，
@@ -1297,14 +1301,14 @@ export function mount(root, params) {
         refresh();
       }
       if (act === 'dl-gas') {
-        const { gasTemplate } = await import('../lib/gastemplate.js');
-        download('Code.gs', gasTemplate(), 'text/plain;charset=utf-8');
-        toast('已下載 Code.gs', 'ok');
+        const { unifiedGasTemplate } = await import('../lib/unifiedtemplate.generated.js');
+        download('Code.gs', unifiedGasTemplate(), 'text/plain;charset=utf-8');
+        toast('已下載 Unified Code.gs', 'ok');
       }
       if (act === 'copy-gas') {
-        const { gasTemplate } = await import('../lib/gastemplate.js');
-        const ok = await copyText(gasTemplate());
-        if (ok) toast('已複製 Code.gs 全部原始碼到剪貼簿', 'ok');
+        const { unifiedGasTemplate } = await import('../lib/unifiedtemplate.generated.js');
+        const ok = await copyText(unifiedGasTemplate());
+        if (ok) toast('已複製 Unified Code.gs 全部原始碼到剪貼簿', 'ok');
       }
       if (act === 'dl-schema') {
         const defs = tableDefs();
@@ -1315,7 +1319,7 @@ export function mount(root, params) {
         toast('已下載欄位對應表', 'ok');
       }
       if (act === 'copy-guide') {
-        const txt = `【總表同步設定】\n1. 開你嘅 Google Sheet → 擴充功能 → Apps Script\n2. 貼上下載嘅 Code.gs（或 app 內「下載 Code.gs」）\n3. 部署 → 新增部署作業 → 類型：網頁應用程式\n4. 執行身分：我；具有存取權的使用者：任何人\n5. 複製 /exec 網址，貼返「資料管理 → 總表同步 → Apps Script 網址」\n6. 儲存設定，之後就可以撳頂部「儲存到後端」\n第 7 步（可選）：設定 API Key 加強保護。`;
+        const txt = `【Unified 後端設定】\n1. 開新 Google Sheet → 擴充功能 → Apps Script\n2. 貼上 App 下載嘅 Unified Code.gs\n3. 執行 initializeSheets，再執行 showApiKey\n4. 部署網頁應用程式（執行身分：我；存取權：任何人），複製正式 /exec\n5. 管理員喺 Vercel 只登記 TROOP_<編號>_NAME／BACKEND／APIKEY 三項並 Redeploy\n6. 管理系統、進度及 BADGE 自動使用同一 GAS／Sheet；唔好喺 browser 貼 Key。`;
         if (await copyText(txt)) toast('已複製部署步驟', 'ok');
       }
     }));

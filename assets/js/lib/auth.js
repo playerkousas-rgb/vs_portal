@@ -80,7 +80,7 @@ async function verifySuperServer(password) {
       body: JSON.stringify({ user: SUPER.username, password })
     });
     const j = await res.json().catch(() => null);
-    if (j?.ok === true) return { ok: true };
+    if (j?.ok === true && j?.sessionToken) return { ok: true, sessionToken: j.sessionToken, sessionExpiresAt: Number(j.sessionExpiresAt || 0) };
     return {
       ok: false,
       disabled: !!(j?.disabled) || res.status === 404,
@@ -367,9 +367,9 @@ export async function loginIdentity(id, password) {
   return sessionForMember(m, { mustChangePw, via: isAdult ? 'email' : 'ymis' });
 }
 
-/** 團員入口（members.html）用：一樣行個人身份登入 */
+/** 團員入口（members.html）用：由 GAS 核對並取得短期 session；唔再本機驗密碼。 */
 export async function loginMember(ymis, password) {
-  return loginIdentity(ymis, password);
+  return loginServer('member', ymis, password);
 }
 
 /* 團長查詢交畀 model.js（單一來源）：chief() / hasChief() */
@@ -426,25 +426,52 @@ export async function reviewAccountApp(appId, { decision, reviewer = '' } = {}) 
 }
 
 /** 開團 KEY：由旅團 Apps Script 執行 issueSetupKey() 產生，72 小時有效 */
+async function callBranchBackend(payload, { timeoutMs = 60000 } = {}) {
+  const [remote, gateway] = await Promise.all([import('./remote.js'), import('./gateway.js')]);
+  const cfg = remote.remoteCfg();
+  const result = await gateway.postBackend(payload, {
+    unit: payload.unit || cfg.unit || currentUnit(), execUrl: cfg.url, apiKey: cfg.apiKey, timeoutMs
+  });
+  return { ok: !!result.ok && !!result.json, status: Number(result.status || (result.ok ? 200 : 0)),
+    data: result.json || {}, error: result.error || result.json?.error || '', via: result.via || 'none' };
+}
+
+export async function requestPasswordReset(email, resetUrl) {
+  const called = await callBranchBackend({ action: 'authForgotPassword', unit: currentUnit(),
+    email: String(email || '').trim(), resetUrl: String(resetUrl || '') });
+  const data = called.data;
+  return called.ok && data.success !== false
+    ? { ok: true, message: data.message || '', resetMode: data.resetMode === 'code' ? 'code' : 'link' }
+    : { ok: false, msg: data.error || called.error || '暫時未能提交' };
+}
+
+export async function completePasswordReset(loginId, code, newPassword) {
+  const called = await callBranchBackend({ action: 'authCompletePasswordReset', unit: currentUnit(),
+    email: String(loginId || '').trim(), code: String(code || '').trim(), newPassword: String(newPassword || '') });
+  const data = called.data;
+  return called.ok && data.success !== false
+    ? { ok: true, message: data.message || '' }
+    : { ok: false, msg: data.error || called.error || '重設碼不正確或已過期' };
+}
+
 export async function loginSetupKey(key) {
   const k = String(key || '').trim();
   if (!k) return { ok: false, msg: '請貼上開團 KEY' };
   const unit = (await import('./store.js')).currentUnit?.() || '';
   let json = null;
   try {
-    const res = await fetch('./api/proxy', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'verifySetupKey', unit, key: k })
-    });
-    json = await res.json();
+    const called = await callBranchBackend({ action: 'verifySetupKey', unit, key: k });
+    json = called.data;
+    if (!called.ok && !json?.error) throw new Error(called.error || '連線失敗');
   } catch {
     return { ok: false, msg: '連唔到後端。請確認旅團已登記，同埋 Apps Script 已更新（有 issueSetupKey）' };
   }
   if (!(json?.ok || json?.success)) return { ok: false, msg: json?.error || 'KEY 無效或已過期' };
+  if (!json?.sessionToken) return { ok: false, msg: '後端未能簽發開團 session；請更新 Apps Script 後重試' };
   setSession({
     role: 'leader', accountId: 'setup', username: '', name: '開團設定',
-    at: Date.now(), setupKey: true, mustChangePw: false
+    at: Date.now(), setupKey: true, mustChangePw: false,
+    sessionToken: json.sessionToken, sessionExpiresAt: json.sessionExpiresAt || 0
   });
   auditLogin('setup-key', '開團 KEY 登入');
   return { ok: true, role: 'leader', setup: true };
@@ -456,6 +483,30 @@ export async function setMemberHubPassword(memberId, newPassword, { mustChange =
   const force = mustChange == null ? (String(newPassword) === TEMP_PASSWORD) : !!mustChange;
   const bad = passwordProblem(newPassword, { forbidTemp: !force });
   if (bad) return { ok: false, msg: bad };
+  const session = getSession();
+  const expiresAt = Number(session?.sessionExpiresAt || 0);
+  /* 正式後端模式不可先在 browser 寫 hash 再靠整庫同步。先把新名冊 row 儲到
+     server（如有），再由專用 action 固定操作者／目標並寫 PBKDF2。 */
+  if (session?.sessionToken && Number.isFinite(expiresAt) && expiresAt > Date.now() && !session.setupKey) {
+    try {
+      const remote = await import('./remote.js');
+      if (remote.remoteConfigured?.() && remote.hasPending?.()) {
+        const pushed = await remote.saveToBackend({ policy: 'ask', silent: true });
+        if (!pushed?.ok) return { ok: false, msg: pushed?.error || '未能先把新用戶儲存到後端' };
+      }
+      const called = await callBranchBackend({ action: 'authResetPassword', unit: currentUnit(),
+        targetYmis: String(m.ymis || ''), targetEmail: String(m.email || ''),
+        targetUsername: String(m.email || m.ymis || ''), newPassword: String(newPassword),
+        ...backendAuthPayload(session) });
+      const data = called.data;
+      if (!called.ok || data.success === false) return { ok: false, msg: data.error || called.error || '設定密碼失敗' };
+      /* GAS request audit 已記錄操作者；唔再寫一筆本機 audit 令剛讀回版本重新變 pending。 */
+      return { ok: true, refreshed: await refreshAfterAccountMutation() };
+    } catch (err) {
+      return { ok: false, msg: String(err?.message || err || '設定密碼失敗') };
+    }
+  }
+  /* 開團 setup／未接後端的舊本機資料只保留遷移 fallback。 */
   m.hubPw = await hashPassword(newPassword, makeSalt('member', m.ymis || m.id));
   delete m.hubPassword;
   m.hubPwUpdatedAt = new Date().toISOString().slice(0, 10);
@@ -466,8 +517,66 @@ export async function setMemberHubPassword(memberId, newPassword, { mustChange =
   return { ok: true };
 }
 
-/** 團員自己改密碼（首次可以唔填舊密碼） */
-export async function changeMemberOwnPassword(memberId, oldPw, newPw) {
+/**
+ * 有效 GAS session 固定「本人」後直接改後端密碼；成功會撤銷舊票並換一張新票。
+ * 讀回後端係必要安全步驟：否則本機仍留住舊 hash，下一次逐表同步可能撞版。
+ */
+async function changePasswordServer(oldPassword, newPassword, sessionOverride = null) {
+  const bad = passwordProblem(newPassword, { forbidTemp: true });
+  if (bad) return { ok: false, msg: bad };
+  const s = sessionOverride || getSession();
+  const expiresAt = Number(s?.sessionExpiresAt || 0);
+  if (!s?.sessionToken || !Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+    return { ok: false, msg: '登入狀態已失效，請重新登入' };
+  }
+  try {
+    const called = await callBranchBackend({
+      action: 'authChangePassword', unit: currentUnit(),
+      oldPassword: String(oldPassword || ''), newPassword: String(newPassword || ''),
+      sessionToken: s.sessionToken
+    });
+    const data = called.data;
+    if (!called.ok || data.success !== true || data.ok === false) {
+      return { ok: false, msg: data.error || called.error || '改唔到密碼' };
+    }
+    const nextExpires = Number(data.sessionExpiresAt || 0);
+    if (!data.sessionToken || !Number.isFinite(nextExpires) || nextExpires <= Date.now()) {
+      /* 密碼可能已成功寫入，但冇安全新票就絕不保留舊身份。 */
+      if (getSession()?.sessionToken === s.sessionToken) setSession(null);
+      return { ok: true, relogin: true, msg: '密碼已更改，請重新登入' };
+    }
+    const live = getSession();
+    if (live?.sessionToken === s.sessionToken) {
+      setSession({ ...live, sessionToken: data.sessionToken, sessionExpiresAt: nextExpires,
+        mustChangePw: false, pwChangedAt: Date.now(), via: 'server' });
+    }
+    let refreshed = false;
+    try {
+      const remote = await import('./remote.js');
+      if (remote.remoteConfigured?.()) {
+        /* 團員入口只可以讀本人安全投影；行政 session 先可讀整份資料庫。 */
+        const pull = (sessionOverride?.identity || sessionOverride?.id) && !sessionOverride?.via
+          ? await remote.loadHubView({ sessionToken: data.sessionToken })
+          : await remote.loadFromBackend({ policy: 'ask' });
+        refreshed = !!pull?.ok;
+      }
+    } catch { /* 密碼已改；讀回失敗會由版本鎖阻止舊 hash 覆蓋後端 */ }
+    return {
+      ok: true, sessionToken: data.sessionToken, sessionExpiresAt: nextExpires,
+      version: data.version || '', refreshed
+    };
+  } catch (e) {
+    return { ok: false, msg: e?.message || '暫時改唔到密碼，請再試一次' };
+  }
+}
+
+/** 團員自己改密碼（首次可以唔填舊密碼）；正式入口必須帶 GAS session。 */
+export async function changeMemberOwnPassword(memberId, oldPw, newPw, serverSession = null) {
+  const s = serverSession || getSession();
+  if (s?.sessionToken || s?.via === 'server') return changePasswordServer(oldPw, newPw, s);
+  if (s?.portalToken || s?.via === 'portal') return { ok: false, msg: '旅系統登入不設本地密碼' };
+
+  /* 只供開團／舊本機資料遷移 helper；正式 loginServer session 絕不落到呢條路。 */
   const m = find('members', memberId);
   if (!m) return { ok: false, msg: '搵唔到呢位用戶' };
   if (!m.hubMustChangePw) {
@@ -481,71 +590,136 @@ export async function changeMemberOwnPassword(memberId, oldPw, newPw) {
   return setMemberHubPassword(memberId, newPw, { mustChange: false });
 }
 
+/** 後端身份一律優先使用已兌換的 opaque session；portalToken 只供舊部署過渡。 */
+function backendAuthPayload(s) {
+  if (s?.sessionToken) return { sessionToken: s.sessionToken };
+  if (s?.portalToken) return { portalToken: s.portalToken, portalRole: s.portalRole, actorUsername: s.username };
+  return {};
+}
+
+/* 帳戶 mutation 已先寫入後端；必須即時讀回新版本，否則本機舊 password hash／
+   accounts 表可能在下一次整庫同步時撞版。讀回失敗不會把已成功 mutation 誤報失敗，
+   但 optimistic version 仍會阻止舊資料靜默覆蓋。 */
+async function refreshAfterAccountMutation() {
+  try {
+    const remote = await import('./remote.js');
+    if (!remote.remoteConfigured?.()) return false;
+    const pulled = await remote.loadFromBackend({ policy: 'ask' });
+    return !!pulled?.ok;
+  } catch { return false; }
+}
+
 /** 正式支部登入：密碼由 GAS server-side authLogin 核對，瀏覽器只保存安全身份資料。 */
 export async function createAccountServer(payload) {
   const s = getSession();
-  if (!s?.sessionToken) return { ok: false, msg: '登入狀態已失效，請重新登入' };
-  const r = await fetch('./api/proxy', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ action:'authCreateAccount', unit:currentUnit(), ...payload, ...(s.via === 'portal' ? { portalToken:s.portalToken, portalRole:s.portalRole, actorUsername:s.username } : { sessionToken:s.sessionToken }) }) });
-  const data = await r.json().catch(() => ({}));
-  return r.ok && data.success !== false ? { ok:true } : { ok:false, msg:data.error || '新增帳戶失敗' };
+  if (!s?.sessionToken && !(s?.via === 'portal' && s?.portalToken)) return { ok: false, msg: '登入狀態已失效，請重新登入' };
+  const called = await callBranchBackend({ action:'authCreateAccount', unit:currentUnit(), ...payload, ...backendAuthPayload(s) });
+  const data = called.data;
+  if (!called.ok || data.success === false) return { ok:false, msg:data.error || called.error || '新增帳戶失敗' };
+  return { ok:true, refreshed: await refreshAfterAccountMutation() };
 }
 
 export async function restoreAccountServer(target, newPassword = '1234') {
   const s = getSession();
-  if (!s?.sessionToken) return { ok: false, msg: '登入狀態已失效，請重新登入' };
-  const r = await fetch('./api/proxy', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ action:'authRestoreAccount', unit:currentUnit(), targetEmail:target?.email || target?.username || '', newPassword, ...(s.via === 'portal' ? { portalToken:s.portalToken, portalRole:s.portalRole, actorUsername:s.username } : { sessionToken:s.sessionToken }) }) });
-  const data = await r.json().catch(() => ({}));
-  return r.ok && data.success !== false ? { ok:true } : { ok:false, msg:data.error || '復原帳戶失敗' };
+  if (!s?.sessionToken && !(s?.via === 'portal' && s?.portalToken)) return { ok: false, msg: '登入狀態已失效，請重新登入' };
+  const called = await callBranchBackend({ action:'authRestoreAccount', unit:currentUnit(), targetEmail:target?.email || target?.username || '', newPassword, ...backendAuthPayload(s) });
+  const data = called.data;
+  if (!called.ok || data.success === false) return { ok:false, msg:data.error || called.error || '復原帳戶失敗' };
+  return { ok:true, refreshed: await refreshAfterAccountMutation() };
 }
 
 export async function resetAccountPasswordServer(target, newPassword) {
   const s = getSession();
-  if (!s?.sessionToken) return { ok: false, msg: '登入狀態已失效，請重新登入' };
-  const r = await fetch('./api/proxy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'authResetPassword', unit: currentUnit(), targetUsername: target?.username || target?.email || '', newPassword: String(newPassword || ''), ...(s.via === 'portal' ? { portalToken: s.portalToken, portalRole: s.portalRole, actorUsername: s.username } : { sessionToken: s.sessionToken }) }) });
-  const data = await r.json().catch(() => ({}));
-  return r.ok && data.success !== false ? { ok: true } : { ok: false, msg: data.error || '重設密碼失敗' };
+  if (!s?.sessionToken && !(s?.via === 'portal' && s?.portalToken)) return { ok: false, msg: '登入狀態已失效，請重新登入' };
+  const called = await callBranchBackend({ action: 'authResetPassword', unit: currentUnit(), targetUsername: target?.username || target?.email || '', newPassword: String(newPassword || ''), ...backendAuthPayload(s) });
+  const data = called.data;
+  if (!called.ok || data.success === false) return { ok: false, msg: data.error || called.error || '重設密碼失敗' };
+  return { ok: true, refreshed: await refreshAfterAccountMutation() };
 }
 
 export async function loginPortalFromUrl(params = new URLSearchParams(location.search)) {
-  const unit = String(params.get('u') || params.get('unit') || '').trim();
-  const role = String(params.get('role') || '').trim().toLowerCase();
-  const src = String(params.get('src') || '').trim();
-  const subject = String(params.get('ymis') || params.get('sub') || '').trim();
-  if (params.get('from') !== 'portal' || !unit || !role || !src) return { ok: false, skipped: true };
-  const r = await fetch(`./api/portal?u=${encodeURIComponent(unit)}&role=${encodeURIComponent(role)}&src=${encodeURIComponent(src)}&ymis=${encodeURIComponent(subject)}`);
+  if (params.get('from') !== 'portal') return { ok: false, skipped: true };
+  /* role／YMIS／src query 全部可偽造，絕不採用。上游只可以交一張由伺服器簽發、
+     最長 90 秒的 assertion；/api/portal 會核對 issuer／audience／旅團／身份。 */
+  const assertion = String(params.get('assertion') || '').trim();
+  if (!assertion) return { ok: false, msg: '旅系統入口缺少已簽署登入憑證' };
+  const r = await fetch('./api/portal', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ assertion })
+  });
   const data = await r.json().catch(() => ({}));
   if (!r.ok || !data.ok || !data.portalToken) return { ok: false, msg: data.reason || '旅系統入口驗證失敗' };
-  setSession({ role: role === 'admin' ? 'leader' : role === 'exco' ? 'exco' : role, accountId: `portal:${subject || role}`, username: subject || `PORTAL-${unit}-${role}`, name: params.get('name') || '旅系統使用者', at: Date.now(), via: 'portal', portalToken: data.portalToken, portalRole: role, portalUnit: unit, mustChangePw: false });
+
+  /* /api/portal 只發 60 秒、只可用來兌換的 purpose token。真正 app session
+     由該支部統一 GS 發出；兌換後不在瀏覽器保留中央票據。 */
+  const exchanged = await fetch('./api/proxy', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'authPortalExchange', unit: data.unit, portalToken: data.portalToken })
+  });
+  const session = await exchanged.json().catch(() => ({}));
+  if (!exchanged.ok || !session.ok || !session.sessionToken || !session.account) {
+    return { ok: false, msg: session.error || '支部尚未接好中央 SSO，請聯絡管理員' };
+  }
+  const a = session.account;
+  const role = ['chief', 'leader', 'exco', 'member'].includes(a.role) ? a.role : 'member';
+  const subject = String(a.ymis || data.subject || '');
+  setSession({
+    role, accountId: `central:${a.id || subject}`, username: String(a.username || subject),
+    email: a.email || '', name: a.name || data.name || '旅系統使用者',
+    memberId: a.memberId || '', ymis: a.ymis || subject,
+    at: Date.now(), via: 'portal', centralSso: true,
+    sessionToken: session.sessionToken,
+    sessionExpiresAt: Number(session.sessionExpiresAt || 0),
+    mustChangePw: false
+  });
+  /* assertion 係短期憑證：兌換後即刻由網址移走，避免留喺 history／截圖。 */
+  try {
+    const clean = new URL(location.href);
+    ['from', 'assertion', 'role', 'src', 'ymis', 'sub', 'name'].forEach(k => clean.searchParams.delete(k));
+    history.replaceState(null, '', clean.pathname + (clean.search ? clean.search : '') + (clean.hash || ''));
+  } catch { /* 舊瀏覽器唔阻登入 */ }
   return { ok: true };
 }
 
 export async function deleteAccountServer(target) {
   const s = getSession();
-  if (!s?.sessionToken) return { ok: false, msg: '登入狀態已失效，請重新登入' };
-  const r = await fetch('./api/proxy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'authDeleteAccount', unit: currentUnit(), targetUsername: target?.username || target?.email || '', ...(s.via === 'portal' ? { portalToken: s.portalToken, portalRole: s.portalRole, actorUsername: s.username } : { sessionToken: s.sessionToken }) }) });
-  const data = await r.json().catch(() => ({}));
-  return r.ok && data.success !== false ? { ok: true } : { ok: false, msg: data.error || '刪除帳戶失敗' };
+  if (!s?.sessionToken && !(s?.via === 'portal' && s?.portalToken)) return { ok: false, msg: '登入狀態已失效，請重新登入' };
+  const called = await callBranchBackend({ action: 'authDeleteAccount', unit: currentUnit(), targetUsername: target?.username || target?.email || '', ...backendAuthPayload(s) });
+  const data = called.data;
+  if (!called.ok || data.success === false) return { ok: false, msg: data.error || called.error || '刪除帳戶失敗' };
+  return { ok: true, refreshed: await refreshAfterAccountMutation() };
 }
 
 export async function loginServer(role, username, password) {
+  /* 超管有自己嘅同源 /api/auth；普通身份一律交 GAS 核對並取得短期 session。 */
+  if (String(username || '').trim().toLowerCase() === SUPER.username) {
+    const superResult = await login(role, username, password);
+    if (!superResult.ok) return superResult;
+    const superSession = current();
+    return { ...superResult, sessionToken: superSession?.sessionToken || '', sessionExpiresAt: superSession?.sessionExpiresAt || 0 };
+  }
   const unit = currentUnit();
-  const r = await fetch('./api/proxy', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'authLogin', unit, username: String(username || ''), ymis: role === 'member' ? String(username || '') : undefined, password: String(password || '') })
-  });
-  let data = null;
-  try { data = await r.json(); } catch { data = null; }
-  if (!r.ok || !data?.ok) {
-    /* 舊支部尚未把本機帳戶同步到新 auth action：只在「找不到後端帳戶」時保留一次舊資料遷移後備；後端明確拒絕密碼時絕不 fallback。 */
-    if (data?.code === 'AUTH_ACCOUNT_NOT_FOUND') return login(role, username, password);
+  const called = await callBranchBackend({ action: 'authLogin', unit, username: String(username || ''),
+    ymis: role === 'member' ? String(username || '') : undefined, password: String(password || '') });
+  const data = called.data;
+  if (!called.ok || !data?.ok) {
+    /* fail closed：唔再跌返瀏覽器本機驗密碼。否則正常登入攞唔到 server session，
+       後續改密碼／帳戶操作會被擋，亦會令舊本機資料變成第二套身份來源。 */
     return { ok: false, msg: data?.error || '帳號或密碼不正確' };
+  }
+  const sessionExpiresAt = Number(data.sessionExpiresAt || 0);
+  if (!data.sessionToken || !Number.isFinite(sessionExpiresAt) || sessionExpiresAt <= Date.now()) {
+    return { ok: false, msg: '登入後端未能建立安全 session，請更新 Code.gs 後再試' };
   }
   const a = data.account || {};
   const accountRole = a.role || (role === 'member' ? 'member' : 'leader');
   const dest = accountRole === 'member' ? 'hub' : 'staff';
-  setSession({ role: accountRole, accountId: a.id, username: a.username, email: a.email || '', name: a.name, at: Date.now(), mustChangePw: !!data.mustChangePw, sessionToken: data.sessionToken || '', sessionExpiresAt: data.sessionExpiresAt || 0, via: 'server' });
+  setSession({ role: accountRole, accountId: a.id, username: a.username, email: a.email || '', name: a.name,
+    memberId: a.memberId || (a.kind === 'member' ? a.id : ''), ymis: a.ymis || '', identity: accountRole,
+    at: Date.now(), mustChangePw: !!data.mustChangePw, sessionToken: data.sessionToken || '',
+    sessionExpiresAt: data.sessionExpiresAt || 0, via: 'server' });
   auditLogin(a.username || username, 'GAS server-side 登入');
-  return { ok: true, role: accountRole, mustChangePw: !!data.mustChangePw, dest, member: { id: a.id, name: a.name, ymis: a.username, email: a.email, identity: accountRole } };
+  return { ok: true, role: accountRole, mustChangePw: !!data.mustChangePw, dest, sessionToken: data.sessionToken || '', sessionExpiresAt: data.sessionExpiresAt || 0, member: { id: a.memberId || a.id, name: a.name, ymis: a.ymis || a.username, email: a.email, identity: accountRole } };
 }
 
 /**
@@ -576,7 +750,8 @@ export async function login(role, username, password) {
     }
     setSession({
       role: 'super', accountId: 'super', username: '', name: SUPER.name,
-      at: Date.now(), hidden: true
+      at: Date.now(), hidden: true,
+      sessionToken: v.sessionToken, sessionExpiresAt: v.sessionExpiresAt, via: 'super-server'
     });
     auditLogin('super', '超級管理員登入（伺服器端核對）');
     return { ok: true, role: 'super' };
@@ -610,7 +785,14 @@ function auditLogin(who, what) {
 }
 
 export function logout() { setSession(null); }
-export function current() { return getSession(); }
+export function current() {
+  const s = getSession();
+  if (s?.sessionExpiresAt && Number(s.sessionExpiresAt) <= Date.now()) {
+    setSession(null);
+    return null;
+  }
+  return s;
+}
 export function currentRole() { return getSession()?.role || null; }
 export function isSuper() { return currentRole() === 'super'; }
 /* ★ 2026-09-24 團長：「刪除示範資料 (MOCK) 我都在用要MOCK 幹什麼」
@@ -932,6 +1114,11 @@ export async function changePassword(accountId, newPassword) {
 export async function changeOwnPassword(oldPw, newPw) {
   const s = getSession();
   if (!s || s.role === 'super') return { ok: false, msg: '超管密碼唔可以更改' };
+  /* 正式登入身份一定由 GAS 以 opaque session 固定本人、核對目前密碼、撤銷舊票
+     並換新票；不可只改瀏覽器 hash，否則另一部機仍會用舊密碼。 */
+  if (s.sessionToken || s.via === 'server') return changePasswordServer(oldPw, newPw, s);
+  if (s.portalToken || s.via === 'portal') return { ok: false, msg: '中央旅系統帳戶不設支部本地密碼' };
+  /* 以下只供開團／舊本機資料遷移 helper。 */
   /* 名冊領袖（喺「用戶」頁開、用電郵入口入嚟）：密碼擺喺名冊 hubPw，唔喺 accounts */
   if (String(s.accountId || '').startsWith('member:')) {
     const m = find('members', String(s.accountId).slice('member:'.length));

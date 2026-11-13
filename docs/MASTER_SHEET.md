@@ -1,162 +1,102 @@
-# 手機記帳 · 通告 · 總表同步 —— 一次過設定（可列印）
+# Unified Sheet：行政、進度、通告與申報
 
-> 目標：**成員用手機影相＋揀欄目就交得單**（唔再開 Google Form），
-> 而所有資料最後**經 Apps Script 寫入你嘅總 Sheet** —— 一張 Sheet 統管整個 Venture 行政事宜。
+> 每個支部只有一張 Google Sheet 與一支 Unified Apps Script。管理系統、進度、BADGE、公開通告及申報都寫回這張 Sheet；不共用其他支部的後端。
+>
+> 現在是「BOOK → BADGE → 5 個支部系統」的第 3 階段，尚未有中央旅系統；本地支部帳戶是正常身份來源。
 
----
+## 1. 拓撲
 
-## 0. 一頁流程圖
-
-```
-        成員手機                     執委／領袖                    後端
-   ┌──────────────────┐        ┌──────────────────┐       ┌────────────────────┐
-   │ entry.html?u=0082│        │ APP（index.html）│       │ 總 Sheet（Google） │
-   │ 影相 → 揀欄目    │  POST  │ 批核 → 自動入帳  │ POST  │ 帳目 / 物資 / 團員  │
-   │ → 金額 → 送出    │ ─────► │ 通告 / 表格設計  │ ────► │ 通告 / 報名 / 會議  │
-   └──────────────────┘        └──────────────────┘       └────────────────────┘
-        （免登入，QR）              （只有 2 個身份：領袖 / 執委）      （由 Code.gs 寫入）
+```text
+管理系統 ─────────────┐
+進度頁／BADGE ─────────┼──▶ 同一 Unified GAS /exec ──▶ 同一旅團 Sheet
+通告／申報公開頁 ──────┘
 ```
 
----
+不同前端可以有不同 action，但 routing 與 server-to-server HMAC 根都使用該旅團同一 `API_KEY`。API Key 不等於用戶身份；行政與進度權限仍由 server-issued session 決定。
 
-## 0.9 已連接嘅後端（寫死喺資料檔，唔使再填）
+## 2. 建立 Unified Sheet
 
-你嘅 Apps Script 已經加入系統（`data/units.json` 嘅 `backend`，同 `data/units/0082/unit.json`）：
+1. 建立新的 Google Sheet。
+2. **擴充功能 → Apps Script**。
+3. 貼上 [`../apps-script/UnifiedCode.gs`](../apps-script/UnifiedCode.gs)。
+4. 執行 `initializeSheets`。
+5. 執行 `showApiKey`，安全保存 Key。
+6. 部署 Web App（執行身分：我；存取權：任何人），取得正式 `/exec`。
+7. Vercel 只設定：
 
-```
-https://script.google.com/macros/s/AKfycbySGLBg5KuWzgM9EySiOIppqnzrL0QASIYLlhbCIHocGHcLHKbkMdvmhJvam3baG___/exec
-```
-
-* **總表同步**、**成員手機記帳（entry.html）**、**通告報名（notice.html）** 三條路都預設用呢條 `/exec`
-* APP 內「資料管理 → 總表同步」已經預填好，狀態會顯示「**後端已連接**」
-* 其他旅團都會自動用同一個後端（要分開嘅話，喺 `data/units.json` 自己嗰個 entry 加 `"backend": { "gasUrl": "…" }`）
-* **示範（MOCK）模式永遠唔會送出街** —— 示範資料只留喺瀏覽器
-
-> ⚠️ 呢個 `/exec` 目前**冇 `doGet`**（直接用瀏覽器開會顯示「Script function not found: doGet」），
-> 即係嗰個 Script 只做 `doPost`。要令三條路都寫入總表，最穩陣係：
-> 開嗰個 Script 專案 → 貼上 APP 內「下載 Code.gs」→
-> **部署 → 管理部署作業 → 編輯（鉛筆）→ 版本：新版本 → 部署**
-> 咁樣 `/exec` 網址**唔會變**，唔使改返系統入面嘅設定。
-> （如果按「新增部署作業」就會出新網址，要返 APP 貼過。）
-
----
-
-## 1. 設定總表（做一次，約 10 分鐘）
-
-1. 開一個 **Google Sheet**（例：`深資童軍管理系統 總表`）。
-2. 選單「**擴充功能 → Apps Script**」。
-3. APP 內去「**資料管理 → 總表同步 → 下載 Code.gs**」，將內容**全部取代**貼上。
-4. （可選）改頂部兩個設定：
-   * `API_KEY = 'v82-demo-key'` —— 改做你自己嘅字串，APP 內「總表同步 → API Key」要填同一個
-   * `DRIVE_FOLDER_ID = ''` —— 填 Google Drive 資料夾 ID，成員影嘅單據相片就會自動上載去 Drive
-     （資料夾 → 共用 → 複製 `/folders/xxxx` 後面嗰串）
-5. 按「**部署 → 新增部署作業 → 類型：網頁應用程式**」
-   * 說明：`深資童軍管理系統 sync`
-   * 執行身分：**我**
-   * 具有存取權的使用者：**任何人** ← 一定要，否則 APP 送唔到資料
-6. 複製 **`/exec` 網址**，返到 APP：「資料管理 → 總表同步」——你嘅網址**已經預填**
-   （如果換咗網址就先貼上新嘅，並確認「同一條網址共用」有剔），然後撳「**儲存設定**」。
-7. 撳頂部「**儲存到後端**」—— 收到「**已寫入後端（已核對）**」收據即係連通成功；
-   成份資料庫會寫入總 Sheet 嘅「**資料庫**」分頁
-   （呢個係正本；之後每部機登入都由呢度攞）。
-   想另外出報表分頁就撳「**更新報表分頁**」，總 Sheet 會出現：
-   `帳目 · 收支申報 · 物資 · 團員 · 通告 · 報名 · 會議 · 同步紀錄`
-
-> **儲存到後端**係唯一寫入「資料庫」分頁嘅路（2026-09-20 起）：登入攞後端 → 本機改 → 撳儲存先核對版本、
-> 三方逐格比對，同一格唔同值會逐格問你（見 `docs/UPDATES_2026-09-20.md`）。
-> **報表同步只重寫報表分頁**（唔會愈積愈多舊資料、唔會重複、唔會碰「資料庫」分頁）。
-> 一張總 Sheet ＝ 一個旅團：報表一律寫入同名分頁（`物資`、`帳目`、`團員`…），
-> 唔會再為旅團編號生「`物資·0082`」呢類後綴分頁（v2.6.1，2026-09-20 修正）。
-
----
-
-## 2. 開通「成員手機記帳」（取代 Google Form）
-
-1. APP 內「**財務 → 收支申報 → 畀成員自己填（QR）**」。
-2. 對話框會顯示：
-   * **公開收集頁網址**：`https://你嘅網址/entry.html?u=0082`
-   * **QR Code**（可下載 SVG、可「列印 QR 海報」）
-3. 同一個對話框下面，貼上第 1 步嘅 **Apps Script `/exec` 網址**（剔「同總表同步共用同一個」），按「儲存設定」。
-4. 印 QR 海報貼喺團址 / 貼落 WhatsApp 群。
-
-### 成員嘅體驗（3 步）
-
-| 步驟 | 做咩 |
-|---|---|
-| ① | 掃 QR 開網頁 → 揀「支出（我墊支）」或「收入（代收）」 |
-| ② | 按「**影相**」影低單據（可以影多張，會自動壓縮） |
-| ③ | 揀**欄目**（活動／交通／膳食／物資／團費收入…）→ 打金額、項目、姓名 → 「送出畀司庫」 |
-
-送出之後：
-* 設定咗 Apps Script → **直接寫入總表「待批申報」分頁**（相片存 Drive，連結貼喺 Sheet）
-* 未設定 → 紀錄存喺佢部手機，佢可以按「複製內容」WhatsApp 傳畀司庫
-
-### 執委／領袖喺 APP 內填（一樣嘅相機＋欄目）
-
-* **儀表板 →「影相記一筆」**（最快）
-* 或 **財務 → 收支申報 →「我要申報」**
-
-批核：「收支申報 → 批准並入帳」→ 自動寫入帳目（金額、分類、日期、相片一齊跟）。
-
----
-
-## 3. 通告：每次開一張，分享＋報名
-
-1. APP 內「**通告 → 開新通告**」。
-2. 揀類型（活動／會議／招募／一般／AGM）、填**中文標題**、內容；活動通告記得填日期／地點／費用／截止／名額。
-3. 要收報名就開「**要報名**」→ 下面可以**自己加／改／刪報名欄目**（姓名、電話、身份、飲食禁忌、備註…），剔「必填」。
-4. 「**發布並分享**」→ 有：
-   * 公開連結 `notice.html?u=0082&n=<通告編號>`（免登入，只顯示該張通告）
-   * **QR Code**（可下載 SVG）
-   * 「複製 WhatsApp 文字」
-5. 報名名單：「通告 → 該通告 → 報名名單」→ 匯出 CSV／Word、列印簽到表。
-
-> 一次一張：每張通告有自己嘅連結；想收檔就改狀態或者開新一張，
-> 舊連結仍然只顯示該張通告，唔會露出其他資料。
-
----
-
-## 4. 每個旅團插入自己嘅 SHEET（多旅團）
-
-如果另一個旅團本身已經有帳目表／物資表，唔需要重新入過：
-
-1. 佢哋嘅 Google Sheet → 共用 →「**知道連結嘅任何人均可檢視**」。
-2. APP 內「**資料管理 → 插入自己嘅 Sheet**」：
-   * 貼上連結（要帶 `gid=`，即係佢停留嘅分頁）
-   * 揀「匯入到」（帳目／物資／團員…）→ 按「**讀取欄位**」
-   * 系統會**自動對應**（日期→日期、金額→金額、付款人→經手人…），下拉可以逐個改
-   * 可以剔「匯入前清空該表」避免重複
-   * 按「**匯入**」；或者「**儲存做同步來源**」，之後隨時按「同步」拉最新版
-3. 冇公開連結都得：喺 Sheet 選範圍 Ctrl+C → APP 內按「**改為貼上 CSV**」。
-4. 想改欄位名（例：把「經手人」改成「負責人」）：去相應模組頁右上撳「**欄位**」直接改字，全 APP 即時跟住；
-   加欄位、改類型、設必填、隱藏、排序、還原預設都喺同一頁。
-
----
-
-## 4.5 合併系統（一個後端、兩個前端）
-
-```
-成員手機 entry.html ─┐
-通告 notice.html  ─┼─► POST 同一條 Apps Script /exec ─► 總 Sheet（帳目 / 報名 / 待批申報 …）
-執委 APP index.html ┘
+```dotenv
+TROOP_<ID>_NAME=旅團顯示名稱
+TROOP_<ID>_BACKEND=https://script.google.com/macros/s/部署識別碼/exec
+TROOP_<ID>_APIKEY=showApiKey 顯示的值
 ```
 
-* 三邊都係同一個 payload 格式：`{ action, unit, source:'82venture', payload / tables, at }`
-* Apps Script 支援動作：`ping`（探測連線）、`status`、`sync`（全部表格）、`claim`（成員手機記帳）、`noticeSignup`（通告報名）
-* 唔識嘅 `action` 會回 `{ ok:false, error:'未知 action：…' }`，APP 嘅「同步紀錄」會顯示出嚟，方便對格式
-* 進度紀錄：**同一個後端**（`?action=load` / `action=save`）—— 深資童軍管理系統同進度前端係兩個前端、一份資料；
-  後端範本 `Code.gs` 已經兩邊都支援（`initializeSheets` 會建 `進度追蹤`／`其他獎章`／`活動履歷` 等分頁）
+8. Redeploy。
 
----
+不要把 `/exec`／API Key 寫入 Git 的 `data/units.json` 或 browser profile。不要設定 `PORTAL*`／`PROGRESS*` 第二套接線。
 
-## 5. 自我檢查清單
+## 3. Sheet 內的資料
 
-- [ ] 「總表同步」見到「後端已連接」，撳頂部「**儲存到後端**」收到「**已寫入後端（已核對）**」收據（會顯示試算表名）
-- [ ] 總 Sheet 見到 `帳目`、`報名` 等分頁，而且有資料
-- [ ] `entry.html` QR 喺手機開到，影相＋揀欄目送得出
-- [ ] 送咗之後，總表「待批申報」多咗一行
-- [ ] 開一張測試通告 → 手機掃 QR → 報到名 → APP 見到報名名單
-- [ ] （可選）`DRIVE_FOLDER_ID` 填咗，單據相片有上載去 Drive
+`initializeSheets` 只增補缺失 schema，不應清空現有資料或輪換 API Key。Unified Sheet 會涵蓋：
 
-有問題睇 APP 內「**教學 → 手機記帳與通告**」同「**教學 → 插入自己嘅 Sheet 與總表同步**」，
-或者「總表同步 → 同步紀錄」睇每次同步嘅 HTTP 結果。
+- 行政資料庫及報表：團員、帳目、物資、會議、通告、報名、申報等；
+- 身份與授權映射：`Users` 及 canonical roster；
+- 進度：`進度追蹤`、`其他獎章`、`待批完成`、`活動履歷`、`待批履歷`、`成員名單`；
+- 操作與同步紀錄。
+
+現階段 `Users` 本地帳戶保存 PBKDF2 hash，並在 `ALLOW_LOCAL_LOGIN=true` 時作正常日常登入。第 4 階段旅系統建立後，才可另加不保存本地密碼的中央 SSO 授權鏡像。
+
+## 4. 行政資料保存
+
+完整管理介面的讀寫必須先有有效 branch session：
+
+1. 登入取得 server-issued opaque session；
+2. 讀取目前 server version；
+3. 本機修改；
+4. 「儲存到後端」做版本與受保護欄位核對；
+5. 同格衝突要明確處理，不得靜默覆蓋。
+
+API Key 只由 server Registry 注入，不能取代 session。browser 自報 role、`__serverSigned`、YMIS 或帳戶欄位不構成授權。
+
+## 5. 進度
+
+- 管理系統經同源 `/api/progress` 呼叫同一 Unified GAS。
+- BADGE 亦讀寫同一 Sheet。
+- staff 可管理全團；member action 由 session 固定本人 YMIS。
+- 審批 `reviewRequest`／`reviewLogRequest` 寫回同一張 Sheet。
+- 考核項目固定讀同源 `data/progress/items.json`；不是第二資料後端。
+- 「進度 → 接駁狀態」沒有 backend、API Key 或 remote catalog 輸入欄。
+
+## 6. 手機申報與通告
+
+### 收支申報
+
+公開 `entry.html?u=<ID>` 可提供手機申報入口；後端 action 只可寫入指定待批資料，不得取得完整行政 DB。單據相片如啟用 Drive，DB 只保存 URL。
+
+執委／領袖在管理系統批核後，才正式寫入帳目。
+
+### 通告報名
+
+每張通告使用獨立 `notice.html?u=<ID>&n=<通告編號>`。公開回應只可寫入該通告的白名單欄位，不能讀取其他行政資料。
+
+## 7. 多旅團隔離
+
+- 每旅團各有一張 Sheet、一支 Unified GAS、一個 API Key。
+- Registry 以 `TROOP_<ID>_NAME/BACKEND/APIKEY` 分開。
+- 另一旅團 API Key、session、assertion 或 exchange token全部不可跨旅使用。
+- 不存在「未登記旅團借用預設後端」fallback。
+- `/api/units` 不回傳 secret 或完整 `/exec`。
+
+## 8. 驗收
+
+- [ ] `/api/units` 顯示正確旅團接通狀態，無 secret。
+- [ ] 未登入不能下載完整行政 DB。
+- [ ] 管理寫入、進度寫入與 BADGE 寫入落在同一 Sheet。
+- [ ] 同一 YMIS 在所有前端對應同一人。
+- [ ] browser 偽造 backend／apikey／role／YMIS 不可改路或升權。
+- [ ] member 只可本人；staff scope 正確。
+- [ ] 通告／申報只寫白名單欄位，不能讀完整 DB。
+- [ ] 重跑 `initializeSheets` 兩次，API Key、帳戶 hash、行政與進度資料不變。
+- [ ] 另一旅團 token／Key 全部拒絕。
+- [ ] 真 Apps Script staging 已測 Lock、Cache、Sheet、Drive、Mail 及並發。
+
+完整 staging 證據表見 [`UNIFIED_STAGING_RESULTS.md`](UNIFIED_STAGING_RESULTS.md)。

@@ -33,6 +33,7 @@
 // ============================================================
 
 import crypto from 'node:crypto';
+import { issueSuperSession } from './_super-session.js';
 
 export const config = { maxDuration: 15 };
 
@@ -147,6 +148,8 @@ export default async function handler(req, res) {
   clearFailures(user);
   /* ⚠️ 只 log metadata。密碼一律唔入 log。 */
   try { console.log(JSON.stringify({ svc: 'ecportal-auth', result: 'ok', user })); } catch { /* ignore */ }
-  /* 只回「啱」。密碼唔會回。 */
-  return send(res, 200, { ok: true, user: wantUser });
+  /* 密碼只核對一次；之後敏感 API 用 8 小時 HMAC session，唔會再傳密碼。 */
+  const session = issueSuperSession(wantUser);
+  if (!session) return send(res, 503, { ok: false, disabled: true, error: '超級管理員 session 未能建立' });
+  return send(res, 200, { ok: true, user: wantUser, sessionToken: session.token, sessionExpiresAt: session.expiresAt });
 }

@@ -124,7 +124,7 @@ ok(PROG_ALLOW.size > 0, `讀到 api/progress.js ACTIONS（${PROG_ALLOW.size} 個
 
 /** 前端經 gateway（callBackend／postBackend）送嘅 action —— 即係 proxy 要放行嗰啲 */
 const viaGateway = [];
-for (const f of ALL.filter(f => /^assets\/js\//.test(rel(f)) && /\.js$/.test(f))) {
+for (const f of ALL.filter(f => (/^assets\/js\//.test(rel(f)) && /\.js$/.test(f)) || rel(f) === 'reset-password.html')) {
   const s = fs.readFileSync(f, 'utf8');
   for (const m of s.matchAll(/(?:callBackend|postBackend)\(\s*\{[^}]*?action:\s*'([a-zA-Z]+)'/gs)) {
     viaGateway.push({ action: m[1], file: rel(f) });
@@ -151,11 +151,21 @@ const progMissing = needProg.filter(a => !PROG_ALLOW.has(a));
 ok(progMissing.length === 0, `進度前端嘅 ${needProg.length} 個 action 全部喺 /api/progress 白名單`,
   progMissing.join(', '));
 
-/** 白名單入面嘅 action 後端（Code.gs）真係識做 —— 唔好放行咗但後端冇 */
+/** 白名單入面嘅 action 後端真係識做 —— 唔好放行咗但後端冇。
+    正式 Code.gs 暫時保持原 Portal build；中央兌換及 server 改密碼只屬隔離的
+    UnifiedCode.gs。兩個例外必須在 unified extension 的 action map 真實存在。 */
 const gasSrc = fs.readFileSync(gas, 'utf8');
 const gasHandles = new Set([...gasSrc.matchAll(/body\.action === '([a-zA-Z]+)'/g)].map(m => m[1]));
-const ghost = [...PROXY_ALLOW].filter(a => !gasHandles.has(a) && !['submitRegistration', 'submitIssue', 'test', 'ping'].includes(a));
-ok(ghost.length === 0, '白名單冇「放行咗但後端唔識」嘅 action', ghost.join(', '));
+const unifiedExtension = fs.readFileSync(path.join(ROOT, 'apps-script', 'unified-src', 'unified-extension.gs'), 'utf8');
+const unifiedOnlyProxyActions = new Set(['authPortalExchange', 'authChangePassword', 'authCompletePasswordReset']);
+const missingUnifiedHandlers = [...unifiedOnlyProxyActions].filter(action =>
+  !(new RegExp(`\\b${action}:\\s*1\\b`).test(unifiedExtension)));
+ok(missingUnifiedHandlers.length === 0,
+  '隔離 Unified GS 有處理 proxy 放行的統一版專用 action', missingUnifiedHandlers.join(', '));
+const ghost = [...PROXY_ALLOW].filter(a => !gasHandles.has(a)
+  && !unifiedOnlyProxyActions.has(a)
+  && !['submitRegistration', 'submitIssue', 'test', 'ping'].includes(a));
+ok(ghost.length === 0, '白名單冇「放行咗但所有後端都唔識」嘅 action', ghost.join(', '));
 
 /** Code.gs 嘅 SUPPORTED_ACTIONS（回提示用）要同真正處理緊嘅 action 一模一樣。
     以前呢句係手寫死嘅字串，一直漏咗 constitution —— 用家撞到「未知 action」
@@ -310,10 +320,12 @@ section('⑦ 孤兒 action 守門（後端有、前端冇人 call ＝ 死碼）'
     ['test', 'status 別名（舊部署相容）'],
     ['repairDb', '人手搶救：清暫存垃圾＋舊版本段（部署指南）'],
     ['saveDbForce', '人手搶救：用留住資料嗰部機強制覆蓋（部署指南）'],
-    ['syncCheck', '後端寫入＋讀回自證（tests/e2ereal.mjs 經 proxy 驗）']
+    ['syncCheck', '後端寫入＋讀回自證（tests/e2ereal.mjs 經 proxy 驗）'],
+    ['authWhoAmI', '/api/progress server-to-server 核對 opaque session；唔由瀏覽器直接 call'],
+    ['loadMine', '/api/progress 將 myProgress 改寫成只回本人嘅 server-to-server action']
   ]);
   const feActions = new Set();
-  for (const f of ALL.filter(f => /^assets\/js\//.test(rel(f)) && /\.js$/.test(f))) {
+  for (const f of ALL.filter(f => (/^assets\/js\//.test(rel(f)) && /\.js$/.test(f)) || rel(f) === 'reset-password.html')) {
     const s = fs.readFileSync(f, 'utf8');
     for (const m of s.matchAll(/action:\s*'([a-zA-Z]+)'/g)) feActions.add(m[1]);
   }

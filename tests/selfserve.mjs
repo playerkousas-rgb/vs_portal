@@ -32,8 +32,10 @@
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { TEST_SUPER_PASSWORD } from './_authstub.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+process.env.SUPER_KEY = TEST_SUPER_PASSWORD;
 const t0 = Date.now();
 let pass = 0, fail = 0;
 function ok(name, cond, extra = '') {

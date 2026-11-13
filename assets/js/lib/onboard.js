@@ -1,29 +1,29 @@
 /* ============================================================
    onboard.js — 新旅團申請接入與部署協助（全前端 App 內完成，毋須存取 Git）
    流程（旅團嗰邊）：
-     1. 登入前直接喺 App 內下載或複製 Code.gs（毋須登入、毋須 Git）
-     2. 建自己嘅 Google Sheet → 執行 initializeSheets → 複製 API Key
+     1. 登入前直接喺 App 內下載或複製 Unified Code.gs（毋須登入、毋須 Git）
+     2. 建自己嘅 Google Sheet → 執行 initializeSheets／showApiKey → 複製 API Key
      3. 部署做 Web App（執行身分：我；存取權：任何人）
      4. 喺 App 內填寫「申請接入」自動送出，管理員於系統後台／Vercel 登記後即時生效
    ============================================================ */
 
 import { registry } from './units.js';
-import { gasTemplate } from './gastemplate.js';
+import { unifiedGasTemplate } from './unifiedtemplate.generated.js';
 import { download } from './exporter.js';
 import { toast, copyText, icon, esc, modal } from './util.js';
 
 export const APP_TYPE = '82venture';       // 中央收件匣用 appType 分辨來源（同 VSBADGE 共用收件匣）
 export const APP_NAME = '深資童軍管理系統';        // 全名，方便管理員喺 ADMIN 系統睇到係邊個 app
 
-/** 登入前／任何時候直接在 App 內下載 Code.gs */
+/** 登入前／任何時候直接下載同 builder 完全一致的 Unified Code.gs。 */
 export function downloadCodeGs() {
-  download('Code.gs', gasTemplate(), 'text/plain;charset=utf-8');
-  toast('已下載 Code.gs（Apps Script 後端程式碼）', 'ok');
+  download('Code.gs', unifiedGasTemplate(), 'text/plain;charset=utf-8');
+  toast('已下載 Unified Code.gs（管理、進度及 BADGE 共用）', 'ok');
 }
 
-/** 登入前／任何時候直接複製 Code.gs 原始碼到剪貼簿（方便手機／平板使用） */
+/** 登入前／任何時候直接複製 Unified Code.gs 原始碼到剪貼簿。 */
 export async function copyCodeGs() {
-  const code = gasTemplate();
+  const code = unifiedGasTemplate();
   const ok = await copyText(code);
   if (ok) toast('已複製 Code.gs 全部原始碼到剪貼簿！', 'ok');
   else toast('未能複製，請使用「下載 Code.gs」', 'err');
@@ -67,6 +67,7 @@ export function validateApplication(input = {}) {
   if (!troopName) errors.push('請填旅團名稱');
   if (!scriptUrl) errors.push('請填你嘅 Apps Script /exec 網址');
   else if (!EXEC_RE.test(scriptUrl)) errors.push('後端網址要係 Google Apps Script 嘅 /exec 正式部署網址（https://script.google.com/macros/s/…/exec）');
+  if (!apiKey) errors.push('請填 Unified GAS 執行 showApiKey 顯示嘅 API Key');
 
   let mainSystemUrl = '';
   try { mainSystemUrl = globalThis.location?.origin || ''; } catch (e) { mainSystemUrl = ''; }
@@ -447,11 +448,9 @@ export function envUnitTemplate(code = '<編號>', name = '', execUrl = '', apiK
   const key = String(apiKey || '').trim() || '<佢畀你嘅 API Key>';
   const nm = String(name || '').trim() || `第 ${c} 旅深資童軍團`;
   return [
-    `TROOP_${c}_BACKEND         = ${url}`,
-    `TROOP_${c}_APIKEY          = ${key}`,
-    `TROOP_${c}_NAME            = ${nm}`,
-    `TROOP_${c}_PROGRESSBACKEND = ${url}`,
-    `TROOP_${c}_PROGRESSAPIKEY  = ${key}`
+    `TROOP_${c}_NAME    = ${nm}`,
+    `TROOP_${c}_BACKEND = ${url}`,
+    `TROOP_${c}_APIKEY  = ${key}`
   ].join('\n');
 }
 
@@ -459,19 +458,19 @@ export function envUnitTemplate(code = '<編號>', name = '', execUrl = '', apiK
 export function envUnitSteps(code = '<編號>') {
   return [
     `Vercel → 你嘅專案 → Settings → Environment Variables`,
-    `逐個新增上面 5 個變數（Production / Preview / Development 都勾）`,
+    `逐個新增上面 3 個變數（只加到你要測試嘅環境）`,
     `儲存後撳 Deployments → 最新嗰個 → … → Redeploy（環境變數要重新部署先生效）`,
     `部署完打開系統 → 旅團清單應該出現 ${code}`,
-    `通知旅團更新 Apps Script 嘅 Code.gs（「資料管理 → 總表同步」下載）＋ 執行一次 initializeSheets`
+    `通知旅團更新同一支 Apps Script 嘅 Unified Code.gs（App 內下載）＋ 在測試副本執行一次 initializeSheets`
   ];
 }
 
 export function adminChecklist(troopId = '<編號>') {
   return [
-    `深資童軍管理系統 → data/units.json：喺 units 加 "${troopId}" entry（code／name／section 等公開資料；唔好放 backend／apiKey 落 Git，亦唔使起資料夾 —— 新旅團由空白開始）`,
-    `深資童軍管理系統 → Vercel 環境變數：加 TROOP_${troopId}_BACKEND（旅團嘅 /exec）同 TROOP_${troopId}_APIKEY，再 Redeploy（名單即現身，後端經伺服器端轉發）`,
-    `（進度）一個後端、兩個前端：旅團自己嘅後端 /exec 就係進度資料所在；團員用嘅進度前端讀同一個後端`,
-    `通知旅團：登入後去「進度 → 設定」填自己嘅 /exec 網址 + API Key，就可以喺執委系統直接讀寫進度`,
-    '兩邊 deploy 一次，再由旅團喺「進度」開機就自動讀後端（見到團員同進度就成功）'
+    `（可選公開名單）data/units.json：喺 units 加 "${troopId}" entry，只放 code／name／section 等公開資料；唔好放 backend／apiKey 落 Git`,
+    `Vercel：只加 TROOP_${troopId}_NAME／BACKEND／APIKEY；名稱、/exec、Key 必須與 BADGE 完全相同，再 Redeploy`,
+    `旅團同一張 Sheet 貼 App 下載的 Unified Code.gs，執行 initializeSheets／showApiKey，再部署正式 /exec`,
+    `管理系統、進度及 BADGE 固定共用上述 Unified GAS／Sheet；不要另設 Portal／Progress secret、後端或 browser Key`,
+    '實測三個前端讀寫同一 YMIS／Sheet及本地帳戶登入後，通知支部接入完成；中央 SSO 留待最後建立旅系統時另行驗收'
   ];
 }

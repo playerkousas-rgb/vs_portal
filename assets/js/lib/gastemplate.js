@@ -190,23 +190,25 @@ function showApiKey() {
   return apiKey;
 }
 
-/* ★ v2.8.4 旅系統接駁：Sheet 選單（後備閂／開門）
-   呢個掣係**本機**嘅直接入口（post /exec 唔再收 apikey／本地登入，只收上游 sig）。 */
+/* 第 3 階段支部獨立運作：本地帳戶係正常主入口，Sheet 選單只可查看提示／開返。
+   第 4 階段旅系統建立並完成 SSO staging 後，才由真正上游簽名控制關門。 */
 function onOpen() {
   try {
     var ui = SpreadsheetApp.getUi();
-    ui.createMenu('🔗 旅系統')
-      .addItem('閂（只收上游 sig）', 'menuLocalLoginOff')
-      .addItem('🔓 開啟（容許本地登入）', 'menuLocalLoginOn')
+    ui.createMenu('🔗 支部接駁')
+      .addItem('ℹ️ 本地入口（現階段必須開）', 'menuLocalLoginOff')
+      .addItem('🔓 開啟／復原本地登入', 'menuLocalLoginOn')
       .addToUi();
   } catch (e) { /* headless（執行緊 script）冇 UI，靜靜略過 */ }
 }
 function menuLocalLoginOff() {
-  var ui = SpreadsheetApp.getUi();
-  var r = ui.alert('閂「直接入口」？', '閂咗之後，本地 apikey／帳戶登入都入唔到，只收上游（旅／團）簽名請求。\\n\\n本系統（呢支 /exec）只會由上游經簽名讀寫。確定？', ui.ButtonSet.OK_CANCEL);
-  if (r !== ui.Button.OK) return;
-  PropertiesService.getScriptProperties().setProperty(LINK_FLAG, 'false');
-  ui.alert('已閂', 'ALLOW_LOCAL_LOGIN=false：只收上游 sig。\\n要重開就撳「🔓 開啟（容許本地登入）」或者等上游 setLocalLogin(allow=true)。', ui.ButtonSet.OK);
+  var ui = null;
+  try { ui = SpreadsheetApp.getUi(); } catch (e) { /* headless */ }
+  var message = '現階段未有中央旅系統，本地帳戶／session 係支部正常主入口，必須保持開啟。';
+  if (ui) ui.alert('不可關閉支部本地入口', message, ui.ButtonSet.OK);
+  try { Logger.log(message); } catch (e2) { /* ignore */ }
+  return { success: false, code: 'PHASE3_LOCAL_LOGIN_REQUIRED', error: message,
+    allow_local_login: localLoginAllowed() };
 }
 function menuLocalLoginOn() {
   var ui = SpreadsheetApp.getUi();
@@ -235,13 +237,16 @@ var LINK_FLAG = 'ALLOW_LOCAL_LOGIN';
 var LINK_SIG_PURPOSE = 'vsbadge-troop-sig-v1';     // 同 VSBADGE 一樣（有齊兩邊就互相認得）
 var LINK_SIG_WINDOW_MS = 5 * 60 * 1000;
 var LINK_SIG_NONCE_TTL = 600;
-var LINK_MAX_SIGNED_BYTES = 900000;
+/* Admin saveTables payload can legitimately approach the 4 MiB proxy ceiling. HMAC hashes
+   the body, so accepting the same bounded size does not weaken signature verification. */
+var LINK_MAX_SIGNED_BYTES = 4 * 1024 * 1024;
 var LINK_SIG_HEX_RE = /^[0-9a-f]{64}$/i;
 var LINK_NONCE_RE = /^[0-9A-Za-z_-]{8,64}$/;
 var LINK_RESERVED_BODY_KEYS = ['sig', 'sig_ts', 'sig_nonce'];
-/* 上游可以經簽名喺我做嘅 action。本地憑證操作（登入／改密碼／申請）永不接受簽名。 */
-var LINK_SIG_READ_ACTIONS = ['load', 'getLinkState', 'getLoginMode', 'dbInfo', 'loadDb', 'loadTables', 'loadTablesPart'];
-var LINK_SIG_WRITE_ACTIONS = ['save', 'saveOtherBadge', 'reviewRequest', 'reviewLogRequest', 'saveDb', 'saveTables', 'setLocalLogin'];
+/* 上游可以經簽名喺我做嘅 action。authWhoAmI 仍然必須另帶有效短期 sessionToken；
+   簽名只讓閂咗直接入口時到達核對邏輯，唔會代替登入。 */
+var LINK_SIG_READ_ACTIONS = ['load', 'loadMine', 'myRequests', 'getLinkState', 'getLoginMode', 'dbInfo', 'loadDb', 'loadDbPart', 'loadTables', 'loadTablesPart', 'syncCheck', 'authWhoAmI'];
+var LINK_SIG_WRITE_ACTIONS = ['save', 'saveOtherBadge', 'reviewRequest', 'reviewLogRequest', 'addRequest', 'saveDb', 'saveDbPart', 'saveDbCommit', 'saveTables', 'sync', 'uploadPhotos', 'repairDb', 'saveDbForce', 'setLocalLogin', 'authResetPassword', 'authDeleteAccount', 'authRestoreAccount', 'authCreateAccount'];
 
 function toHexGs(bytes) {
   var out = '';
@@ -303,6 +308,8 @@ function readLinkSig(e, body, rawBody) {
   return null;
 }
 function verifyLinkSig(e, body, rawBody) {
+  var lock = null;
+  var locked = false;
   try {
     var s = readLinkSig(e, body, rawBody);
     if (!s) return false;
@@ -314,17 +321,41 @@ function verifyLinkSig(e, body, rawBody) {
     var bodyAction = String((body && body.action) || '');
     var expected = linkSigKeyGs();
     var got = hmacSha256HexGs(linkCanonicalGs(bodyAction, s.ts, s.nonce, s.digest), expected);
-    if (got !== String(s.sig)) return false;
-    /* 防重放：同一 nonce 只可用一次（CacheService；冇就用唔到嘅環境照放行） */
-    var cache = null;
-    try { cache = (typeof CacheService !== 'undefined') ? CacheService.getScriptCache() : null; } catch (err) { cache = null; }
-    if (cache) {
-      var nonceKey = 'v82-link-nonce:' + sha256HexGs(String(s.nonce)).substring(0, 40);
-      if (cache.get(nonceKey)) return false;
-      cache.put(nonceKey, '1', LINK_SIG_NONCE_TTL);
-    }
+    var supplied = String(s.sig);
+    if (got.length !== supplied.length) return false;
+    var different = 0;
+    for (var ci = 0; ci < got.length; ci++) different |= got.charCodeAt(ci) ^ supplied.charCodeAt(ci);
+    if (different !== 0) return false;
+
+    /* query 外層簽名同 body 內層簽名都要一次過消耗；否則攔截者可拆走
+       已用過的 query，再單獨重放未標記的 body nonce。Cache get＋put 必須
+       放喺同一把 ScriptLock 內，兩個並發請求只可有一個成功。服務異常 fail closed。 */
+    var nonces = [String(s.nonce)];
+    var params = (e && e.parameter) || {};
+    var queryNonce = String(params.snonce || '');
+    var bodyNonce = String((body && body.sig_nonce) || '');
+    [queryNonce, bodyNonce].forEach(function (nonce) {
+      if (LINK_NONCE_RE.test(nonce) && nonces.indexOf(nonce) < 0) nonces.push(nonce);
+    });
+    if (typeof CacheService === 'undefined' || typeof LockService === 'undefined') return false;
+    lock = LockService.getScriptLock();
+    lock.waitLock(5000);
+    locked = true;
+    var cache = CacheService.getScriptCache();
+    if (!cache) return false;
+    var nonceKeys = nonces.map(function (nonce) {
+      return 'v82-link-nonce:' + sha256HexGs(nonce).substring(0, 40);
+    });
+    for (var ni = 0; ni < nonceKeys.length; ni++) if (cache.get(nonceKeys[ni])) return false;
+    for (var nj = 0; nj < nonceKeys.length; nj++) cache.put(nonceKeys[nj], '1', LINK_SIG_NONCE_TTL);
     return true;
-  } catch (err) { return false; }
+  } catch (err) {
+    return false;
+  } finally {
+    if (locked && lock) {
+      try { lock.releaseLock(); } catch (ignore) { /* fail closed above */ }
+    }
+  }
 }
 
 /* ---- 上游簽名請求路由（閂咗口都入到；行 body.action 白名單）---- */
@@ -333,9 +364,11 @@ function handleSignedRequest(e, body, rawBody) {
   if (LINK_SIG_READ_ACTIONS.indexOf(a) < 0 && LINK_SIG_WRITE_ACTIONS.indexOf(a) < 0) {
     return json({ success: false, ok: false, error: '上游簽名請求不接受此操作：' + a });
   }
-  /* 執住 SHEET KEY＝執委／上游身份：簽名已驗，將呢次操作當成「有 key」批落去，照舊行現有邏輯。 */
+  /* 簽名已由共享 nonce＋HMAC 驗證；用只在 server 內加入的 marker 交給 dispatcher。
+     API Key 仍只作路由，絕不因為「有 key」就自動變成用戶身份。 */
   var signedBody = stripLinkSigFields(body);
   signedBody.apikey = getApiKey();
+  signedBody.__serverSigned = true;
   return dispatchBody(e, signedBody);
 }
 
@@ -404,6 +437,20 @@ function issueSetupKey() {
   }
   Logger.log('SETUP KEY: ' + key + ' until ' + until);
   return key;
+}
+
+function setPasswordResetUrl(url) {
+  var value = String(url || '').trim();
+  if (value.slice(-1) === '/') value = value.slice(0, -1);
+  var lower = value.toLowerCase();
+  var validPath = lower.endsWith('/reset-password.html') || lower.endsWith('/reset-password');
+  if (lower.indexOf('https://') !== 0 || value.indexOf('?') >= 0 || value.indexOf('#') >= 0
+      || value.indexOf(' ') >= 0 || !validPath || value.length > 500) {
+    throw new Error('只接受 https://.../reset-password.html 固定網址（不可帶 query／fragment）');
+  }
+  PropertiesService.getScriptProperties().setProperty('PASSWORD_RESET_URL', value);
+  Logger.log('PASSWORD_RESET_URL configured: ' + value);
+  return value;
 }
 
 function verifySetupKey(key) {
@@ -585,6 +632,486 @@ function initializeSheets() {
 }
 
 /* ============================================================
+   團員入口安全投影／本人寫入
+   ------------------------------------------------------------
+   團員 session 絕不可以下載整份行政資料庫（密碼 hash、全團請假、答卷、
+   RSVP 等）。以下 helper 由 server session 對回名冊本人，再按身份過濾內容；
+   寫入亦只接受本人 RSVP／答卷／請假，完全不採用 client 傳來的 memberId／role。
+   ============================================================ */
+function hubClone_(value) {
+  try { return JSON.parse(JSON.stringify(value)); } catch (e) { return null; }
+}
+function hubRoleRank_(role) {
+  var r = textOf(role).toLowerCase();
+  if (r === 'super' || r === 'super_admin' || r === 'chief' || r === 'group_leader' || r === 'admin') return 5;
+  if (r === 'leader' || r === 'branch_leader') return 4;
+  if (r === 'exco' || r === 'exec_committee') return 3;
+  if (r === 'member') return 2;
+  return 0;
+}
+function hubVisRank_(vis, fallback) {
+  var v = textOf(vis || fallback || 'member').toLowerCase();
+  if (v === 'other') return 1;
+  if (v === 'member') return 2;
+  if (v === 'exco') return 3;
+  if (v === 'leader') return 4;
+  if (v === 'chief') return 5;
+  return hubVisRank_(fallback || 'member', 'member');
+}
+function hubVisible_(record, kind, role) {
+  var fallback = kind === 'notice' ? 'other' : 'member';
+  if (kind === 'event' && record && record.visibility === 'exco') fallback = 'exco';
+  return hubVisRank_(record && record.vis, fallback) <= hubRoleRank_(role);
+}
+function hubSafeMember_(member, role) {
+  return {
+    id: textOf(member && member.id), ymis: textOf(member && member.ymis),
+    name: textOf(member && member.name), email: textOf(member && member.email),
+    identity: textOf(role || (member && member.identity) || 'member').toLowerCase(),
+    status: textOf(member && member.status || 'active')
+  };
+}
+/* Hub output uses positive field lists. Never clone a whole admin record and delete today's
+   sensitive fields: a future schema column must stay private until explicitly admitted here. */
+function hubSafeRsvp_(row) {
+  if (!row || typeof row !== 'object') return null;
+  return { status: textOf(row.status || row), at: textOf(row.at), name: textOf(row.name),
+    time: textOf(row.time), reason: textOf(row.reason) };
+}
+function hubSafeQuestion_(row) {
+  row = row || {};
+  return { id: textOf(row.id), prompt: textOf(row.prompt), type: textOf(row.type || 'short'),
+    options: (Array.isArray(row.options) ? row.options : []).map(textOf), required: !!row.required };
+}
+function hubSafeAnswers_(raw, questions) {
+  var out = {}; raw = raw && typeof raw === 'object' ? raw : {};
+  (questions || []).forEach(function (question) {
+    var id = textOf(question && question.id); if (!id) return;
+    var value = raw[id];
+    out[id] = question.type === 'multi'
+      ? (Array.isArray(value) ? value : []).map(textOf)
+      : textOf(value);
+  });
+  return out;
+}
+function hubSafeEvent_(row, memberId) {
+  row = row || {};
+  var out = { id: textOf(row.id), title: textOf(row.title), date: textOf(row.date),
+    dateEnd: textOf(row.dateEnd), time: textOf(row.time), venue: textOf(row.venue),
+    detail: textOf(row.detail), status: textOf(row.status), vis: textOf(row.vis),
+    visibility: textOf(row.visibility), rsvp: {} };
+  var mine = row.rsvp && row.rsvp[memberId];
+  if (mine !== undefined) out.rsvp[memberId] = hubSafeRsvp_(mine);
+  return out;
+}
+function hubSafeQuiz_(row, memberId) {
+  row = row || {};
+  var questions = (Array.isArray(row.questions) ? row.questions : []).map(hubSafeQuestion_);
+  var out = { id: textOf(row.id), title: textOf(row.title), note: textOf(row.note),
+    status: textOf(row.status), vis: textOf(row.vis), questions: questions, responses: {} };
+  var mine = row.responses && row.responses[memberId];
+  if (mine !== undefined) out.responses[memberId] = { name: textOf(mine && mine.name),
+    at: textOf(mine && mine.at), answers: hubSafeAnswers_(mine && mine.answers, questions) };
+  return out;
+}
+function hubSafeNotice_(row) {
+  row = row || {};
+  var title = row.title && typeof row.title === 'object'
+    ? { zh: textOf(row.title.zh), en: textOf(row.title.en) }
+    : { zh: textOf(row.title), en: '' };
+  return { id: textOf(row.id), title: title, status: textOf(row.status), vis: textOf(row.vis),
+    type: textOf(row.type), eventDate: textOf(row.eventDate), deadline: textOf(row.deadline),
+    needSignup: !!row.needSignup, publishAt: textOf(row.publishAt) };
+}
+function hubSafeAbsence_(row) {
+  row = row || {};
+  return { id: textOf(row.id), at: textOf(row.at), unit: textOf(row.unit),
+    memberId: textOf(row.memberId), ymis: textOf(row.ymis), date: textOf(row.date),
+    slot: textOf(row.slot), reason: textOf(row.reason), plan: textOf(row.plan),
+    status: textOf(row.status), reviewedBy: textOf(row.reviewedBy),
+    reviewedAt: textOf(row.reviewedAt), reviewNote: textOf(row.reviewNote) };
+}
+function hubFindActor_(db, session) {
+  db = db || {};
+  var members = Array.isArray(db.members) ? db.members : [];
+  var accounts = Array.isArray(db.accounts) ? db.accounts : [];
+  var account = null;
+  var member = null;
+  var subject = textOf(session && session.subject).toLowerCase();
+  if (session && session.portal) {
+    members.some(function (m) {
+      if (m && m.status !== 'alumni' && (textOf(m.ymis).toLowerCase() === subject ||
+          textOf(m.email).toLowerCase() === subject || textOf(m.loginId).toLowerCase() === subject)) {
+        member = m; return true;
+      }
+      return false;
+    });
+  } else if (session && session.kind === 'account') {
+    accounts.some(function (a) {
+      if (a && a.active !== false && textOf(a.id) === textOf(session.id)) { account = a; return true; }
+      return false;
+    });
+    if (account && account.memberId) members.some(function (m) {
+      if (m && m.status !== 'alumni' && textOf(m.id) === textOf(account.memberId)) { member = m; return true; }
+      return false;
+    });
+    if (!member && account) members.some(function (m) {
+      if (!m || m.status === 'alumni') return false;
+      if ((account.email && textOf(m.email).toLowerCase() === textOf(account.email).toLowerCase()) ||
+          (account.username && (textOf(m.ymis).toLowerCase() === textOf(account.username).toLowerCase() ||
+            textOf(m.loginId).toLowerCase() === textOf(account.username).toLowerCase()))) {
+        member = m; return true;
+      }
+      return false;
+    });
+  } else if (session) {
+    members.some(function (m) {
+      if (m && m.status !== 'alumni' && !m.accountDeletedAt && textOf(m.id) === textOf(session.id)) {
+        member = m; return true;
+      }
+      return false;
+    });
+  }
+  if (!member) return { ok: false, error: '登入帳戶未綁定有效名冊成員', code: 'SESSION_ACCOUNT_MISSING' };
+  var role = textOf(session && session.portal ? session.role : (member.identity || (account && account.role) || 'member')).toLowerCase();
+  return { ok: true, member: member, account: account, record: account || member,
+    kind: account ? 'account' : 'member', role: role };
+}
+
+/* 行政 actor 同 hub actor 有一個刻意差異：歷史個人 accounts 可能尚未綁 memberId，
+   但仍要容許其有效 session 管理／搬遷資料。優先用 hubFindActor_ 取得名冊最新身份；
+   只有本地 account session 且確實對到 active account id 時，才 fallback 到 account role。
+   中央 SSO 永遠必須對到支部名冊，不設此 fallback。 */
+function adminFindActor_(db, session) {
+  var linked = hubFindActor_(db, session);
+  if (linked.ok || !session || session.portal || session.kind !== 'account') return linked;
+  var account = null;
+  (db && db.accounts || []).some(function (a) {
+    if (a && a.active !== false && textOf(a.id) === textOf(session.id)) { account = a; return true; }
+    return false;
+  });
+  if (!account) return linked;
+  return { ok: true, member: null, account: account, record: account, kind: 'account',
+    role: textOf(account.role || 'member').toLowerCase(), legacyUnbound: true };
+}
+
+/* 整庫／逐表同步係資料傳輸通道，唔係授權通道。尤其 members[].identity 同
+   account role/memberId/password 會直接改下一次 session 的權限，必須用 server
+   目前版本逐欄比對；client UI 有冇收埋欄位並不構成保護。 */
+function protectedWriteDenied_(message) {
+  return { success: false, code: 'PROTECTED_AUTH_FIELD', error: message };
+}
+function protectedSame_(a, b) {
+  try { return JSON.stringify(a === undefined ? null : a) === JSON.stringify(b === undefined ? null : b); }
+  catch (e) { return false; }
+}
+function protectedRowsById_(rows) {
+  var out = {}, bad = '';
+  if (!Array.isArray(rows)) return { ok: false, error: '受保護資料表格式不正確', rows: out };
+  for (var i = 0; i < rows.length; i++) {
+    var id = textOf(rows[i] && rows[i].id);
+    if (!id || Object.prototype.hasOwnProperty.call(out, id)) { bad = '受保護資料列缺少唯一 id'; break; }
+    out[id] = rows[i];
+  }
+  return { ok: !bad, error: bad, rows: out };
+}
+function protectedMemberRole_(row) {
+  return textOf(row && row.identity || 'member').toLowerCase() || 'member';
+}
+function validateDelegatedIdentityMap_(members, identityMap) {
+  if (!identityMap || typeof identityMap !== 'object') {
+    return protectedWriteDenied_('統一身份對照缺失，已拒絕受保護寫入');
+  }
+  if (!Array.isArray(members)) return protectedWriteDenied_('受保護資料表格式不正確');
+  for (var i = 0; i < members.length; i++) {
+    var member = members[i] || {};
+    var key = textOf(member.ymis).trim().toLowerCase();
+    var expected = key && Object.prototype.hasOwnProperty.call(identityMap, key)
+      ? textOf(identityMap[key]).toLowerCase() : 'member';
+    if (protectedMemberRole_(member) !== (expected || 'member')) {
+      return protectedWriteDenied_('成員身份必須跟中央身份來源一致');
+    }
+    if (member.hubPw || member.hubPassword) {
+      return protectedWriteDenied_('統一模式不可透過行政資料寫入本地密碼');
+    }
+  }
+  return { success: true };
+}
+function validateProtectedAdminWrite_(unit, incoming, writeAuth) {
+  if (!incoming || typeof incoming !== 'object') return protectedWriteDenied_('寫入內容格式不正確');
+  /* 已驗 server HMAC 代表中央 platform-super；setup session 係首次建庫憑證。
+     兩者都唔係由 browser 自報（網絡入口會先刪除 marker）。 */
+  if (writeAuth && ((writeAuth.serverSigned && !writeAuth.delegated) || writeAuth.setup)) return { success: true };
+  var touchesMembers = Object.prototype.hasOwnProperty.call(incoming, 'members');
+  var touchesAccounts = Object.prototype.hasOwnProperty.call(incoming, 'accounts');
+  var touchesDeletedAccounts = Object.prototype.hasOwnProperty.call(incoming, 'deletedAccounts');
+  if (!touchesMembers && !touchesAccounts && !touchesDeletedAccounts) return { success: true };
+  if (writeAuth && writeAuth.delegated && touchesMembers) {
+    var delegatedGuard = validateDelegatedIdentityMap_(incoming.members, writeAuth.identityMap);
+    if (delegatedGuard.success !== true) return delegatedGuard;
+  }
+
+  var current = loadDb(textOf(unit));
+  /* Unified 首次寫入時 compatibility DB 尚未存在；delegated actor 已由 pinned
+     baseline／中央 SSO 核實，identity map 亦已在上面逐項核對。一旦有現行版本，
+     下面仍以 server 狀態逐欄比較。 */
+  if ((!current.success || !current.db) && writeAuth && writeAuth.delegated) return { success: true };
+  if (!current.success || !current.db) return protectedWriteDenied_('未能讀取目前身份資料，已拒絕寫入');
+  var actor = adminFindActor_(current.db, writeAuth && writeAuth.session);
+  if (!actor.ok) return protectedWriteDenied_(actor.error || '未能核對操作者身份');
+  var actorRank = hubRoleRank_(actor.role);
+  var actorMemberId = textOf(actor.member && actor.member.id);
+
+  if (touchesMembers) {
+    var oldMembers = protectedRowsById_(current.db.members || []);
+    var nextMembers = protectedRowsById_(incoming.members);
+    if (!oldMembers.ok || !nextMembers.ok) return protectedWriteDenied_(oldMembers.error || nextMembers.error);
+    var oldMap = oldMembers.rows, nextMap = nextMembers.rows;
+    var oldChiefs = [], nextChiefs = [], identityChanges = [];
+    Object.keys(oldMap).forEach(function (id) { if (protectedMemberRole_(oldMap[id]) === 'chief') oldChiefs.push(id); });
+    Object.keys(nextMap).forEach(function (id) { if (protectedMemberRole_(nextMap[id]) === 'chief') nextChiefs.push(id); });
+    oldChiefs.sort(); nextChiefs.sort();
+    var chiefSetChanged = oldChiefs.join('|') !== nextChiefs.join('|');
+    var claimingChief = oldChiefs.length === 0 && actorRank === 4 && !!actorMemberId
+      && nextChiefs.length === 1 && nextChiefs[0] === actorMemberId;
+    var transferringChief = oldChiefs.length === 1 && actorRank >= 5 && !!actorMemberId
+      && oldChiefs[0] === actorMemberId && nextChiefs.length === 1 && nextChiefs[0] !== actorMemberId
+      && nextMap[actorMemberId] && protectedMemberRole_(nextMap[actorMemberId]) === 'leader';
+    if (chiefSetChanged && !claimingChief && !transferringChief) {
+      return protectedWriteDenied_('團長身份只可由未有團長時本人認領，或由現任團長交棒');
+    }
+
+    var memberAuthFields = ['hubPw', 'hubPassword', 'hubMustChangePw', 'pv', 'accountDeletedAt'];
+    var ids = Object.keys(oldMap);
+    for (var mi = 0; mi < ids.length; mi++) {
+      var mid = ids[mi], before = oldMap[mid], after = nextMap[mid];
+      if (!after) {
+        if (actorRank < 4 || mid === actorMemberId || hubRoleRank_(protectedMemberRole_(before)) >= actorRank) {
+          return protectedWriteDenied_('不能透過整庫同步刪除自己、同級或更高權限成員');
+        }
+        continue;
+      }
+      var beforeRole = protectedMemberRole_(before), afterRole = protectedMemberRole_(after);
+      if (beforeRole !== afterRole) identityChanges.push({ id: mid, before: beforeRole, after: afterRole });
+      for (var mf = 0; mf < memberAuthFields.length; mf++) {
+        var memberField = memberAuthFields[mf];
+        /* 無團長時，已登入領袖認領本人可同一次設定本人密碼；其他密碼／撤銷欄
+           一律只可走 authChangePassword／authResetPassword／authDeleteAccount。 */
+        var claimOwnPassword = claimingChief && mid === actorMemberId
+          && (memberField === 'hubPw' || memberField === 'hubPassword' || memberField === 'hubMustChangePw');
+        if (!claimOwnPassword && !protectedSame_(before[memberField], after[memberField])) {
+          return protectedWriteDenied_('登入密碼或帳戶撤銷欄位只可經專用帳戶操作修改');
+        }
+      }
+    }
+    var nextIds = Object.keys(nextMap);
+    for (var ni = 0; ni < nextIds.length; ni++) {
+      var newId = nextIds[ni];
+      if (oldMap[newId]) continue;
+      var newRole = protectedMemberRole_(nextMap[newId]);
+      if (newRole !== 'member') identityChanges.push({ id: newId, before: '', after: newRole });
+      if (nextMap[newId].hubPw || nextMap[newId].hubPassword || nextMap[newId].accountDeletedAt) {
+        var claimNewPassword = claimingChief && newId === actorMemberId;
+        if (!claimNewPassword) return protectedWriteDenied_('新增成員不可夾帶密碼或帳戶撤銷欄位');
+      }
+    }
+    for (var ic = 0; ic < identityChanges.length; ic++) {
+      var change = identityChanges[ic];
+      if (['chief', 'leader', 'exco', 'member'].indexOf(change.after) < 0) {
+        return protectedWriteDenied_('身份值不正確');
+      }
+      if (actorRank < 4) return protectedWriteDenied_('執委不可更改成員身份');
+      if (actorRank === 4) {
+        var allowedClaim = claimingChief && change.id === actorMemberId && change.after === 'chief';
+        if (!allowedClaim && (change.id === actorMemberId || change.before === 'chief' || change.after === 'chief')) {
+          return protectedWriteDenied_('領袖不可更改自己或團長身份');
+        }
+      }
+      if (actorRank >= 5 && change.id === actorMemberId && change.after !== 'chief' && !transferringChief) {
+        return protectedWriteDenied_('團長不可直接降低自己身份；請先交棒');
+      }
+    }
+  }
+
+  /* Unified 的 accounts 只係中央 Users 無密碼投影，不係 compatibility 登入來源；
+     delegated router 已重建整張投影，所以本地 account 欄位規則只套普通 Portal。 */
+  if (touchesAccounts && !(writeAuth && writeAuth.delegated)) {
+    var oldAccounts = protectedRowsById_(current.db.accounts || []);
+    var nextAccounts = protectedRowsById_(incoming.accounts);
+    if (!oldAccounts.ok || !nextAccounts.ok) return protectedWriteDenied_(oldAccounts.error || nextAccounts.error);
+    var oldAccountIds = Object.keys(oldAccounts.rows), nextAccountIds = Object.keys(nextAccounts.rows);
+    if (oldAccountIds.length !== nextAccountIds.length) {
+      return protectedWriteDenied_('新增或刪除帳戶只可經專用帳戶操作');
+    }
+    var accountAuthFields = ['role', 'memberId', 'pw', 'password', 'mustChangePw', 'defaultPw', 'pv'];
+    for (var ai = 0; ai < oldAccountIds.length; ai++) {
+      var aid = oldAccountIds[ai], oldAccount = oldAccounts.rows[aid], nextAccount = nextAccounts.rows[aid];
+      if (!nextAccount) return protectedWriteDenied_('新增或刪除帳戶只可經專用帳戶操作');
+      for (var af = 0; af < accountAuthFields.length; af++) {
+        var accountField = accountAuthFields[af];
+        if (!protectedSame_(oldAccount[accountField], nextAccount[accountField])) {
+          return protectedWriteDenied_('帳戶角色、綁定或密碼只可經專用帳戶操作');
+        }
+      }
+    }
+  }
+  if (touchesDeletedAccounts && !(writeAuth && writeAuth.delegated)
+      && !protectedSame_(current.db.deletedAccounts || [], incoming.deletedAccounts || [])) {
+    return protectedWriteDenied_('帳戶刪除紀錄只可經專用帳戶操作');
+  }
+  return { success: true };
+}
+function hubSafePublicProfile_(profile, role) {
+  var src = profile && typeof profile === 'object' ? profile : {};
+  var socials = Array.isArray(src.socials) ? src.socials : [];
+  var albums = Array.isArray(src.albums) ? src.albums : [];
+  var links = Array.isArray(src.links) ? src.links : [];
+  var managed = {};
+  socials.forEach(function (item) {
+    var kind = textOf(item && item.kind).toLowerCase();
+    if (item && textOf(item.url) && (kind === 'instagram' || kind === 'facebook' || kind === 'whatsapp')) managed[kind] = true;
+  });
+  if (albums.some(function (item) { return !!textOf(item && item.url); })) managed.album = true;
+  if (textOf(src.site && src.site.url)) managed.website = true;
+  function visibleList(list) {
+    return list.filter(function (item) { return item && textOf(item.url) && hubVisible_(item, 'profile', role); })
+      .map(function (item) { return hubClone_(item); });
+  }
+  return {
+    socials: visibleList(socials), albums: visibleList(albums), links: visibleList(links),
+    site: src.site && textOf(src.site.url) && hubVisible_(src.site, 'profile', role) ? hubClone_(src.site) : { url: '', vis: 'member' },
+    about: src.about && textOf(src.about.text) && hubVisible_(src.about, 'profile', role) ? hubClone_(src.about) : { text: '', vis: 'member' },
+    managedSlots: Object.keys(managed)
+  };
+}
+function hubSafeDb_(db, actor) {
+  db = db || {};
+  var member = actor.member;
+  var role = actor.role;
+  var memberId = textOf(member.id);
+  var ymis = textOf(member.ymis);
+  var unit = db.unit || {};
+  var profile = db.profile || unit;
+  var events = (Array.isArray(db.events) ? db.events : []).filter(function (event) {
+    return event && event.status !== 'cancelled' && hubVisible_(event, 'event', role);
+  }).map(function (event) { return hubSafeEvent_(event, memberId); });
+  var quizzes = (Array.isArray(db.quizzes) ? db.quizzes : []).filter(function (quiz) {
+    return quiz && quiz.status !== 'closed' && hubVisible_(quiz, 'quiz', role);
+  }).map(function (quiz) { return hubSafeQuiz_(quiz, memberId); });
+  var notices = (Array.isArray(db.notices) ? db.notices : []).filter(function (notice) {
+    return notice && notice.status === 'published' && hubVisible_(notice, 'notice', role);
+  }).map(hubSafeNotice_);
+  var absences = (Array.isArray(db.absences) ? db.absences : []).filter(function (absence) {
+    return absence && ((memberId && textOf(absence.memberId) === memberId) || (ymis && textOf(absence.ymis) === ymis));
+  }).map(hubSafeAbsence_);
+  return {
+    schema: db.schema || 2, kind: 'real', unitCode: textOf(db.unitCode),
+    unit: { code: textOf(unit.code || db.unitCode), name: textOf(unit.name), nameEn: textOf(unit.nameEn), short: textOf(unit.short), theme: hubClone_(unit.theme || {}) },
+    profile: { code: textOf(profile.code || db.unitCode), name: textOf(profile.name || unit.name), nameEn: textOf(profile.nameEn || unit.nameEn), short: textOf(profile.short || unit.short), theme: hubClone_(profile.theme || unit.theme || {}) },
+    settings: {
+      troopLinks: hubClone_(db.settings && db.settings.troopLinks || {}),
+      publicLinks: hubClone_(db.settings && db.settings.publicLinks || {}),
+      publicBaseUrl: textOf(db.settings && db.settings.publicBaseUrl)
+    },
+    publicProfile: hubSafePublicProfile_(db.publicProfile, role),
+    members: [hubSafeMember_(member, role)], accounts: [], events: events, quizzes: quizzes,
+    notices: notices, absences: absences,
+    meta: { updatedAt: textOf(db.meta && db.meta.updatedAt), hubView: true }
+  };
+}
+function hubAnswerEmpty_(value) {
+  return value === undefined || value === null || value === '' || (Array.isArray(value) && value.length === 0);
+}
+function hubApplyMutation_(db, actor, body) {
+  var action = textOf(body && body.action);
+  var member = actor.member;
+  var memberId = textOf(member.id);
+  var role = actor.role;
+  if (action === 'hubRsvp') {
+    var event = (db.events || []).filter(function (row) { return row && textOf(row.id) === textOf(body.eventId); })[0];
+    if (!event || event.status === 'cancelled' || !hubVisible_(event, 'event', role)) return { ok: false, error: '搵唔到可回覆嘅活動' };
+    var end = textOf(event.dateEnd || event.date).substring(0, 10);
+    if (end && end < new Date().toISOString().substring(0, 10)) return { ok: false, error: '活動已經完結' };
+    var status = textOf(body.status).toLowerCase();
+    if (['present', 'absent', 'late', 'early'].indexOf(status) < 0) return { ok: false, error: '出席狀態唔正確' };
+    var reason = textOf(body.reason).trim().substring(0, 500);
+    if (status === 'absent' && !reason) return { ok: false, error: '不出席要填原因' };
+    var time = textOf(body.time).trim();
+    if ((status === 'late' || status === 'early') && !/^([01]\\d|2[0-3]):[0-5]\\d$/.test(time)) return { ok: false, error: '時間格式唔正確' };
+    event.rsvp = event.rsvp && typeof event.rsvp === 'object' ? event.rsvp : {};
+    event.rsvp[memberId] = { status: status, at: new Date().toISOString().substring(0, 10),
+      name: textOf(member.name), time: (status === 'late' || status === 'early') ? time : '', reason: reason };
+    return { ok: true };
+  }
+  if (action === 'hubQuiz') {
+    var quiz = (db.quizzes || []).filter(function (row) { return row && textOf(row.id) === textOf(body.quizId); })[0];
+    if (!quiz || quiz.status === 'closed' || !hubVisible_(quiz, 'quiz', role)) return { ok: false, error: '搵唔到可提交嘅試卷' };
+    var supplied = body.answers && typeof body.answers === 'object' && !Array.isArray(body.answers) ? body.answers : {};
+    if (JSON.stringify(supplied).length > 50000) return { ok: false, error: '答卷太大' };
+    var answers = {};
+    var questions = Array.isArray(quiz.questions) ? quiz.questions : [];
+    for (var qi = 0; qi < questions.length; qi++) {
+      var question = questions[qi] || {};
+      var qid = textOf(question.id);
+      if (!qid) continue;
+      var value = supplied[qid];
+      if (question.type === 'multi') {
+        var options = Array.isArray(question.options) ? question.options.map(textOf) : [];
+        value = (Array.isArray(value) ? value : []).map(textOf).filter(function (answer) { return options.indexOf(answer) >= 0; }).slice(0, 50);
+      } else if (question.type === 'single') {
+        var choices = Array.isArray(question.options) ? question.options.map(textOf) : [];
+        value = textOf(value); if (choices.indexOf(value) < 0) value = '';
+      } else {
+        value = textOf(value).substring(0, question.type === 'para' ? 5000 : 1000);
+      }
+      if (question.required && hubAnswerEmpty_(value)) return { ok: false, error: '請填：' + textOf(question.prompt) };
+      answers[qid] = value;
+    }
+    quiz.responses = quiz.responses && typeof quiz.responses === 'object' ? quiz.responses : {};
+    quiz.responses[memberId] = { name: textOf(member.name), at: new Date().toISOString().substring(0, 10), answers: answers };
+    return { ok: true };
+  }
+  if (action === 'hubAbsence') {
+    db.absences = Array.isArray(db.absences) ? db.absences : [];
+    if (body.op === 'withdraw') {
+      var idx = -1;
+      for (var ai = 0; ai < db.absences.length; ai++) if (textOf(db.absences[ai] && db.absences[ai].id) === textOf(body.id)) { idx = ai; break; }
+      var existing = idx >= 0 ? db.absences[idx] : null;
+      /* 第一次撤回可能已成功、但 response 途中斷線；同一 id 重試要係冪等成功。 */
+      if (!existing) return { ok: true, idempotent: true };
+      if (textOf(existing.memberId) !== memberId && textOf(existing.ymis) !== textOf(member.ymis)) return { ok: false, error: '呢張唔係你嘅請假單' };
+      if (existing.status !== 'pending') return { ok: false, error: '已經處理咗，唔可以撤回' };
+      db.absences.splice(idx, 1);
+      return { ok: true };
+    }
+    if (body.op !== 'create') return { ok: false, error: '請假操作唔正確' };
+    var date = textOf(body.date).trim();
+    var reasonA = textOf(body.reason).trim();
+    var slot = textOf(body.slot || 'full');
+    if (!/^\\d{4}-\\d{2}-\\d{2}$/.test(date) || date < new Date().toISOString().substring(0, 10)) return { ok: false, error: '請揀今日或之後嘅日子' };
+    if (!reasonA || reasonA.length > 2000) return { ok: false, error: '請寫 1 至 2000 字原因' };
+    if (['full', 'am', 'pm', 'evening'].indexOf(slot) < 0) slot = 'full';
+    var id = textOf(body.id);
+    var planA = textOf(body.plan).trim().substring(0, 500);
+    if (!/^ab_[A-Za-z0-9_-]{1,80}$/.test(id)) id = 'ab_' + Utilities.getUuid().replace(/-/g, '');
+    var duplicate = null;
+    db.absences.some(function (row) { if (textOf(row && row.id) === id) { duplicate = row; return true; } return false; });
+    if (duplicate) {
+      var sameOwner = textOf(duplicate.memberId) === memberId || textOf(duplicate.ymis) === textOf(member.ymis);
+      var sameBody = textOf(duplicate.date) === date && textOf(duplicate.slot) === slot &&
+        textOf(duplicate.reason) === reasonA && textOf(duplicate.plan) === planA;
+      return sameOwner && sameBody ? { ok: true, id: id, idempotent: true } : { ok: false, error: '請假單編號重複' };
+    }
+    db.absences.push({ id: id, at: new Date().toISOString(), unit: textOf(db.unitCode),
+      memberId: memberId, ymis: textOf(member.ymis), date: date, slot: slot,
+      reason: reasonA, plan: planA, status: 'pending',
+      reviewedBy: '', reviewedAt: '', reviewNote: '' });
+    return { ok: true, id: id };
+  }
+  return { ok: false, error: '未知團員入口操作' };
+}
+
+/* ============================================================
    HTTP 請求處理
    ============================================================ */
 
@@ -594,11 +1121,13 @@ function initializeSheets() {
      （2026-09-20 之前呢句係手寫死嘅字串，一直漏咗 constitution，
        加咗 loadDbPart 之後更加唔可以再靠人手記得改。） */
 var SUPPORTED_ACTIONS = ['ping', 'test', 'status', 'sync', 'claim', 'noticeSignup', 'loan',
-  'authLogin', 'authResetPassword', 'authDeleteAccount', 'authRestoreAccount', 'authCreateAccount', 'authForgotPassword', 'saveDb', 'loadDb', 'loadDbPart', 'dbInfo', 'saveDbPart', 'saveDbCommit', 'verifySetupKey',
+  'authLogin', 'authWhoAmI', 'authChangePassword', 'authResetPassword', 'authDeleteAccount', 'authRestoreAccount', 'authCreateAccount', 'authForgotPassword', 'authResetByToken',
+  /* 團員入口：session 限定本人；只回安全投影／只改本人入站資料。 */
+  'hubLoad', 'hubRsvp', 'hubQuiz', 'hubAbsence',
+  'saveDb', 'loadDb', 'loadDbPart', 'dbInfo', 'saveDbPart', 'saveDbCommit', 'verifySetupKey',
   'uploadPhotos', 'constitution', 'notices',
-  'load',
+  'load', 'loadMine',
   'save', 'saveOtherBadge', 'reviewRequest', 'reviewLogRequest', 'addRequest', 'myRequests',
-  ,
   /* ★ v2.7.2：一鍵修復（清垃圾／舊版本段）＋ 強制覆蓋（人手搶救） */
   'repairDb', 'saveDbForce',
   /* ★ v2.8.0：簡單寫入（逐表寫／逐表讀）—— 見下面 saveTables／loadTables／loadTablesPart */
@@ -626,9 +1155,9 @@ function requireAuth(expectedKey, suppliedKey) {
    全部都係讀 —— 逐次記只會令「審計紀錄」日日洗版（5000 行上限轉個圈就冇晒），
    仲要每個請求多 3 下 Sheet API（appendRow＋getLastRow＋間中 deleteRows），
    又慢又燒配額。寫入／登入／批核／重設密碼等會改嘢嘅 action 照樣逐次記。 */
-var AUDIT_SKIP_ACTIONS = { ping: 1, test: 1, status: 1, load: 1,
+var AUDIT_SKIP_ACTIONS = { ping: 1, test: 1, status: 1, load: 1, loadMine: 1,
   loadDb: 1, loadDbPart: 1, loadTables: 1, loadTablesPart: 1, dbInfo: 1, diag: 1,
-  notices: 1, constitution: 1, myRequests: 1, getLinkState: 1 };
+  notices: 1, constitution: 1, myRequests: 1, authWhoAmI: 1, hubLoad: 1, getLinkState: 1 };
 function auditAccess(body, result) {
   try {
     if (AUDIT_SKIP_ACTIONS[textOf(body && body.action)]) return;
@@ -650,6 +1179,12 @@ function doPost(e) {
   try {
     var rawBody = String((e && e.postData && e.postData.contents) || '{}');
     var body = JSON.parse(rawBody || '{}');
+    /* __serverSigned 只可由 handleSignedRequest 驗簽後在記憶體加入；網絡 body
+       自報同名欄位必須先清走，否則會變成授權繞過。 */
+    if (body && Object.prototype.hasOwnProperty.call(body, '__serverSigned')) delete body.__serverSigned;
+    if (body && Object.prototype.hasOwnProperty.call(body, '__serverActorRole')) delete body.__serverActorRole;
+    if (body && Object.prototype.hasOwnProperty.call(body, '__serverActorSubject')) delete body.__serverActorSubject;
+    if (body && Object.prototype.hasOwnProperty.call(body, '__serverIdentityMap')) delete body.__serverIdentityMap;
     auditAccess(body, 'received');
     /* ★ 旅系統接駁（旅 > 團 > 支部）：上游簽名（sig）請求優先路由——
        喺「直接入口」掣同 API Key 核對**之前**先驗簽名，等閂咗口（ALLOW_LOCAL_LOGIN=false）
@@ -680,16 +1215,24 @@ function dispatchBody(e, body) {
 
     /* server-side session：登入成功後由 GAS 發出短期 token；hash 留喺 ScriptProperties。 */
     function issueAuthSession(unit, record, kind) {
-      var token = Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '') + String(Date.now()) + String(Math.random()).replace('.', '');
+      /* 重設／改密碼會先寫 AUTH_REVOKE。新票 iat 必須嚴格大過 revoke 時間；
+         同一毫秒內完成時都唔可以誤殺啱啱換出嚟嗰張新票。 */
+      var now = Date.now();
+      var revokedAt = Number(PropertiesService.getScriptProperties().getProperty('AUTH_REVOKE_' + textOf(unit) + '_' + textOf(record && record.id)) || 0);
+      if (now <= revokedAt) now = revokedAt + 1;
+      var expiresAt = now + 8 * 3600 * 1000;
+      var token = Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '') + String(now) + String(Math.random()).replace('.', '');
       var tokenHash = sha256HexGs(token);
       var key = 'AUTH_SESSION_' + textOf(unit) + '_' + tokenHash;
-      PropertiesService.getScriptProperties().setProperty(key, JSON.stringify({ id: textOf(record.id), kind: kind, iat: Date.now(), exp: Date.now() + 8 * 3600 * 1000, pv: Number(record.pv || 1) }));
-      return { token: token, expiresAt: Date.now() + 8 * 3600 * 1000 };
+      PropertiesService.getScriptProperties().setProperty(key, JSON.stringify({ id: textOf(record.id), kind: kind, iat: now, exp: expiresAt, pv: Number(record.pv || 1) }));
+      return { token: token, expiresAt: expiresAt };
     }
 
     function verifyPortalToken(unit, token, wantedRole) {
       var parts = textOf(token).split('.');
-      var secret = PropertiesService.getScriptProperties().getProperty('PORTAL_SESSION_SECRET') || '';
+      /* 同 BADGE／proxy 共用 API_KEY，但用固定 purpose 派生獨立 exchange key；
+         不需要另一條 Portal session secret，API Key 本身亦不會直接成為身份。 */
+      var secret = hmacSha256HexGs('vs-portal-branch-exchange-v1', getApiKey());
       if (!secret || parts.length !== 2) return { ok: false, error: '旅系統登入未設定' };
       var expected = Utilities.computeHmacSha256Signature(parts[0], Utilities.newBlob(secret).getBytes())
         .map(function (b) { return ('0' + (b & 255).toString(16)).slice(-2); }).join('');
@@ -700,7 +1243,17 @@ function dispatchBody(e, body) {
       if (supplied.replace(/=+$/, '') !== expectedB64) return { ok: false, error: '旅系統登入票據無效' };
       var payload = null;
       try { payload = JSON.parse(Utilities.newBlob(Utilities.base64DecodeWebSafe(parts[0])).getDataAsString()); } catch (e2) { payload = null; }
-      if (!payload || textOf(payload.u) !== textOf(unit) || Number(payload.exp || 0) <= Date.now()) return { ok: false, error: '旅系統登入票據已過期' };
+      var nowMs = Date.now();
+      var iat = Number(payload && payload.iat || 0);
+      var exp = Number(payload && payload.exp || 0);
+      if (!payload || textOf(payload.typ) !== 'central-sso-exchange'
+          || textOf(payload.u) !== textOf(unit)
+          || textOf(payload.iss) !== 'vs-portal'
+          || textOf(payload.aud) !== 'unified-gas:branch:' + textOf(unit)
+          || textOf(payload.src) !== 'central-travel-system'
+          || !iat || !exp || iat > nowMs + 15000 || exp <= nowMs - 15000 || exp <= iat || exp - iat > 120000) {
+        return { ok: false, error: '旅系統登入票據已過期或用途不正確' };
+      }
       if (wantedRole && textOf(payload.role) !== textOf(wantedRole)) return { ok: false, error: '旅系統身份不符合' };
       return { ok: true, portal: true, role: textOf(payload.role), subject: textOf(payload.sub) };
     }
@@ -725,16 +1278,70 @@ function dispatchBody(e, body) {
       return verifyAuthSession(body.unit, body.sessionToken);
     }
 
+    /* 行政資料的 API Key 只係 routing secret。直連 /exec 同樣要一張 server-issued
+       session；經已驗 HMAC＋nonce 的 server-to-server request 才可用內部 marker。
+       role 由 session 對回後端名冊，client 自報 role/memberId 一律唔採用。 */
+    function requireStaffSession(body, minimumRank, allowSetup) {
+      if (body && body.__serverSigned === true) {
+        var delegatedRole = textOf(body.__serverActorRole).toLowerCase();
+        var delegatedSubject = textOf(body.__serverActorSubject).toLowerCase();
+        if (delegatedRole && delegatedSubject) {
+          if (hubRoleRank_(delegatedRole) < Number(minimumRank || 3)) {
+            return { ok: false, success: false, error: '你的身份不可以執行此操作', code: 'ACTION_SCOPE_DENIED' };
+          }
+          return { ok: true, serverSigned: true, delegated: true, role: delegatedRole,
+            identityMap: body.__serverIdentityMap && typeof body.__serverIdentityMap === 'object'
+              ? body.__serverIdentityMap : null,
+            session: { ok: true, portal: true, role: delegatedRole, subject: delegatedSubject } };
+        }
+        return { ok: true, serverSigned: true, role: 'server' };
+      }
+      var session = requireAuthSession(body || {});
+      if (!session.ok) return { ok: false, success: false, error: session.error, code: 'SESSION_REQUIRED' };
+      if (session.kind === 'setup' && session.id === 'setup') {
+        if (allowSetup !== true) return { ok: false, success: false, error: '開團身份不可以執行修復或強制覆寫', code: 'ACTION_SCOPE_DENIED' };
+        return { ok: true, role: 'leader', setup: true };
+      }
+      var loaded = loadDb(textOf(body && body.unit));
+      var actor = adminFindActor_(loaded.db || {}, session);
+      if (!actor.ok) return { ok: false, success: false, error: actor.error, code: actor.code || 'SESSION_ACCOUNT_MISSING' };
+      if (hubRoleRank_(actor.role) < Number(minimumRank || 3)) {
+        return { ok: false, success: false, error: '你的身份不可以執行此操作', code: 'ACTION_SCOPE_DENIED' };
+      }
+      return { ok: true, role: actor.role, actor: actor, session: session };
+    }
+
     function revokeAuthSessions(unit, id) {
       if (id) PropertiesService.getScriptProperties().setProperty('AUTH_REVOKE_' + textOf(unit) + '_' + textOf(id), String(Date.now()));
     }
 
-    /* ---- 支部帳戶登入：密碼核對留喺 GAS，前端只收安全身份資料 ---- */
+    /* authLogin 必須可以由未登記旅團的 ?be= 公開連結直達 /exec，因此 API Key
+       不能當登入憑證。密碼仍由 GAS 核對；ScriptCache＋ScriptLock 對同一登入代號
+       每 5 分鐘最多保留 20 次嘗試，成功即清零。 */
+    function reserveLoginAttempt(unit, loginName) {
+      var cache = (typeof CacheService !== 'undefined' && CacheService.getScriptCache)
+        ? CacheService.getScriptCache() : null;
+      var cacheKey = 'v82-auth-attempt:' + sha256HexGs(textOf(unit) + ':' + textOf(loginName)).substring(0, 40);
+      if (!cache) return { ok: true, key: cacheKey, cache: null };
+      var allowed = withLock(function () {
+        var count = Number(cache.get(cacheKey) || 0);
+        if (count >= 20) return false;
+        cache.put(cacheKey, String(count + 1), 300);
+        return true;
+      });
+      return { ok: allowed, key: cacheKey, cache: cache };
+    }
+    function clearLoginAttempts(reservation) {
+      try { if (reservation && reservation.cache) reservation.cache.remove(reservation.key); } catch (ignore) { /* 下次自動過期 */ }
+    }
+
+    /* ---- 支部帳戶登入：公開 credential endpoint；前端只收安全身份資料 ---- */
     if (body.action === 'authLogin') {
-      var loginAuth = requireAuth(expectedKey, key);
-      if (!loginAuth.ok) return json(loginAuth);
       var loginDb = loadDb(textOf(body.unit));
       var loginName = textOf(body.username || body.email || body.ymis).toLowerCase();
+      var loginReservation = reserveLoginAttempt(body.unit, loginName);
+      if (!loginReservation.ok) return json({ ok: false, success: false,
+        error: '登入嘗試次數過多，請五分鐘後再試', code: 'AUTH_RATE_LIMITED' });
       var loginPw = textOf(body.password);
       var loginRec = null;
       var loginKind = '';
@@ -745,61 +1352,206 @@ function dispatchBody(e, body) {
         return false;
       });
       if (!loginRec) (loginDb.db && loginDb.db.members || []).some(function (m) {
-        if (m && m.status !== 'alumni' && !m.accountDeletedAt && (textOf(m.ymis).toLowerCase() === loginName || textOf(m.email).toLowerCase() === loginName)) {
+        if (m && m.status !== 'alumni' && !m.accountDeletedAt && (
+            textOf(m.ymis).toLowerCase() === loginName ||
+            textOf(m.email).toLowerCase() === loginName ||
+            textOf(m.loginId).toLowerCase() === loginName)) {
           loginRec = m; loginKind = 'member'; return true;
         }
         return false;
       });
       var loginPassword = loginRec && (loginRec.pw || loginRec.hubPw);
+      var loginRole = textOf(loginRec && (loginRec.role || loginRec.identity) || 'member').toLowerCase();
       var loginOk = false;
       if (loginRec && loginPassword && loginPassword.algo === 'pbkdf2-sha256') {
         loginOk = verifyPasswordRecord(loginPassword, loginPw);
       } else if (loginRec && loginPassword && loginPassword.algo === 'sha256') {
         loginOk = sha256HexGs(loginPassword.salt + '::' + loginPw) === textOf(loginPassword.hash);
-      } else if (loginRec && !loginPassword && loginPw === '1234') {
+      } else if (loginRec && !loginPassword && loginPw === '1234'
+          && (loginRole === 'member' || loginRole === 'exco')) {
+        /* 預設密碼只供團員／執委首次開戶。成人高權身份冇密碼紀錄時 fail closed。 */
         loginOk = true;
       }
-      if (!loginRec) return json({ ok: false, success: false, code: 'AUTH_ACCOUNT_NOT_FOUND', error: '帳號或密碼不正確' });
+      if (!loginRec) return json({ ok: false, success: false, code: 'AUTH_INVALID', error: '帳號或密碼不正確' });
       if (!loginOk) return json({ ok: false, success: false, code: 'AUTH_INVALID', error: '帳號或密碼不正確' });
-      var loginRole = loginRec.role || loginRec.identity || 'member';
+      clearLoginAttempts(loginReservation);
+      var loginMember = loginKind === 'member' ? loginRec : null;
+      if (!loginMember && loginRec.memberId) {
+        (loginDb.db && loginDb.db.members || []).some(function (m) {
+          if (m && textOf(m.id) === textOf(loginRec.memberId)) { loginMember = m; return true; }
+          return false;
+        });
+      }
+      if (!loginMember) {
+        (loginDb.db && loginDb.db.members || []).some(function (m) {
+          if (!m || m.status === 'alumni') return false;
+          if ((loginRec.email && textOf(m.email).toLowerCase() === textOf(loginRec.email).toLowerCase())
+              || (loginRec.username && (
+                textOf(m.ymis).toLowerCase() === textOf(loginRec.username).toLowerCase()
+                || textOf(m.loginId).toLowerCase() === textOf(loginRec.username).toLowerCase()))) {
+            loginMember = m; return true;
+          }
+          return false;
+        });
+      }
       var session = issueAuthSession(textOf(body.unit), loginRec, loginKind);
       return json({ ok: true, success: true, sessionToken: session.token, sessionExpiresAt: session.expiresAt, account: {
-        id: textOf(loginRec.id), username: textOf(loginRec.username || loginRec.email || loginRec.ymis),
-        email: textOf(loginRec.email), name: textOf(loginRec.name), role: loginRole, kind: loginKind
+        id: textOf(loginRec.id), username: textOf(loginRec.username || loginRec.email || loginRec.loginId || loginRec.ymis),
+        email: textOf(loginRec.email), name: textOf(loginRec.name), role: loginRole, kind: loginKind,
+        memberId: textOf(loginMember && loginMember.id), ymis: textOf(loginMember && loginMember.ymis || loginRec.ymis)
       }, mustChangePw: !!(loginRec.mustChangePw || loginRec.hubMustChangePw || !loginPassword || loginPw === '1234') });
     }
 
-    /* ---- 支部帳戶自己改密碼：舊密碼正確先可寫入新 PBKDF2 record ---- */
+    /* ---- 核對短期 session，只回登入者本人嘅安全身份欄位 ---- */
+    if (body.action === 'authWhoAmI') {
+      var whoAuth = requireAuth(expectedKey, key);
+      if (!whoAuth.ok) return json(whoAuth);
+      var whoSession = requireAuthSession(body);
+      if (!whoSession.ok) return json({ ok: false, success: false, error: whoSession.error, code: 'SESSION_REQUIRED' });
+      /* 新旅團未有名冊時，已由 server 驗過 72 小時開團 KEY 的短期 setup session
+         要可以完成第一次載入／儲存；client 單靠 kind 字串造唔到呢張票。 */
+      if (whoSession.kind === 'setup' && whoSession.id === 'setup') {
+        return json({ ok: true, success: true, setup: true, account: {
+          id: 'setup', memberId: '', ymis: '', email: '', name: '開團設定', role: 'leader'
+        } });
+      }
+      var whoDb = loadDb(textOf(body.unit));
+      var whoRec = null;
+      var whoMember = null;
+      if (whoSession.portal) {
+        var whoSubject = textOf(whoSession.subject).toLowerCase();
+        (whoDb.db && whoDb.db.members || []).some(function (m) {
+          if (m && m.status !== 'alumni' && (
+              textOf(m.ymis).toLowerCase() === whoSubject ||
+              textOf(m.email).toLowerCase() === whoSubject ||
+              textOf(m.loginId).toLowerCase() === whoSubject)) {
+            whoMember = m; return true;
+          }
+          return false;
+        });
+      } else if (whoSession.kind === 'account') {
+        (whoDb.db && whoDb.db.accounts || []).some(function (a) {
+          if (a && a.active !== false && textOf(a.id) === textOf(whoSession.id)) { whoRec = a; return true; }
+          return false;
+        });
+        if (whoRec && whoRec.memberId) (whoDb.db && whoDb.db.members || []).some(function (m) {
+          if (m && m.status !== 'alumni' && textOf(m.id) === textOf(whoRec.memberId)) { whoMember = m; return true; }
+          return false;
+        });
+      } else {
+        (whoDb.db && whoDb.db.members || []).some(function (m) {
+          if (m && m.status !== 'alumni' && !m.accountDeletedAt && textOf(m.id) === textOf(whoSession.id)) { whoMember = m; return true; }
+          return false;
+        });
+      }
+      if (!whoMember && whoRec) (whoDb.db && whoDb.db.members || []).some(function (m) {
+        if (!m || m.status === 'alumni') return false;
+        if ((whoRec.email && textOf(m.email).toLowerCase() === textOf(whoRec.email).toLowerCase())
+            || (whoRec.username && (
+              textOf(m.ymis).toLowerCase() === textOf(whoRec.username).toLowerCase()
+              || textOf(m.loginId).toLowerCase() === textOf(whoRec.username).toLowerCase()))) {
+          whoMember = m; return true;
+        }
+        return false;
+      });
+      if (!whoMember && !whoRec) return json({ ok: false, success: false, error: '登入帳戶已不存在', code: 'SESSION_ACCOUNT_MISSING' });
+      var whoRole = textOf(whoSession.portal ? whoSession.role : ((whoMember && whoMember.identity) || (whoRec && whoRec.role) || 'member')).toLowerCase();
+      return json({ ok: true, success: true, account: {
+        id: textOf((whoMember && whoMember.id) || (whoRec && whoRec.id)),
+        memberId: textOf(whoMember && whoMember.id),
+        ymis: textOf(whoMember && whoMember.ymis),
+        email: textOf((whoMember && whoMember.email) || (whoRec && whoRec.email)),
+        name: textOf((whoMember && whoMember.name) || (whoRec && whoRec.name)),
+        role: whoRole
+      } });
+    }
+
+    /* ---- 支部帳戶自己改密碼：身份固定由 opaque session 對回；成功撤銷舊票並換新票 ---- */
+    if (body.action === 'authChangePassword') {
+      var changeSession = requireAuthSession(body);
+      if (!changeSession.ok) return json({ ok: false, success: false, error: changeSession.error, code: 'SESSION_REQUIRED' });
+      if (changeSession.portal) return json({ ok: false, success: false, error: '旅系統登入不設支部本地密碼', code: 'CENTRAL_IDENTITY_MANAGED' });
+      if (textOf(body.newPassword) === '1234') return json({ ok: false, success: false, error: '新密碼唔可以繼續用預設 1234' });
+      var changedPassword = withLock(function () {
+        var changedDb = loadDb(textOf(body.unit));
+        if (!changedDb.success || !changedDb.db) return { success: false, error: changedDb.error || '後端未有資料庫' };
+        var changedActor = hubFindActor_(changedDb.db, changeSession);
+        if (!changedActor.ok) return { success: false, error: changedActor.error, code: changedActor.code };
+        var record = changedActor.record;
+        var oldRecord = record && (record.pw || record.hubPw);
+        var temporary = !!(record && (record.mustChangePw || record.hubMustChangePw || !oldRecord));
+        var oldOk = temporary;
+        if (!oldOk && oldRecord && oldRecord.algo === 'pbkdf2-sha256') oldOk = verifyPasswordRecord(oldRecord, textOf(body.oldPassword));
+        else if (!oldOk && oldRecord && oldRecord.algo === 'sha256') oldOk = sha256HexGs(oldRecord.salt + '::' + textOf(body.oldPassword)) === textOf(oldRecord.hash);
+        if (!oldOk) return { success: false, error: '舊密碼不正確' };
+        var nextPassword = makePasswordRecord(textOf(body.newPassword), false);
+        if (!nextPassword.ok) return { success: false, error: nextPassword.error };
+        if (changedActor.kind === 'account') {
+          record.pw = nextPassword.pw; record.mustChangePw = false; record.defaultPw = false; delete record.password;
+        } else {
+          record.hubPw = nextPassword.pw; record.hubMustChangePw = false; record.hubOpened = true; delete record.hubPassword;
+        }
+        record.pv = Number(record.pv || 1) + 1;
+        var changedSaved = saveDb({ unit: textOf(body.unit), db: changedDb.db, baseVersion: changedDb.version, refreshReports: false });
+        if (changedSaved.success !== true) return changedSaved;
+        revokeAuthSessions(body.unit, record.id);
+        var nextSession = issueAuthSession(textOf(body.unit), record, changedActor.kind);
+        return { success: true, version: changedSaved.version || '', sessionToken: nextSession.token, sessionExpiresAt: nextSession.expiresAt };
+      });
+      return json({ ok: changedPassword.success === true, success: changedPassword.success === true,
+        version: changedPassword.version || '', sessionToken: changedPassword.sessionToken || '',
+        sessionExpiresAt: changedPassword.sessionExpiresAt || 0, mustChangePw: false,
+        code: changedPassword.code || '', error: changedPassword.error || '' });
+    }
+
+    /* ---- 團員入口：安全投影＋本人入站資料；API Key 永遠唔代替 session 身份 ---- */
+    if (body.action === 'hubLoad' || body.action === 'hubRsvp' || body.action === 'hubQuiz' || body.action === 'hubAbsence') {
+      var hubSession = requireAuthSession(body);
+      if (!hubSession.ok) return json({ ok: false, success: false, error: hubSession.error, code: 'SESSION_REQUIRED' });
+      if (body.action === 'hubLoad') {
+        var hubLoaded = loadDb(textOf(body.unit));
+        if (!hubLoaded.success || !hubLoaded.db) return json({ ok: false, success: false, found: false, error: hubLoaded.error || '後端未有資料庫' });
+        var hubActor = hubFindActor_(hubLoaded.db, hubSession);
+        if (!hubActor.ok) return json({ ok: false, success: false, code: hubActor.code || 'SESSION_ACCOUNT_MISSING', error: hubActor.error });
+        return json({ ok: true, success: true, found: true, db: hubSafeDb_(hubLoaded.db, hubActor),
+          version: hubLoaded.version || '', at: hubLoaded.at || '', role: hubActor.role });
+      }
+      var hubChanged = withLock(function () {
+        var loaded = loadDb(textOf(body.unit));
+        if (!loaded.success || !loaded.db) return { success: false, error: loaded.error || '後端未有資料庫' };
+        var actor = hubFindActor_(loaded.db, hubSession);
+        if (!actor.ok) return { success: false, code: actor.code, error: actor.error };
+        var applied = hubApplyMutation_(loaded.db, actor, body);
+        if (!applied.ok) return { success: false, error: applied.error };
+        var saved = saveDb({ unit: textOf(body.unit), db: loaded.db, baseVersion: loaded.version, refreshReports: false });
+        if (saved.success !== true) return saved;
+        return { success: true, version: saved.version || '', db: hubSafeDb_(loaded.db, actor), id: applied.id || '' };
+      });
+      return json({ ok: hubChanged.success === true, success: hubChanged.success === true,
+        version: hubChanged.version || '', db: hubChanged.db || null, id: hubChanged.id || '',
+        code: hubChanged.code || '', error: hubChanged.error || '' });
+    }
 
     /* ---- 領袖替成員重設密碼：由 server-side 重新核對領袖身份 ---- */
     if (body.action === 'authResetPassword') {
       var resetAuth = requireAuth(expectedKey, key);
       if (!resetAuth.ok) return json(resetAuth);
-      var resetSession = requireAuthSession(body);
+      var resetSession = body.__serverSigned === true
+        ? { ok: true, serverSigned: true, role: 'super' }
+        : requireAuthSession(body);
       if (!resetSession.ok) return json({ ok: false, success: false, error: resetSession.error, code: 'SESSION_REQUIRED' });
       var reset = withLock(function () {
         var resetDb = loadDb(textOf(body.unit));
-        var actorName = textOf(body.actorUsername || body.actorEmail).toLowerCase();
+        if (!resetDb.success || !resetDb.db) return { success: false, error: resetDb.error || '後端未有資料庫' };
         var targetName = textOf(body.targetUsername || body.targetEmail || body.targetYmis).toLowerCase();
-        var actor = null, target = null;
-        (resetDb.db && resetDb.db.accounts || []).some(function (a) {
-          if (a && a.active !== false && (textOf(a.username).toLowerCase() === actorName || textOf(a.email).toLowerCase() === actorName)) { actor = a; return true; }
-          return false;
-        });
-        if (!actor) (resetDb.db && resetDb.db.members || []).some(function (m) {
-          if (m && m.status !== 'alumni' && (textOf(m.email).toLowerCase() === actorName || textOf(m.ymis).toLowerCase() === actorName)) { actor = m; return true; }
-          return false;
-        });
-        if ((!actor && !resetSession.portal) || (!resetSession.portal && resetSession.id !== textOf(actor.id))) return { success: false, error: '登入帳戶與操作帳戶不一致' };
-        var actorPw = actor && (actor.pw || actor.hubPw);
-        var actorOk = false;
-        if (actor && actorPw && actorPw.algo === 'pbkdf2-sha256') actorOk = verifyPasswordRecord(actorPw, textOf(body.actorPassword));
-        else if (actor && actorPw && actorPw.algo === 'sha256') actorOk = sha256HexGs(actorPw.salt + '::' + textOf(body.actorPassword)) === textOf(actorPw.hash);
-        else if (actor && !actorPw && textOf(body.actorPassword) === '1234') actorOk = true;
-        if (resetSession.portal || resetSession.id === textOf(actor && actor.id)) actorOk = true;
-        if (!actorOk) return { success: false, error: '管理員帳戶或密碼不正確' };
-        var actorRole = resetSession.portal ? textOf(resetSession.role).toLowerCase() : textOf(actor.role || actor.identity).toLowerCase();
-        if (actorRole !== 'chief' && actorRole !== 'leader' && actorRole !== 'admin' && actorRole !== 'super') return { success: false, error: '你沒有權限重設其他帳戶密碼' };
+        var target = null;
+        /* 操作者只由已驗證 session 對回後端紀錄；actorUsername／actorRole 等 client
+           欄位全部不參與授權，中央 SSO opaque session 亦走同一路徑。 */
+        var resetActor = resetSession.serverSigned
+          ? { ok: true, role: 'super', record: null, serverSigned: true }
+          : adminFindActor_(resetDb.db, resetSession);
+        if (!resetActor.ok) return { success: false, error: resetActor.error, code: resetActor.code };
+        if (hubRoleRank_(resetActor.role) < hubRoleRank_('leader')) return { success: false, error: '你沒有權限重設其他帳戶密碼', code: 'ACTION_SCOPE_DENIED' };
         (resetDb.db && resetDb.db.accounts || []).some(function (a) {
           if (a && a.active !== false && (textOf(a.username).toLowerCase() === targetName || textOf(a.email).toLowerCase() === targetName)) { target = a; return true; }
           return false;
@@ -810,7 +1562,9 @@ function dispatchBody(e, body) {
         });
         if (!target) return { success: false, error: '搵唔到要重設嘅帳戶' };
         var targetRole = textOf(target.role || target.identity).toLowerCase();
-        if (targetRole === 'leader' || targetRole === 'admin') return { success: false, error: '不能由支部領袖重設另一個領袖帳戶' };
+        if (hubRoleRank_(targetRole) >= hubRoleRank_(resetActor.role)) {
+          return { success: false, error: '不能重設同級或更高權限帳戶' };
+        }
         var nextReset = makePasswordRecord(textOf(body.newPassword), true);
         if (!nextReset.ok) return { success: false, error: nextReset.error };
         if (target.hubPw !== undefined || target.ymis !== undefined) {
@@ -822,47 +1576,41 @@ function dispatchBody(e, body) {
         if (savedReset.success === true) revokeAuthSessions(body.unit, target.id);
         return savedReset.success === true ? { success: true, version: savedReset.version || '' } : savedReset;
       });
-      return json({ ok: reset.success === true, success: reset.success === true, version: reset.version || '', error: reset.error || '' });
+      return json({ ok: reset.success === true, success: reset.success === true, version: reset.version || '',
+        code: reset.code || '', error: reset.error || '' });
     }
 
     /* ---- 管理員／團長刪除帳戶：只刪 accounts row，不刪成員資料 ---- */
     if (body.action === 'authDeleteAccount') {
       var deleteAuth = requireAuth(expectedKey, key);
       if (!deleteAuth.ok) return json(deleteAuth);
-      var deleteSession = requireAuthSession(body);
+      var deleteSession = body.__serverSigned === true
+        ? { ok: true, serverSigned: true, role: 'super' }
+        : requireAuthSession(body);
       if (!deleteSession.ok) return json({ ok: false, success: false, error: deleteSession.error, code: 'SESSION_REQUIRED' });
       var deleted = withLock(function () {
         var deleteDb = loadDb(textOf(body.unit));
-        var actorName3 = textOf(body.actorUsername || body.actorEmail).toLowerCase();
+        if (!deleteDb.success || !deleteDb.db) return { success: false, error: deleteDb.error || '後端未有資料庫' };
         var targetName3 = textOf(body.targetUsername || body.targetEmail).toLowerCase();
-        var actor3 = null, target3 = null, targetIndex = -1;
-        (deleteDb.db && deleteDb.db.accounts || []).some(function (a) {
-          if (a && a.active !== false && (textOf(a.username).toLowerCase() === actorName3 || textOf(a.email).toLowerCase() === actorName3)) { actor3 = a; return true; }
-          return false;
-        });
-        if (!actor3 && deleteSession.portal) actor3 = (deleteDb.db && deleteDb.db.members || []).filter(function(m){ return m && m.status !== 'alumni' && (textOf(m.ymis).toLowerCase() === actorName3 || textOf(m.email).toLowerCase() === actorName3); })[0];
-        if ((!actor3 && !deleteSession.portal) || (!deleteSession.portal && deleteSession.id !== textOf(actor3.id))) return { success: false, error: '登入帳戶與操作帳戶不一致' };
-        var actorPw3 = actor3 && (actor3.pw || actor3.hubPw);
-        var actorOk3 = actorPw3 && actorPw3.algo === 'pbkdf2-sha256'
-          ? verifyPasswordRecord(actorPw3, textOf(body.actorPassword))
-          : actorPw3 && actorPw3.algo === 'sha256'
-            ? sha256HexGs(actorPw3.salt + '::' + textOf(body.actorPassword)) === textOf(actorPw3.hash)
-            : textOf(body.actorPassword) === '1234';
-        if (deleteSession.portal || deleteSession.id === textOf(actor3 && actor3.id)) actorOk3 = true;
-        if (!actorOk3) return { success: false, error: '管理員帳戶或密碼不正確' };
-        var actorRole3 = deleteSession.portal ? textOf(deleteSession.role).toLowerCase() : textOf(actor3.role || actor3.identity).toLowerCase();
-        if (actorRole3 !== 'chief' && actorRole3 !== 'leader' && actorRole3 !== 'admin' && actorRole3 !== 'super') return { success: false, error: '你沒有權限刪除帳戶' };
+        var target3 = null, targetIndex = -1;
+        var deleteActor = deleteSession.serverSigned
+          ? { ok: true, role: 'super', record: null, serverSigned: true }
+          : adminFindActor_(deleteDb.db, deleteSession);
+        if (!deleteActor.ok) return { success: false, error: deleteActor.error, code: deleteActor.code };
+        if (hubRoleRank_(deleteActor.role) < hubRoleRank_('leader')) return { success: false, error: '你沒有權限刪除帳戶', code: 'ACTION_SCOPE_DENIED' };
         (deleteDb.db && deleteDb.db.accounts || []).some(function (a, i) {
           if (a && (textOf(a.username).toLowerCase() === targetName3 || textOf(a.email).toLowerCase() === targetName3)) { target3 = a; targetIndex = i; return true; }
           return false;
         });
         if (!target3) return { success: false, error: '搵唔到要刪除嘅帳戶' };
-        if (actor3 && textOf(target3.id) === textOf(actor3.id)) return { success: false, error: '不能刪除自己目前登入嘅帳戶' };
+        if (deleteActor.record && textOf(target3.id) === textOf(deleteActor.record.id)) return { success: false, error: '不能刪除自己目前登入嘅帳戶' };
         var targetRole3 = textOf(target3.role || target3.identity).toLowerCase();
-        if (targetRole3 === 'leader' || targetRole3 === 'admin') {
+        if (hubRoleRank_(targetRole3) >= hubRoleRank_(deleteActor.role)) {
+          return { success: false, error: '不能刪除同級或更高權限帳戶' };
+        }
+        if (hubRoleRank_(targetRole3) >= hubRoleRank_('leader')) {
           var managerCount3 = (deleteDb.db.accounts || []).filter(function (a) {
-            var r = textOf(a && (a.role || a.identity)).toLowerCase();
-            return a && a.active !== false && (r === 'leader' || r === 'admin');
+            return a && a.active !== false && hubRoleRank_(a.role || a.identity) >= hubRoleRank_('leader');
           }).length;
           if (managerCount3 <= 1) return { success: false, error: '不能刪除最後一個管理員／團長帳戶，請先開通另一個管理員' };
         }
@@ -879,35 +1627,27 @@ function dispatchBody(e, body) {
         if (savedDelete.success === true) revokeAuthSessions(body.unit, target3.id);
         return savedDelete.success === true ? { success: true, version: savedDelete.version || '' } : savedDelete;
       });
-      return json({ ok: deleted.success === true, success: deleted.success === true, version: deleted.version || '', error: deleted.error || '' });
+      return json({ ok: deleted.success === true, success: deleted.success === true, version: deleted.version || '',
+        code: deleted.code || '', error: deleted.error || '' });
     }
 
     /* ---- 復原已刪除登入：保留成員資料，重新建立帳戶 row ---- */
     if (body.action === 'authRestoreAccount') {
       var restoreAuth = requireAuth(expectedKey, key);
       if (!restoreAuth.ok) return json(restoreAuth);
-      var restoreSession = requireAuthSession(body);
+      var restoreSession = body.__serverSigned === true
+        ? { ok: true, serverSigned: true, role: 'super' }
+        : requireAuthSession(body);
       if (!restoreSession.ok) return json({ ok: false, success: false, error: restoreSession.error, code: 'SESSION_REQUIRED' });
       var restored = withLock(function () {
         var restoreDb = loadDb(textOf(body.unit));
-        var actorName4 = textOf(body.actorUsername || body.actorEmail).toLowerCase();
-        var actor4 = null, member4 = null;
-        (restoreDb.db && restoreDb.db.accounts || []).some(function (a) {
-          if (a && a.active !== false && (textOf(a.username).toLowerCase() === actorName4 || textOf(a.email).toLowerCase() === actorName4)) { actor4 = a; return true; }
-          return false;
-        });
-        if (!actor4 && restoreSession.portal) actor4 = (restoreDb.db && restoreDb.db.members || []).filter(function(m){ return m && m.status !== 'alumni' && (textOf(m.ymis).toLowerCase() === actorName4 || textOf(m.email).toLowerCase() === actorName4); })[0];
-        if ((!actor4 && !restoreSession.portal) || (!restoreSession.portal && restoreSession.id !== textOf(actor4.id))) return { success: false, error: '登入帳戶與操作帳戶不一致' };
-        var actorPw4 = actor4 && (actor4.pw || actor4.hubPw);
-        var actorOk4 = actorPw4 && actorPw4.algo === 'pbkdf2-sha256'
-          ? verifyPasswordRecord(actorPw4, textOf(body.actorPassword))
-          : actorPw4 && actorPw4.algo === 'sha256'
-            ? sha256HexGs(actorPw4.salt + '::' + textOf(body.actorPassword)) === textOf(actorPw4.hash)
-            : textOf(body.actorPassword) === '1234';
-        if (restoreSession.portal || restoreSession.id === textOf(actor4 && actor4.id)) actorOk4 = true;
-        if (!actorOk4) return { success: false, error: '管理員帳戶或密碼不正確' };
-        var actorRole4 = restoreSession.portal ? textOf(restoreSession.role).toLowerCase() : textOf(actor4.role || actor4.identity).toLowerCase();
-        if (actorRole4 !== 'chief' && actorRole4 !== 'leader' && actorRole4 !== 'admin' && actorRole4 !== 'super') return { success: false, error: '你沒有權限復原帳戶' };
+        if (!restoreDb.success || !restoreDb.db) return { success: false, error: restoreDb.error || '後端未有資料庫' };
+        var member4 = null;
+        var restoreActor = restoreSession.serverSigned
+          ? { ok: true, role: 'super', record: null, serverSigned: true }
+          : adminFindActor_(restoreDb.db, restoreSession);
+        if (!restoreActor.ok) return { success: false, error: restoreActor.error, code: restoreActor.code };
+        if (hubRoleRank_(restoreActor.role) < hubRoleRank_('leader')) return { success: false, error: '你沒有權限復原帳戶', code: 'ACTION_SCOPE_DENIED' };
         var restoreTarget = textOf(body.targetEmail || body.targetYmis).toLowerCase();
         var tombstone = null;
         (restoreDb.db && restoreDb.db.deletedAccounts || []).some(function (d) {
@@ -922,6 +1662,9 @@ function dispatchBody(e, body) {
         var restorePw = makePasswordRecord(textOf(body.newPassword || '1234'), true);
         if (!restorePw.ok) return { success: false, error: restorePw.error };
         var role4 = textOf((member4 && member4.identity) || (tombstone && tombstone.role) || 'member');
+        if (hubRoleRank_(role4) >= hubRoleRank_(restoreActor.role)) {
+          return { success: false, error: '不能復原同級或更高權限帳戶' };
+        }
         restoreDb.db.accounts = restoreDb.db.accounts || [];
         restoreDb.db.accounts.push({ id: 'acc_' + Utilities.getUuid().replace(/-/g, '').slice(0, 12),
           role: role4, username: textOf((member4 && (member4.email || member4.ymis)) || (tombstone && tombstone.username)),
@@ -934,16 +1677,24 @@ function dispatchBody(e, body) {
         var savedRestore = saveDb({ unit: textOf(body.unit), db: restoreDb.db, baseVersion: restoreDb.version, refreshReports: false });
         return savedRestore.success === true ? { success: true, version: savedRestore.version || '' } : savedRestore;
       });
-      return json({ ok: restored.success === true, success: restored.success === true, version: restored.version || '', error: restored.error || '' });
+      return json({ ok: restored.success === true, success: restored.success === true, version: restored.version || '',
+        code: restored.code || '', error: restored.error || '' });
     }
 
-    /* ---- EMAIL 忘記密碼：一次性 token，回應永遠不透露帳戶是否存在 ---- */
+    /* ---- EMAIL 忘記密碼：公開、非枚舉 endpoint；同一 email 五分鐘最多寄一次 ---- */
     if (body.action === 'authForgotPassword') {
-      var forgotAuth = requireAuth(expectedKey, key);
-      if (!forgotAuth.ok) return json(forgotAuth);
       var forgotDb = loadDb(textOf(body.unit));
       var forgotEmail = textOf(body.email).trim().toLowerCase();
       var forgotTarget = null;
+      var forgotCache = (typeof CacheService !== 'undefined' && CacheService.getScriptCache)
+        ? CacheService.getScriptCache() : null;
+      var forgotKey = 'v82-forgot:' + sha256HexGs(textOf(body.unit) + ':' + forgotEmail).substring(0, 40);
+      var forgotMaySend = true;
+      if (forgotCache) forgotMaySend = withLock(function () {
+        if (forgotCache.get(forgotKey)) return false;
+        forgotCache.put(forgotKey, '1', 300);
+        return true;
+      });
       (forgotDb.db && forgotDb.db.accounts || []).some(function (a) {
         if (a && a.active !== false && textOf(a.email).toLowerCase() === forgotEmail) { forgotTarget = { id: textOf(a.id), kind: 'account', email: textOf(a.email) }; return true; }
         return false;
@@ -952,36 +1703,109 @@ function dispatchBody(e, body) {
         if (m && m.status !== 'alumni' && textOf(m.email).toLowerCase() === forgotEmail) { forgotTarget = { id: textOf(m.id), kind: 'member', email: textOf(m.email) }; return true; }
         return false;
       });
-      if (forgotTarget) {
+      /* callback URL 絕不採用 client body，否則攻擊者可令正式電郵把 token 送去釣魚網域。
+         Sheet owner 必須先在 Apps Script editor 執行 setPasswordResetUrl(...)。 */
+      var configuredResetUrl = textOf(PropertiesService.getScriptProperties().getProperty('PASSWORD_RESET_URL'));
+      if (forgotTarget && forgotMaySend && configuredResetUrl.toLowerCase().indexOf('https://') === 0) {
         var rawToken = Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '');
         var tokenHash = sha256HexGs(rawToken);
         var tokenKey = 'PWD_RESET_' + textOf(body.unit) + '_' + tokenHash;
         PropertiesService.getScriptProperties().setProperty(tokenKey, JSON.stringify({ id: forgotTarget.id, kind: forgotTarget.kind, exp: Date.now() + 30 * 60 * 1000 }));
-        var origin = textOf(body.resetUrl || body.origin);
-        if (origin.slice(-1) === '/') origin = origin.slice(0, -1);
-        var link = (origin || 'https://scout-system.example/reset-password') + '?unit=' + encodeURIComponent(textOf(body.unit)) + '&token=' + encodeURIComponent(rawToken);
+        var link = configuredResetUrl + '?unit=' + encodeURIComponent(textOf(body.unit)) + '&token=' + encodeURIComponent(rawToken);
+        /* 未登記旅團要把自己公開 /exec 路由帶到 reset page；API Key 永不入網址。 */
+        try {
+          var ownExec = textOf(ScriptApp.getService().getUrl());
+          if (ownExec) link += '&be=' + encodeURIComponent(ownExec);
+        } catch (resetUrlErr) { /* 經平台 proxy 的旅團不需要 be */ }
         var lineBreak = String.fromCharCode(10);
         try { MailApp.sendEmail(forgotTarget.email, 'Scout System 重設密碼', '請在 30 分鐘內開啟以下連結重設密碼：' + lineBreak + lineBreak + link); } catch (mailErr) { /* 不向外洩漏寄信錯誤 */ }
       }
-      return json({ ok: true, success: true, message: '如果電郵已登記，重設連結會寄出。' });
+      return json({ ok: true, success: true, resetMode: 'link',
+        message: '如果電郵已登記，重設連結會寄出。' });
+    }
+
+    /* ---- 電郵一次性 token 完成重設：免登入、免 API Key；token 本身係高熵單次憑證 ---- */
+    if (body.action === 'authResetByToken') {
+      var publicResetError = { ok: false, success: false, code: 'RESET_TOKEN_INVALID', error: '重設連結無效或已過期，請重新申請' };
+      var resetToken = textOf(body.token).trim();
+      if (resetToken.length < 32 || resetToken.length > 256) return json(publicResetError);
+      var resetTokenKey = 'PWD_RESET_' + textOf(body.unit) + '_' + sha256HexGs(resetToken);
+      var completedReset = withLock(function () {
+        var resetProps = PropertiesService.getScriptProperties();
+        var savedToken = resetProps.getProperty(resetTokenKey);
+        var tokenInfo = null;
+        try { tokenInfo = savedToken ? JSON.parse(savedToken) : null; } catch (tokenErr) { tokenInfo = null; }
+        if (!tokenInfo || Number(tokenInfo.exp || 0) <= Date.now()) {
+          if (savedToken) resetProps.deleteProperty(resetTokenKey);
+          return { success: false, invalid: true };
+        }
+        var publicResetDb = loadDb(textOf(body.unit));
+        if (!publicResetDb.success || !publicResetDb.db) return { success: false, retryable: true };
+        var resetRecord = null;
+        var rows = tokenInfo.kind === 'account' ? (publicResetDb.db.accounts || []) : (publicResetDb.db.members || []);
+        rows.some(function (row) {
+          if (row && textOf(row.id) === textOf(tokenInfo.id)
+              && (tokenInfo.kind !== 'account' || row.active !== false)
+              && (tokenInfo.kind !== 'member' || row.status !== 'alumni')) {
+            resetRecord = row; return true;
+          }
+          return false;
+        });
+        if (!resetRecord) { resetProps.deleteProperty(resetTokenKey); return { success: false, invalid: true }; }
+        var publicResetPw = makePasswordRecord(textOf(body.newPassword), false);
+        if (!publicResetPw.ok) return { success: false, policy: publicResetPw.error };
+        if (tokenInfo.kind === 'account') {
+          resetRecord.pw = publicResetPw.pw; resetRecord.mustChangePw = false; resetRecord.defaultPw = false;
+          delete resetRecord.password;
+        } else {
+          resetRecord.hubPw = publicResetPw.pw; resetRecord.hubMustChangePw = false; resetRecord.hubOpened = true;
+          delete resetRecord.hubPassword;
+        }
+        resetRecord.pv = Number(resetRecord.pv || 1) + 1;
+        var publicResetSaved = saveDb({ unit: textOf(body.unit), db: publicResetDb.db,
+          baseVersion: publicResetDb.version, refreshReports: false });
+        if (publicResetSaved.success !== true) return { success: false, retryable: true };
+        revokeAuthSessions(body.unit, resetRecord.id);
+        resetProps.deleteProperty(resetTokenKey);
+        return { success: true };
+      });
+      if (completedReset.policy) return json({ ok: false, success: false, code: 'PASSWORD_POLICY', error: completedReset.policy });
+      if (!completedReset.success) return json(publicResetError);
+      return json({ ok: true, success: true, message: '密碼已重設，請用新密碼登入' });
     }
 
 
     /* ---- 管理員／團長新增支部帳戶 ---- */
     if (body.action === 'authCreateAccount') {
       var createAuth = requireAuth(expectedKey, key); if (!createAuth.ok) return json(createAuth);
-      var createSession = requireAuthSession(body); if (!createSession.ok) return json({ ok:false, success:false, error:createSession.error, code:'SESSION_REQUIRED' });
+      var createSession = body.__serverSigned === true
+        ? { ok:true, serverSigned:true, role:'super' }
+        : requireAuthSession(body);
+      if (!createSession.ok) return json({ ok:false, success:false, error:createSession.error, code:'SESSION_REQUIRED' });
       var createdAccount = withLock(function () {
         var createDb = loadDb(textOf(body.unit));
-        var actorC = (createDb.db && createDb.db.accounts || []).filter(function(a){ return a && a.active !== false && (!createSession.portal ? textOf(a.id) === createSession.id : (textOf(a.username).toLowerCase() === textOf(body.actorUsername).toLowerCase() || textOf(a.email).toLowerCase() === textOf(body.actorUsername).toLowerCase())); })[0];
-        if (!actorC && createSession.portal) actorC = (createDb.db && createDb.db.members || []).filter(function(m){ return m && m.status !== 'alumni' && (textOf(m.ymis).toLowerCase() === textOf(body.actorUsername).toLowerCase() || textOf(m.email).toLowerCase() === textOf(body.actorUsername).toLowerCase()); })[0];
-        if (!actorC) return { success:false, error:'管理員帳戶不存在' };
-        var actorRoleC = createSession.portal ? textOf(createSession.role).toLowerCase() : textOf(actorC.role || actorC.identity).toLowerCase();
+        if (!createDb.success || !createDb.db) return { success:false, error:createDb.error || '後端未有資料庫' };
+        var createActor = createSession.serverSigned
+          ? { ok:true, role:'super', record:null, serverSigned:true }
+          : adminFindActor_(createDb.db, createSession);
+        if (!createActor.ok) return { success:false, error:createActor.error, code:createActor.code };
+        var actorRoleC = textOf(createActor.role).toLowerCase();
         var wantedRole = textOf(body.role || 'exco').toLowerCase();
-        if (actorRoleC !== 'chief' && actorRoleC !== 'leader' && actorRoleC !== 'admin' && actorRoleC !== 'super') return { success:false, error:'你沒有權限新增帳戶' };
+        if (hubRoleRank_(actorRoleC) < hubRoleRank_('leader')) return { success:false, error:'你沒有權限新增帳戶', code:'ACTION_SCOPE_DENIED' };
+        if (['member', 'exco', 'leader'].indexOf(wantedRole) < 0 || hubRoleRank_(wantedRole) >= hubRoleRank_(actorRoleC)) {
+          return { success:false, error:'不能建立同級或更高權限帳戶' };
+        }
         /* ★ 2026-09-24：唔再開「共用帳戶」。團長／領袖只可以幫人開**個人**帳戶
            （要綁名冊 memberId）—— 純「執委帳戶」呢回事已經取消，改身份就得。 */
-        if (actorRoleC !== 'super' && !textOf(body.memberId)) return { success:false, error:'由 2026-09-24 起唔再開共用帳戶 —— 請喺「用戶與身份」加人、改身份（系統會自動開個人帳號）' };
+        if (!textOf(body.memberId)) return { success:false, error:'由 2026-09-24 起唔再開共用帳戶 —— 請喺「用戶與身份」加人、改身份（系統會自動開個人帳號）' };
+        var memberC = null;
+        (createDb.db.members || []).some(function (m) {
+          if (m && m.status !== 'alumni' && textOf(m.id) === textOf(body.memberId)) { memberC = m; return true; }
+          return false;
+        });
+        if (!memberC) return { success:false, error:'帳戶必須綁定有效名冊成員' };
+        var memberRoleC = textOf(memberC.identity || 'member').toLowerCase();
+        if (wantedRole !== memberRoleC) return { success:false, error:'帳戶權限必須跟名冊身份一致；請先在用戶頁更改身份' };
         var usernameC = textOf(body.username || body.email).trim();
         if (!usernameC) return { success:false, error:'請填帳號或 EMAIL' };
         if ((createDb.db.accounts || []).some(function(a){ return a && (textOf(a.username).toLowerCase() === usernameC.toLowerCase() || (textOf(a.email) && textOf(a.email).toLowerCase() === usernameC.toLowerCase())); })) return { success:false, error:'帳戶已存在' };
@@ -991,7 +1815,8 @@ function dispatchBody(e, body) {
         var savedC = saveDb({ unit:textOf(body.unit), db:createDb.db, baseVersion:createDb.version, refreshReports:false });
         return savedC.success === true ? { success:true, version:savedC.version || '' } : savedC;
       });
-      return json({ ok:createdAccount.success === true, success:createdAccount.success === true, version:createdAccount.version || '', error:createdAccount.error || '' });
+      return json({ ok:createdAccount.success === true, success:createdAccount.success === true, version:createdAccount.version || '',
+        code:createdAccount.code || '', error:createdAccount.error || '' });
     }
 
     /* ---- 整份資料庫讀／寫（app 嘅真正儲存；一定要 API Key）---- */
@@ -1000,13 +1825,18 @@ function dispatchBody(e, body) {
       || body.action === 'saveTables' || body.action === 'loadTables' || body.action === 'loadTablesPart') {
       var dbAuth = requireAuth(expectedKey, key);
       if (!dbAuth.ok) return json(dbAuth);
+      var dbSession = requireStaffSession(body, 3, true);
+      if (!dbSession.ok) return json(dbSession);
       /* ★ v2.8.0 簡單寫入（逐表）：一個請求淨係寫「有改過」嗰幾個表。
          冇樂觀鎖、冇分段暫存、冇報表重寫 —— 一個表寫唔到，其餘表照讀得到。 */
       if (body.action === 'saveTables') {
-        var stx = withLock(function () { return saveTables(body); });
+        var stx = withLock(function () {
+          var tableGuard = validateProtectedAdminWrite_(body.unit, body.tables, dbSession);
+          return tableGuard.success === true ? saveTables(body) : tableGuard;
+        });
         return json({ ok: stx.success === true, success: stx.success === true,
           tables: stx.tables || null, bytes: stx.bytes || 0, at: stx.at || '',
-          version: stx.version || '', conflict: stx.conflict === true, error: stx.error || '',
+          version: stx.version || '', conflict: stx.conflict === true, code: stx.code || '', error: stx.error || '',
           /* ★ v2.8.1 自證：confirmed=false ＝ 後端話收到、但分頁留唔到呢次寫嘅行。
              前端要當寫入失敗（保留 pending 再試），唔可以假成功。 */
           confirmed: stx.confirmed === true, simpleRows: stx.simpleRows || 0,
@@ -1029,9 +1859,12 @@ function dispatchBody(e, body) {
           at: ltp.at || '', version: ltp.version || '', error: ltp.error || '' });
       }
       if (body.action === 'saveDb') {
-        var sv = withLock(function () { return saveDb(body); });
+        var sv = withLock(function () {
+          var dbGuard = validateProtectedAdminWrite_(body.unit, body.db, dbSession);
+          return dbGuard.success === true ? saveDb(body) : dbGuard;
+        });
         return json({ ok: sv.success === true, success: sv.success === true, conflict: sv.conflict === true,
-          chunks: sv.chunks || 0, bytes: sv.bytes || 0, at: sv.at || '', version: sv.version || '', error: sv.error || '',
+          chunks: sv.chunks || 0, bytes: sv.bytes || 0, at: sv.at || '', version: sv.version || '', code: sv.code || '', error: sv.error || '',
           /* 自 v2.6.3 起：報表分頁係咪喺同一次請求入面一齊刷新咗（前端就唔使再發第二次）。
              呢個欄位一定要**明確列出**—— 呢度係逐個欄位砌回應，漏咗就會靜靜地冇咗。 */
           reports: sv.reports || null });
@@ -1042,9 +1875,9 @@ function dispatchBody(e, body) {
           partIdx: sp.partIdx || 0, chunks: sp.chunks || 0, version: sp.version || '', error: sp.error || '' });
       }
       if (body.action === 'saveDbCommit') {
-        var sc = withLock(function () { return saveDbCommit(body); });
+        var sc = withLock(function () { return saveDbCommit(body, dbSession); });
         return json({ ok: sc.success === true, success: sc.success === true, conflict: sc.conflict === true,
-          chunks: sc.chunks || 0, bytes: sc.bytes || 0, at: sc.at || '', version: sc.version || '', error: sc.error || '',
+          chunks: sc.chunks || 0, bytes: sc.bytes || 0, at: sc.at || '', version: sc.version || '', code: sc.code || '', error: sc.error || '',
           reports: sc.reports || null });
       }
       if (body.action === 'dbInfo') {
@@ -1077,6 +1910,19 @@ function dispatchBody(e, body) {
         error: ld.error || '' });
     }
 
+    /* ---- 個人進度 bridge：只回指定 YMIS；公開 caller 冇 API Key／link signature 入唔到。 */
+    if (body.action === 'loadMine') {
+      var mineAuth = requireAuth(expectedKey, key);
+      if (!mineAuth.ok) return json(mineAuth);
+      var mineData = loadMineProgress(textOf(body.ymis));
+      return json({ ok: mineData.success === true, success: mineData.success === true,
+        member: mineData.member || null, members: mineData.members || [],
+        progress: mineData.progress || {}, flatProgress: mineData.flatProgress || {},
+        otherBadges: mineData.otherBadges || {}, logs: mineData.logs || [],
+        logRequests: mineData.logRequests || [], requests: mineData.requests || [],
+        at: mineData.at || '', error: mineData.error || '' });
+    }
+
     /* ---- 進度追蹤：POST 讀（doGet ?action=load 之外，仲要 POST 版 ——
        上游（旅系統）簽名讀進度嗰陣都係 POST；同一條 API Key 授權）---- */
     if (body.action === 'load') {
@@ -1087,7 +1933,7 @@ function dispatchBody(e, body) {
       return json(lpData);
     }
 
-    /* ---- 進度追蹤（同進度前端共用同一個後端；API Key＝執委身份）---- */
+    /* ---- 進度追蹤（同 BADGE 共用同一個後端；API Key 只作 server HMAC／routing）---- */
     if (body.action === 'save' || body.action === 'saveOtherBadge') {
       var progressAuth = requireAuth(expectedKey, key);
       if (!progressAuth.ok) return json(progressAuth);
@@ -1099,7 +1945,7 @@ function dispatchBody(e, body) {
       return json({ ok: pbo.success === true, success: pbo.success === true, processed: pbo.processed || 0, error: pbo.error || '' });
     }
 
-    /* ---- 審批中心（執委系統內直接批；同一個 API Key＝執委身份）---- */
+    /* ---- 審批中心（執委系統內直接批；使用者身份由 session 固定）---- */
     if (body.action === 'reviewRequest' || body.action === 'reviewLogRequest') {
       var reviewAuth = requireAuth(expectedKey, key);
       if (!reviewAuth.ok) return json(reviewAuth);
@@ -1137,7 +1983,13 @@ function dispatchBody(e, body) {
       if (expectedKey && key !== expectedKey) {
         return json({ ok: false, success: false, error: '未授權：API Key 唔正確' });
       }
-      return json(verifySetupKey(body.key || body.setupKey || ''));
+      var setupVerified = verifySetupKey(body.key || body.setupKey || '');
+      if (setupVerified.success !== true && setupVerified.ok !== true) return json(setupVerified);
+      var setupSession = issueAuthSession(textOf(body.unit), { id: 'setup', pv: 1 }, 'setup');
+      setupVerified.ok = true; setupVerified.success = true;
+      setupVerified.sessionToken = setupSession.token;
+      setupVerified.sessionExpiresAt = setupSession.expiresAt;
+      return json(setupVerified);
     }
     if (body.action === 'ping') return json({ ok: true, msg: 'pong', unit: body.unit, at: body.at });
     /* ---- 個人化通告訂閱：只保存帳戶自己的訂閱偏好，不接受前端 memberId 冒認 ---- */
@@ -1156,6 +2008,8 @@ function dispatchBody(e, body) {
     /* ---- 相片上 Drive（v2.3.0；免 API Key，同 claim 同一信任級別）----
        APP 內申報用：只存檔回連結，唔會寫任何報表行（報表行由 syncAll 負責）。 */
     if (body.action === 'uploadPhotos') {
+      var uploadAuth = requireAuth(expectedKey, key); if (!uploadAuth.ok) return json(uploadAuth);
+      var uploadSession = requireStaffSession(body, 3, true); if (!uploadSession.ok) return json(uploadSession);
       var upPhotos = (body.payload && body.payload.photos) || [];
       var links = savePhotos(upPhotos, textOf(body.unit), textOf(body.payload && body.payload.id) || 'x', textOf(body.folderId));
       return json({ ok: true, links: links, saved: links.length, asked: upPhotos.length });
@@ -1168,25 +2022,40 @@ function dispatchBody(e, body) {
     if (body.action === 'sync') {
       var syncAuth = requireAuth(expectedKey, key);
       if (!syncAuth.ok) return json(syncAuth);
-      var counts = withLock(function () { return syncAll(body); });
+      var syncSession = requireStaffSession(body, 3, true);
+      if (!syncSession.ok) return json(syncSession);
+      var counts = withLock(function () {
+        if (body.db && typeof body.db === 'object') {
+          var syncGuard = validateProtectedAdminWrite_(body.unit, body.db, syncSession);
+          if (syncGuard.success !== true) return { __protectedWrite: syncGuard };
+        }
+        return syncAll(body);
+      });
+      if (counts && counts.__protectedWrite) return json(counts.__protectedWrite);
       /* 有帶整份資料庫就順便存埋（一次過搞掂「睇得到嘅報表」＋「讀得返嘅資料庫」） */
       var dbSaved = null;
       if (body.db && typeof body.db === 'object') {
         var syncDbAuth = requireAuth(expectedKey, key);
         if (!syncDbAuth.ok) return json(syncDbAuth);
-        dbSaved = withLock(function () { return saveDb(body); });
+        dbSaved = withLock(function () {
+          var syncDbGuard = validateProtectedAdminWrite_(body.unit, body.db, syncSession);
+          return syncDbGuard.success === true ? saveDb(body) : syncDbGuard;
+        });
       }
       return json({ ok: true, msg: '已寫入總表', counts: counts, unit: body.unit, at: body.at,
         db: dbSaved ? { saved: dbSaved.success === true, conflict: dbSaved.conflict === true, chunks: dbSaved.chunks || 0, bytes: dbSaved.bytes || 0, error: dbSaved.error || '' } : null });
     }
-    /* ---- 團員申報進度完成（免 API Key：寫入「待批完成」等執委批核）----
-       團員喺團員入口揀項目申報 → 執委喺「進度 → 審批中心」批准 → 寫入進度。 */
+    /* ---- 團員個人 bridge：唔再接受公開 caller 任填 YMIS。
+       同源 /api/progress 先用 session 對出本人，再以 server-side API Key／link signature 到達呢度。 */
     if (body.action === 'addRequest') {
+      var addReqAuth = requireAuth(expectedKey, key);
+      if (!addReqAuth.ok) return json(addReqAuth);
       var ar = withLock(function () { return addProgressRequest(body); });
       return json({ ok: ar.success === true, success: ar.success === true, request_id: ar.request_id || '', error: ar.error || '' });
     }
     if (body.action === 'myRequests') {
-      /* 團員查返自己嘅申報狀態（只會回自己 YMIS 嘅紀錄） */
+      var myReqAuth = requireAuth(expectedKey, key);
+      if (!myReqAuth.ok) return json(myReqAuth);
       return json(loadMyRequests(textOf(body.ymis)));
     }
     /* 獨立讀寫自測：唔使有帳戶或舊資料；只寫臨時記號，立即讀回再清走。
@@ -1194,6 +2063,8 @@ function dispatchBody(e, body) {
     if (body.action === 'syncCheck') {
       var checkAuth = requireAuth(expectedKey, key);
       if (!checkAuth.ok) return json(checkAuth);
+      var checkSession = requireStaffSession(body, 3, true);
+      if (!checkSession.ok) return json(checkSession);
       var checked = withLock(function () { return checkSheetWriteRead(textOf(body.unit)); });
       return json(checked);
     }
@@ -1216,6 +2087,8 @@ function dispatchBody(e, body) {
     if (body.action === 'repairDb') {
       var repairAuth = requireAuth(expectedKey, key);
       if (!repairAuth.ok) return json(repairAuth);
+      var repairSession = requireStaffSession(body, 4, false);
+      if (!repairSession.ok) return json(repairSession);
       var repaired = withLock(function () { return repairDb(textOf(body.unit)); });
       return json({ ok: true, success: true, repaired: repaired });
     }
@@ -1223,7 +2096,14 @@ function dispatchBody(e, body) {
     if (body.action === 'saveDbForce') {
       var forceAuth = requireAuth(expectedKey, key);
       if (!forceAuth.ok) return json(forceAuth);
-      var forcedSaved = withLock(function () { return saveDb({ unit: textOf(body.unit), db: body.db, baseVersion: '', force: true }); });
+      var forceSession = requireStaffSession(body, 4, false);
+      if (!forceSession.ok) return json(forceSession);
+      var forcedSaved = withLock(function () {
+        var forceGuard = validateProtectedAdminWrite_(body.unit, body.db, forceSession);
+        return forceGuard.success === true
+          ? saveDb({ unit: textOf(body.unit), db: body.db, baseVersion: '', force: true })
+          : forceGuard;
+      });
       return json(forcedSaved);
     }
     /* ★ v2.8.4：旅系統接駁 —— 讀／寫我呢支後端嘅「直接入口」掣。
@@ -1232,11 +2112,15 @@ function dispatchBody(e, body) {
     if (body.action === 'getLinkState') {
       var lsAuth = requireAuth(expectedKey, key);
       if (!lsAuth.ok) return json(lsAuth);
+      var lsSession = requireStaffSession(body, 3, true);
+      if (!lsSession.ok) return json(lsSession);
       return json(getLinkState());
     }
     if (body.action === 'setLocalLogin') {
       var slAuth = requireAuth(expectedKey, key);
       if (!slAuth.ok) return json(slAuth);
+      var slSession = requireStaffSession(body, 4, false);
+      if (!slSession.ok) return json(slSession);
       var rawAllow = String(body.allow || '').trim().toLowerCase();
       var allow = ['1', 'true', 'yes', 'on', 'open'].indexOf(rawAllow) >= 0;
       if (!allow && ['0', 'false', 'no', 'off', 'close', 'closed'].indexOf(rawAllow) < 0) {
@@ -1281,7 +2165,8 @@ function doGet(e) {
   }
   if (action === 'load') {
     var expected = PropertiesService.getScriptProperties().getProperty('API_KEY');
-    if (supplied && expected && supplied !== expected) return json({ success: false, ok: false, error: 'Invalid API Key' });
+    var getLoadAuth = requireAuth(expected, supplied);
+    if (!getLoadAuth.ok) return json(getLoadAuth);
     var data = loadProgressData();
     data.success = true; data.ok = true;
     return json(data);
@@ -1663,7 +2548,7 @@ function saveDbPart(body) {
   return { success: true, partIdx: idx, chunks: chunks.length };
 }
 
-function saveDbCommit(body) {
+function saveDbCommit(body, writeAuth) {
   var unit = textOf(body.unit) || 'UNKNOWN';
   var saveId = textOf(body.saveId);
   var parts = Number(body.parts);
@@ -1703,6 +2588,8 @@ function saveDbCommit(body) {
       else merged[k] = incoming;
     });
   });
+  var protectedCommit = validateProtectedAdminWrite_(unit, merged, writeAuth);
+  if (protectedCommit.success !== true) return protectedCommit;
   var text = JSON.stringify(merged);
   if (text.length > 40000000) { cleanStaging(sh, got); return { success: false, error: '拼合後太大（>40MB）' }; }
 
@@ -2816,6 +3703,33 @@ function loadProgressData() {
     logsSupported: !!ss.getSheetByName('活動履歷'),
     logRequests: logRequests,
     logRequestsSupported: !!ss.getSheetByName('待批履歷'),
+    at: new Date()
+  };
+}
+
+/** 只回一位團員自己的 BADGE 資料；永遠唔會把完整 load payload 交畀個人入口。 */
+function loadMineProgress(ymis) {
+  ymis = textOf(ymis);
+  if (!ymis) return { success: false, error: '登入帳戶未綁定 YMIS' };
+  var all = loadProgressData();
+  var member = null;
+  (all.members || []).some(function (m) {
+    if (textOf(m && m.ymis) === ymis) { member = m; return true; }
+    return false;
+  });
+  var progress = {}; progress[ymis] = (all.progress && all.progress[ymis]) || {};
+  var flat = {}; flat[ymis] = (all.flatProgress && all.flatProgress[ymis]) || {};
+  var other = {}; other[ymis] = (all.otherBadges && all.otherBadges[ymis]) || {};
+  return {
+    success: true,
+    member: member || { ymis: ymis, name: '' },
+    members: [member || { ymis: ymis, name: '' }],
+    progress: progress,
+    flatProgress: flat,
+    otherBadges: other,
+    logs: (all.logs || []).filter(function (r) { return textOf(r && r.ymis) === ymis; }),
+    logRequests: (all.logRequests || []).filter(function (r) { return textOf(r && r.ymis) === ymis; }),
+    requests: loadMyRequests(ymis).requests || [],
     at: new Date()
   };
 }

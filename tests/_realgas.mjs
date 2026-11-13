@@ -31,6 +31,17 @@ if (process.env.REALGAS_INIT !== '0') {
   try { gas.sandbox.initializeSheets(); } catch (e) { console.error('[realgas] initializeSheets 失敗', e); }
 }
 
+/* 直接打 test /exec 的舊 fixture 亦要用合法 server-issued setup session；經
+   /api/proxy 的產品請求本身已有使用者 session，不會行到這個 test-only 補票。 */
+let FIXTURE_SESSION = '';
+try {
+  const setupKey = gas.sandbox.issueSetupKey();
+  FIXTURE_SESSION = String(gas.post({ action: 'verifySetupKey', unit: '0082', key: setupKey }).sessionToken || '');
+} catch (e) { console.error('[realgas] fixture session 失敗', e); }
+const ADMIN_SETUP_ACTIONS = new Set(['dbInfo', 'loadDb', 'loadDbPart', 'loadTables', 'loadTablesPart', 'syncCheck',
+  'saveDb', 'saveDbPart', 'saveDbCommit', 'saveTables', 'sync', 'uploadPhotos', 'getLinkState']);
+const ADMIN_SERVER_ACTIONS = new Set(['repairDb', 'saveDbForce']);
+
 function readBody(req) {
   // 記得讀過嘅內容：多個 handler 都想睇 body 時唔會把 stream 讀第二遍（會掛住）
   if (req._body !== undefined) return Promise.resolve(req._body);
@@ -139,9 +150,26 @@ const server = http.createServer(async (req, res) => {
        （唔好經 gas.post() 嗰個 JSON.parse/stringify 往返：呢度要保留
        真實回應嘅**位元組數**，先至測得到 4.5MB 回應上限嗰類問題）。 */
     const params = Object.fromEntries(u.searchParams.entries());
-    const out = req.method === 'GET'
-      ? gas.sandbox.doGet({ parameter: params })
-      : gas.sandbox.doPost({ postData: { contents: await readBody(req) }, parameter: params });
+    let out;
+    if (req.method === 'GET') {
+      out = gas.sandbox.doGet({ parameter: params });
+    } else {
+      let contents = await readBody(req);
+      let parsed = null;
+      try { parsed = JSON.parse(contents || '{}'); } catch { parsed = null; }
+      const signed = !!(parsed?.sig || params.sig);
+      const explicitSession = parsed && (Object.prototype.hasOwnProperty.call(parsed, 'sessionToken') || Object.prototype.hasOwnProperty.call(parsed, 'portalToken'));
+      if (parsed && !signed && !explicitSession && ADMIN_SETUP_ACTIONS.has(String(parsed.action || ''))) {
+        parsed.sessionToken = FIXTURE_SESSION;
+        contents = JSON.stringify(parsed);
+      }
+      if (parsed && !signed && !explicitSession && ADMIN_SERVER_ACTIONS.has(String(parsed.action || ''))) {
+        const trusted = gas.serverPost(parsed);
+        res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+        return res.end(JSON.stringify(trusted));
+      }
+      out = gas.sandbox.doPost({ postData: { contents }, parameter: params });
+    }
     res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
     res.end(out.getContent());
   } catch (e) {

@@ -71,6 +71,10 @@ function makeSheet(name, headers, { coerceNumericText = false } = {}) {
 function makeGas({ apiKey = null, coerceNumericText = false } = {}) {
   const sheets = new Map();
   const props = new Map();
+  const cache = new Map();
+  const cacheWrites = [];
+  const mail = [];
+  const lockStats = { waits: 0, releases: 0 };
   if (apiKey) props.set('API_KEY', apiKey);
 
   const ss = {
@@ -102,15 +106,24 @@ function makeGas({ apiKey = null, coerceNumericText = false } = {}) {
       DigestAlgorithm: { SHA_256: 'sha256' }, Charset: { UTF_8: 'utf8' },
       computeDigest: (algo, value) => [...crypto.createHash(algo).update(String(value), 'utf8').digest()],
       computeHmacSha256Signature: (value, key) => [...crypto.createHmac('sha256', Buffer.from(key)).update(Buffer.from(value)).digest()],
-    }, 
-    LockService: { getScriptLock: () => ({ tryLock: () => true, waitLock: () => true, releaseLock: () => {} }) },
+    },
+    CacheService: { getScriptCache: () => ({
+      get: (k) => cache.get(String(k)) || null,
+      put: (k, v, ttl) => { cache.set(String(k), String(v)); cacheWrites.push({ key: String(k), value: String(v), ttl: Number(ttl || 0) }); },
+      remove: (k) => cache.delete(String(k))
+    }) },
+    LockService: { getScriptLock: () => ({
+      tryLock: () => { lockStats.waits++; return true; },
+      waitLock: () => { lockStats.waits++; return true; },
+      releaseLock: () => { lockStats.releases++; }
+    }) },
     Logger: { log: () => {} },
     DriveApp: { getFolderById: () => ({ createFile: () => ({ getUrl: () => 'https://drive/x', setSharing: () => {} }) }) },
     ContentService: {
       createTextOutput: (t) => ({ _t: t, setMimeType() { return this; }, getContent() { return this._t; } }),
       MimeType: { JSON: 'application/json' }
     },
-    MailApp: { sendEmail: () => {} },
+    MailApp: { sendEmail: (...args) => { mail.push(args); } },
     Session: { getActiveUser: () => ({ getEmail: () => 't@e.com' }) },
     console, JSON, Date, Math, String, Number, Object, Array,
     isNaN, parseInt, parseFloat, RegExp, Error, encodeURIComponent, decodeURIComponent
@@ -118,8 +131,13 @@ function makeGas({ apiKey = null, coerceNumericText = false } = {}) {
   vm.createContext(sandbox);
   vm.runInContext(fs.readFileSync(path.join(ROOT, 'apps-script/Code.gs'), 'utf8'), sandbox, { filename: 'Code.gs' });
 
-  const post = (body) => {
+  const networkPost = (body, parameter = {}) => {
+    const out = sandbox.doPost({ parameter, postData: { contents: JSON.stringify(body || {}) } });
+    try { return JSON.parse(out.getContent()); } catch { return { _raw: out.getContent() }; }
+  };
+  const rawPost = (body) => {
     const payload = { ...body };
+    /* fixture 預設補 routing key；真正「瀏覽器原樣送入」測試要用 networkPost。 */
     /* 簽名請求由 sig 授權、唔行 apikey —— 唔可以硬注 key 入去（會整爛 body digest 嘅驗證）。 */
     const signed = Object.prototype.hasOwnProperty.call(payload, 'sig');
     if (!signed && props.has('API_KEY') && !Object.prototype.hasOwnProperty.call(payload, 'apiKey') && !Object.prototype.hasOwnProperty.call(payload, 'apikey')) {
@@ -128,12 +146,43 @@ function makeGas({ apiKey = null, coerceNumericText = false } = {}) {
     const out = sandbox.doPost({ postData: { contents: JSON.stringify(payload) } });
     try { return JSON.parse(out.getContent()); } catch { return { _raw: out.getContent() }; }
   };
+  /* 行政 fixture 同產品一樣先取得 server-issued bootstrap session；API Key 只做 routing。
+     明確傳 sessionToken（包括空字串）會關閉自動 fixture，供 fail-closed 測試使用。 */
+  const ADMIN_WITH_SETUP = new Set(['dbInfo', 'loadDb', 'loadDbPart', 'loadTables', 'loadTablesPart', 'syncCheck',
+    'saveDb', 'saveDbPart', 'saveDbCommit', 'saveTables', 'sync', 'uploadPhotos', 'getLinkState']);
+  const fixtureSessions = new Map();
+  const fixtureSession = (unit) => {
+    const code = String(unit || '0082');
+    if (fixtureSessions.has(code)) return fixtureSessions.get(code);
+    const key = sandbox.issueSetupKey();
+    const verified = rawPost({ action: 'verifySetupKey', unit: code, key });
+    const token = String(verified.sessionToken || '');
+    if (token) fixtureSessions.set(code, token);
+    return token;
+  };
+  const post = (body) => {
+    const payload = { ...body };
+    const signed = Object.prototype.hasOwnProperty.call(payload, 'sig');
+    const explicitSession = Object.prototype.hasOwnProperty.call(payload, 'sessionToken') || Object.prototype.hasOwnProperty.call(payload, 'portalToken');
+    if (!signed && !explicitSession && ADMIN_WITH_SETUP.has(String(payload.action || ''))) {
+      payload.sessionToken = fixtureSession(payload.unit);
+    }
+    return rawPost(payload);
+  };
+  /* 只供測試平台 server-to-server 已驗簽後的行政修復能力；網絡 body 自報 marker
+     會被 Code.gs doPost 清走，所以呢條 helper 直接進 dispatcher。 */
+  const serverPost = (body) => {
+    const payload = { ...body, __serverSigned: true };
+    if (props.has('API_KEY') && !payload.apiKey && !payload.apikey) payload.apiKey = props.get('API_KEY');
+    const out = sandbox.dispatchBody(null, payload);
+    try { return JSON.parse(out.getContent()); } catch { return { _raw: out.getContent() }; }
+  };
   /* GET（doGet：?action=load 讀進度 —— 進度前端／團員入口用） */
   const get = (params = {}) => {
     const out = sandbox.doGet({ parameter: params });
     try { return JSON.parse(out.getContent()); } catch { return { _raw: out.getContent() }; }
   };
-  return { sandbox, post, get, props, sheets };
+  return { sandbox, post, networkPost, serverPost, get, props, sheets, cache, cacheWrites, mail, lockStats };
 }
 
 export { makeSheet, makeGas };

@@ -1,0 +1,2 @@
+# Exact vendored upstream checkpoint: preserve bytes (including its historical EOL spaces).
+apps-script/unified-src/vsbadge-v9.6.gs whitespace=-trailing-space

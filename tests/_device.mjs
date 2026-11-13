@@ -11,6 +11,7 @@ import { JSDOM } from 'jsdom';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { TEST_SUPER_PASSWORD, TEST_SUPER_USER } from './_authstub.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BASE = process.argv[2];
@@ -51,6 +52,29 @@ try {
   /* 同 main.js 一樣：改動會自動排一次寫入（critical＝即刻）。
      舊劇本想測「未撳掣之前後端應該冇嘢」嘅，加 { bootAutoSave:false }。 */
   store.setSaveHook((info) => remote.scheduleSave(info));
+
+  /* 行政讀寫而家必須有可信 session；API Key 只係 server routing key。
+     呢個裝置測試先經真 /api/auth 取得測試用平台 super session，之後
+     /api/proxy 會轉成支部 Key 簽署的 server-to-server request。需要測未登入
+     情境的 plan 可以明確設 bootstrapSession:false。 */
+  if (PLAN.bootstrapSession !== false) {
+    const ticketRes = await fetch(`${BASE}/api/auth`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user: TEST_SUPER_USER, password: TEST_SUPER_PASSWORD })
+    });
+    const ticket = await ticketRes.json().catch(() => ({}));
+    if (ticketRes.ok && ticket.ok && ticket.sessionToken && Number(ticket.sessionExpiresAt) > Date.now()) {
+      store.setSession({
+        role: 'super', accountId: 'super', username: '', name: '測試平台管理員',
+        at: Date.now(), hidden: true, via: 'super-server',
+        sessionToken: ticket.sessionToken, sessionExpiresAt: Number(ticket.sessionExpiresAt)
+      });
+      out.bootstrapSession = true;
+    } else {
+      out.bootstrapSession = false;
+      out.bootstrapError = ticket.error || '測試平台 session 未啟用';
+    }
+  }
   /* ★ 2026-09-24：模擬「status 通、但讀寫被拒」（最常見嘅死因：API Key 唔啱）。
      呢個情況正正係「以為同步到，其實一個字都寫唔入」，所以一定要測得到。 */
   if (PLAN.badKey) {
@@ -92,7 +116,8 @@ try {
     if (step.op === 'checkReadWrite') {
       const r = await (await fetch(`${BASE}/api/proxy`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action: 'syncCheck', unit: '0082' })
+        body: JSON.stringify({ action: 'syncCheck', unit: '0082',
+          sessionToken: store.getSession()?.sessionToken || '' })
       })).json();
       const d = r.data || r;
       out.steps.push({ op: 'checkReadWrite', ok: r.ok === true && d.wrote === true && d.readBack === true,
@@ -173,6 +198,21 @@ try {
       const r = await auth.setMemberHubPassword(id, step.pw);
       out.steps.push({ op: 'setHubPw', ok: !!r.ok, msg: r.msg || '', pending: pendingN(), pendingAccounts: remote.pendingAccounts?.() ?? 0, state: remote.syncState().state, statusMsg: remote.syncState().msg || '' });
     }
+    /* 對抗 fixture：人工注入一個從未上載的舊 browser hash，驗證正式 login 絕不
+       把它當第二身份來源。產品流程不可 call 呢條；正常 setHubPw 一律 server-first。 */
+    if (step.op === 'injectLocalOnlyPassword') {
+      const ms = store.load().members;
+      const m = step.id === '@last' ? ms[ms.length - 1] : ms.find(x => x.id === step.id);
+      if (m) {
+        m.hubPw = await auth.hashPassword(String(step.pw || ''), `fixture-local:${m.id}`);
+        delete m.hubPassword;
+        m.hubOpened = true;
+        m.hubMustChangePw = false;
+        store.commitCritical('fixture-local-auth');
+      }
+      out.steps.push({ op: 'injectLocalOnlyPassword', ok: !!m, pending: pendingN(),
+        pendingAccounts: remote.pendingAccounts?.() ?? 0 });
+    }
     /* 直接問後端：呢個 login 代號喺後端嗰份名冊存唔存在 */
     if (step.op === 'backendHasLogin') {
       const got = await remote.pullDb();
@@ -188,7 +228,7 @@ try {
     if (step.op === 'login') {
       const gate = await remote.requireBackendForLogin();
       let res = null;
-      if (gate.ok) res = await auth.loginIdentity(step.login, step.pw);
+      if (gate.ok) res = await auth.loginServer('staff', step.login, step.pw);
       out.steps.push({
         op: 'login', gateOk: !!gate.ok, gateReason: gate.reason || '', gateError: (gate.error || '').slice(0, 120),
         ok: !!(res && res.ok), msg: res?.msg || '', role: res?.role || '',
@@ -220,9 +260,10 @@ try {
     }
     /* 讀進度後端（同一個 /exec）：成員名單有幾多個 YMIS、進度追蹤有幾多格 */
     if (step.op === 'progressLoad') {
+      const session = store.getSession?.() || {};
       const r = await fetch(`${BASE}/api/progress`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ unit: '0082', action: 'load' })
+        body: JSON.stringify({ unit: '0082', action: 'load', sessionToken: session.sessionToken || '', portalToken: session.portalToken || '' })
       }).then(x => x.json()).catch(e => ({ ok: false, error: String(e) }));
       const d = r?.data || {};
       const ymisList = (d.members || []).map(m => String(m.ymis || '')).filter(Boolean);
@@ -235,9 +276,10 @@ try {
     }
     /* 直接勾一項進度（經 /api/progress → 旅團後端「進度追蹤」分頁） */
     if (step.op === 'progressTick') {
+      const session = store.getSession?.() || {};
       const r = await fetch(`${BASE}/api/progress`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ unit: '0082', action: 'save', data: {
+        body: JSON.stringify({ unit: '0082', action: 'save', sessionToken: session.sessionToken || '', portalToken: session.portalToken || '', data: {
           changes: [{ ymis: step.ymis, itemId: step.itemId, date: step.date || '2026-09-24' }],
           confirmer: step.confirmer || '測試領袖'
         } })
@@ -353,7 +395,9 @@ try {
       const post = async (action) => {
         const rr = await fetch(cfg.url || `${BASE}/api/proxy`, {
           method: 'POST', headers: { 'Content-Type': cfg.url ? 'text/plain;charset=utf-8' : 'application/json' },
-          body: JSON.stringify(cfg.url ? { action, unit: cfg.unit || '0082', apiKey: cfg.apiKey } : { action, unit: cfg.unit || '0082' })
+          body: JSON.stringify(cfg.url
+            ? { action, unit: cfg.unit || '0082', apiKey: cfg.apiKey }
+            : { action, unit: cfg.unit || '0082', sessionToken: store.getSession()?.sessionToken || '' })
         });
         return rr.json().catch(() => ({}));
       };
@@ -370,7 +414,9 @@ try {
       const cfg = remote.remoteCfg();
       const r = await fetch(cfg.url || `${BASE}/api/proxy`, {
         method: 'POST', headers: { 'Content-Type': cfg.url ? 'text/plain;charset=utf-8' : 'application/json' },
-        body: JSON.stringify(cfg.url ? { action: 'dbInfo', unit: cfg.unit || '0082', apiKey: cfg.apiKey } : { action: 'dbInfo', unit: cfg.unit || '0082' })
+        body: JSON.stringify(cfg.url
+          ? { action: 'dbInfo', unit: cfg.unit || '0082', apiKey: cfg.apiKey }
+          : { action: 'dbInfo', unit: cfg.unit || '0082', sessionToken: store.getSession()?.sessionToken || '' })
       });
       const j = await r.json().catch(() => ({}));
       out.steps.push({
@@ -473,7 +519,9 @@ try {
         : { action: 'saveDb', unit: '0082', db, baseVersion: String(got.version || '') };
       const r = await (await fetch(cfg.url || `${BASE}/api/proxy`, {
         method: 'POST', headers: { 'Content-Type': cfg.url ? 'text/plain;charset=utf-8' : 'application/json' },
-        body: JSON.stringify({ ...body, ...(cfg.url ? { apiKey: cfg.apiKey } : {}) })
+        body: JSON.stringify({ ...body, ...(cfg.url
+          ? { apiKey: cfg.apiKey }
+          : { sessionToken: store.getSession()?.sessionToken || '' }) })
       })).json();
       out.steps.push({ op: 'teammatePush', ok: r.ok === true, via: simple ? 'simple' : 'blob', version: String(r.version || '') });
     }

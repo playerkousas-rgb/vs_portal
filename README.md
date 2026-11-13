@@ -8,6 +8,14 @@
 > 規範來源：[`playerkousas-rgb/readme`](https://github.com/playerkousas-rgb/readme)（真理倉）。
 > 授權：**版權保留**（未提供開源授權）。
 >
+> [!IMPORTANT]
+> **由下而上施工：BOOK 齊 → BADGE 齊 → 5 個支部系統（現在）→ 最後才建立並接通旅系統。**
+> 現在沒有中央旅系統；支部本地帳戶／session 是正常主入口，`ALLOW_LOCAL_LOGIN` 必須保持開啟。
+> 一支部一共用 Sheet 的 Unified GS 現為隔離測試版；assertion／exchange 只是第 4 階段預留接口，
+> 未有中央 signer 不阻擋支部獨立驗收。測試產物是 [`apps-script/UnifiedCode.gs`](apps-script/UnifiedCode.gs)，
+> 不是現行 `apps-script/Code.gs`，亦未發佈到 `vsbadge` 或任何正式旅團。詳見
+> [`SCOPE.md`](SCOPE.md) §0 及 [`docs/UNIFIED_ARCHITECTURE_TEST.md`](docs/UNIFIED_ARCHITECTURE_TEST.md)。
+>
 > **v2.8.7（2026-11-12）★ UI 簡化：一個功能一個入口 ＋ 無權就唔准入**：
 > ① 導覽由**兩份人手清單**（`VIEWS` ＋ `NAV`）收斂做**一個登記冊**；
 > 　「資料管理」正式登記做側欄獨立入口（以前係孤兒頁），「教學」搬去頂欄。
@@ -69,16 +77,16 @@
 > 舊種子 `acc_leader`／`acc_exco` 自動清走；權限變更＝改名冊身份（執委冇呢個權）。
 > ⑥ **團長**（每團一位，最高權限）：**第一個開戶嗰位就係團長**（入到去即刻認領），
 > **只可以轉移**、唔可以自己改低自己身份；轉移後舊團長自動變返領袖（有審計紀錄）。
-> ⑦ 進度對接：**唔需要**喺 vsbadge 設 `PORTAL_DEFAULT_ORIGIN` —— 我哋行「一個後端、兩個前端」，
-> 只需要 `/exec` ＋ API Key（見 **[docs/UPDATES_2026-09-24.md](docs/UPDATES_2026-09-24.md)** ⑥）。
+> ⑦ 進度對接：管理系統、進度同 BADGE 使用**同一 Unified GAS／Sheet**；Vercel 只設
+> `TROOP_<ID>_NAME/BACKEND/APIKEY`。唔設任何 Portal／Progress 額外 secret、backend 或 key。
 > ⑧ **「人係讀到、但個個都冇進度」**：~~進度 → 設定「後端資料檢查」（`diag`）~~
 > **【已於 v2.8.6 移除】** —— 該 UI 喺 2026-09-26 拆掣時已經拆走，v2.8.6 連後端
 > `diag` action ＋ `diagnoseBackendTabs()` 一併清走，唔再係可用功能。
 > 而家嘅做法：**直接開張 Google Sheet 對數**（「進度追蹤」有幾行／幾個 YMIS、
 > 同「成員名單」對唔對得上），或者睇 `status` 回嘅 `spreadsheet` 確認係邊張 Sheet；
 > 唔見分頁 → 行 `initializeSheets()`；資料喺另一張 Sheet → 改用嗰支 `/exec`；YMIS 唔一致 → 對 YMIS。
-> 「總覽」見到「有成員、零進度」亦會自動彈橫額。順帶：進度設定係**跟資料庫走**嘅，
-> 填完要撳頂部「**儲存到後端**」，否則無痕／另一部機讀唔到。
+> 「總覽」見到「有成員、零進度」亦會自動彈橫額。進度接線只由 server Registry 管理；
+> browser 唔會保存或提交 `/exec`／API Key。
 > ⑨ **「資料綁死喺我部機，其他人登入睇唔見」**：~~登入閘／「儲存狀態」卡嘅**搶救三寶**~~
 > **【UI 已於 2026-09-26 拆走；前端函數已於 v2.8.6 清走】** ——
 > 團長定案：「我地已經完成曬就唔洗再做呢D，用戶之後用其實佢都唔識整」。
@@ -293,12 +301,12 @@ node dev-server.mjs             # 推薦（靜態＋/api，同 Vercel 行為一�
 |---|---|---|
 | 1 | 主色改棗紅 | `assets/css/main.css` 全部用 `--brand-700: #7B2233` 系列 token；`assets/js/lib/theme.js` 每個旅團可自訂色 |
 | 2 | 內建團章（可改、可出 Word / PDF / QR 公開睇） | 「團章」頁：中／英／對照編輯、版本發布、Word、PDF、Markdown、單一 HTML、QR Code；公開閱讀頁 `constitution.html?u=<旅團編號>` **免登入** |
-| 3 | 登入＝**個人帳號**（冇共用帳戶）；`sheep`＋密碼靜默登入超管 | `assets/js/lib/auth.js`（`loginIdentity()`，登入代號 email → loginId → YMIS）、`store.js`（`migrateSharedAccounts()` 清走舊共用帳戶）；登入頁只有一個門口；超管唔會出現在帳戶名單、session 亦唔會存帳號名 |
-| 4 | 改密碼權限：超管→全部；領袖→自己＋執委；執委→只有自己 | `auth.canChangePasswordOf()`、`changePassword()`；「權限總表」有矩陣 |
+| 3 | 登入＝**個人帳號**（冇共用帳戶）；`sheep`＋密碼靜默登入超管 | 普通帳戶由 GAS `authLogin` 以 email／loginId／YMIS 核對並派 opaque session；超管由同源 `/api/auth` 核對並派 HMAC session；未登入不下載名冊／hash。`store.js` 的 `migrateSharedAccounts()` 清走舊共用帳戶 |
+| 4 | 改密碼權限：超管→全部；領袖→自己＋執委；執委→只有自己 | 自己改密碼必須填目前密碼並走 server-side `changeOwnPassword()`；管理員重設他人密碼走獨立授權 action；「權限總表」有矩陣 |
 | 5 | 生日內建、可改可輸出、當月＋前 7 日提示（顯示邊位） | 「用戶」頁自行輸入團員資料、「用戶與身份 → 生日表」頁（月曆／年表／下載 .ics）、儀表板提示卡（會顯示姓名） |
 | 6 | 物資紀錄＋借用面板，任何已登入帳戶可批核，借出／歸還自動加減庫存 | 「物資」頁：物資清單、借用與批核、盤點紀錄；`inv.approve` 三個角色都有；庫存由 `model.itemTotals()` 即時計算（批准即鎖定、歸還即回復） |
 | 7 | 財務內建，取代 Google Form；**出兩條數**（旅 31/3 年結 vs 旅團 AGM 起計） | 「財務」頁：帳目／過往紀錄／**團費收款表（每年每人 $360，逐人記錄邊個交咗）**／申報／預算／設定（含匯入舊帳），頂部「年結報告」；`assets/js/lib/fiscal.js` 同時計算**童軍年度（4/1–3/31）**同**旅年度（AGM → 下屆 AGM 前一日）**；AGM 日期**逐年輸入**（每年唔同） |
-| 8 | 進度紀錄（**一個後端、兩個前端**） | 旅團只有**一個後端**（Google Sheet ＋ Apps Script）：**深資童軍管理系統**同**進度前端**都係前端，讀寫同一份資料。呢邊**唔連任何其他系統** —— 直接讀後端（`?action=load`）／寫後端（`action=save`），通常用返 Registry 登記嘅後端，API Key＝執委身份；分頁有總覽／成員進度／勾選進度／審批中心／設定 |
+| 8 | 進度紀錄（**一個後端、兩個前端**） | 旅團只有**一個後端**（Google Sheet ＋ Apps Script）：管理前端同進度前端讀寫同一份資料。行政／批核 action 必須先驗 server-issued session 與 role/scope；API Key 只由 server 用作支部路由，**不是執委身份**；團員只可讀寫 session 對應的本人進度 |
 | 9 | 多旅團系統（Git Registry） | `data/units.json` 係 Git Registry，每個旅團一個資料夾（`data/units/<編號>/*.json`）。示範資料（MOCK）已經喺 2026-09-24 拆走 |
 | 10 | 成員用手機**影相＋揀欄目**就入得帳（取代 Google Form）；領袖／執委亦可在 APP 內填 | 公開收集頁 **`entry.html?u=<旅團編號>`**（免登入：影相 → 揀欄目 → 金額 → 送出）＋ APP 內「儀表板 → 影相記一筆」／「財務 → 收支申報」；相機會自動壓縮，送出可經 Apps Script 直接入總表 |
 | 11 | 每個旅團可以**插入自己嘅 SHEET** 取代預設；欄目可改名／加減（內建類 Google Sheet） | 每個模組頁右上「**欄位**」掣（帳目／物資／借用／團員／通告／會議）：改名／加欄／改類型／必填／隱藏／排序／還原；「**插入自己嘅 Sheet**」喺「**資料管理**」 |
@@ -382,7 +390,7 @@ node dev-server.mjs             # 推薦（靜態＋/api，同 Vercel 行為一�
 
 | 系統 | 公開頁 | 成員點用 |
 |---|---|---|
-| **團員入口**（要登入） | `members.html?u=<旅團編號>` | YMIS＋密碼登入 → 睇活動／通告 → **一撳 RSVP**（認名冊身份，唔使填名）→ 自動推上後端；IG／FB／網頁 ICON 直入；**我的進度**（睇獎章進度＋申報完成＋批核狀態）；過期嘢照顯示但排後＋標「已截止／已完結」 |
+| **團員入口**（要登入） | `members.html?u=<旅團編號>` | YMIS＋密碼經 GAS 登入 → 只下載本人可見、正面欄位白名單安全投影（不含帳戶 hash／他人請假、答卷、RSVP）並存入獨立 `hub` namespace，絕不覆蓋行政 DB → RSVP／答卷／請假由 opaque session 固定本人；畫面不先樂觀改值，server 成功回新投影才顯示，失敗會保留明確「重新送出」狀態；**我的進度**只讀本人 |
 | 收支申報 | `entry.html?u=<旅團編號>` | 影相 → 揀欄目 → 金額 → 送出（即刻入 APP 待批清單） |
 | **物資借用** | `borrow.html?u=<旅團編號>` | 揀物資（睇到**可用數量**）→ 數量 → 用途 → 送出（即刻入 APP 借用批核） |
 | 通告報名／出席回覆 | `notice.html?u=<旅團編號>&n=<編號>` | 睇通告 → 回覆出席與否（即刻入 APP 報名分頁；同名防重複） |
@@ -439,22 +447,15 @@ Word／PDF／Markdown／單一 HTML／JSON 匯出、QR Code、
 **深資童軍管理系統**同**進度前端**（團員／領袖用嗰個）係**兩個前端**，讀寫同一份資料 ——
 所以執委系統**唔需要連去任何其他系統**：唔開分頁、唔用 portal，亦唔會出 `referer_mismatch`。
 
-* **讀**：`GET ?action=load` → 成員、進度、待批完成、其他獎章、活動履歷（經同源 `/api/progress` 轉發）
-* **寫**：`POST {action:'save'|'saveOtherBadge', apikey, changes|records}` → 直接勾／取消勾，寫入同一個 Sheet
-* **批**：`POST {action:'reviewRequest'|'reviewLogRequest', apikey, request_id, decision}` → **審批中心**批准／拒絕團員申報；
-  批准即刻寫入「進度追蹤」（已有紀錄會更新完成日期）／「活動履歷」，拒絕只改狀態、唔會刪紀錄
-* **設定**：通常唔使填 —— 旅團後端登記喺 `data/units.json`（`backend.gasUrl` / `apiKey`）就會自動用返；
-  未登記就去「進度 → 設定」填 `/exec` ＋ API Key（Apps Script 執行 `showApiKey()` 複製）。**API Key＝執委身份**
-* **考核項目**：第 11 版綱要已經**內建**喺 `data/progress/items.json`（離線可用，唔使連任何網站）；
-  旅團自己改過項目就喺設定填一條公開 https 網址
-* **後端範本**：`Code.gs` 已經同時支援兩邊（`sync` / `claim` / `noticeSignup` / `loan` ＋ `load` / `save` / `saveOtherBadge`）；
-  執行一次 `initializeSheets` 會建好 `進度追蹤`／`其他獎章`／`待批完成`／`活動履歷`／`待批履歷`／`成員名單` 分頁，
-  同步時亦會更新 `成員名單`，令兩個前端見到同一批人
-* **安全**：`/api/progress` 只准 GAS `/exec`、payload ≤ 1 MB、45 秒逾時，log 只記 metadata（唔記 API Key）。
-  要埋讀取進度追蹤：去「進度 → 設定」貼 `/exec` 網址（Apps Script → 部署 → 管理部署）＋ API Key
-  （Apps Script 執行 `showApiKey()`）→ 撳「儲存」再撳「重新讀取」見到團員名單就成功（存在旅團自己嘅資料，跟 JSON 備份走）。
-  想收埋條 Key 唔落前端，先設伺服器端 env（`TROOP_<旅團>_PROGRESSBACKEND` / `_PROGRESSAPIKEY`）覆蓋
-* **身份對應**：團員／執委用 **YMIS（10 位數字）**、領袖用 **Email**
+* **讀**：staff 以 server-issued session 經同源 `/api/progress` 讀行政進度；團員只走 `loadMine`，YMIS 由 session 固定
+* **寫**：`save`／`saveOtherBadge` 要有效 staff session 與 action scope；支部 API Key 由 server 注入，只作路由
+* **批**：`reviewRequest`／`reviewLogRequest` 要有效 staff session → **審批中心**批准／拒絕團員申報；
+  批准即刻寫入「進度追蹤」／「活動履歷」，拒絕只改狀態、唔會刪紀錄
+* **設定**：正式接線只由 server Registry 的 `TROOP_<ID>_BACKEND/APIKEY` 管理；「進度 → 接駁狀態」係唯讀頁，冇 `/exec`／Key 輸入欄。API Key **不代表執委身份**
+* **考核項目**：第 11 版綱要固定內建喺 `data/progress/items.json`（離線可用），唔接受 browser remote catalog override
+* **後端範本**：`UnifiedCode.gs` 同時支援行政、進度同 BADGE；`initializeSheets` 會增補 `進度追蹤`／`其他獎章`／`待批完成`／`活動履歷`／`待批履歷`／`成員名單` 等分頁
+* **安全**：`/api/progress` 只使用 Registry 的 GAS `/exec`；browser 傳入 backend／apikey 會被忽略。payload ≤ 1 MB、上游有逾時，log 只記 metadata；所有 action 先驗 server-issued session，member YMIS 由 session 固定
+* **身份對應**：所有前端使用同一 canonical YMIS／中央 subject 對人，角色由 server session 決定
 
 ### 通告：欄位 + 一撳 WhatsApp 分享 + QR 報名
 通告有齊常規欄位：**活動日期、報名截止、活動地點、集合時間及地點、解散時間及地點、內容／程序、服裝、費用、名額、查詢**
@@ -502,8 +503,7 @@ data/
 
 新增旅團：喺 `data/units.json` 加一個 key，再 copy 一個資料夾改名即可。
 詳見 **[docs/ADD_NEW_UNIT.md](docs/ADD_NEW_UNIT.md)**。
-想最快開團（唔改 Git）：喺 Vercel 加 `TROOP_<編號>_BACKEND` / `_APIKEY` / `_NAME`
-（＋ `_PROGRESSBACKEND` / `_PROGRESSAPIKEY`）→ Redeploy 就得。
+想最快開團（唔改 Git）：Vercel 只加 `TROOP_<編號>_NAME`／`_BACKEND`／`_APIKEY` → Redeploy；三項與 BADGE 完全相同。
 
 網址參數：`?u=<旅團編號>`（指定旅團）。
 
@@ -514,8 +514,8 @@ data/
 **寫入後端只有一個掣：頂部「儲存到後端（N）」**（2026-09-24 第五輪 團長定案；
 詳見 [docs/UPDATES_2026-09-24.md](docs/UPDATES_2026-09-24.md) ⑩）：
 
-1. **登入攞後端** —— 揀旅團 → 由後端（Google Sheet「資料庫」分頁）攞成份資料（名冊＋個人密碼）→ 再核對你嘅登入代號／密碼。**後端答唔到就一律唔准入**（登入硬閘）。
-   攞到嘅嗰份 ＝ 後端嗰一刻嘅狀態，會存做「基準」（`venture82.unit.<編號>.base.v2`）。
+1. **先登入、後攞行政資料** —— 揀旅團 → GAS `authLogin` 在 server 核對登入代號／PBKDF2 密碼並派 8 小時 opaque session（瀏覽器不先下載名冊／hash）→ staff 才可憑 session 載入完整行政資料；團員則只走 `hubLoad` 本人安全投影。**身份核對或後端載入任何一步失敗都不准入**。
+   staff 攞到嘅行政資料 ＝ 後端嗰一刻嘅狀態，會存做「基準」（`venture82.unit.<編號>.base.v2`）。
 2. **其他任何時候，改動只係寫瀏覽器** `localStorage`（`venture82.unit.<編號>.db.v2`），頂部會顯示「N 項未寫入」。
    * **冇自動寫入**（2026-09-24 加過，團長明確唔要，已拆走）—— 唔會有嘢偷偷送上後端。
    * 每個分頁自己嘅「**儲存**」掣＝寫瀏覽器；**離開分頁時若果有未撳「儲存」嘅改動會彈提示**
@@ -525,18 +525,18 @@ data/
      所以頂部會**轉紅**寫「N 個帳戶未寫入後端」，登出／閂頁亦會擋住問 ——
      但**一律唔會代你寫**：登出彈框會問，撳「照登出（唔寫入）」＝放棄呢次機會，
      撳「取消」返返去自己撳呢粒掣；**下次登出會再問多次**。
-   * 團員入口（`members.html`）交嘢行 `pushSubmit()`，唔會成份 db 寫後端。
+   * 團員入口（`members.html`）係例外嘅「入站本人資料」：登入後只讀 `hubLoad` 正面欄位白名單投影，並寫入獨立 `venture82.unit.<編號>.hub.v2`／`hubbase.v2` namespace；`pushSubmit()` 只呼叫本人 action。RSVP／答卷／請假**不先改本機**，server 成功回新投影先顯示；失敗會出明確重試 banner。請假使用固定 request id，create／withdraw 重試均冪等。
 3. **撳頂部「儲存到後端」＝ `saveToBackend()`（唯一寫入函式）**：先核對後端版本；有人喺你登入後儲存過 → 話你知，並拉成份落嚟做**三方逐格比對**：
    * 唔同格（佢加張三、我加李四；佢點李小明、我點陳大文）→ 一齊儲存；同一格同一個值 → 冇問題；
    * **同一格唔同值**（佢登記「遲到」、我登記「早走」）→ 逐格列出、**未寫入**、要你剔咗「用我嘅」再確認先蓋。
    * 所有儲存排成一條隊（`saveChain`）：連撳兩下唔會回 `busy`，會等前一次完成。
 4. **跨視窗**：同一個瀏覽器另一個分頁改咗嘢，會經 `storage` event ＋ 同一套三方比對併入呢邊（`store.bindCrossTabSync()`），唔使重新整理；
    切返分頁會 `refreshIfClean()`（本機冇未存改動先至由後端拉，唔會彈衝突框）。
-* 頂部「**儲存到後端（N）**」＝ 唯一寫入路；「**重新載入**」＝ 由後端拉最新嗰份。
+* 一般行政資料只經頂部「**儲存到後端（N）**」寫入；「**重新載入**」由後端拉最新嗰份。密碼重設／帳戶刪除等安全憑證操作例外：必須即時走專用 server action，成功後讀回版本，不會把 browser hash 留在 pending。
 * 未由後端載入過嘅裝置（冇基準）**唔准寫**（`no_base`），改動留喺本機。
 * 首次開啟（後端仲係空）會由 `data/units/<編號>/*.json` **種子載入**一次；第一次寫入就建立後端正本。
 * 備份：「資料管理 → 儲存與備份 → 匯出全部（JSON）」；還原備份 ＝ 一次本機改動，照樣自動寫入，撞嘅格照樣會問。
-* 密碼以 SHA-256 + 鹽雜湊儲存（非明文），但**純前端系統唔應該存放敏感個人資料**
+* 正式支部密碼只由 Apps Script 以 PBKDF2-HMAC-SHA256（最低 100,000 iterations）保存；瀏覽器只持有短期 opaque session，不以本機 SHA hash 作正式身份來源
 * 未接後端之前，唔好放電話／身份證等敏感資料；團章公開頁只會顯示你發布嘅團章文字
 
 ---
@@ -547,24 +547,27 @@ data/
 npm install          # 只裝測試用嘅 jsdom（網站本身零依賴）
 npm run dev          # 本機開發伺服器（靜態檔 + /api/*，進度讀寫要用呢個）
 npm run build:gas    # 由 assets/js/lib/gastemplate.js 產生 apps-script/Code.gs（單一來源）
-npm test             # build:gas + smoke + public + gate + api + progress + … + gas + hub（19 檔一條鏈）
+npm run check         # lint + build + 全套 Portal／真 Code.gs／Unified GS 回歸
 ```
 
-`npm test` 全鏈 **2,214 項斷言 / 0 失敗（2026-09-20）**：
+`npm run check` 全鏈於 **2026-11-12 exit 0**；所有 suite 均為 0 失敗（包括 usersim 33/0、Portal GAS 307/0、Unified 55/0）：
 
 | 測試 | 內容 | 結果 |
 |---|---|---|
-| `node tests/hub.mjs` | **團員入口端到端**：假 GAS 後端＋空白新裝置 → 開機拉後端 → YMIS＋1234 登入 → 強制改密碼 → RSVP（唔問名）→ 後端真係收到（團員自己嗰格以佢為準，冇 poll） → 過期活動／截止通告**照顯示（標已截止／已完結）** → **我的進度：申報→執委推 db→申報零損失→批核→團員見到已完成**（衝突模擬） → 登出零殘留 → 公開團章讀後端正本（冇名冊外洩） → **公開資料渲染（旅團設定＋公開資料合併去重）＋ 可見範圍（團員睇唔到領袖級、領袖見到晒）＋ 行事曆／通告／試卷按「邊個睇到」過濾** | **79 / 0** |
-| `node tests/gas.mjs` | Code.gs 契約：API Key、round-trip 唔走樣、大資料分件、旅團隔離、樂觀鎖＋**v2.5.0（`constitution`／`notices` 讀正本防漏名冊、`noticeSignup` 防重複、`claim`／`loan` 寫入資料庫、`backendVersion`＋**三路齊寫衝突模擬**）** | **92 / 0** |
-| `node tests/smoke.mjs real` | 真實模式：種子資料、登入／密碼權限、雙財政年度、AGM 逐年輸入、**團費收款紀錄（含領袖免收）**、生日、全部頁面渲染、**分頁對位**、QR、文件輸出、物資加減庫存、財務匯入解析、**帳目（本年度總覽／按月／過往紀錄・統計卡＝期初結餘→收入→支出→淨額→現在結餘）**、**報告唔混上年度結餘**、**通告（開一張・分享・報名・統計・撳真「開新通告」掣・同步到公開頁）**、**欄位設計（改名／還原，每頁入口）**、**插入自己嘅 Sheet**、**快速記帳**、**總表同步下載**、**進度直接接駁**、**新旅團申請經 `/api/proxy` 送去 ADMIN 系統（收件匣唔回執，送到就 OK）**、**登出確認框（問但唔代寫、取消唔寫、再問多次）**、**公開資料一覽表係只讀** | **587 / 0** |
+| `node tests/hub.mjs` | 團員入口端到端：新裝置登入、安全投影、本人 RSVP／答卷／請假、公開資料／可見範圍、進度、session、公開團章 | **93 / 0** |
+| `node tests/gas.mjs` | 真 `Code.gs` 契約：server session、setup bootstrap、identity／account 欄位級授權、token reset 單鎖、正面投影白名單、本人 mutation 冪等重試、nonce Lock＋Cache、資料保全／分件／衝突 | **307 / 0** |
+| `node tests/smoke.mjs real` | 真實模式：資料／權限／頁面／財務／物資／文件／同步／登出等完整產品回歸 | **592 / 0** |
 | `node tests/public.mjs` | 公開頁：團章（免登入、中英對照、語言切換、搜尋）＋ 通告公開頁（分享連結、報名表、送出、失效連結、**靜態檔＋旅團後端合併（同 id 以後端為準）**）＋ 手機記一筆 | **87 / 0** |
-| `node tests/gate.mjs` · `gate-env.mjs` | 旅團閘：揀旅團、部署指南、申請接入、驗證＋**環境變數旅團／示範模式逃生門（離開示範掣周圍都有、切換旅團入口）** | **39 · 114 / 0** |
-| `node tests/tabs.mjs` | 分頁掣**真係撳得**（dispatch click 驗 hash）＋ **MOCK 分頁已拆走**＋ **「身份與系統」改名「系統」＋「身份與帳號」搬到「用戶與身份」（舊址自動導向）** | **59 / 0** |
+| `node tests/gate.mjs` · `gate-env.mjs` | 旅團閘、登記、部署環境與登出清理 | **51 · 103 / 0** |
+| `node tests/tabs.mjs` | 分頁掣、hash、MOCK 清理與舊址導向 | **57 / 0** |
 | `node tests/merge3.mjs`（**新**） | 三方比對純函數：同格同值／唔同格／**同格唔同值＝衝突（唔會自己揀）**／加刪／`overridesFor` 確認先蓋 | **48 / 0** |
-| `node tests/remote.mjs` · `syncorder.mjs` | **團長劇本（真 HTTP）**：一部機點「早走」未存、另一部點「遲到」儲存 → 返嚟撳儲存：唔撞嘅入咗、撞嗰格列出未寫；唔確認＝後端、確認＝蓋；同格同值冇衝突；上次未存閂咗再開機都會問 ＋ 原始碼守門（冇 poll／自動寫／第二條寫入路）；核對唔到版本一個 byte 都唔寫 | **190 · 44 / 0** |
-| `node tests/simplewrite.mjs`（**新**） | **★ 逐表寫入（真 HTTP ＋ 两部機）**：寫入真係落到後端（新 process 讀得返）；**只寫改過嗰幾個表**（帳目表版本號一個字都冇郁、行數冇變）；**弄壞一個表 → 其余照讀**（`broken` 如實報）；**舊後端自動跌返 saveDb**；三個新 action 白名單守門 | **47 / 0** |
-| `node tests/reality.mjs` | **後端實況**：未撳掣 → 結論「要處理」＋逐表對數；撳完掣 → 「對得上」＋版本／筆數核對成功；**一寫一讀驗證**（寫記號→讀返→清走）；**API Key 唔啱**（status 通、讀寫被拒）要老實講「斷咗」 | **25 / 0** |
-| `login.mjs` · `api.mjs` · `progress.mjs` · `pdftext.mjs` · `bake.mjs` · `selfserve.mjs` | 登入（密碼／暫用密碼）、API 轉發防護、進度讀寫、PDF 文字抽取、焗名單、自助後端路線 | **24 · 32 · 33 · 47 · 15 · 38 / 0** |
+| `node tests/remote.mjs` · `syncorder.mjs` | 真 HTTP 三方合併、一般資料單一寫入路、session／hub namespace／重試守門與排隊次序 | **275 · 47 / 0** |
+| `node tests/simplewrite.mjs` | 逐表真 HTTP 寫入、損壞隔離、舊後端 fallback、action 白名單 | **70 / 0** |
+| `node tests/e2ereal.mjs` | 真前端 → proxy → 真 `Code.gs`：分件、修復、platform-super HMAC、server-first 個人密碼、跨裝置登入 | **71 / 0** |
+| `node tests/reality.mjs` | 後端實況、逐表對數與一寫一讀驗證 | **19 / 0** |
+| `login.mjs` · `api.mjs` · `progress.mjs` · `pdftext.mjs` · `bake.mjs` · `selfserve.mjs` | 登入／session、API 防護、本人進度、PDF、焗名單、自助路線 | **43 · 73 · 59 · 47 · 15 · 35 / 0** |
+| `node tests/ui-ia.mjs` · `modal.mjs` | 權限／導航、兩個一般改密碼入口都要求目前密碼、modal null 語義 | **48 · 8 / 0** |
+| `npm run test:unified` | hash-locked vsbadge v9.6 composer、中央 SSO、防重放、scope、delegated identity map／分件欄位守門、投影白名單、冪等本人寫入、初始化保全 | **55 / 0** |
 
 ---
 
@@ -609,7 +612,7 @@ https://script.google.com/macros/s/AKfycbySGLBg5KuWzgM9EySiOIppqnzrL0QASIYLlhbCI
    QR Code 就會指向公開頁；亦可以喺「團章 → 公開網址」填自訂網址
 4. 想公開通告／收手機記帳：同樣要上載 `notice.html`、`entry.html`、`data/units.json`、
    `data/units/<旅團編號>/notices.json`（公開頁會讀呢啲檔；`entry.html` 只讀 `unit.json` 嘅基本資料）
-4. 進度紀錄：旅團後端登記喺 `data/units.json`（`backend.gasUrl` / `apiKey`）就會自動用返；要覆蓋先喺「進度 → 設定」填 `/exec` ＋ API Key
+4. 進度紀錄：只從 server Registry 的 `TROOP_<ID>_BACKEND/APIKEY` 接駁同一 Unified GAS；browser 不可覆蓋
    （**需要支援 `/api/` 嘅部署**：Vercel 或本機 `npm run dev`；純靜態主機冇 API，進度接駁會停用）
 
 ---
@@ -643,8 +646,8 @@ tests/                         jsdom 端對端測試
    一鍵可匯入。其他年度分頁如有需要，將連結（連 `gid=`）發我，我可以同樣內建。
 2. **AGM 日期**：現時用「8 月最後一個星期六」推算 2023–2026 並標示「未確認」，
    請到「財務 → 年結報告 → 逐年輸入 AGM 日期」填每年實際日期（每年唔同）。
-3. **進度紀錄**：一個後端、兩個前端 —— 深資童軍管理系統同進度前端讀寫同一份資料，冇外連、冇 portal。
-   後端要係本系統嘅 `Code.gs`（支援 `?action=load` / `action=save`），`npm run build:gas` 會由範本產生。
+3. **進度紀錄**：管理系統、進度同 BADGE 讀寫同一 Unified GAS／Sheet，唔接受第二後端或 browser override。
+   測試產物由 `npm run build:gas:unified` 生成 `apps-script/UnifiedCode.gs`。
 4. **多裝置同步**：登入攞後端 → 本機改 → 撳「儲存到後端」（三方逐格比對，撞先問）—— 見「資料儲存」一節。
    兩個人**同時**改同一格仍然要有人揀；系統唔會自己猜。
 5. **團員職位／聯絡**：名冊暫只有姓名＋生日（來自生日表），其餘欄位待你補充

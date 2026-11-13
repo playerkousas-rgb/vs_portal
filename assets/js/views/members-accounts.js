@@ -20,8 +20,8 @@
 import { load } from '../lib/store.js';
 import {
   ROLES, accounts, accountById, can, canChangePasswordOf, canManageRole,
-  createAccountServer, changePassword, changeUsername, setAccountActive,
-  deleteAccount, deleteAccountServer, resetAccountPasswordServer,
+  createAccountServer, changeOwnPassword, changeUsername, setAccountActive,
+  deleteAccountServer, resetAccountPasswordServer,
   current, currentRole, isMe, displayName, RESERVED_USERNAMES, TEMP_PASSWORD,
   setMemberIdentity, setMemberHubPassword, canClaimChief
 } from '../lib/auth.js';
@@ -238,16 +238,16 @@ export function mountAccountsTab(root, refresh) {
     })) {
       const serverResult = await deleteAccountServer(acc);
       if (!serverResult.ok) return toast(serverResult.msg, 'err');
-      const r2 = deleteAccount(b.dataset.del);
-      if (!r2.ok) return toast(r2.msg, 'err');
-      toast('已刪除帳戶', 'ok'); refresh();
+      toast(serverResult.refreshed ? '已刪除帳戶' : '已刪除帳戶；請重新載入以更新本機列表', serverResult.refreshed ? 'ok' : 'warn');
+      refresh();
     }
   }));
 }
 
 /* ---------- 彈窗表單 ---------- */
 async function addAccountForm(role, refresh) {
-  const list = members().filter(m => m.status !== 'alumni');
+  /* 個人帳戶必須綁定同身份名冊成員；唔再容許建立第二套「共用帳戶」身份。 */
+  const list = members().filter(m => m.status !== 'alumni' && String(m.identity || 'member') === String(role));
   const r = await modal({
     title: `新增${ROLES[role].name}帳戶`, sub: '登入頁只可以揀「領袖」或「執委」身份',
     body: `<div class="grid g-2" style="gap:12px">
@@ -259,8 +259,8 @@ async function addAccountForm(role, refresh) {
           <input class="input" id="q-user" placeholder="${role === 'leader' ? '例：scouter@example.com' : '電郵或帳號'}"></div>
         <div class="field"><label class="label">密碼（留空＝${TEMP_PASSWORD}）</label>
           <input class="input" id="q-pass" placeholder="留空＝首次 ${TEMP_PASSWORD}，要改"></div>
-        <div class="field" style="grid-column:1/-1"><label class="label">對應團員（可選）</label>
-          <select class="select" id="q-member"><option value="">— 唔關聯 —</option>
+        <div class="field" style="grid-column:1/-1"><label class="label">對應名冊成員 <span class="req">*</span></label>
+          <select class="select" id="q-member"><option value="">— 請先選擇已設為${esc(ROLES[role].name)}的成員 —</option>
             ${list.map(m => `<option value="${m.id}">${esc(m.name)}${m.role ? `（${esc(m.role)}）` : ''}</option>`).join('')}</select></div>
       </div>
       <div id="q-err" class="err mt-8"></div>
@@ -270,14 +270,16 @@ async function addAccountForm(role, refresh) {
         const name = el.querySelector('#q-name').value.trim();
         const username = el.querySelector('#q-user').value.trim();
         const password = el.querySelector('#q-pass').value;
+        const memberId = el.querySelector('#q-member').value;
         if (!name) { el.querySelector('#q-err').textContent = '請填姓名'; el.querySelector('#q-err').style.display = 'block'; return false; }
-        return { name, username, password, title: el.querySelector('#q-title').value.trim(), memberId: el.querySelector('#q-member').value };
+        if (!memberId) { el.querySelector('#q-err').textContent = `請先在用戶頁把成員身份設為「${ROLES[role].name}」，再選擇該成員`; el.querySelector('#q-err').style.display = 'block'; return false; }
+        return { name, username, password, title: el.querySelector('#q-title').value.trim(), memberId };
       } }]
   });
   if (!r) return;
   const res = await createAccountServer({ role, ...r });
   if (!res.ok) return (await modal({ title: '新增失敗', body: `<p class="sm">${esc(res.msg)}</p>`, actions: [{ label: '關閉', class: 'btn-primary', value: null }] }));
-  toast('已新增帳戶', 'ok');
+  toast(res.refreshed ? '已新增帳戶' : '已新增帳戶；請重新載入以更新本機列表', res.refreshed ? 'ok' : 'warn');
   refresh();
 }
 
@@ -288,28 +290,32 @@ async function passwordForm(id, refresh) {
   const r = await modal({
     title: me ? '更改我嘅密碼' : '更改密碼',
     sub: `${ROLES[acc.role].name} · ${esc(acc.name)}（${esc(acc.username)}）`,
-    body: `<div class="field"><label class="label">新密碼 <span class="req">*</span></label>
-        <input class="input" id="q-p1" type="text" autocomplete="new-password" placeholder="至少 4 個字元"></div>
+    body: `${me ? `<div class="field"><label class="label">目前密碼 <span class="req">*</span></label>
+        <input class="input" id="q-old" type="password" autocomplete="current-password"></div>` : ''}
+      <div class="field ${me ? 'mt-12' : ''}"><label class="label">新密碼 <span class="req">*</span></label>
+        <input class="input" id="q-p1" type="password" autocomplete="new-password" placeholder="至少 4 個字元"></div>
       <div class="field mt-12"><label class="label">再輸入一次 <span class="req">*</span></label>
-        <input class="input" id="q-p2" type="text" autocomplete="new-password"></div>
+        <input class="input" id="q-p2" type="password" autocomplete="new-password"></div>
       <div id="q-err" class="err mt-8"></div>
       <div class="hint mt-12">${me ? '改完之後下次登入要用新密碼。' : `你係以「${ROLES[currentRole()]?.name}」身份改呢個帳戶嘅密碼。`}</div>`,
     actions: [{ label: '取消', class: 'btn', value: null },
       { label: '更改密碼', class: 'btn-primary', onClick: el => {
+        const old = el.querySelector('#q-old')?.value || '';
         const p1 = el.querySelector('#q-p1').value, p2 = el.querySelector('#q-p2').value;
         const err = el.querySelector('#q-err');
+        if (me && !old) { err.textContent = '請輸入目前密碼'; err.style.display = 'block'; return false; }
         if (p1.length < 4) { err.textContent = '密碼至少需要 4 個字元'; err.style.display = 'block'; return false; }
         if (p1 !== p2) { err.textContent = '兩次輸入唔一樣'; err.style.display = 'block'; return false; }
-        return p1;
+        return { old, p1 };
       } }]
   });
   if (!r) return;
   if (!me) {
-    const serverRes = await resetAccountPasswordServer(acc, r);
+    const serverRes = await resetAccountPasswordServer(acc, r.p1);
     if (!serverRes.ok) return toast(serverRes.msg, 'err');
-    toast('密碼已重設，對方下次登入要改密碼', 'ok'); refresh(); return;
+    toast(serverRes.refreshed ? '密碼已重設，對方下次登入要改密碼' : '密碼已重設；請重新載入以更新本機版本', serverRes.refreshed ? 'ok' : 'warn'); refresh(); return;
   }
-  const res = await changePassword(id, r);
+  const res = await changeOwnPassword(r.old, r.p1);
   if (!res.ok) return toast(res.msg, 'err');
   toast('密碼已更改', 'ok');
   refresh();

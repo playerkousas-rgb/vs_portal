@@ -2,11 +2,10 @@
    public-hub.js — 團員入口（members.html）
    ------------------------------------------------------------
    2026-09-18 深夜大修（團長回報 6 項問題嘅 1／2／4／5／6）：
-   ① 開機會由旅團後端（Google Sheet）拉最新資料 —— 以前淨係讀本機
-     localStorage，新裝置／無痕視窗／團員手機全部空白（登入都唔得、
-     IG／FB連結／活動／通告全部「未公開」）。而家同執委版一樣：
-     開機由後端攞成份資料做基準 → 團員交嘢即刻行同一條儲存路寫返上去
-     （核對版本＋三方比對，只寫自己嗰格）。冇背景 poll。
+   ① 登入由旅團後端（Google Sheet）核對；成功後只拉「本人可見安全投影」
+     —— 以前淨係讀本機，新裝置／無痕視窗全部空白；中途版本又曾直接拉成份
+     行政資料庫。現時唔會把密碼 hash、他人請假／答卷／RSVP 送到團員瀏覽器。
+     團員提交則走本人專用 action，即時寫返後端，唔經整庫同步。冇背景 poll。
    ② 回覆出席／交卷直接用登入身份（YMIS 登入咗就知你係邊個）——
      以前要「填自己個名」，但個名欄原來冇 render 到，結果次次
      都彈「請填名」而根本冇位填（= 報出席永遠失敗）。
@@ -17,18 +16,19 @@
      可以搵領袖／執委跟進。草稿先係完全唔出街。
    ============================================================ */
 import { loadRegistry, defaultUnitCode } from './lib/units.js';
-import { init, load, update } from './lib/store.js';
+import { init, load, getSession, setSession } from './lib/store.js';
 import { profile, publicEvents, RSVP, quizzes, activeMembers, publicPageUrl, troopPublicLinks, identityOf, IDENTITIES } from './lib/model.js';
 import { publicProfile, visibleTo, socialName, socialIcon, contentVis } from './lib/public-profile.js';
 import { loadMe, saveMe } from './lib/member-me.js';
 import { loadHubAuth, saveHubAuth, clearHubAuth } from './lib/hub-session.js';
+import { beFromQuery } from './lib/gateway.js';
 import { loginMember, changeMemberOwnPassword, TEMP_PASSWORD } from './lib/auth.js';
-import { progressConfigured, loadRemote, loadItems, flattenItems, memberDetail, submitProgressRequest, loadMyRequests } from './lib/progress.js';
-import { absencesOf, submitAbsence, withdrawAbsence, allAbsences, ABSENCE_STATUS, ABSENCE_SLOTS, absenceCounts } from './lib/absence.js';
-import { esc, icon, toast, todayISO, modal, confirmDlg } from './lib/util.js';
+import { progressConfigured, loadMyProgress, loadItems, flattenItems, memberDetail, submitProgressRequest } from './lib/progress.js';
+import { absencesOf, allAbsences, ABSENCE_STATUS, ABSENCE_SLOTS, absenceCounts } from './lib/absence.js';
+import { esc, icon, toast, todayISO, modal, confirmDlg, closeAllModals, uid } from './lib/util.js';
 
 const app = document.getElementById('app');
-let syncReady = false;      /* 後端拉完（或者確定唔使拉）先畀登入 */
+let syncReady = false;      /* 後端路由準備好（已有 session 就完成安全投影核實）先畀登入 */
 /* 拉唔到後端嘅真正原因 —— 一定要顯示出嚟。以前淨係 console.warn，
    團員見到嘅係一個正常嘅登入頁，但名冊係空 → 點都入唔到，
    完全唔知發生咩事（2026-09-19 團長回報「公開連結冇修好」）。 */
@@ -36,6 +36,21 @@ let syncError = '';
 /* 團員入口嘅 remote 模組引用（syncBoot 入面 assign）。
    rsvp()／submitQuiz() 要用佢 —— 見 pushSubmit() 註解。 */
 let hubRemote = null;
+/* 本人 mutation 唔再先改本機：pending／失敗都有明確狀態，失敗可原封重試。
+   成功回應帶 server projection，remote 採用後先重畫，所以毋須「估」回滾。 */
+let hubSubmitState = { pending: false, retry: null };
+
+function hubSubmitBanner() {
+  if (hubSubmitState.pending) {
+    return `<div class="note-box info mb-12" id="hubSubmitState">${icon('cloud', 14)}<div><b>${esc(hubSubmitState.pending)}送出中…</b><div class="xs mt-4">請勿關閉頁面。</div></div></div>`;
+  }
+  const retry = hubSubmitState.retry;
+  if (!retry) return '';
+  return `<div class="note-box danger mb-12" id="hubSubmitState">${icon('alert', 14)}<div class="grow">
+    <b>${esc(retry.what)}未送到</b><div class="xs mt-4">${esc(retry.error || '網絡或後端暫時失敗')}。本機畫面未當作成功；可以安全重試。</div>
+    <button class="btn btn-xs btn-danger mt-8" id="hubRetrySubmit" type="button">重新送出</button>
+  </div></div>`;
+}
 
 /**
  * 團員交嘢（回覆出席／交卷）之後**即刻**寫返後端。
@@ -43,19 +58,38 @@ let hubRemote = null;
  * 團員交嘅嘢係**入站資料**：呢部機係團員嘅，佢交完就關，永遠唔會有人喺佢部機
  * 撳「儲存到後端」。如果暫存住，份回覆就永遠困喺團員部機 —— 等如冇交過。
  *
- * 所以入站提交即刻行**同一條**儲存路 saveToBackend()：先核對後端版本、三方比對，
- * 只會寫團員自己嗰格（佢嘅 RSVP／答卷）；執委嘅資料一格都唔會蓋。
- * policy:'mine' ＝ 撞正同一格（例如執委同時幫佢改咗出席）就以團員自己啱啱交嘅為準
- * （團員部機冇人可以答對話框）。
+ * 所以入站提交即刻走 hubRsvp／hubQuiz／hubAbsence：GAS 由 opaque session 對回本人，
+ * 完全唔採用 client memberId／role，只改本人嗰格。寫完回本人安全投影，唔會下載、
+ * 亦唔會上傳整份行政資料庫。
  */
-async function pushSubmit(what) {
-  if (!hubRemote?.remoteConfigured?.()) return;
+async function pushSubmit(what, kind, payload) {
+  if (hubSubmitState.pending) return { ok: false, error: '上一項仍在送出' };
+  const fail = (error) => {
+    hubSubmitState = { pending: false, retry: { what, kind, payload: JSON.parse(JSON.stringify(payload || {})), error: String(error || '未知錯誤') } };
+    paint();
+    toast(`${what}未送到後端 —— 請按「重新送出」`, 'warn');
+    return { ok: false, error: String(error || '未知錯誤') };
+  };
+  if (!hubRemote?.remoteConfigured?.()) return fail('旅團後端未設定');
+  const auth = loadHubAuth(code());
+  if (!auth?.sessionToken) return fail('登入狀態已失效，請重新登入');
+  hubSubmitState = { pending: what, retry: null };
+  paint();
   try {
-    const r = await hubRemote.saveToBackend({ policy: 'mine', silent: true });
-    if (!r?.ok) toast(`${what}已記低喺呢部機，但暫時送唔到後端（${r?.error || '未知'}）—— 請話畀執委知`, 'warn');
-    else if (r.remoteChanged) paint();   /* 順便併入咗執委嘅新資料 → 重畫 */
+    const options = { sessionToken: auth.sessionToken };
+    const r = kind === 'rsvp'
+      ? await hubRemote.saveHubRsvp(payload, options)
+      : kind === 'quiz'
+        ? await hubRemote.saveHubQuiz(payload, options)
+        : await hubRemote.saveHubAbsence(payload, options);
+    if (!r?.ok) return fail(r?.error || '後端拒絕請求');
+    /* 後端回嘅係寫完之後嘅本人安全投影；remote 已採用後先當成功。 */
+    hubSubmitState = { pending: false, retry: null };
+    paint();
+    toast(`${what}已送出`, 'ok');
+    return r;
   } catch (e) {
-    toast(`${what}已記低喺呢部機，但暫時送唔到後端 —— 請話畀執委知`, 'warn');
+    return fail(e?.message || '網絡錯誤');
   }
 }
 
@@ -64,57 +98,51 @@ function closedN(n, today) {
   return !!(n.needSignup && n.deadline && String(n.deadline) < today);
 }
 
+function clearHubIdentity(auth = loadHubAuth(code())) {
+  clearHubAuth(code());
+  const shared = getSession();
+  if (auth?.sessionToken && shared?.sessionToken === auth.sessionToken) setSession(null);
+}
+
 async function boot() {
   const u = new URLSearchParams(location.search);
   const code = (u.get('u') || '').trim() || defaultUnitCode();
   await loadRegistry();
-  await init({ mode: 'real', unit: code });
-  paint();
-  /* 後端先係資料正本：拉完先至有得登入（名冊喺後端度）。
-     失敗都唔會死 —— 照用本機資料，狀態條會話畀你知。 */
-  syncBoot();
+  /* 團員投影用獨立 store namespace，絕不覆蓋同瀏覽器行政 DB／base。
+     ?be= 經 Apps Script /exec 白名單後只作 routing，令未登記旅團的自助連結
+     都可登入；安全空殼不會為取得路由而讀完整靜態行政 seed。 */
+  await init({ mode: 'hub', scope: 'hub', unit: code, backendUrl: beFromQuery() });
+  app.innerHTML = '<div class="hub-wrap" style="padding-top:32px"><div class="card card-pad muted">正在連接旅團後端…</div></div>';
+  await syncBoot();
 }
 
-/* 開機對一對後端（同 main.js 嘅 syncBoot 同一套邏輯，呢度係 hub 版） */
+/* 未登入時唔再下載行政資料庫。已有 opaque session 就先由 GAS 核實，再採用
+   只含本人可見內容嘅安全投影；核實失敗絕不畫本機快取嘅私有內容。 */
 async function syncBoot() {
-  let remoteApi = null;
   try {
-    remoteApi = await import('./lib/remote.js');
-    hubRemote = remoteApi;      // 畀 pushSubmit()（團員交嘢即刻寫後端）用
+    hubRemote = await import('./lib/remote.js');
     const store = await import('./lib/store.js');
-    if (!remoteApi.remoteConfigured?.()) {
+    store.setSaveHook(null);       // 團員寫入走 hubRsvp/hubQuiz/hubAbsence，唔走整庫同步
+    if (!hubRemote.remoteConfigured?.()) {
       syncError = '呢個網址冇帶旅團編號，或者未接後端 —— 請用系統「公開資料」頁生成嘅連結。';
-      syncReady = true; paint(); return;
-    }
-    store.setSaveHook((info) => remoteApi.scheduleSave(info));
-    /* 2026-09-20：同 main.js 一樣行 loadFromBackend() —— 開機由後端攞成份資料做基準。
-       上次交咗但送唔出嘅嘢（pending）會三方比對保留（撞正就以團員自己嘅為準）。
-       讀唔到就一律唔寫 —— 交卷／回覆都要先有基準先至可以寫。 */
-    try {
-      const rc = await remoteApi.loadFromBackend({ policy: 'mine' });
-      if (!rc?.ok) {
-        /* 讀唔到名冊 ＝ 團員一定入唔到。原因如實講（唔好靜靜雞）。
-           團員入口要讀成個資料庫（名冊＋密碼），呢個 action 後端要 API Key，
-           所以**冇得**靠連結帶 ?be= 自救 —— 一定要平台伺服器端登記好。 */
-        syncError = (rc?.error || '讀唔到旅團後端')
-          + (rc?.reason === 'not_registered'
-            ? '（平台伺服器端未登記呢個旅團：要管理員喺 Vercel 加 TROOP_<編號>_BACKEND／_APIKEY 再 Redeploy。'
-              + '團員入口要讀名冊，呢一步冇得由團員自己繞過。）' : '');
-      } else if (rc.found === false) {
-        syncError = '後端仲未有資料庫 —— 執委請先喺系統撳「儲存到後端」。';
-      } else if (!rc.version) {
-        syncError = '後端版本舊咗（讀唔到改動版本）—— 執委請更新 Apps Script 去 v2.5.0。';
+    } else {
+      const auth = loadHubAuth(code());
+      if (auth?.sessionToken) {
+        const rc = await hubRemote.loadHubView({ sessionToken: auth.sessionToken });
+        if (!rc?.ok) {
+          clearHubIdentity(auth);
+          syncError = rc?.error || '登入狀態已失效，請重新登入';
+        }
       }
-      /* 上次困住嘅回覆／答卷 → 而家有基準喇，即刻送 */
-      if (rc?.ok && rc.found !== false && remoteApi.hasPending?.()) pushSubmit('上次未送出嘅回覆');
-    } catch (e) {
-      console.warn('[hub] 開機拉後端失敗（照用本機資料）', e);
-      syncError = e?.message || String(e);
+      window.addEventListener('v82:sync', paintSyncBadge);
     }
-    window.addEventListener('v82:sync', paintSyncBadge);
-  } catch { /* remote 模組載入唔到 —— 照用本機 */ }
+  } catch (e) {
+    const auth = loadHubAuth(code());
+    if (auth) clearHubIdentity(auth);
+    syncError = e?.message || '團員入口模組載入失敗';
+  }
   syncReady = true;
-  paint();          /* 拉完資料重新畫（登入閘／主頁內容都可能變咗） */
+  paint();
   paintSyncBadge();
 }
 
@@ -166,6 +194,7 @@ function paint() {
     </div>
   </div>
   <div class="hub-wrap">
+    ${hubSubmitBanner()}
     ${sec === 'cal' && id ? eventDetail(id, auth)
       : sec === 'quiz' && id ? quizFill(id, auth)
       : sec === 'progress' ? progressPage(auth)
@@ -219,8 +248,19 @@ function paintGate() {
       return;
     }
     const m = res.member;
-    saveHubAuth(code(), { id: m.id, name: m.name, ymis: m.ymis, identity: identityOf(m), mustChangePw: !!res.mustChangePw });
+    /* 密碼核對成功後，再用同一張 opaque session 拉本人安全投影。未拉成功前
+       唔會畫舊 localStorage 資料，避免 client 自改 identity 睇到快取內容。 */
+    const pulled = await hubRemote?.loadHubView?.({ sessionToken: res.sessionToken });
+    if (!pulled?.ok) {
+      if (err) { err.textContent = pulled?.error || '登入成功，但暫時讀唔到團員資料'; err.style.display = 'block'; }
+      const shared = getSession();
+      if (shared?.sessionToken === res.sessionToken) setSession(null);
+      return;
+    }
+    saveHubAuth(code(), { id: m.id, name: m.name, ymis: m.ymis, identity: m.identity || 'member',
+      mustChangePw: !!res.mustChangePw, sessionToken: res.sessionToken, sessionExpiresAt: res.sessionExpiresAt });
     saveMe({ id: m.id, name: m.name });
+    syncError = '';
     paint();
     if (res.mustChangePw) forceMemberPw(m.id);
   });
@@ -285,7 +325,9 @@ function hubPublic(auth) {
   const legacy = troopPublicLinks();                       // 旅團設定（6 個固定槽）
   const legacyById = id => legacy.find(l => l.id === id);
   /* 公開資料「管緊」邊啲槽 —— 管緊嘅話，旅團設定嗰條要讓位（包括設咗睇唔到） */
-  const managed = new Set();
+  /* 後端安全投影會移除睇唔到項目嘅 URL，但保留 managedSlots，
+     避免隱藏咗嘅公開資料槽又跌返去顯示旅團設定舊連結。 */
+  const managed = new Set(Array.isArray(pp.managedSlots) ? pp.managedSlots : []);
   seen(pp.socials).forEach(s => { if (['instagram', 'facebook', 'whatsapp'].includes(s.kind)) managed.add(s.kind); });
   if (seen(pp.albums).length) managed.add('album');
   if (siteUrl) managed.add('website');
@@ -553,8 +595,6 @@ function absencePage(auth) {
 }
 
 async function bindAbsenceHub(auth) {
-  const memberId = String(auth?.id || '');
-  const ymis = String(auth?.ymis || '');
   app.querySelector('#abNew')?.addEventListener('click', async () => {
     const r = await modal({
       title: '請假',
@@ -588,16 +628,17 @@ async function bindAbsenceHub(auth) {
       ]
     });
     if (!r) return;
-    const res = submitAbsence({ memberId, ymis, date: r.date, slot: r.slot, reason: r.reason, plan: r.plan });
-    if (!res.ok) { toast(res.errors[0], 'err'); return; }
-    toast('已交請假，等覆核', 'ok');
-    paint();
+    /* 唔先 add 本機：server 成功並回傳新投影後先顯示。固定 id 令網絡斷線後
+       重試同一請求仍然冪等，唔會重複開兩張請假。 */
+    await pushSubmit('請假單', 'absence', {
+      op: 'create', id: 'ab_' + uid(),
+      date: r.date, slot: r.slot, reason: r.reason, plan: r.plan
+    });
   });
   app.querySelectorAll('[data-abwithdraw]').forEach(b => b.addEventListener('click', async () => {
     if (!(await confirmDlg({ title: '撤回請假', danger: true, okText: '撤回', message: '確定撤回呢張請假單？' }))) return;
-    const res = withdrawAbsence(b.dataset.abwithdraw, memberId);
-    toast(res.ok ? '已撤回' : (res.error || '撤回唔到'), res.ok ? 'ok' : 'err');
-    paint();
+    /* 唔先 remove 本機；失敗時原紀錄原封不動，banner 提供明確重試。 */
+    await pushSubmit('撤回請假', 'absence', { op: 'withdraw', id: b.dataset.abwithdraw });
   }));
 }
 
@@ -618,7 +659,8 @@ async function fillProgressPage(auth) {
     return;
   }
   try {
-    const [r, it, mine] = await Promise.all([loadRemote(), loadItems(), loadMyRequests(ymis)]);
+    /* 個人 bridge：server 由 session 對出 YMIS，後端只回本人；唔會下載全團 progress 再喺瀏覽器篩。 */
+    const [r, it] = await Promise.all([loadMyProgress(auth), loadItems()]);
     if (!r.ok) {
       box.innerHTML = `<div class="card card-pad"><div class="semibold mb-4">我的進度</div>
         <div class="xs muted">${esc(r.error || '讀唔到進度')}</div></div>`;
@@ -627,7 +669,7 @@ async function fillProgressPage(auth) {
     const catalog = it.ok ? flattenItems(it.data) : {};
     const d = memberDetail(r.data, catalog, ymis);
     const myName = (r.data?.members || []).find(m => String(m.ymis) === ymis)?.name || auth?.name || '';
-    const reqs = (mine?.ok && mine?.data?.requests) || [];
+    const reqs = r.data?.requests || [];
     const REQ_LABEL = { pending: ['b-warn', '等批核'], approved: ['b-ok', '已批准'], rejected: ['b-danger', '已拒絕'] };
     box.innerHTML = `
       <div class="card card-pad">
@@ -693,7 +735,7 @@ async function claimProgressDialog(auth, itemId, itemName) {
     ]
   });
   if (!r) return;
-  const res = await submitProgressRequest({ ymis, name: auth?.name || '', item_id: itemId, item_name: itemName, requested_date: r.date, evidence: r.ev });
+  const res = await submitProgressRequest({ item_id: itemId, item_name: itemName, requested_date: r.date, evidence: r.ev }, auth);
   if (res.ok) { toast('已送出申報，等執委批核 ✓', 'ok'); paint(); }
   else toast(res.error || '申報失敗，一陣再試', 'err');
 }
@@ -723,8 +765,12 @@ function quizFill(id, auth) {
 }
 
 function bind(auth) {
+  app.querySelector('#hubRetrySubmit')?.addEventListener('click', async () => {
+    const retry = hubSubmitState.retry;
+    if (retry) await pushSubmit(retry.what, retry.kind, retry.payload);
+  });
   app.querySelector('#hubLogout')?.addEventListener('click', () => {
-    clearHubAuth(code());
+    clearHubIdentity(auth);
     paint();
   });
   app.querySelector('#hubSOS')?.addEventListener('click', () => openHubSOS(auth));
@@ -817,15 +863,13 @@ async function openRsvpForm(e, ident, cur, fieldsHtml, onMount) {
   if (kind === 'early') rec.time = r.earlyTime;
   if ((r || {}).reason) rec.reason = r.reason.slice(0, 500);
   if (!rec.status) rec.status = 'present';
-  const map = { ...(e.rsvp || {}) };
-  map[ident.id] = rec;
-  update('events', e.id, { rsvp: map });
-  toast('已回覆：' + (RSVP[rec.status]?.label || rec.status), 'ok');
-  paint();
-  pushSubmit('出席回覆');
+  /* 唔先 update 本機；server 成功回投影先顯示新回覆。失敗保留舊值兼可重試。 */
+  await pushSubmit('出席回覆', 'rsvp', {
+    eventId: e.id, status: rec.status, time: rec.time || '', reason: rec.reason || ''
+  });
 }
 
-function submitQuiz(id, auth) {
+async function submitQuiz(id, auth) {
   const ident = whoAmI(auth);
   if (!ident) { toast('請先登入再交卷', 'warn'); return; }
   const q = quizzes().find(x => x.id === id);
@@ -841,13 +885,12 @@ function submitQuiz(id, auth) {
   });
   if (answers._bad) return;
   delete answers._bad;
-  const responses = { ...(q.responses || {}) };
-  responses[ident.id] = { name: ident.name, at: todayISO(), answers };
-  update('quizzes', id, { responses });
-  toast('已交卷', 'ok');
-  location.hash = '#/home';
-  paint();
-  pushSubmit('答卷');       // 入站資料：即刻寫後端，唔可以困喺團員部機
+  /* 入站資料即刻寫後端；唔先改本機，避免失敗後畫面假裝已交。 */
+  const sent = await pushSubmit('答卷', 'quiz', { quizId: id, answers });
+  if (sent?.ok) {
+    location.hash = '#/home';
+    paint();
+  }
 }
 
 async function forceMemberPw(memberId) {
@@ -872,16 +915,22 @@ async function forceMemberPw(memberId) {
     ]
   });
   if (!r) return;
-  const res = await changeMemberOwnPassword(memberId, '', r);
-  toast(res.ok ? '密碼已更改' : (res.msg || '改唔到'), res.ok ? 'ok' : 'err');
+  const a = loadHubAuth(code());
+  const res = await changeMemberOwnPassword(memberId, '', r, a);
+  toast(res.ok ? (res.relogin ? '密碼已更改，請重新登入' : '密碼已更改') : (res.msg || '改唔到'), res.ok ? 'ok' : 'err');
   if (res.ok) {
-    const a = loadHubAuth(code());
-    if (a) saveHubAuth(code(), { ...a, mustChangePw: false });
+    if (res.relogin || !res.sessionToken) {
+      clearHubIdentity(a);
+      paint();
+      return;
+    }
+    if (a) saveHubAuth(code(), { ...a, mustChangePw: false,
+      sessionToken: res.sessionToken, sessionExpiresAt: res.sessionExpiresAt });
     if (location.hash === '#forcepw') location.hash = '#/home';
   }
 }
 
-window.addEventListener('hashchange', () => { try { paint(); } catch { /* */ } });
+window.addEventListener('hashchange', () => { try { closeAllModals(null); paint(); } catch { /* */ } });
 boot().catch(e => {
   app.innerHTML = `<div style="padding:40px" class="muted">載入失敗：${esc(e.message || e)}</div>`;
 });

@@ -20,6 +20,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { spawn } from 'node:child_process';
 import net from 'node:net';
+import { TEST_SUPER_PASSWORD } from './_authstub.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const t0 = Date.now();
@@ -55,6 +56,9 @@ const WEB_PORT = await freePort();
 const BASE = `http://127.0.0.1:${WEB_PORT}`;
 const FAKE_EXEC = `http://127.0.0.1:${GAS_PORT}/exec`;
 const procs = [];
+let platformSessionToken = '';
+const ADMIN_ACTIONS = new Set(['dbInfo', 'loadDb', 'loadDbPart', 'loadTables', 'loadTablesPart', 'syncCheck',
+  'saveDb', 'saveDbPart', 'saveDbCommit', 'saveTables', 'sync', 'uploadPhotos', 'repairDb', 'saveDbForce']);
 const spawnBg = (args, env = {}) => {
   const p = spawn(process.execPath, args, { cwd: ROOT, env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
   procs.push(p);
@@ -62,9 +66,12 @@ const spawnBg = (args, env = {}) => {
 };
 
 async function proxyCall(payload) {
+  const body = ADMIN_ACTIONS.has(payload.action)
+    ? { ...payload, sessionToken: payload.sessionToken || platformSessionToken }
+    : payload;
   const r = await fetch(`${BASE}/api/proxy`, {
     method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify(payload)
+    body: JSON.stringify(body)
   });
   return r.json();
 }
@@ -86,16 +93,25 @@ const runDevice = (plan) => new Promise((resolve) => {
 });
 
 try {
-  spawnBg([path.join(ROOT, 'tests', '_fakegas.mjs'), String(GAS_PORT)]);
+  spawnBg([path.join(ROOT, 'tests', '_realgas.mjs'), String(GAS_PORT)], {
+    REALGAS_APIKEY: 'test_key_0082'
+  });
   spawnBg([path.join(ROOT, 'dev-server.mjs')], {
     TROOP_0082_BACKEND: FAKE_EXEC,
     TROOP_0082_APIKEY: 'test_key_0082',
     V82_PROXY_TEST: '1',
+    SUPER_KEY: TEST_SUPER_PASSWORD,
     PORT: String(WEB_PORT)
   });
   const gasUp = await waitPort(GAS_PORT);
   const webUp = await waitPort(WEB_PORT);
-  ok('測試用假後端＋dev-server 已啟動', gasUp && webUp);
+  ok('真 Code.gs 後端＋dev-server 已啟動', gasUp && webUp);
+  const platformAuth = await fetch(`${BASE}/api/auth`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user: 'sheep', password: TEST_SUPER_PASSWORD })
+  }).then(r => r.json());
+  platformSessionToken = String(platformAuth.sessionToken || '');
+  ok('行政 fixture 先取得平台測試 session（唔用 API Key 冒充身份）', platformAuth.ok === true && !!platformSessionToken);
 
   /* ============ 裝置 A（執委）：種團員入口要嘅資料 → 推後端 ============ */
   section('裝置 A（執委）：種資料並推上後端');
@@ -276,7 +292,7 @@ try {
   ok('撳「出席」唔會再彈「請填名」（以前係必彈）', !/請喺上面填/.test(pageTxt()));
   ok('即時顯示「已回覆：出席」', /已回覆：出席/.test(pageTxt()), pageTxt().slice(0, 300));
   const toasts = [...doc.querySelectorAll('.toast')].map(t => t.textContent);
-  ok('有成功提示', toasts.some(t => /已回覆/.test(t)), toasts.join(' | '));
+  ok('有 server 確認後成功提示', toasts.some(t => /出席回覆已送出/.test(t)), toasts.join(' | '));
 
   section('登入狀態保持（唔會退返系統又要登過）');
   const authKey = 'v82.hub.auth.0082';
@@ -335,9 +351,11 @@ try {
   /* ============ 我的進度（團員登入後做齊進度追蹤）＋ 兩個系統寫入衝突模擬 ============ */
   section('我的進度（登入後自己申報 —— 唔使分兩個 APP）');
   {
-    const progCall = async (action, data = {}) => (await (await fetch(`${BASE}/api/progress`, {
+    const memberAuth = JSON.parse(window.localStorage.getItem(authKey) || '{}');
+    const sessionToken = String(memberAuth.sessionToken || '');
+    const progCall = async (action, data = {}, token = sessionToken) => (await (await fetch(`${BASE}/api/progress`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ unit: '0082', action, data })
+      body: JSON.stringify({ unit: '0082', action, data, sessionToken: token })
     })).json());
 
     /* 主頁「我的進度」入口 → 自己嘅獎章項目（同一個後端、零設定接通） */
@@ -383,17 +401,20 @@ try {
     const mine2 = await progCall('myRequests', { ymis: '2026000001' });
     ok('★ 資料庫覆寫之後，團員嘅申報一條都冇甩（進度寫「待批完成」分頁，db 寫「資料庫」分頁，互唔相撞）',
       (mine2?.data?.requests || []).some(r => r.request_id === mine?.request_id), JSON.stringify((mine2?.data?.requests || []).length));
-    const loadAfter = await progCall('load', {});
+    const staffLogin = await proxyCall({ action: 'authLogin', unit: '0082', username: '2026000004', password: 'leader123' });
+    const staffSession = String(staffLogin.sessionToken || '');
+    ok('進度管理操作先取得領袖 server session', staffLogin.ok === true && !!staffSession, JSON.stringify(staffLogin).slice(0, 120));
+    const loadAfter = await progCall('load', {}, staffSession);
     ok('★ 進度照讀得到，名冊仲同步埋新增團員（saveDb 會更新「成員名單」分頁）',
       (loadAfter?.data?.members || []).length >= 3 && loadAfter?.ok === true,
       JSON.stringify({ n: (loadAfter?.data?.members || []).length, err: loadAfter?.error }));
 
     /* ===== 衝突模擬 ②：執委直接喺進度前端勾另一項（直接寫「進度追蹤」）===== */
-    const tick = await progCall('save', { changes: [{ ymis: '2026000002', itemId: claimItemId, date: '2026-09-01' }], confirmer: '陳領袖' });
+    const tick = await progCall('save', { changes: [{ ymis: '2026000002', itemId: claimItemId, date: '2026-09-01' }], confirmer: '陳領袖' }, staffSession);
     ok('衝突模擬：進度前端直接勾另一項（執委身份）', tick?.ok === true, JSON.stringify(tick).slice(0, 100));
 
     /* ===== 執委批核團員嘅申報 → 寫入「進度追蹤」 ===== */
-    const rv = await progCall('reviewRequest', { request_id: mine?.request_id, decision: 'approved', review_note: '測試批核', reviewer: '陳領袖', confirmed_date: '2026-09-19' });
+    const rv = await progCall('reviewRequest', { request_id: mine?.request_id, decision: 'approved', review_note: '測試批核', reviewer: '陳領袖', confirmed_date: '2026-09-19' }, staffSession);
     ok('執委批核成功（批准＝寫入進度追蹤，兩個前端即刻見到）', rv?.ok === true, JSON.stringify(rv).slice(0, 120));
 
     /* 團員再入進度頁 → 見到自己嗰項已完成＋申請紀錄「已批准」 */
@@ -410,9 +431,10 @@ try {
     ok('團員再入進度頁：自己嗰項變咗「已完成」（有批核人）',
       /已完成 1 項/.test(progTxt2) && progTxt2.includes('陳領袖'), progTxt2.slice(0, 160));
     ok('申請紀錄顯示「已批准」（團員自己睇到進度）', /已批准/.test(progTxt2));
-    const mine3 = await progCall('myRequests', { ymis: '2026000002' });
-    ok('myRequests 只回自己嘅紀錄（李小美見唔到陳大文嘅申請）',
-      (mine3?.data?.requests || []).length === 0, JSON.stringify((mine3?.data?.requests || []).length));
+    const otherLogin = await proxyCall({ action: 'authLogin', unit: '0082', username: '2026000002', password: '1234' });
+    const mine3 = await progCall('myRequests', { ymis: '2026000001' }, String(otherLogin.sessionToken || ''));
+    ok('myRequests 只回登入者自己嘅紀錄（client 偽造陳大文 YMIS 都見唔到）',
+      otherLogin.ok === true && (mine3?.data?.requests || []).length === 0, JSON.stringify((mine3?.data?.requests || []).length));
   }
 
   /* 電子請假：團員自己申報 → 覆核 */

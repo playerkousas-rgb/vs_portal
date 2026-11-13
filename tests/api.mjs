@@ -3,9 +3,12 @@
    驗證 Registry、Units 清單、Proxy 轉發與安全規則。
    ============================================================ */
 
-import { getRegistry, getTrustedUnit, listPublicUnits, isTrustedExecUrl } from '../api/_registry.js';
+import crypto from 'node:crypto';
+import { getRegistry, getTrustedUnit, getProgressRegistryEntry, listPublicUnits, isTrustedExecUrl } from '../api/_registry.js';
 import unitsHandler from '../api/units.js';
 import proxyHandler from '../api/proxy.js';
+import portalHandler from '../api/portal.js';
+import { issueSuperSession, verifySuperSession } from '../api/_super-session.js';
 
 let pass = 0, fail = 0;
 function ok(name, cond, extra = '') {
@@ -27,6 +30,9 @@ const TEST_GAS = 'https://script.google.com/macros/s/AKfycbTESTonlyFixtureNotARe
 process.env.TROOP_TEST9_BACKEND = TEST_GAS;
 process.env.TROOP_TEST9_APIKEY = 'test9_secret_key';
 process.env.TROOP_TEST9_NAME = '測試旅深資童軍團';
+process.env.TROOP_TEST8_BACKEND = TEST_GAS;
+process.env.TROOP_TEST8_APIKEY = 'test8_secret_key';
+process.env.TROOP_TEST8_NAME = '另一測試旅';
 
 const reg = getRegistry();
 ok('Registry 讀取到環境變數登記嘅旅團', !!reg.TEST9, Object.keys(reg).join(','));
@@ -40,19 +46,157 @@ ok('getTrustedUnit 帶埋伺服器端 API Key', trusted?.apiKey === 'test9_secre
 ok('非白名單旅團回傳 null', getTrustedUnit('9999') === null);
 ok('0082 冇登記就攞唔到後端（唔會再借用舊旅團）', getTrustedUnit('0082') === null);
 
-// 代理憑證來源：瀏覽器以前保存的 Key 不可蓋過伺服器端的新 Key。
+// Portal SSO：網址 query 不再可偽造身份；只接受上游伺服器簽署的短期 assertion。
+{
+  const response = () => ({
+    statusCode: 0, headers: {}, body: null,
+    setHeader(k, v) { this.headers[k] = v; return this; },
+    status(s) { this.statusCode = s; return this; },
+    json(v) { this.body = v; return this; }
+  });
+  const forged = response();
+  await portalHandler({ method: 'GET', query: { u: 'TEST9', role: 'leader', src: 'https://portal.example.test', ymis: 'victim' }, headers: { host: 'vs.example.test' } }, forged);
+  ok('Portal GET query 就算偽造准許來源／高權角色／YMIS 都唔會產票',
+    forged.statusCode === 405 && !forged.body?.portalToken, JSON.stringify(forged.body));
+
+  const unsigned = response();
+  await portalHandler({ method: 'POST', body: { assertion: 'fake.fake' }, headers: { host: 'vs.example.test', 'x-forwarded-proto': 'https' } }, unsigned);
+  ok('Portal 未簽署 assertion fail closed', unsigned.statusCode === 403 && !unsigned.body?.portalToken, JSON.stringify(unsigned.body));
+
+  const purposeKey = (root, purpose) => crypto.createHmac('sha256', root).update(purpose).digest('hex');
+  const purposeSig = (root, purpose, value) => crypto.createHmac('sha256', purposeKey(root, purpose))
+    .update(value).digest('base64url');
+  const payload = {
+    typ: 'central-sso-assertion', u: 'TEST9', role: 'leader', sub: 'YMIS-9001', name: '可信領袖',
+    iss: 'central-travel-system', aud: 'vs-portal:branch:TEST9',
+    iat: Date.now(), exp: Date.now() + 60_000, jti: crypto.randomUUID()
+  };
+  const body64 = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const sig = purposeSig(process.env.TROOP_TEST9_APIKEY, 'vs-portal-central-assertion-v1', body64);
+  const assertion = body64 + '.' + sig;
+  const accepted = response();
+  await portalHandler({ method: 'POST', body: { assertion, role: 'super', sub: 'attacker' }, headers: { host: 'vs.example.test', 'x-forwarded-proto': 'https' } }, accepted);
+  ok('Portal 有效短期 assertion 先會產票，身份只取簽署內容',
+    accepted.statusCode === 200 && accepted.body?.ok === true && accepted.body?.role === 'leader'
+      && accepted.body?.subject === 'YMIS-9001' && !!accepted.body?.portalToken,
+    JSON.stringify(accepted.body));
+  const [exchangeBody, exchangeSig] = String(accepted.body?.portalToken || '').split('.');
+  const exchangePayload = JSON.parse(Buffer.from(exchangeBody, 'base64url').toString('utf8'));
+  const expectedExchangeSig = purposeSig(process.env.TROOP_TEST9_APIKEY,
+    'vs-portal-branch-exchange-v1', exchangeBody);
+  const expectedExchangeJti = crypto.createHmac('sha256', purposeKey(process.env.TROOP_TEST9_APIKEY,
+    'vs-portal-branch-exchange-jti-v1')).update(`TEST9\n${payload.jti}`).digest('base64url');
+  ok('Portal 只發 60 秒、指定支部用途的 exchange token（唔係 app session）',
+    accepted.body?.exchangeRequired === true && exchangePayload.typ === 'central-sso-exchange'
+      && exchangePayload.u === 'TEST9' && exchangePayload.exp - exchangePayload.iat <= 60_000
+      && exchangePayload.iss === 'vs-portal' && exchangePayload.aud === 'unified-gas:branch:TEST9'
+      && exchangePayload.src === 'central-travel-system' && exchangePayload.jti === expectedExchangeJti
+      && exchangeSig === expectedExchangeSig && Array.isArray(exchangePayload.scope));
+
+  const test8Payload = {
+    ...payload, u: 'TEST8', aud: 'vs-portal:branch:TEST8',
+    sub: 'YMIS-8001', name: '另一支部領袖', jti: crypto.randomUUID()
+  };
+  const test8Body = Buffer.from(JSON.stringify(test8Payload)).toString('base64url');
+  const wrongBranchSig = purposeSig(process.env.TROOP_TEST9_APIKEY,
+    'vs-portal-central-assertion-v1', test8Body);
+  const wrongBranch = response();
+  await portalHandler({ method: 'POST', body: { assertion: `${test8Body}.${wrongBranchSig}` },
+    headers: { host: 'vs.example.test', 'x-forwarded-proto': 'https' } }, wrongBranch);
+  ok('同一 APIKEY 派生的 assertion key 仍按支部隔離，TEST9 不可冒充 TEST8',
+    wrongBranch.statusCode === 403 && wrongBranch.body?.reason === 'assertion_invalid');
+
+  const test8Sig = purposeSig(process.env.TROOP_TEST8_APIKEY,
+    'vs-portal-central-assertion-v1', test8Body);
+  const accepted8 = response();
+  await portalHandler({ method: 'POST', body: { assertion: `${test8Body}.${test8Sig}` },
+    headers: { host: 'vs.example.test', 'x-forwarded-proto': 'https' } }, accepted8);
+  const [exchange8Body, exchange8Sig] = String(accepted8.body?.portalToken || '').split('.');
+  const expected8Sig = purposeSig(process.env.TROOP_TEST8_APIKEY,
+    'vs-portal-branch-exchange-v1', exchange8Body);
+  const crossBranchExchangeSig = purposeSig(process.env.TROOP_TEST9_APIKEY,
+    'vs-portal-branch-exchange-v1', exchange8Body);
+  ok('用途派生 exchange key 按支部隔離，purpose token 只可由目標 Unified GAS 驗證',
+    accepted8.statusCode === 200 && exchange8Sig === expected8Sig && exchange8Sig !== crossBranchExchangeSig);
+
+  const replay = response();
+  await portalHandler({ method: 'POST', body: { assertion }, headers: { host: 'vs.example.test', 'x-forwarded-proto': 'https' } }, replay);
+  ok('Portal 同一 jti assertion 不可在同一服務實例重放', replay.statusCode === 403 && replay.body?.reason === 'assertion_replayed', JSON.stringify(replay.body));
+}
+
+// 代理憑證來源：API Key 只供 server 路由，唔可以代替用戶 session；舊 Key 亦不可蓋過 Registry Key。
 {
   const originalFetch = globalThis.fetch;
-  let forwarded = null;
-  globalThis.fetch = async (_url, init) => {
-    forwarded = JSON.parse(init.body);
+  const calls = [];
+  const callUrls = [];
+  globalThis.fetch = async (url, init) => {
+    const sent = JSON.parse(init.body);
+    calls.push(sent);
+    callUrls.push(String(url));
+    if (sent.action === 'authWhoAmI') {
+      return { status: 200, text: async () => JSON.stringify({ ok: true, success: true,
+        account: { id: 'YMIS-9001', ymis: 'YMIS-9001', role: 'leader' } }) };
+    }
     return { status: 200, text: async () => JSON.stringify({ success: true }) };
   };
   try {
-    const response = { setHeader() { return this; }, status() { return this; }, json(v) { this.body = v; return this; } };
-    await proxyHandler({ method: 'POST', body: { action: 'saveTables', unit: 'TEST9', apiKey: 'outdated', apikey: 'outdated', tables: { members: [] } } }, response);
+    const makeResponse = () => ({ statusCode: 0, setHeader() { return this; }, status(v) { this.statusCode = v; return this; }, json(v) { this.body = v; return this; } });
+    const anonymous = makeResponse();
+    await proxyHandler({ method: 'POST', body: { action: 'saveTables', unit: 'TEST9', apiKey: 'outdated', tables: { members: [] } } }, anonymous);
+    ok('行政資料不可用 API Key 代替登入', anonymous.statusCode === 401 && anonymous.body?.code === 'session_required');
+
+    const response = makeResponse();
+    await proxyHandler({ method: 'POST', body: { action: 'saveTables', unit: 'TEST9', apiKey: 'outdated', apikey: 'outdated',
+      sessionToken: 'opaque-user-session', tables: { members: [] } } }, response);
+    const authProbe = calls.find(x => x.action === 'authWhoAmI');
+    const forwarded = calls.find(x => x.action === 'saveTables');
+    ok('代理先由同一 GS session 對回可信身份', authProbe?.sessionToken === 'opaque-user-session' && authProbe?.apiKey === 'test9_secret_key');
     ok('舊瀏覽器 Key 不會蓋過 Registry Key', response.body?.success === true && forwarded?.apiKey === 'test9_secret_key' && !forwarded?.apikey);
-  } finally { globalThis.fetch = originalFetch; }
+
+    process.env.SUPER_KEY = 'proxy-super-session-test-secret';
+    const superTicket = issueSuperSession('sheep');
+    const beforeSuper = calls.length;
+    const superResponse = makeResponse();
+    await proxyHandler({ method: 'POST', body: { action: 'saveTables', unit: 'TEST9',
+      sessionToken: superTicket.token, tables: { members: [] } } }, superResponse);
+    const superForwarded = calls.at(-1);
+    const superUrl = new URL(callUrls.at(-1));
+    ok('平台 super 行政路徑不會把平台 session 當支部用戶票轉發',
+      superResponse.body?.success === true && calls.length === beforeSuper + 1
+        && superForwarded?.sessionToken === undefined && superForwarded?.unified_super === true
+        && superForwarded?.on_behalf === 'sheep');
+
+    const signatureKey = crypto.createHmac('sha256', 'test9_secret_key').update('vsbadge-troop-sig-v1').digest('hex');
+    const expectedSig = (raw, ts, nonce, action = 'saveTables') => crypto.createHmac('sha256', signatureKey)
+      .update([action, String(ts), String(nonce), crypto.createHash('sha256').update(raw).digest('hex')].join('\n'))
+      .digest('hex');
+    const { sig: innerSig, sig_ts: innerTs, sig_nonce: innerNonce, ...unsignedSuperBody } = superForwarded;
+    const innerOk = innerSig === expectedSig(JSON.stringify(unsignedSuperBody), innerTs, innerNonce);
+    const outerOk = superUrl.searchParams.get('sig') === expectedSig(JSON.stringify(superForwarded),
+      superUrl.searchParams.get('sts'), superUrl.searchParams.get('snonce'));
+    ok('平台 super 只以該支部 Registry Key 簽 server-to-server 行政請求',
+      superForwarded?.apiKey === 'test9_secret_key' && innerOk && outerOk);
+
+    const accountResponse = makeResponse();
+    await proxyHandler({ method: 'POST', body: { action: 'authDeleteAccount', unit: 'TEST9',
+      sessionToken: superTicket.token, targetUsername: 'old@example.test' } }, accountResponse);
+    const accountForwarded = calls.at(-1);
+    const accountUrl = new URL(callUrls.at(-1));
+    const { sig: accountInnerSig, sig_ts: accountInnerTs, sig_nonce: accountInnerNonce,
+      ...unsignedAccountBody } = accountForwarded;
+    const accountInnerOk = accountInnerSig === expectedSig(JSON.stringify(unsignedAccountBody),
+      accountInnerTs, accountInnerNonce, 'authDeleteAccount');
+    const accountOuterOk = accountUrl.searchParams.get('sig') === expectedSig(JSON.stringify(accountForwarded),
+      accountUrl.searchParams.get('sts'), accountUrl.searchParams.get('snonce'), 'authDeleteAccount');
+    ok('平台 super 的支部帳戶操作亦轉成完整 HMAC request，不會把 Vercel session 當 GAS session',
+      accountResponse.body?.success === true && accountForwarded?.sessionToken === undefined
+        && accountForwarded?.unified_super === true && accountForwarded?.action === 'authDeleteAccount'
+        && accountInnerOk && accountOuterOk);
+    delete process.env.SUPER_KEY;
+  } finally {
+    delete process.env.SUPER_KEY;
+    globalThis.fetch = originalFetch;
+  }
 }
 
 // 正式站的 backendReady 必須有網址 *及* API Key；單靠 status 不能寫入。
@@ -63,7 +207,10 @@ delete process.env.TROOP_NOKEY_BACKEND;
 // 3. listPublicUnits
 const pub = listPublicUnits();
 ok('公開清單包含登記咗嘅旅團', !!pub.TEST9);
-ok('公開清單絕不外洩 gasUrl / apiKey', pub.TEST9.gasUrl === undefined && pub.TEST9.apiKey === undefined);
+ok('公開清單絕不外洩 gasUrl / apiKey，亦冇另一套 Portal secret 欄',
+  pub.TEST9.gasUrl === undefined && pub.TEST9.apiKey === undefined
+    && pub.TEST9.portalOrigin === undefined && pub.TEST9.portalSecret === undefined
+    && pub.TEST9.portalSessionSecret === undefined);
 
 // 4. unitsHandler
 let resStatus = 0;
@@ -85,8 +232,9 @@ ok('unitsHandler 回傳 units 物件', !!resJson?.units?.TEST9);
   process.env.TROOP_0081_APIKEY = 'troop_key_81';
   process.env.TROOP_0081_NAME = '第八十一旅深資童軍團';
   process.env.TROOP_0081_NOTICE = GAS;
-  process.env.TROOP_0081_PROGRESSBACKEND = GAS;
-  process.env.TROOP_0081_PROGRESSAPIKEY = 'progress_key_81';
+  /* 舊分離變數即使殘留亦不可改送第二個進度後端。 */
+  process.env.TROOP_0081_PROGRESSBACKEND = TEST_GAS;
+  process.env.TROOP_0081_PROGRESSAPIKEY = 'must_be_ignored';
 
   const envPub = listPublicUnits();
   ok('淨係設 env 都開到新旅團（0081 出現喺公開清單）', !!envPub['0081'], Object.keys(envPub).join(','));
@@ -94,6 +242,9 @@ ok('unitsHandler 回傳 units 物件', !!resJson?.units?.TEST9);
   ok('公開清單一樣唔外洩 gasUrl / apiKey / progress key',
     envPub['0081'].gasUrl === undefined && envPub['0081'].apiKey === undefined && envPub['0081'].progressApiKey === undefined);
   ok('公開清單標示「伺服器端已備妥進度後端」（前端唔使填）', envPub['0081'].progressServerSide === true);
+  const progressEntry = getProgressRegistryEntry('0081');
+  ok('進度固定沿用同一 BACKEND／APIKEY，毋須亦冇第二組進度變數',
+    progressEntry.backend === GAS && progressEntry.apiKey === 'troop_key_81');
   ok('公開清單標示通告可以直接送去總表', envPub['0081'].noticeReady === true);
   ok('env 旅團一樣通過白名單驗證（proxy 用得到）', !!getTrustedUnit('0081')?.gasUrl);
 
@@ -143,7 +294,8 @@ ok('unitsHandler 回傳 units 物件', !!resJson?.units?.TEST9);
   const sent = JSON.parse(calls[0]?.init?.body || '{}');
   ok('提交申請 → 用同源 proxy 轉發（申請人唔使直接打 GAS）', calls.length === 1 && calls[0].target === ADMIN, calls[0]?.target);
   ok('收件匣目的地由伺服器端固定（前端改唔到）',
-    (await post({ action: 'submitRegistration', troopId: '0100', adminUrl: 'https://evil.example.com/exec',
+    (await post({ action: 'submitRegistration', troopId: '0100', troopName: 'X', apiKey: 'K1',
+      adminUrl: 'https://evil.example.com/exec',
       scriptUrl: 'https://script.google.com/macros/s/AKfycbTESTTESTTESTTESTTESTTESTTESTTEST/exec' }))
       && calls[calls.length - 1].target === ADMIN);
   ok('轉發 payload 帶 appType=82venture ＋ appName（同 VSBADGE 共用收件匣，可以分辨）',
@@ -154,18 +306,24 @@ ok('unitsHandler 回傳 units 物件', !!resJson?.units?.TEST9);
     && sent.mainSystemUrl === 'https://ecportal.vercel.app' && /^\d{4}-\d{2}-\d{2}T/.test(sent.at || ''));
   ok('收件匣回 JSON → proxy 當送到（success:true，唔聲稱有回執）',
     good.statusCode === 200 && good.body?.success === true && good.body?.receipt === false);
+  const beforeIncomplete = calls.length;
+  const incomplete = await post({ action: 'submitRegistration', troopId: '0100', troopName: 'X',
+    scriptUrl: 'https://script.google.com/macros/s/AKfycbTESTTESTTESTTESTTESTTESTTESTTEST/exec' });
+  ok('server 亦拒絕缺 API Key 的不完整申請，不會轉發去收件匣',
+    incomplete.statusCode === 400 && incomplete.body?.reason === 'registration_invalid'
+      && calls.length === beforeIncomplete, JSON.stringify(incomplete.body));
   /* 收件匣唔會回執：回 HTML／空白都要當送到（ADMIN 系統收到就 OK） */
-  const htmlPage = await (upstreamRaw = '<html>已收到</html>', post({ action: 'submitRegistration', troopId: '0100', troopName: 'X',
+  const htmlPage = await (upstreamRaw = '<html>已收到</html>', post({ action: 'submitRegistration', troopId: '0100', troopName: 'X', apiKey: 'K1',
     scriptUrl: 'https://script.google.com/macros/s/AKfycbTESTTESTTESTTESTTESTTESTTESTTEST/exec' }));
   ok('收件匣唔回 JSON（HTML／空白）→ 照當送到（唔會誤報失敗）',
     htmlPage.statusCode === 200 && htmlPage.body?.success === true, JSON.stringify(htmlPage.body));
-  const blank = await (upstreamRaw = ' ', post({ action: 'submitRegistration', troopId: '0100', troopName: 'X',
+  const blank = await (upstreamRaw = ' ', post({ action: 'submitRegistration', troopId: '0100', troopName: 'X', apiKey: 'K1',
     scriptUrl: 'https://script.google.com/macros/s/AKfycbTESTTESTTESTTESTTESTTESTTESTTEST/exec' }));
   ok('收件匣回空白 → 同樣當送到', blank.statusCode === 200 && blank.body?.success === true);
   /* 但收件匣真係話收唔到，就照當失敗 */
   upstreamRaw = null;
   const refused = await (upstreamJson = { success: false, error: '唔收呢類申請' },
-    post({ action: 'submitRegistration', troopId: '0100', troopName: 'X',
+    post({ action: 'submitRegistration', troopId: '0100', troopName: 'X', apiKey: 'K1',
       scriptUrl: 'https://script.google.com/macros/s/AKfycbTESTTESTTESTTESTTESTTESTTESTTEST/exec' }));
   ok('收件匣明確回 success:false → 當失敗（唔會呃申請人）',
     refused.statusCode === 502 && /唔收呢類申請/.test(refused.body?.error || ''), JSON.stringify(refused.body));
@@ -190,7 +348,7 @@ ok('unitsHandler 回傳 units 物件', !!resJson?.units?.TEST9);
   /* 連線唔通 → 失敗 */
   const realFetch2 = globalThis.fetch;
   globalThis.fetch = async () => { const e = new Error('boom'); e.name = 'TimeoutError'; throw e; };
-  const down = await post({ action: 'submitRegistration', troopId: '0100', troopName: 'X',
+  const down = await post({ action: 'submitRegistration', troopId: '0100', troopName: 'X', apiKey: 'K1',
     scriptUrl: 'https://script.google.com/macros/s/AKfycbTESTTESTTESTTESTTESTTESTTESTTEST/exec' });
   ok('連線／逾時 → 回 504（呢個先算送唔到）', down.statusCode === 504, JSON.stringify(down.body));
   globalThis.fetch = realFetch2;
@@ -306,7 +464,13 @@ console.log('\n▌超管核對（api/auth.js：SUPER_KEY、fail closed）');
   const good = await call({ user: 'sheep', password: PW });
   ok('★ SUPER_KEY = 密碼，密碼啱 → 200', good.statusCode === 200 && good.body?.ok === true,
     JSON.stringify(good.body));
+  ok('★ 成功登入簽發有 expiry 嘅短期超管 HMAC session',
+    !!good.body?.sessionToken && good.body?.sessionExpiresAt > Date.now()
+      && verifySuperSession(good.body.sessionToken)?.role === 'super', JSON.stringify(good.body));
+  ok('★ 超管 session 被竄改後 fail closed',
+    verifySuperSession(String(good.body?.sessionToken || '') + 'x') === null);
   ok('★ 回應唔會洩漏密碼', !JSON.stringify(good.body).includes(PW), JSON.stringify(good.body));
+  const firstSuperTicket = good.body?.sessionToken;
 
   const bad = await call({ user: 'sheep', password: 'wrong-password' });
   ok('密碼錯 → 401', bad.statusCode === 401 && bad.body?.ok === false, JSON.stringify(bad.body));
@@ -324,8 +488,10 @@ console.log('\n▌超管核對（api/auth.js：SUPER_KEY、fail closed）');
   process.env.SUPER_KEY = 'a-brand-new-password';
   ok('★ 改咗 SUPER_KEY → 舊密碼即刻入唔到',
     (await call({ user: 'sheep', password: PW })).statusCode === 401);
-  ok('★ 改咗 SUPER_KEY → 新密碼即刻入到',
-    (await call({ user: 'sheep', password: 'a-brand-new-password' })).statusCode === 200);
+  ok('★ 改咗 SUPER_KEY → 舊超管 session 同步失效', verifySuperSession(firstSuperTicket) === null);
+  const freshSuper = await call({ user: 'sheep', password: 'a-brand-new-password' });
+  ok('★ 改咗 SUPER_KEY → 新密碼即刻入到並簽發新 session',
+    freshSuper.statusCode === 200 && verifySuperSession(freshSuper.body?.sessionToken)?.role === 'super');
 
   /* sheep 係品牌固定隱藏超管，不接受 SUPER_USER 改名或另造入口。 */
   process.env.SUPER_USER = 'myboss';

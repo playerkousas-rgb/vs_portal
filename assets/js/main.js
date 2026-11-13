@@ -17,12 +17,12 @@ import {
 } from './lib/onboard.js';
 import { applyTheme, MAROON } from './lib/theme.js';
 import {
-  login, loginServer, loginMember, loginPortalFromUrl, logout, current, currentRole, ROLES, displayName, displaySub,
+  loginServer, loginPortalFromUrl, logout, current, currentRole, ROLES, displayName, displaySub,
   accounts, isSuper, can, changeOwnPassword, TEMP_PASSWORD,
-  loginSetupKey, applyAccount
+  loginSetupKey, requestPasswordReset, completePasswordReset, applyAccount
 } from './lib/auth.js';
 import { pendingMeetings, overdueFees, pendingClaims, pendingLoans, profile, notices, onLegacyHost, canonicalUrl } from './lib/model.js';
-import { esc, icon, toast, toastAction, modal, confirmDlg } from './lib/util.js';
+import { esc, icon, toast, toastAction, modal, confirmDlg, closeAllModals } from './lib/util.js';
 import { APP_VERSION } from './lib/version.js';
 import { parse, go } from './lib/router.js';
 
@@ -132,6 +132,8 @@ async function boot() {
      ★ 要彈框問嘅得一樣：**未寫入後端**（尤其帳戶級）—— 嗰個喺登出／閂頁問
        （confirmLogout ／ beforeunload），因為嗰啲先係會「第二部機登唔到」嘅嘢。 */
   window.addEventListener('hashchange', async () => {
+    /* 換頁一定清 modal stack；即使上一個 async action 中途重畫，都唔可以留低 overlay 擋住全站。 */
+    closeAllModals(null);
     const { stashActiveDrafts } = await import('./lib/guard.js');
     const n = stashActiveDrafts();
     if (n) toast(`呢個分頁有 ${n} 份未完成草稿 —— 已自動暫存喺呢部機，返嚟撳「還原」就攞得返`, 'info');
@@ -140,11 +142,9 @@ async function boot() {
   window.addEventListener('v82:refresh', render);
   window.addEventListener('v82:sync', paintSyncChip);
 
-  /* 資料真正嘅家係旅團自己嘅 Google Sheet：
-     真實旅團要先成功載入後端，先至會出**帳戶／密碼**畫面（見 loginSyncBanner）。
-     ★ 2026-09-26 團長：SET 好之後再連唔到後端嘅機會好細，唔使成頁咁大陣仗；
-       暫時連唔到就照出登入表單＋頂部一句「暫時未能連線」，唔收埋登入畫面。
-       登入嗰一刻仍然會同後端硬性核對（gateLoginOnBackend），未連到就唔會放行。 */
+  /* 資料真正嘅家係旅團自己嘅 Google Sheet。未登入先顯示登入表單；密碼由
+     GAS authLogin 核對並派 session，staff 其後先可載入完整行政資料。
+     暫時連唔到就喺表單就地報錯，絕不退回瀏覽器本機密碼驗證。 */
   await syncBoot();
   if (current()) { render(); maybeForceChangePw(); maybeShowLoginConflicts(); }
   else renderLogin();
@@ -226,6 +226,15 @@ async function syncBoot() {
     bootSyncWarn = out;
     paintSyncChip();
     return out;
+  }
+
+  /* 行政 loadDb 由 hardened proxy 要求已登入 session。未登入開機只確認路由
+     已設定，真正身份先交 GAS authLogin 核對；成功後先由 gateLoginOnBackend()
+     拉完整行政資料。咁 API Key 永遠唔會再變成 pre-login 身份。 */
+  if (!current()) {
+    bootSyncWarn = null;
+    paintSyncChip();
+    return { ok: true, ready: true, authenticated: false };
   }
 
   app.innerHTML = loadingScreen('由旅團後端載入資料中…');
@@ -317,7 +326,7 @@ function paintSyncChip() {
 
 
   if (!remoteApi || !remoteApi.remoteConfigured()) {
-    el.innerHTML = `<span class="badge b-warn" title="資料淨係存喺呢部機嘅瀏覽器，換機／清 cache 就會冇咗。去「資料管理 → 總表同步」設定後端。">
+    el.innerHTML = `<span class="badge b-warn" title="資料淨係存喺呢部機嘅瀏覽器，換機／清 cache 就會冇咗。請平台管理員核對與 BADGE 相同的 NAME／BACKEND／APIKEY Registry。">
       ${icon('alert', 12)} 只存喺本機</span>`;
     el.onclick = () => go('#/tables/sync');
     el.style.cursor = 'pointer';
@@ -657,7 +666,7 @@ function renderUnitGate() {
             <div class="xs faint">每個旅團用自己嘅 Google Sheet 做後端。毋須登入，先下載 <code>Code.gs</code> → 建立 Google Sheet → 執行 <code>initializeSheets</code> → 部署做網頁應用程式 → 把 URL 及 API Key 提交登記。</div>
           </div>
           <div class="row gap-8 wrap" style="align-items:center">
-            <button class="btn btn-sm" data-act="dl-gs">${icon('download', 15)} 下載 Code.gs</button>
+            <button class="btn btn-sm" data-act="dl-gs">${icon('download', 15)} 下載 Unified Code.gs</button>
             <button class="btn btn-sm" data-act="guide">${icon('note', 15)} 部署指南</button>
             <button class="btn btn-sm btn-primary" data-act="apply">${icon('plus', 15)} 新旅團申請接入</button>
 
@@ -740,15 +749,15 @@ async function openDeployGuideModal() {
     body: `
       <div class="note-box info mb-12">
         ${icon('check', 16)}
-        <div><b>10 分鐘完成部署！</b>本系統為多旅團架構，每個旅團擁有自己獨立的 Google Sheet 後端，毋須登入即可完成部署並提交登記（申請會直接送去平台管理員嘅 ADMIN 系統）。</div>
+        <div><b>10 分鐘完成部署！</b>每個旅團一張 Google Sheet ＋ 一支 Unified GAS；管理、進度及 BADGE 共用。毋須登入即可下載並提交登記（申請會直接送去平台管理員嘅 ADMIN 系統）。</div>
       </div>
       
       <div class="col gap-12" style="font-size:13.5px;line-height:1.6">
         <div class="card" style="padding:14px">
-          <div class="semibold mb-4">第 1 步：下載後端程式碼（Code.gs）</div>
-          <div class="xs faint mb-8">毋須登入，直接點擊下方按鈕下載或複製最新單一檔案後端程式碼：</div>
+          <div class="semibold mb-4">第 1 步：下載 Unified Code.gs</div>
+          <div class="xs faint mb-8">毋須登入；下方下載內容與本 repo builder 產物逐 byte 一致：</div>
           <div class="row gap-8 wrap">
-            <button class="btn btn-sm btn-primary" id="guide-dl-btn" type="button">${icon('download', 15)} ⬇️ 立即下載 Code.gs</button>
+            <button class="btn btn-sm btn-primary" id="guide-dl-btn" type="button">${icon('download', 15)} ⬇️ 立即下載 Unified Code.gs</button>
             <button class="btn btn-sm" id="guide-copy-btn" type="button">${icon('copy', 15)} 📋 複製原始碼</button>
           </div>
         </div>
@@ -758,7 +767,7 @@ async function openDeployGuideModal() {
           <ol class="xs mono" style="padding-left:18px;line-height:1.8">
             <li>開啟 Google Sheets 建立新試算表（例：「第82旅 執委會總表」）</li>
             <li>點擊上方選單「擴充功能」→「Apps Script」</li>
-            <li>清空預設代碼，將下載的 <code>Code.gs</code> 全部內容貼上並儲存 💾</li>
+            <li>清空預設代碼，將下載的 <code>Unified Code.gs</code> 全部內容貼上並儲存 💾</li>
           </ol>
         </div>
 
@@ -791,8 +800,8 @@ async function openDeployGuideModal() {
             <b>送出就 OK，唔使等回覆</b>：ADMIN 系統唔會回覆申請人，管理員收到之後會轉寄畀團長跟進，
             開好團（加好 <code>TROOP_&lt;編號&gt;_*</code> 環境變數）就會 email 通知你。
             如果幾日都冇消息，用申請內容 WhatsApp／電郵問一聲管理員就得。
-            <br>之後：想埋讀「進度追蹤」＝登入後去「進度 → 設定」貼 <code>/exec</code> ＋ API Key（或者交畀管理員一齊設定）；
-            通告一開就可以用 QR／WhatsApp 分享收報名，報名直接入你自己嘅 Sheet。
+            <br>管理員只會登記 <code>TROOP_&lt;編號&gt;_NAME／BACKEND／APIKEY</code> 三項；
+            管理系統、進度追蹤及 BADGE 自動共用同一 <code>/exec</code>、API Key 與 Sheet。
           </div>
           <button class="btn btn-sm btn-primary" id="guide-apply-btn">${icon('plus', 15)} 填寫申請表自動送出（入 ADMIN 系統）</button>
           <div class="xs faint mt-8">送唔到（例如網絡問題）？申請表會畀你<b>複製申請內容</b>，直接 WhatsApp／電郵畀管理員都一樣開得團。</div>
@@ -826,11 +835,11 @@ async function openApplication() {
       <div class="note-box mb-12">${icon('alert', 15)}<div>
         <b>申請之前請先起好你自己嘅後端</b>（每個旅團一張自己嘅 Google Sheet）：
         <div class="xs mt-4 mb-8">
-          1. 獲取 <b>Code.gs</b>（免登入）：
-          <button class="btn btn-xs btn-primary ml-8" id="ap-dl-btn" type="button">${icon('download', 13)} 下載 Code.gs</button>
+          1. 獲取 <b>Unified Code.gs</b>（免登入；管理、進度及 BADGE 共用）：
+          <button class="btn btn-xs btn-primary ml-8" id="ap-dl-btn" type="button">${icon('download', 13)} 下載 Unified Code.gs</button>
           <button class="btn btn-xs ml-4" id="ap-copy-btn" type="button">${icon('copy', 13)} 複製原始碼</button><br>
-          2. 建一張新 Google Sheet → 擴充功能 → Apps Script → 貼上 Code.gs<br>
-          3. 執行 <code>initializeSheets</code>（會建好全部分頁），複製 API Key<br>
+          2. 建一張新 Google Sheet → 擴充功能 → Apps Script → 貼上 Unified Code.gs<br>
+          3. 執行 <code>initializeSheets</code>（會建好全部分頁），再執行 <code>showApiKey</code> 複製 API Key<br>
           4. 部署做<b>網頁應用程式</b>（執行身分：我；存取權：任何人），複製 <code>/exec</code> 網址
         </div></div></div>
       <div class="grid g-2" style="gap:12px">
@@ -840,8 +849,8 @@ async function openApplication() {
           <input class="input" id="ap-name" placeholder="例：第一百旅深資童軍團"></div>
         <div class="field" style="grid-column:1/-1"><label class="label">你嘅後端 Apps Script <code>/exec</code> 網址 <span class="req">*</span></label>
           <input class="input" id="ap-url" placeholder="https://script.google.com/macros/s/…/exec"></div>
-        <div class="field"><label class="label">API Key</label>
-          <input class="input" id="ap-key" placeholder="執行 initializeSheets 之後顯示嗰個"></div>
+        <div class="field"><label class="label">API Key <span class="req">*</span></label>
+          <input class="input" id="ap-key" placeholder="執行 showApiKey 顯示嗰個"></div>
         <div class="field"><label class="label">聯絡人（電郵／電話）</label>
           <input class="input" id="ap-contact" placeholder="例：scouter@example.hk"></div>
         <div class="field" style="grid-column:1/-1"><label class="label">備註</label>
@@ -850,7 +859,7 @@ async function openApplication() {
           <input class="input" value="${esc(mainUrl)}" readonly style="font-family:var(--mono);font-size:12px;background:var(--bg-2)">
           <div class="hint">呢個係<b>你而家睇緊嘅呢個網站</b>嘅網址，方便管理員核對同登記。</div></div>
       </div>
-      <div class="hint mt-8">送出後管理員會把你嘅後端網址加進 Registry，完成開戶。之後你自己喺「<b>進度 → 設定</b>」填入旅團自己嘅 <code>/exec</code> 網址同 API Key，就可以喺呢度直接讀寫進度（一個後端、兩個前端，唔使外連）。</div>`,
+      <div class="hint mt-8">送出後管理員會以同一組旅團名稱、<code>/exec</code> 與 API Key 登記 Registry。進度頁及 BADGE 自動沿用；不用亦不應在瀏覽器再貼 Key。</div>`,
     actions: [
       { label: '取消', class: 'btn', value: null },
       { label: '送出申請', class: 'btn-primary', onClick: el => ({
@@ -1012,8 +1021,8 @@ let pickedUnit = null;
  * 所以未登入都睇得。淨係 show 可見範圍 ＝ 「對外公開」（rank 1）嘅嘢 ——
  * 團員級／執委級／領袖級嘅內容一律唔會喺呢度出現（未登入冇身份＝睇唔到）。
  *
- * 資料由邊度嚟：開機 syncBoot() 已經由後端拉咗成份資料庫落嚟（登入核對要用），
- * 所以呢度直接讀本機就得，唔使再問後端、亦唔會洩露任何團員資料。
+ * 資料由邊度嚟：已登入 staff 會有後端行政副本；未登入 fresh device 只讀本機
+ * 已知的公開資料（可能為空），絕不為顯示呢個 modal 匿名下載完整名冊／密碼。
  */
 function showPublicInfo() {
   const u = unitEntry(currentUnit() || defaultUnitCode()) || {};
@@ -1034,7 +1043,8 @@ function renderLogin() {
   const code = currentUnit() || defaultUnitCode();
   const u = unitEntry(code) || {};
 
-  /* 未有用戶嗰陣，登入畫面交畀「開團 KEY」；有用戶之後變返簡潔登入框 */
+  /* 未登入唔再下載完整名冊，所以 fresh device 無法（亦不應）靠本機資料判斷
+     支部有冇用戶。登入表單一律顯示；本機尚未有名冊時額外顯示開團 KEY。 */
   const db0 = tryLoad();
   const hasUsers = !!(db0 && Array.isArray(db0.members) && db0.members.length > 0);
   const luname = esc(u.name || '深資童軍團');
@@ -1080,7 +1090,6 @@ function renderLogin() {
 
         ${loginSyncBanner()}
 
-        ${hasUsers ? `
         <h1 style="text-align:center">登入</h1>
         <form id="loginForm" autocomplete="off">
           <div class="field mt-12">
@@ -1100,10 +1109,13 @@ function renderLogin() {
           <button type="button" id="btnApply">申請開戶</button>
           <span class="faint">·</span>
           <button type="button" id="btnPublicInfo">公開資料</button>
-        </div>` : `
-        <h1 style="text-align:center">開團</h1>
+        </div>
+
+        ${!hasUsers ? `
+        <div style="border-top:1px solid var(--line-2);margin:20px 0 16px"></div>
+        <h2 style="text-align:center;font-size:17px">新旅團開團</h2>
         <form id="setupKeyForm" autocomplete="off" class="mt-8">
-          <div class="hint mb-8">新旅團開團 KEY（第一個設定嘅人就係「團長」）<br>
+          <div class="hint mb-8">如果呢支部未有任何帳戶，可以用開團 KEY（第一個設定嘅人就係「團長」）。<br>
             喺 Google 試算表 → Apps Script 執行 <code>issueSetupKey()</code>（每次 72 小時；過期再執行一次）。</div>
           <div class="field">
             <label class="label">開團 KEY</label>
@@ -1111,7 +1123,7 @@ function renderLogin() {
           </div>
           <div id="liKeyErr" class="err mt-8"></div>
           <button type="submit" class="btn btn-primary btn-lg btn-block mt-12">用 KEY 進入開戶</button>
-        </form>`}
+        </form>` : ''}
 
         <div class="login-version">版本 ${esc(APP_VERSION)}</div>
       </div>
@@ -1179,6 +1191,12 @@ function renderLogin() {
       if (box) { box.textContent = res.msg; box.style.display = 'block'; }
       return;
     }
+    const gate = await gateLoginOnBackend();
+    if (!gate.ok) {
+      logout();
+      if (box) { box.textContent = gateMessage(gate); box.style.display = 'block'; }
+      return;
+    }
     document.body.classList.remove('login-body');
     applyTheme(load()?.unit?.theme);
     location.hash = '#/admin';
@@ -1199,15 +1217,45 @@ function renderLogin() {
           const email = el.querySelector('#forgotEmail')?.value?.trim() || '';
           if (!email) { el.querySelector('#forgotErr').textContent = '請輸入 EMAIL'; el.querySelector('#forgotErr').style.display = 'block'; return false; }
           try {
-            const response = await fetch('./api/proxy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'authForgotPassword', unit: code, email, resetUrl: `${location.origin}/reset-password.html` }) });
-            const data = await response.json();
-            if (!response.ok || data.success === false) throw new Error(data.error || '暫時未能提交');
-            return true;
+            const submitted = await requestPasswordReset(email, `${location.origin}/reset-password.html`);
+            if (!submitted.ok) throw new Error(submitted.msg || '暫時未能提交');
+            return { email, resetMode: submitted.resetMode, message: submitted.message || '' };
           } catch (error) { el.querySelector('#forgotErr').textContent = error.message || '暫時未能提交，請稍後再試'; el.querySelector('#forgotErr').style.display = 'block'; return false; }
         } }
       ]
     });
-    if (r) toast('如果 EMAIL 已登記，重設連結會寄出。', 'ok');
+    if (!r) return;
+    if (r.resetMode !== 'code') {
+      toast(r.message || '如果 EMAIL 已登記，重設連結會寄出。', 'ok');
+      return;
+    }
+    const completed = await modal({
+      title: '輸入電郵重設碼',
+      sub: r.message || '如果 EMAIL 已登記，8 位重設碼會寄到登記電郵。',
+      body: `<div class="field"><label class="label">8 位重設碼</label>
+          <input class="input mono" id="resetCode" inputmode="numeric" autocomplete="one-time-code"></div>
+        <div class="field mt-12"><label class="label">新密碼</label>
+          <input class="input" id="resetNew" type="password" autocomplete="new-password"></div>
+        <div class="field mt-12"><label class="label">再次輸入</label>
+          <input class="input" id="resetConfirm" type="password" autocomplete="new-password"></div>
+        <div id="resetErr" class="err mt-8"></div>`,
+      actions: [
+        { label: '稍後處理', class: 'btn', value: null },
+        { label: '重設密碼', class: 'btn-primary', onClick: async el => {
+          const code = el.querySelector('#resetCode')?.value?.trim() || '';
+          const password = el.querySelector('#resetNew')?.value || '';
+          const confirm = el.querySelector('#resetConfirm')?.value || '';
+          const box = el.querySelector('#resetErr');
+          if (!code) { box.textContent = '請輸入電郵內的重設碼'; box.style.display = 'block'; return false; }
+          if (password.length < 4) { box.textContent = '新密碼最少要 4 位'; box.style.display = 'block'; return false; }
+          if (password !== confirm) { box.textContent = '兩次密碼不一致'; box.style.display = 'block'; return false; }
+          const result = await completePasswordReset(r.email, code, password);
+          if (!result.ok) { box.textContent = result.msg || '重設碼不正確或已過期'; box.style.display = 'block'; return false; }
+          return true;
+        } }
+      ]
+    });
+    if (completed) toast('密碼已重設，請用新密碼登入。', 'ok');
   });
 
   app.querySelector('#loginForm')?.addEventListener('submit', async e => {
@@ -1216,39 +1264,37 @@ function renderLogin() {
     err.style.display = 'none';
     const btn = app.querySelector('#loginForm button[type=submit]');
     btn.disabled = true;
-    /* ★ 硬閘：登入嗰一刻一定要同後端核對過。核對唔到 → 唔入。
-       （後端載入成功＝本機呢份名冊密碼就係後端嗰份 → 個人身份登入即係核對過後端。） */
-    const gate = await gateLoginOnBackend();
-    if (!gate.ok) {
-      /* ★ 暫時連唔到後端：就地話俾用家知（照保留登入表單），
-         後端答得返就可以撳多次；冇放行、亦冇收埋畫面。 */
-      btn.disabled = false;
-      passInput.value = '';
-      err.textContent = gateMessage(gate);
-      err.style.display = 'block';
-      return;
-    }
-    let res = await login('staff', userInput.value, passInput.value);
-    /* 舊個人帳戶（開喺後端但本機名冊冇）：最後試一次後端核對 —— 唔會靜靜哋放行。 */
-    if (!res.ok && res.notFound === true) {
-      const srv = await loginServer('staff', userInput.value, passInput.value).catch(() => ({ ok: false }));
-      if (srv?.ok) res = srv;
-    }
-    btn.disabled = false;
+    /* 先由 server 核對身份並派 opaque session。行政 loadDb 已禁止匿名／API Key
+       身份，所以舊次序「先拉整庫、後登入」會形成無法通過的循環。 */
+    const res = await loginServer('staff', userInput.value, passInput.value).catch(e => ({ ok: false, msg: e?.message || '暫時未能登入' }));
     if (!res.ok) {
+      btn.disabled = false;
       err.textContent = res.msg;
       err.style.display = 'block';
       passInput.value = '';
       passInput.focus();
       return;
     }
-    /* 團員（identity = member）登入 → 去團員入口（members.html），唔係管理系統 */
+    /* 團員去獨立入口，由 hubLoad 用同一張 session 拉本人安全投影；
+       絕不先下載完整行政資料庫。 */
     if (res.role === 'member' && res.member) {
+      btn.disabled = false;
       const { saveHubAuth } = await import('./lib/hub-session.js');
       const { saveMe } = await import('./lib/member-me.js');
-      saveHubAuth(code, { id: res.member.id, name: res.member.name, ymis: res.member.ymis, identity: 'member', mustChangePw: !!res.mustChangePw });
+      saveHubAuth(code, { id: res.member.id, name: res.member.name, ymis: res.member.ymis, identity: 'member', mustChangePw: !!res.mustChangePw, sessionToken: res.sessionToken, sessionExpiresAt: res.sessionExpiresAt });
       saveMe({ id: res.member.id, name: res.member.name });
       location.href = `./members.html?u=${encodeURIComponent(code)}${res.mustChangePw ? '#forcepw' : ''}`;
+      return;
+    }
+    /* staff／超管攞到 session 後先做行政硬閘＋完整載入。核對唔到就撤銷
+       本機 session，唔可以靠舊 localStorage 入主控頁。 */
+    const gate = await gateLoginOnBackend();
+    btn.disabled = false;
+    if (!gate.ok) {
+      logout();
+      passInput.value = '';
+      err.textContent = gateMessage(gate);
+      err.style.display = 'block';
       return;
     }
     document.body.classList.remove('login-body');
@@ -1320,14 +1366,11 @@ function chiefFormHtml(me) {
     <div id="chiefErr" class="err mt-8"></div>`;
 }
 
-/** ★ 登入硬閘（2026-09-20 團長定案）：後端答唔到 → 一律唔准入主控頁。
- *  以前呢度係 `freshenBeforeLogin()`：「連唔到就照登入，橫額會話你知」——
- *  於係出現咗團長講嗰句：「既然都同後端對咗帳戶密碼，點可能入去之後話冇連上後端？」
- *  答案係：根本冇對過（當時 `login()` 係對本機嗰份帳戶名單，後端由頭到尾冇被問過）。
- *  ★ 2026-09-24：名冊同密碼都係**呢個旅團後端**嗰份（冇共用帳戶之後，
- *     本機嗰份就係後端拉落嚟嘅名冊）—— 所以呢個閘更加重要：
- *     先由後端載入成功（`requireBackendForLogin()`），名冊／密碼對得上先算真係核對過。
- *  而家：開機／核對唔到就停喺連線閘，唔會顯示登入表單。 */
+/** ★ 登入硬閘：後端答唔到 → 一律唔准入主控頁。
+ *  現行次序係 `authLogin`／`/api/auth` 先核對身份、簽發 opaque session，然後
+ *  `requireBackendForLogin()` 才用該 session 拉完整行政資料。呢個次序避免匿名
+ *  loadDb，也避免 API Key 被當成 pre-login 身份；團員則改由 hubLoad 安全投影。
+ *  身份核對成功但行政載入失敗時會立即清走本機 session，仍然唔會放行。 */
 async function gateLoginOnBackend() {
 
   if (!remoteApi) {

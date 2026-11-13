@@ -7,58 +7,37 @@
      · 兩個前端餵同一個後端：
          ① 深資童軍管理系統（呢度）  ② 進度前端（團員／領袖用）
      · 呢邊只做兩件事：讀後端（GET ?action=load）／寫後端（POST action=save）
-     · 預設就用返旅團已登記嘅後端（data/units.json → backend.gasUrl / apiKey），
-       所以通常唔使填任何嘢；要覆蓋就喺「進度 → 設定」自己填。
-   設定：喺「進度 → 設定」填 /exec ＋ API Key（Apps Script 執行 showApiKey() 複製），
-        存在旅團自己嘅資料（跟 JSON 備份走）；env（TROOP_<id>_PROGRESS*）係可選覆蓋。
-   安全：API Key 只會由瀏覽器傳去**同源** /api/progress，唔會經第三方；亦唔會出現在 log。
+     · 固定使用旅團 Registry 已登記嘅同一 BACKEND／APIKEY；進度頁冇第二套路線。
+   設定：Vercel 只需 TROOP_<id>_NAME／BACKEND／APIKEY，與 BADGE 完全相同。
+   安全：API Key 只留 server；瀏覽器只送 unit＋opaque session，不能改後端或冒充身份。
    ============================================================ */
 
-import { load, commit } from './store.js';
-import { profile } from './model.js';
-import { backendOf, unitEntry } from './units.js';
+import { load, getSession } from './store.js';
+import { unitEntry } from './units.js';
 
 /** 預設考核項目定義（app 內建，離線可用） */
 export const DEFAULT_CATALOG_URL = 'data/progress/items.json';
 
-/* ---------- 設定（跟旅團儲存；會跟 JSON 備份一齊走） ---------- */
+/* ---------- 設定（browser 只有接駁狀態，沒有後端／Key／catalog override） ---------- */
 export function progressCfg(unitOverride = '') {
-  const p = profile();
-  const b = p.progress?.backend || {};
-  const unit = b.unit || unitOverride || load().unitCode || '';
-  const be = backendOf(unit) || {};
-  /* 伺服器端 Registry（環境變數）已經有進度後端＋Key：前端唔使填，直接經 /api/progress 讀寫 */
-  const serverSide = !!(unitEntry(unit)?.progressServerSide) && !b.backend && !b.apiKey;
+  const unit = unitOverride || load().unitCode || '';
+  const serverSide = !!unitEntry(unit)?.progressServerSide;
   return {
     serverSide,
-    /* 後端：旅團自己填嘅 → 冇填就用返 Registry 登記咗嘅旅團後端（兩者其實係同一個後端） */
-    backend: b.backend || be.gasUrl || '',
-    apiKey: b.apiKey || (b.backend ? '' : (be.apiKey || '')),
+    /* 故意不把 /exec 或 API Key 放進 browser config。 */
+    backend: '',
+    apiKey: '',
     unit,
-    name: p.progress?.name || '進度追蹤（同一個後端）',
-    catalogUrl: b.catalogUrl || '',
-    registered: !b.backend && !!be.gasUrl
+    name: '進度追蹤（同一個後端）',
+    registered: serverSide
   };
-}
-
-export function setProgressCfg(patch = {}) {
-  const db = load();
-  const cur = db.profile?.progress?.backend || {};
-  const next = { ...cur, ...patch };
-  db.profile = {
-    ...(db.profile || db.unit || {}),
-    progress: { ...((db.profile || db.unit)?.progress || {}), backend: next }
-  };
-  commit();
-  return progressCfg();
 }
 
 export function progressConfigured() {
-  const c = progressCfg();
-  return !!((c.backend && c.apiKey) || c.serverSide);
+  return progressCfg().serverSide;
 }
 
-/** 後端係唔係已經登記好（未填都可以用，話畀用戶知係「自動用返旅團後端」） */
+/** 同一旅團 BACKEND＋APIKEY 已由 server Registry 登記。 */
 export function progressIsRegistered() {
   return progressCfg().registered === true;
 }
@@ -91,9 +70,14 @@ async function callApi(payload, { timeoutMs = 60000 } = {}) {
   }
 }
 
-const cfgPayload = () => {
+function sessionPayload(session = null) {
+  const s = session || getSession() || {};
+  if (s.portalToken) return { portalToken: s.portalToken };
+  return s.sessionToken ? { sessionToken: s.sessionToken } : {};
+}
+const cfgPayload = (session = null) => {
   const c = progressCfg();
-  return { unit: c.unit, backend: c.backend, apikey: c.apiKey, catalog: c.catalogUrl };
+  return { unit: c.unit, ...sessionPayload(session) };
 };
 
 /** 讀旅團後端全部進度資料（成員／進度／待批／其他獎章／活動履歷） */
@@ -101,21 +85,17 @@ export async function loadRemote() {
   return callApi({ ...cfgPayload(), action: 'load' });
 }
 
-/** 讀考核項目定義：預設用 app 內建副本（同源讀檔，離線都用得）；有自訂網址就經伺服器代讀 */
+/** 讀 app 內建考核項目定義（同源靜態檔，離線可用；不接受 remote override）。 */
 export async function loadItems() {
-  const c = progressCfg();
-  if (!c.catalogUrl) {
-    try {
-      /* 內建考核項目係靜態檔（data/progress/items.json）：交畀 CDN cache（vercel.json /data/(.*)\.json） */
-      const res = await fetch(DEFAULT_CATALOG_URL);
-      if (!res.ok) throw new Error('HTTP ' + res.status);
-      const json = await res.json();
-      return { ok: true, local: true, data: json };
-    } catch (e) {
-      return { ok: false, reason: 'catalog_local_failed', error: '讀唔到內建考核項目（data/progress/items.json）' };
-    }
+  try {
+    /* 內建考核項目係靜態檔（data/progress/items.json）：交畀 CDN cache（vercel.json /data/(.*)\.json） */
+    const res = await fetch(DEFAULT_CATALOG_URL);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const json = await res.json();
+    return { ok: true, local: true, data: json };
+  } catch (e) {
+    return { ok: false, reason: 'catalog_local_failed', error: '讀唔到內建考核項目（data/progress/items.json）' };
   }
-  return callApi({ ...cfgPayload(), action: 'catalog' });
 }
 
 /** 勾／取消勾進度 —— 直接寫入旅團自己嘅後端（同進度前端同一個 Sheet） */
@@ -150,45 +130,48 @@ export function maskBackendUrl(u) {
 }
 
 /* ============================================================
-   團員自助進度（2026-09-18 第 5 項要求）
-   團員喺團員入口申報「完成咗某個考核項目」→ 寫入後端「待批完成」
-   → 執委喺「進度 → 審批中心」批准 → 先真正寫入進度。
-   團員冇 API Key，所以唔會直接改到進度；後端 addRequest 係免 key 動作。
+   團員個人 BADGE bridge
+   server 先用短期 session 對回本人 YMIS；瀏覽器送嘅 identity 欄位一律唔採用。
+   myProgress 後端亦只回本人，唔會先把全團 load payload 轉到瀏覽器再篩。
    ============================================================ */
-/** 申報完成：{ ymis, name, item_id, item_name, requested_date, evidence } */
-export async function submitProgressRequest(req = {}) {
+export async function loadMyProgress(session) {
+  return callApi({ ...cfgPayload(session), action: 'myProgress' });
+}
+
+/** 申報完成：身份由 session 決定；req 只包含業務欄位。 */
+export async function submitProgressRequest(req = {}, session = null) {
   return callApi({
-    ...cfgPayload(), action: 'addRequest',
+    ...cfgPayload(session), action: 'addRequest',
     data: {
-      ymis: String(req.ymis || ''), name: String(req.name || ''),
       item_id: String(req.item_id || ''), item_name: String(req.item_name || ''),
       requested_date: String(req.requested_date || ''), evidence: String(req.evidence || '')
     }
   });
 }
 
-/** 查自己嘅申報紀錄（待批／已批／已拒） */
-export async function loadMyRequests(ymis) {
-  return callApi({ ...cfgPayload(), action: 'myRequests', data: { ymis: String(ymis || '') } });
+/** 向後兼容獨立查詢；一樣由 session 決定本人，唔接受 ymis。 */
+export async function loadMyRequests(session) {
+  return callApi({ ...cfgPayload(session), action: 'myRequests' });
 }
 
 /* ============================================================
-   ★ 2026-09-25 VSBADGE 開關掣（本系統代旅團閂／開 VSBADGE 後端嘅「直接入口」）
+   Unified GAS 支部本地入口
    ------------------------------------------------------------
-   掣喺本系統（VS-PORTAL）呢邊先有；VSBADGE 前端特登唔放出嚟（防人誤關）。
-   閂嘅係**VSBADGE 嗰支後端**（淨係佢自己支 GAS 嘅 Script Properties.ALLOW_LOCAL_LOGIN），
-   唔會掂本系統自己；亦只會鬱到填好嘅嗰支 /exec，唔會波及其他團。
-   實際授權喺伺服器端嗰條 SHEET KEY（＝進度後端自己嘅 API_KEY）——
-   冇 key 就簽唔出名，VSBADGE 一定拒。
+   第 3 階段尚未有中央旅系統，本地帳戶係正常主入口，所以前端只可讀狀態
+   或把錯誤關閉的入口重新開啟。未來第 4 階段才由真正旅系統直接簽名控制。
    ============================================================ */
-/** 讀 VSBADGE 後端而家嘅「直接入口」狀態（allow_local_login / link_flag_set…） */
+/** 讀 Unified 後端的支部本地入口狀態（allow_local_login / link_flag_set…）。 */
 export async function getLinkState() {
   return callApi({ ...cfgPayload(), action: 'getLinkState' });
 }
 
-/** 閂／開 VSBADGE 後端嘅直接入口（allow: true 開、false 閂） */
+/** 現階段只准 allow:true 開返；不可由支部 browser 關閉正常登入入口。 */
 export async function setLocalLogin(allow) {
-  return callApi({ ...cfgPayload(), action: 'setLocalLogin', data: { allow: allow ? 'true' : 'false' } });
+  if (!allow) {
+    return { ok: false, reason: 'phase3_local_login_required',
+      error: '現階段未有中央旅系統，支部本地入口必須保持開啟。' };
+  }
+  return callApi({ ...cfgPayload(), action: 'setLocalLogin', data: { allow: 'true' } });
 }
 
 /* ============================================================

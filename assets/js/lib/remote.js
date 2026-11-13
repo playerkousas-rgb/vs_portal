@@ -31,7 +31,7 @@
 import {
   load, tryLoad, commitMeta, currentUnit, getBase, adoptRemote, setLocalMerged,
   commitSaved, applyChangesLocal, markBackendEmpty, normalizeRemote, stripForBase, exportForBackend,
-  hasLocalContent, localChanges
+  hasLocalContent, localChanges, getSession, storeScope
 } from './store.js';
 import { unitEntry } from './units.js';
 import { postBackend, isExecUrl } from './gateway.js';
@@ -235,7 +235,14 @@ async function callBackend(payload, { timeoutMs = 60000 } = {}) {
     return { ok: false, reason: 'not_configured', error: notConfiguredMessage(cfg) };
   }
 
-  const r = await postBackend(payload, {
+  /* 統一 GS 對行政資料逐 action 驗身份；API Key 只係路由密鑰，唔再當用戶登入。
+     中央 SSO 已兌換成同一款 opaque sessionToken，所以兩個前端共用此路徑。 */
+  const session = getSession();
+  const auth = (payload?.sessionToken || payload?.portalToken) ? {}
+    : (session?.sessionToken
+      ? { sessionToken: session.sessionToken }
+      : (session?.portalToken ? { portalToken: session.portalToken } : {}));
+  const r = await postBackend({ ...payload, ...auth }, {
     unit: cfg.unit, execUrl: cfg.url, apiKey: cfg.apiKey, timeoutMs
   });
 
@@ -592,6 +599,57 @@ export async function uploadPhotos(photos = [], { id = '' } = {}) {
   const r = await callBackend({ action: 'uploadPhotos', payload: { id, photos }, folderId: receiptDrive }, { timeoutMs: 90000 });
   if (r?.ok && Array.isArray(r.links)) return { ok: true, links: r.links };
   return { ok: false, error: r?.error || '上載唔到', links: [] };
+}
+
+/* ============================================================
+   團員入口：安全投影＋本人寫入
+   ------------------------------------------------------------
+   呢條路同行政 loadDb/saveDb 刻意分開：團員 session 永遠只會收到本人
+   可見內容，而且只可提交本人 RSVP／答卷／請假。後端每次寫完直接回一份
+   新安全投影，呢部機採用佢做工作副本，唔會再嘗試整庫同步。
+   ============================================================ */
+function adoptHubResult(result) {
+  if (!result?.ok || !result.db || typeof result.db !== 'object') return result;
+  /* 防呆：hub projection 只准落團員 namespace；任何行政頁誤調都 fail closed，
+     唔可以用裁剪資料覆蓋完整 DB。 */
+  if (storeScope() !== 'hub') return { ok: false, error: '團員資料儲存區未隔離', code: 'HUB_SCOPE_REQUIRED' };
+  try {
+    adoptRemote(result.db, { version: String(result.version || '') });
+    lastLoadAt = Date.now();
+    setState('idle', '團員資料已同步');
+    return { ...result, adopted: true };
+  } catch (e) {
+    return { ok: false, error: e?.message || '團員資料格式唔正確' };
+  }
+}
+
+export async function loadHubView({ sessionToken = '' } = {}) {
+  if (!remoteConfigured()) return { ok: false, reason: 'not_configured', error: notConfiguredMessage() };
+  const result = await callBackend({ action: 'hubLoad', sessionToken: String(sessionToken || '') });
+  if (!result?.ok) {
+    setState('unreachable', result?.error || '讀唔到團員資料');
+    return result || { ok: false, error: '讀唔到團員資料' };
+  }
+  return adoptHubResult(result);
+}
+
+export async function saveHubRsvp(payload = {}, { sessionToken = '' } = {}) {
+  const result = await callBackend({ action: 'hubRsvp', sessionToken: String(sessionToken || ''),
+    eventId: payload.eventId, status: payload.status, time: payload.time || '', reason: payload.reason || '' });
+  return adoptHubResult(result);
+}
+
+export async function saveHubQuiz(payload = {}, { sessionToken = '' } = {}) {
+  const result = await callBackend({ action: 'hubQuiz', sessionToken: String(sessionToken || ''),
+    quizId: payload.quizId, answers: payload.answers || {} });
+  return adoptHubResult(result);
+}
+
+export async function saveHubAbsence(payload = {}, { sessionToken = '' } = {}) {
+  const result = await callBackend({ action: 'hubAbsence', sessionToken: String(sessionToken || ''),
+    op: payload.op, id: payload.id || '', date: payload.date || '', slot: payload.slot || '',
+    reason: payload.reason || '', plan: payload.plan || '' });
+  return adoptHubResult(result);
 }
 
 /* ============================================================

@@ -5,6 +5,66 @@
 
 ---
 
+## 統一 GS 隔離測試版（未發佈）— 2026-11-12
+
+- **施工次序更正：BOOK 齊 → BADGE 齊 → 5 個支部系統（現在）→ 最後才建立並接通旅系統。** 現在未有中央系統；支部本地帳戶／session 是正常主入口，缺少中央 signer 不阻擋支部獨立驗收。
+- 進度接駁狀態頁不再提供「關閉本地入口」按鈕；client helper、server API 及 Sheet 選單亦拒絕關閉，Unified 的 active Sheet menu 隱藏全部未來旅／下游控制。第 3 階段 `ALLOW_LOCAL_LOGIN` 必須保持 `true`；若旗標已被錯誤關閉，只提供立即開返。第 4 階段完成中央 SSO staging 後才由真正旅系統簽名控制。
+- 以 `vsbadge@bb073db` 的 GS v9.6 為不可漂移基線，新增 SHA-256 manifest 及獨立 builder；輸出只寫 `apps-script/UnifiedCode.gs`，不覆蓋現行 `Code.gs`。
+- 把既有支部行政後端封入 namespaced compatibility module；vsbadge 身份、進度、獎章、履歷及申報流程維持全域基線，不會被同名函式 shadow。
+- 預留第 4 階段中央 assertion → 60 秒單次 exchange token → 8 小時支部 session；assertion、exchange 與 deterministic exchange JTI 由同一旅團 API Key 以三個 purpose 分隔 key 派生，角色與 action scope 取交集。現階段不啟用。
+- 支部 link signature 的 query／body nonce 以 `ScriptLock` 包住共享 `ScriptCache` 原子消耗；重放、並發競態或 Cache／Lock 異常全部 fail closed。
+- 第 4 階段中央帳戶只可在支部建立無密碼授權鏡像；Portal client 提交的 shadow account／密碼欄不會保存。現階段本地 PBKDF2 帳戶是正常日常入口，不是救援帳戶。Unified router 只在記憶體注入 delegated actor＋中央 identity map，令分件 commit 亦不能用 compatibility server marker 繞過欄位授權。
+- 行政 `/api/proxy` 不再把 API Key 當用戶身份；先以 `authWhoAmI` 核對 session，再由 GS 二次檢查 role／scope。Portal `Code.gs` 的直連 `/exec` 行政 action 同樣強制 session；client 自報內部 signed marker 會被清走。
+- 每旅 Vercel 接線收斂為與 BADGE 相同的 `TROOP_<ID>_NAME/BACKEND/APIKEY`；管理、進度與 BADGE 固定使用同一 Unified GAS／Sheet，不再接受額外 Portal secret、`PROGRESS*` 環境變數或 browser backend／Key／catalog override。
+- 進度設定頁改為唯讀 Registry 接駁狀態；考核項目固定使用同源 `data/progress/items.json`。
+- 平台 super 的 HMAC＋nonce server request 支援至同 proxy 一致的 4 MiB 有界 payload，避免大型 `saveTables` 因舊 900 KB簽名上限跌成 `SESSION_REQUIRED`；Unified 保留 pinned baseline 不變，僅在隔離 router 使用行政上限。
+- 團員入口改走 `hubLoad`／`hubRsvp`／`hubQuiz`／`hubAbsence`：GS 以正面欄位白名單重建 event／quiz／notice（含 nested question／本人 response），未來新增行政欄預設不會外洩；寫入身份固定由 opaque session 推導。
+- 團員投影使用獨立 `hub`／`hubbase` store namespace；非 hub scope 採用投影會 fail closed，不會再用裁剪資料覆蓋同瀏覽器行政 DB。無快取或舊污染 cache 只建立零名冊／零帳目安全空殼，不會先 fetch 完整靜態 seed；`?be=` 只加入經白名單的 routing metadata。
+- RSVP／答卷／請假取消 client optimistic mutation；server 成功回新投影才顯示，失敗有明確重試 banner。請假固定 request id，create／withdraw response 遺失後重試仍冪等。
+- 新增 `tests/unified-gas.mjs`，覆蓋基線來源、無損初始化、API Key／進度保全、SSO 防重放、角色上限、action scope、欄位白名單、本人寫入冪等、共用資料及本地入口開關。
+- 完整架構、密鑰分工、action 對照、私人驗收及回退程序見 `docs/UNIFIED_ARCHITECTURE_TEST.md`。
+- **沒有更新 `vsbadge`、沒有部署、沒有改動任何現有旅團 Sheet。**
+
+## v2.8.8 — 2026-11-12
+
+**登入、Portal、進度私隱加固 ＋ modal 遮罩修復**
+
+### 身份與 session
+- 一般帳戶固定由 GAS `authLogin` 核對密碼並簽發 8 小時 opaque session；移除瀏覽器本機密碼 fallback，未上載帳戶不可成為第二套身份來源。
+- 超管密碼只在 `/api/auth` 核對一次；成功後改用由 `SUPER_KEY` HMAC 簽署的 8 小時 session。修改 `SUPER_KEY` 會令舊票即時失效。
+- 所有 server／Portal session 集中驗證到期時間；團員入口拒絕缺 token、缺 expiry、畸形或過期 session。
+- 成人團長／領袖沒有密碼紀錄時，公開 `1234` 登入改為 fail closed；一次性 `1234` 只保留給團員／執委首次開戶。
+- GAS 登入補齊自訂 `loginId`，與前端「電郵／loginId／YMIS」規則一致。
+- 團員自行改密碼改為 GAS `authChangePassword`：session 固定本人，PBKDF2 寫回支部 Sheet，成功後撤銷舊票並換發新票；不再由瀏覽器本機 hash 充當正式身份來源。
+- 團員入口登入後只下載本人安全投影；event／quiz／notice 以正面欄位白名單重建並存入獨立 hub namespace；RSVP、答卷、請假以專用 session action 即時寫入，client 偽造 role／memberId 會被忽略。
+- 本人 mutation 不再先樂觀修改 local state；失敗保留舊畫面與可重試狀態，請假 create／withdraw 可安全冪等重試。
+- 管理介面改為「先 `authLogin`／`/api/auth` 取得 session，staff 再 `loadDb`」；未登入開機不再匿名下載完整行政資料，亦修正 hardened proxy 下「loadDb 要 session、但舊流程先 loadDb 才登入」的循環。
+- `Code.gs` 自身對 `loadDb`／`saveDb`／逐表／sync／Drive／修復 action 亦要求 staff session 或已驗證 server signature；直連 `/exec` 不可再只憑 API Key 取得行政身份。自助路線的登入／改密碼／忘記密碼／帳戶 action 改用共用 gateway，成功登入後照帶 branch session。
+- 支部帳戶新增／重設／刪除／復原只由 server session 對回操作者，不採用 client `actorUsername`／role；同級或更高權限操作、角色與名冊身份不一致、無 member 綁定的共用帳戶全部拒絕。管理員在 UI 設成員密碼亦先保存新名冊 row，再走 `authResetPassword`，不會把 browser hash 留到下一次整庫同步。成功 mutation 會即時讀回後端版本，避免本機舊 hash 下次同步撞版。
+- `saveTables`／`saveDb`／分件 commit／`sync`／force restore 全部以 server 現版逐欄保護 `members[].identity`、帳戶角色／綁定／密碼及刪除紀錄；執委不可藉行政資料寫入升權，領袖不可改自己／團長，團長交棒仍維持唯一團長。Unified delegated write 另以 pinned baseline 生成的中央 identity map 核對，client 內部 marker 一律先刪除。
+- `authLogin`／忘記密碼可由未登記旅團的 `?be=` 直達 `/exec`，但登入由 ScriptCache＋ScriptLock 限速；重設連結 callback 只接受 Sheet owner 經 `setPasswordResetUrl()` 固定的 HTTPS URL。Portal token 單次使用，Unified 則沿用 pinned vsbadge 的 8 位碼流程，兩者均撤銷舊登入。
+- 報表 `sync` 亦帶同一有效 session；API Key 只保留 server routing 用途。
+- 開團 KEY 成功後由 GAS 簽發短期 setup session，再以同一 hardened proxy 完成首次載入／保存；首次 fixture 及產品流程都不再用 API Key 冒充身份。
+- 兩個一般「改自己密碼」入口都要求目前密碼並走 `changeOwnPassword`；新密碼欄改用 password input。強制首次改密碼仍由 server 的 `mustChangePw` 規則處理。
+
+### Portal 單一登入
+- `/api/portal` 由可偽造的 GET query 改為 `POST { assertion }`。
+- assertion 以 server-side HMAC 驗證 issuer、audience、旅團、角色、subject、90 秒時限及 `jti`；舊 `role/src/ymis/name` query 不再獲信任。密鑰模型其後已由上方未發佈統一版收斂為 API Key purpose derivation。
+- 兌換後即時從網址移除 assertion，避免留在 history／截圖。
+
+### 進度資料授權
+- `/api/progress` 的全團讀寫與批核一律要求有效 server／Portal／超管 session及 staff 身份；未發佈統一版再移除 remote catalog proxy，固定使用同源靜態 catalog。
+- 團員「我的進度／申報／申請紀錄」由 server session 固定本人 YMIS；瀏覽器偽造 YMIS／姓名會被丟棄。
+- 新增 GAS `authWhoAmI` 與 `loadMine`：團員入口只收到本人進度，不再下載全團進度後再於瀏覽器篩選。
+- GAS `load`、`addRequest`、`myRequests` 改為 API Key／有效 link signature 才可使用。
+
+### UI 穩定性
+- modal 改為真正 stack 管理：nested modal 只關自己一層、async action 防重複提交，換頁會清走殘留 overlay，修復透明遮罩令全站按鈕失效。
+- 修正 modal 把明確 `value:null` 用 `??` 誤變成 `true`：團員在首次改密碼視窗撳「稍後」不會再把字串 `true` 當新密碼送出、撤銷原 session，RSVP 不再間歇性失效。
+
+### 驗證
+- `npm run check` 全套通過；另以真 `Code.gs` 覆蓋登入、跨裝置帳戶、團員入口及 progress 個人／staff 權限情境。
+
 ## v2.8.7 — 2026-11-12
 
 **UI 簡化：一個功能一個入口 ＋「無權就唔准入」**

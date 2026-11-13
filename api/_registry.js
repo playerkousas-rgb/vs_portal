@@ -74,10 +74,6 @@ const FIELD_ALIASES = {
   NAMEEN: ['NAMEEN', 'NAME_EN', 'EN', 'ENNAME'],
   SHORT: ['SHORT', 'SHORTNAME', 'SLUG'],
   NOTICE: ['NOTICE', 'NOTICEURL', 'NOTICE_URL', 'NOTICESUBMIT', 'NOTICESUBMITURL'],
-  PROGRESSBACKEND: ['PROGRESSBACKEND', 'PROGRESS_BACKEND', 'PROGRESSURL', 'PROGRESS_URL'],
-  PROGRESSAPIKEY: ['PROGRESSAPIKEY', 'PROGRESS_APIKEY', 'PROGRESS_API_KEY', 'PROGRESSKEY'],
-  PROGRESSCATALOG: ['PROGRESSCATALOG', 'PROGRESS_CATALOG', 'PROGRESSCATALOGURL'],
-  PORTALORIGIN: ['PORTALORIGIN', 'PORTAL_ORIGIN'],
   MODULES: ['MODULES', 'ENABLED_MODULES', 'ENABLED-MODULES'],
   DISABLEDMODULES: ['DISABLEDMODULES', 'DISABLED_MODULES', 'DISABLED-MODULES']
 };
@@ -224,15 +220,10 @@ export function getRegistry() {
       troopEnv(id, 'NOTICE') || jsonEntry.notice?.submitUrl || jsonEntry.noticeSubmitUrl ||
       fileEntry.notice?.submitUrl || gasUrl;
     const envName = troopEnv(id, 'NAME') || jsonEntry.name || '';
-    const portalOrigin = troopEnv(id, 'PORTALORIGIN') || jsonEntry.portalOrigin || fileEntry.portalOrigin || '';
-    const portalRoles = jsonEntry.portalRoles || fileEntry.portalRoles || ['leader', 'admin', 'exco'];
     const enabledModules = troopEnv(id, 'MODULES') || jsonEntry.modules || fileEntry.modules || '';
     const disabledModules = troopEnv(id, 'DISABLEDMODULES') || jsonEntry.disabledModules || fileEntry.disabledModules || '';
     const name = fileEntry.name || envName || `第 ${id} 旅`;
     const code = fileEntry.code || jsonEntry.code || id;
-    /* 伺服器端已經有進度後端＋Key ＝ 前端唔使填任何嘢（純 env 開團用） */
-    const progressBackend = troopEnv(id, 'PROGRESSBACKEND') || jsonEntry.progressBackend || '';
-    const progressKey = troopEnv(id, 'PROGRESSAPIKEY') || jsonEntry.progressApiKey || '';
 
     out[id] = {
       code,
@@ -258,10 +249,8 @@ export function getRegistry() {
       disabledModules,
       /* 呢個旅團係唔係靠伺服器端 env 開（Git 未加 JSON） */
       fromEnv: fromEnvOnly,
-      /* 「一個後端、兩個前端」：進度後端＝旅團後端本身。設咗 PROGRESSBACKEND
-         專用變數固然係 server-side；淨係設咗 BACKEND＋APIKEY（開團嗰對）都算
-         —— getProgressRegistryEntry 會自動用返同一個 /exec，前端乜都唔使填。 */
-      progressServerSide: !!((progressBackend && progressKey) || (gasUrl && apiKey))
+      /* 統一拓撲只有一個 BACKEND＋APIKEY；進度不接受第二個資料後端。 */
+      progressServerSide: !!(gasUrl && apiKey)
     };
   }
   return out;
@@ -324,38 +313,26 @@ export function getTrustedUnit(id) {
     gasUrl: u.backend.gasUrl.trim(),
     apiKey: (u.backend.apiKey || '').trim(),
     noticeSubmitUrl: (u.notice?.submitUrl || u.backend.gasUrl).trim(),
-      theme: u.theme,
-    portalOrigin: u.portalOrigin || '',
-    portalRoles: Array.isArray(u.portalRoles) ? u.portalRoles.slice() : [],
+    theme: u.theme,
     enabledModules: u.enabledModules || '',
     disabledModules: u.disabledModules || ''
   };
 }
 
 // ============================================================
-// 進度紀錄：旅團後端 —— 伺服器端設定（可選；一個後端、兩個前端）
+// 進度紀錄：固定沿用旅團主後端（一個 Unified GAS／Sheet）
 // ------------------------------------------------------------
-// 平常喺介面「進度 → 設定」填就得（存喺旅團自己嘅資料）；亦可以用 Vercel env 覆蓋：
-//   TROOP_<編號>_PROGRESSBACKEND = https://script.google.com/macros/s/…/exec
-//   TROOP_<編號>_PROGRESSAPIKEY  = …（喺旅團自己嘅 Apps Script 執行 showApiKey()）
-//   TROOP_<編號>_PROGRESSCATALOG = https://…/items.json（自訂考核項目，可選）
-// 有設就會優先採用（API Key 就唔會出現在瀏覽器）。
+// 唯一資料接線是 TROOP_<編號>_BACKEND＋TROOP_<編號>_APIKEY；不讀取
+// 任何 PROGRESS* 變數，也不接受 browser 另指 GAS 或 catalog URL。
 // ============================================================
 export function getProgressRegistryEntry(id) {
-  /* 一個後端、兩個前端：進度資料就係旅團自己嘅後端（GAS /exec）。
-     伺服器端可以設定 TROOP_<id>_PROGRESSBACKEND / _PROGRESSAPIKEY（可選覆蓋；
-     一般情況喺前端「進度 → 設定」填就得），設定咗就優先於前端輸入（API Key 唔使落前端）。
-     2026-09-19：冇設進度專用變數、但旅團有主後端（TROOP_<id>_BACKEND＋_APIKEY）
-     → 自動用返同一個 /exec（團員入口「我的進度」零設定接通）。 */
-  const out = { backend: '', apiKey: '', catalog: '' };
+  const out = { backend: '', apiKey: '' };
   if (typeof id !== 'string' || !/^[0-9A-Za-z_-]{1,32}$/.test(id)) return out;
-  const pick = (key) => troopEnv(id, key);
-  const backend = pick('PROGRESSBACKEND').trim() || pick('BACKEND').trim() || troopShorthand(id);
-  out.backend = isTrustedExecUrl(backend) ? backend : '';
-  out.apiKey = pick('PROGRESSAPIKEY').trim() || pick('APIKEY').trim();
-  // 可選：自訂考核項目定義（預設用 app 內建 data/progress/items.json）
-  const catalog = pick('PROGRESSCATALOG').trim();
-  if (catalog && /^https:\/\//i.test(catalog)) out.catalog = catalog;
+  const unit = getTrustedUnit(id);
+  if (unit) {
+    out.backend = unit.gasUrl;
+    out.apiKey = unit.apiKey;
+  }
   return out;
 }
 

@@ -5,16 +5,15 @@
      「不同視窗開的又不同步，最簡單就是 1 邊能用 email 登入、1 邊不能，
        那＝用戶根本沒寫入後端，唯一能登入的是我的超管，因為不經後端。」
 
-   ★ 2026-09-24 團長第五輪定案（呢個測試跟住改）：
-     「我只想要頂部1個儲到後端的制,其他任何時候都是暫儲在遊覽器」
-     → 2026-09-24 為咗救呢個問題加過自動寫入，團長明確否決，自動寫入已經拆走。
-     所以而家釘死嘅係**兩件事一齊成立**：
-       ① 未撳頂部掣 ＝ 後端一個字都冇（改動只喺瀏覽器），而且頂部要**鬧醒**用家
-          有幾多個帳戶未寫入（pendingAccounts）—— 唔可以再靜靜地漏
-       ② 撳咗頂部「儲存到後端」＝ 帳戶一定到到後端，另一部機即刻用嗰個 email 登到
+   ★ 一般行政資料仍然只有頂部一個「儲存到後端」掣，冇背景 autosave。
+     但密碼／帳戶身份係安全憑證，唔可以先把 browser hash 留喺 pending 再等整庫同步：
+       ① 設密碼會先把新名冊 row 寫到後端，再走 server-issued session 固定操作者的
+          authResetPassword；成功後即時讀回版本，pendingAccounts 必須係 0
+       ② 其他普通資料（例如另一分頁新增的人）仍然等頂部掣先同步
+       ③ 全新裝置即時可用該 email 登入，證明憑證只存在 server authoritative copy
    每個 process ＝ 一部全新嘅機，行真實 HTTP：
-     機 A（團長）：開一個領袖 ＋ 設密碼 → 驗證未撳掣之前後端冇嘢 ＋ 有鬧醒
-                   → 撳頂部「儲存到後端」→ 再問後端
+     機 A（團長）：開一個領袖 ＋ 設密碼 → 驗證 dedicated action 已即時落後端
+                   → 另一分頁加普通資料 → 撳頂部「儲存到後端」
      機 B（全新）：用嗰個 email 登入 —— 應該入到
      機 A        ：另一個分頁（同機同瀏覽器）開咗個人 —— 呢邊應該即刻見到
    環境：假 GAS（tests/_fakegas.mjs）＋ dev-server（/api/proxy）
@@ -25,6 +24,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { spawn } from 'node:child_process';
 import net from 'node:net';
+import { TEST_SUPER_PASSWORD } from './_authstub.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 let pass = 0, fail = 0;
@@ -88,25 +88,27 @@ const PW = 'scout2026';
 const YMIS = '2026000777';
 
 try {
-  spawnBg([path.join(ROOT, 'tests', '_fakegas.mjs'), String(GAS_PORT)]);
+  spawnBg([path.join(ROOT, 'tests', '_realgas.mjs'), String(GAS_PORT)], {
+    REALGAS_APIKEY: 'test_key_0082'
+  });
   spawnBg([path.join(ROOT, 'dev-server.mjs')], {
     TROOP_0082_BACKEND: FAKE_EXEC,
     TROOP_0082_APIKEY: 'test_key_0082',
     V82_PROXY_TEST: '1',
     PORT: String(WEB_PORT),
-    SUPER_KEY: 'super_secret_test'
+    SUPER_KEY: TEST_SUPER_PASSWORD
   });
-  ok('測試用假後端＋dev-server 已啟動', (await waitPort(GAS_PORT)) && (await waitPort(WEB_PORT)));
+  ok('真 Code.gs 後端＋dev-server 已啟動', (await waitPort(GAS_PORT)) && (await waitPort(WEB_PORT)));
 
-  /* ============ 機 A：開人 → 設密碼 →（未撳掣）→ 撳頂部「儲存到後端」 ============ */
-  section('機 A（團長）：開領袖＋設密碼 → 未撳掣之前後端冇嘢 → 撳頂部掣');
+  /* ============ 機 A：開人 → server 設密碼 → 普通資料仍由頂部掣同步 ============ */
+  section('機 A（團長）：開領袖＋server 設密碼 → 普通資料再撳頂部掣');
   const A = await runDevice({ steps: [
     { op: 'wipe' },
     { op: 'load' },                                        // 真 app 開機一定先由後端載入（＝基準）
     { op: 'addStaff', name: '新領袖', email: EMAIL, ymis: YMIS, identity: 'leader' },
     { op: 'setHubPw', id: '@last', pw: PW },
-    { op: 'wait', ms: 3000 },                              // 等足 3 秒：證明冇自動寫入
-    { op: 'backendHasLogin', login: EMAIL },               // ← 未撳掣
+    { op: 'wait', ms: 3000 },                              // dedicated action 完成後唔應再有背景寫入
+    { op: 'backendHasLogin', login: EMAIL },               // ← 密碼 action 後、頂部掣前
     { op: 'otherTabWrite', name: '另一分頁開嘅人' },
     { op: 'syncNow' },                                     // ← 撳頂部「儲存到後端」（唯一寫入路）
     { op: 'backendHasLogin', login: EMAIL }                // ← 撳完
@@ -116,25 +118,25 @@ try {
   console.log('  · 設密碼：' + JSON.stringify(pwStep));
   ok('設密碼成功', pwStep.ok === true, JSON.stringify(pwStep));
 
-  /* ---- ① 未撳掣：改動一定仲喺瀏覽器，而且頂部要鬧醒 ---- */
-  ok('★ 帳戶改動計入「未寫入」（pending ≥ 1）', Number(pwStep.pending || 0) >= 1, JSON.stringify(pwStep));
-  ok('★ 帳戶改動另外計數（pendingAccounts ≥ 1）—— 頂部用嚟轉紅鬧醒',
-    Number(pwStep.pendingAccounts || 0) >= 1, JSON.stringify(pwStep));
-  ok('★ 狀態文字講明「未寫入」同埋有幾個帳戶（唔會靜靜地漏）',
-    pwStep.state === 'pending' && /包括 \d+ 個帳戶/.test(pwStep.statusMsg || ''), pwStep.statusMsg);
+  /* ---- ① 憑證唔留 browser pending：專用 action 完成就以後端為準 ---- */
+  ok('★ server 密碼 action 完成後 pending 清零', Number(pwStep.pending || 0) === 0, JSON.stringify(pwStep));
+  ok('★ browser 冇待同步帳戶 hash（pendingAccounts = 0）',
+    Number(pwStep.pendingAccounts || 0) === 0, JSON.stringify(pwStep));
+  ok('★ 成功後即時讀回後端版本，狀態回復 idle',
+    pwStep.state === 'idle' && /後端/.test(pwStep.statusMsg || ''), pwStep.statusMsg);
 
   const bes = (A.steps || []).filter(x => x.op === 'backendHasLogin');
   const [be0, be1] = [bes[0] || {}, bes[1] || {}];
-  console.log('  · 未撳掣之前問後端：' + JSON.stringify(be0));
-  ok('★ 未撳頂部掣 → 後端仲未有呢個人（改動只喺瀏覽器，冇偷偷地寫）',
-    be0.found === false, JSON.stringify(be0));
+  console.log('  · 密碼 action 後、頂部掣前問後端：' + JSON.stringify(be0));
+  ok('★ 未撳頂部掣，專用 action 已令後端有呢個人＋PBKDF2 密碼',
+    be0.found === true && be0.withPw === true, JSON.stringify(be0));
 
   const otherTab = stepOf(A, 'otherTabWrite');
   console.log('  · 另一分頁寫入：' + JSON.stringify(otherTab));
   ok('★ 同一個瀏覽器另一個分頁開咗人，呢邊即刻見到（唔使重新整理）',
     otherTab.seesName === true, JSON.stringify(otherTab));
 
-  /* ---- ② 撳咗頂部掣：帳戶一定到到後端 ---- */
+  /* ---- ② 撳頂部掣：另一分頁的普通名冊改動先在此同步 ---- */
   const sn = stepOf(A, 'syncNow');
   console.log('  · 撳「儲存到後端」：' + JSON.stringify(sn));
   ok('★ 撳頂部「儲存到後端」成功', sn.ok === true && sn.pushed === true, JSON.stringify(sn));
@@ -154,6 +156,7 @@ try {
   /* ============ 進度追蹤：名冊要真係到到後端「成員名單」，否則個個顯示 0 ============ */
   section('進度追蹤：名冊到咗後端，進度頁先至有人（唔係「0 紀錄」）');
   const P = await runDevice({ steps: [
+    { op: 'login', login: EMAIL, pw: PW }, // 進度管理讀寫必須帶真 server session
     { op: 'load' },      // 真 app 開機一定先由後端載入（＝基準）；唔係就唔准盲寫
     { op: 'addStaff', name: '進度團員', email: 'youth@example.com', ymis: '2026000888', identity: 'member' },
     { op: 'syncNow' },   // ← 「成員名單」分頁係喺寫入後端嗰陣先至更新，所以要撳頂部掣
@@ -175,7 +178,7 @@ try {
   section('對照：超管登入完全唔經旅團後端（所以佢永遠入到）');
   const sup = await fetch(`${BASE}/api/auth`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ user: 'sheep', password: 'super_secret_test' })
+    body: JSON.stringify({ user: 'sheep', password: TEST_SUPER_PASSWORD })
   }).then(x => x.json()).catch(e => ({ error: String(e) }));
   ok('超管核對由伺服器端做（同旅團後端無關）', sup?.ok === true, JSON.stringify(sup));
 

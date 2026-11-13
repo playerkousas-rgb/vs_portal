@@ -96,6 +96,26 @@ section('API Key 代理式獨立讀寫測試（無資料、無登入也能驗證
 /* ============================================================
    ① Code.gs 本身載入得到 + 有齊 action
    ============================================================ */
+section('開團 KEY 簽發 server session（首次建置同樣唔靠 API Key 身份）');
+{
+  const g = makeGas({ apiKey: 'setup-route-key' });
+  const setupKey = g.sandbox.issueSetupKey();
+  const verified = g.post({ action: 'verifySetupKey', unit: '0082', key: setupKey });
+  ok('有效開團 KEY 回傳 8 小時 opaque session', verified.ok === true && !!verified.sessionToken && Number(verified.sessionExpiresAt) > Date.now());
+  const who = g.post({ action: 'authWhoAmI', unit: '0082', sessionToken: verified.sessionToken });
+  ok('開團 session 可通過 server 身份核對，client 不能只報 setup 身份', who.ok === true && who.setup === true && who.account?.id === 'setup');
+  const missing = g.post({ action: 'authWhoAmI', unit: '0082' });
+  ok('只有 API Key 而無 session 仍會 fail closed', missing.ok === false && missing.code === 'SESSION_REQUIRED');
+  const adminMissing = g.post({ action: 'loadDb', unit: '0082', sessionToken: '' });
+  ok('行政 loadDb 直連亦唔接受 API Key-as-identity', adminMissing.ok === false && adminMissing.code === 'SESSION_REQUIRED');
+  const forgedMarker = g.post({ action: 'loadDb', unit: '0082', sessionToken: '', __serverSigned: true });
+  ok('client 自報 server-signed marker 會被 doPost 清走', forgedMarker.ok === false && forgedMarker.code === 'SESSION_REQUIRED');
+  const bootstrapRead = g.post({ action: 'loadDb', unit: '0082', sessionToken: verified.sessionToken });
+  ok('合法 setup session 可完成首次行政載入', bootstrapRead.ok === true);
+  const invalid = g.post({ action: 'verifySetupKey', unit: '0082', key: 'EC72-WRONG' });
+  ok('錯誤開團 KEY 不會獲發 session', invalid.ok === false && !invalid.sessionToken);
+}
+
 section('Code.gs 載入 / 基本契約');
 {
   const g = makeGas();
@@ -113,12 +133,15 @@ section('Server-side access audit');
 {
   const g = makeGas({ apiKey: 'audit-test-key' });
   g.sandbox.initializeSheets();
+  /* fixture 先合法兌換 bootstrap session；兌換本身係授權事件，唔計入讀取斷言。 */
+  g.post({ action: 'dbInfo', unit: '0082', apiKey: 'audit-test-key' });
   /* ★ v2.8.1：純讀取唔記審計（慳配額＋唔洗版） */
+  const beforeReads = g.sheets.get('審計紀錄')._rows.length;
   g.post({ action: 'status', unit: '0082', apiKey: 'audit-test-key', actor: 'leader@example.com', password: 'never-log-this' });
   g.post({ action: 'dbInfo', unit: '0082', apiKey: 'audit-test-key' });
   g.post({ action: 'loadDb', unit: '0082', apiKey: 'audit-test-key' });
   let rows = g.sheets.get('審計紀錄')._rows;
-  ok('★ 純讀取（status／dbInfo／loadDb）唔留審計行', rows.length === 1, JSON.stringify(rows.length));
+  ok('★ 純讀取（status／dbInfo／loadDb）唔留審計行', rows.length === beforeReads, JSON.stringify(rows.length));
   /* 寫入先記 —— 而且唔可以帶出 key／密碼／整份 payload */
   g.post({ action: 'saveTables', unit: '0082', apiKey: 'audit-test-key', tables: { members: [] }, full: true, refreshReports: false, actor: 'leader@example.com', password: 'never-log-this' });
   rows = g.sheets.get('審計紀錄')._rows;
@@ -146,38 +169,251 @@ section('支部帳戶 PBKDF2 密碼基礎');
   g.sandbox.initializeSheets();
   const account = g.sandbox.makePasswordRecord('abcd');
   const exco = g.sandbox.makePasswordRecord('exco-pass');
-  const seeded = { unitCode: '0082', accounts: [{ id: 'a1', username: 'leader@example.com', email: 'leader@example.com', role: 'leader', active: true, pw: account.pw, mustChangePw: false }, { id: 'a2', username: 'exco@example.com', email: 'exco@example.com', role: 'exco', active: true, pw: exco.pw, mustChangePw: false }], members: [{ id: 'm1', ymis: '1000000001', name: '成員一', identity: 'member', status: 'active' }], transactions: [] };
+  const seeded = { unitCode: '0082', accounts: [{ id: 'a1', username: 'leader@example.com', email: 'leader@example.com', role: 'leader', active: true, pw: account.pw, mustChangePw: false }, { id: 'a2', username: 'exco@example.com', email: 'exco@example.com', role: 'exco', active: true, pw: exco.pw, mustChangePw: false }], members: [
+    { id: 'm1', ymis: '1000000001', name: '成員一', identity: 'member', status: 'active' },
+    { id: 'mNewExco', ymis: '1000000002', email: 'new-exco@example.com', name: '新執委', identity: 'exco', status: 'active' },
+    { id: 'mLoginId', loginId: 'leader-alias', email: 'alias@example.com', name: '代號領袖', identity: 'leader', status: 'active', hubPw: account.pw },
+    { id: 'mChiefNoPw', ymis: '1000000099', email: 'chief-nopw@example.com', name: '未設密碼團長', identity: 'chief', status: 'active' },
+    { id: 'mLeaderNoPw', ymis: '1000000098', email: 'leader-nopw@example.com', name: '未設密碼領袖', identity: 'leader', status: 'active' }
+  ], transactions: [] };
   g.post({ action: 'saveDb', unit: '0082', db: seeded });
-  const login = g.post({ action: 'authLogin', unit: '0082', username: 'leader@example.com', password: 'abcd' });
+  const keylessLogin = g.networkPost({ action: 'authLogin', unit: '0082', username: 'leader@example.com', password: 'abcd' });
+  ok('自助 /exec authLogin 不靠 API Key 身份，正確密碼可取得 opaque session',
+    keylessLogin.ok === true && !!keylessLogin.sessionToken && !JSON.stringify(keylessLogin).includes(account.pw.hash));
+  const wrongRoutingKey = g.networkPost({ action: 'authLogin', unit: '0082', apiKey: 'wrong-key', username: 'leader@example.com', password: 'abcd' });
+  ok('有明確提交錯 routing key 時仍 fail closed', wrongRoutingKey.ok === false && /API key/.test(wrongRoutingKey.error || ''));
+  let rateLimited = null;
+  for (let attempt = 0; attempt < 21; attempt++) {
+    rateLimited = g.networkPost({ action: 'authLogin', unit: '0082', username: 'missing-rate-target', password: 'wrong' });
+  }
+  ok('公開登入 endpoint 由 ScriptCache＋ScriptLock 限制同一代號嘗試次數',
+    rateLimited?.code === 'AUTH_RATE_LIMITED' && g.lockStats.waits >= 21, JSON.stringify(rateLimited));
+  g.sandbox.setPasswordResetUrl('https://trusted-portal.example/reset-password.html');
+  const forgot1 = g.networkPost({ action: 'authForgotPassword', unit: '0082', email: 'leader@example.com', resetUrl: 'https://evil.example/reset-password.html' });
+  const forgot2 = g.networkPost({ action: 'authForgotPassword', unit: '0082', email: 'leader@example.com', resetUrl: 'https://evil.example/reset-password.html' });
+  ok('忘記密碼可由自助 /exec 免 Key 提交，重覆請求仍回相同非枚舉訊息',
+    forgot1.ok === true && forgot2.ok === true && forgot1.message === forgot2.message);
+  ok('重設電郵只用 Sheet owner 設定的固定 callback；忽略 client 釣魚網址並限流',
+    g.mail.length === 1 && String(g.mail[0]?.[2] || '').includes('https://trusted-portal.example/reset-password.html?')
+      && !String(g.mail[0]?.[2] || '').includes('evil.example'), JSON.stringify(g.mail));
+  const resetTokenMatch = /[?&]token=([^&\s]+)/.exec(String(g.mail[0]?.[2] || ''));
+  const resetToken = resetTokenMatch ? decodeURIComponent(resetTokenMatch[1]) : '';
+  const resetLockBefore = g.lockStats.waits;
+  const completedPublicReset = g.networkPost({ action: 'authResetByToken', unit: '0082', token: resetToken, newPassword: 'abcd2' });
+  const resetLockAfter = g.lockStats.waits;
+  const replayedPublicReset = g.networkPost({ action: 'authResetByToken', unit: '0082', token: resetToken, newPassword: 'abcd3' });
+  ok('token reset 只取得一次 ScriptLock；saveDb 本身不會重入同一把鎖', resetLockAfter - resetLockBefore === 1,
+    JSON.stringify({ resetLockBefore, resetLockAfter }));
+  ok('電郵 token 可免 Key 單次重設密碼；重放同一 token fail closed',
+    completedPublicReset.ok === true && replayedPublicReset.code === 'RESET_TOKEN_INVALID',
+    JSON.stringify({ completedPublicReset, replayedPublicReset }));
+  ok('token 重設後新密碼生效、舊密碼失效',
+    g.networkPost({ action: 'authLogin', unit: '0082', username: 'leader@example.com', password: 'abcd2' }).ok === true
+      && g.networkPost({ action: 'authLogin', unit: '0082', username: 'leader@example.com', password: 'abcd' }).ok === false);
+  const login = g.post({ action: 'authLogin', unit: '0082', username: 'leader@example.com', password: 'abcd2' });
   ok('authLogin 由 GAS 核對 PBKDF2，不回傳 hash', login.ok === true && login.account?.role === 'leader' && !JSON.stringify(login).includes(account.pw.hash));
   const denied = g.post({ action: 'authLogin', unit: '0082', username: 'leader@example.com', password: 'wrong' });
   ok('authLogin 錯密碼拒絕', denied.ok === false);
-  /* 2026-11-12：authChangePassword 已刪（前端 auth.js 嘅改密碼係純本機，
-     从来冇 call 過呢個 action）。原本靠佢驗嘅「重設密碼後舊 session 立即失效」
-     改由仍然 live 嘅 authResetPassword 驗 —— revokeAuthSessions() 係同一條機制，
-     保安覆蓋冇減少。領袖密碼全程維持 'abcd'。 */
-  const reset = g.post({ action: 'authResetPassword', unit: '0082', actorUsername: 'leader@example.com', actorPassword: 'abcd', targetYmis: '1000000001', newPassword: '1234', sessionToken: login.sessionToken });
-  ok('領袖可由 server-side 重設成員密碼', reset.ok === true, JSON.stringify(reset));
+  const aliasLogin = g.post({ action: 'authLogin', unit: '0082', username: 'leader-alias', password: 'abcd' });
+  ok('authLogin 支援名冊自訂 loginId（同瀏覽器登入代號規則一致）',
+    aliasLogin.ok === true && aliasLogin.account?.id === 'mLoginId' && aliasLogin.account?.role === 'leader', JSON.stringify(aliasLogin));
+  const chiefDefault = g.post({ action: 'authLogin', unit: '0082', username: 'chief-nopw@example.com', password: '1234' });
+  const leaderDefault = g.post({ action: 'authLogin', unit: '0082', username: 'leader-nopw@example.com', password: '1234' });
+  ok('★ 團長／領袖冇 password record 時，公開 authLogin 用 1234 一律 fail closed',
+    chiefDefault.ok === false && leaderDefault.ok === false
+      && chiefDefault.code === 'AUTH_INVALID' && leaderDefault.code === 'AUTH_INVALID',
+    JSON.stringify({ chiefDefault, leaderDefault }));
+  const youthDefault = g.post({ action: 'authLogin', unit: '0082', ymis: '1000000001', password: '1234' });
+  ok('團員冇 password record 仍可用一次性 1234 開戶（並強制改密碼）', youthDefault.ok === true && youthDefault.mustChangePw === true);
+  const who = g.post({ action: 'authWhoAmI', unit: '0082', sessionToken: youthDefault.sessionToken });
+  ok('authWhoAmI 由短期 session 對回可信本人 YMIS，不採用 client 身份欄位',
+    who.ok === true && who.account?.ymis === '1000000001' && who.account?.role === 'member', JSON.stringify(who));
+  /* 團員自己改密碼已改成正式 server action：session 固定本人，成功撤銷舊票並換新票。 */
+  const changedOwn = g.post({ action: 'authChangePassword', unit: '0082', oldPassword: '', newPassword: '5678', sessionToken: youthDefault.sessionToken });
+  ok('首次登入可用 opaque session 設定新 PBKDF2 密碼並換票', changedOwn.ok === true
+    && changedOwn.sessionToken && changedOwn.sessionToken !== youthDefault.sessionToken
+    && changedOwn.sessionExpiresAt > Date.now(), JSON.stringify(changedOwn));
+  const staleOwn = g.post({ action: 'authWhoAmI', unit: '0082', sessionToken: youthDefault.sessionToken });
+  const freshOwn = g.post({ action: 'authWhoAmI', unit: '0082', sessionToken: changedOwn.sessionToken });
+  ok('自己改密碼後舊票即時失效、新票仍有效', staleOwn.code === 'SESSION_REQUIRED' && freshOwn.ok === true,
+    JSON.stringify({ staleOwn, freshOwn }));
+  ok('自己改密碼後新密碼生效、預設 1234 失效',
+    g.post({ action: 'authLogin', unit: '0082', ymis: '1000000001', password: '5678' }).ok === true
+      && g.post({ action: 'authLogin', unit: '0082', ymis: '1000000001', password: '1234' }).ok === false);
+
+  const reset = g.post({ action: 'authResetPassword', unit: '0082', targetYmis: '1000000001', newPassword: '1234', sessionToken: login.sessionToken });
+  ok('領袖只憑 server session 對回操作者，可重設成員密碼（不靠 client actor 欄位）', reset.ok === true, JSON.stringify(reset));
   const memberLogin = g.post({ action: 'authLogin', unit: '0082', ymis: '1000000001', password: '1234' });
   ok('被重設成員首次登入要改密碼', memberLogin.ok === true && memberLogin.mustChangePw === true);
   /* ★ 重設密碼一定要即刻踢走舊 session（唔可以留返個舊票據繼續用得） */
-  const beforeRevoke = g.post({ action: 'authResetPassword', unit: '0082', actorUsername: 'leader@example.com', actorPassword: 'abcd', targetYmis: '1000000001', newPassword: '1234', sessionToken: memberLogin.sessionToken });
-  ok('未重設前，成員自己張 session 係有效嘅（對照組）', beforeRevoke.code !== 'SESSION_REQUIRED', JSON.stringify(beforeRevoke).slice(0, 140));
-  const revokeAgain = g.post({ action: 'authResetPassword', unit: '0082', actorUsername: 'leader@example.com', actorPassword: 'abcd', targetYmis: '1000000001', newPassword: '5678', sessionToken: login.sessionToken });
+  const beforeRevoke = g.post({ action: 'authResetPassword', unit: '0082', actorUsername: 'leader@example.com', actorRole: 'leader', targetYmis: '1000000001', newPassword: '1234', sessionToken: memberLogin.sessionToken });
+  ok('有效 member session 即使偽造 actorUsername／role 仍被 scope 拒絕（對照組）', beforeRevoke.code === 'ACTION_SCOPE_DENIED' && beforeRevoke.ok === false, JSON.stringify(beforeRevoke).slice(0, 140));
+  const revokeAgain = g.post({ action: 'authResetPassword', unit: '0082', targetYmis: '1000000001', newPassword: '5678', sessionToken: login.sessionToken });
   ok('領袖再重設一次成員密碼', revokeAgain.ok === true, JSON.stringify(revokeAgain));
-  const staleAction = g.post({ action: 'authResetPassword', unit: '0082', actorUsername: 'leader@example.com', actorPassword: 'abcd', targetYmis: '1000000001', newPassword: '1234', sessionToken: memberLogin.sessionToken });
+  const staleAction = g.post({ action: 'authResetPassword', unit: '0082', targetYmis: '1000000001', newPassword: '1234', sessionToken: memberLogin.sessionToken });
   ok('★ 重設密碼後舊 session 立即失效', staleAction.code === 'SESSION_REQUIRED', JSON.stringify(staleAction).slice(0, 140));
   const reLogin = g.post({ action: 'authLogin', unit: '0082', ymis: '1000000001', password: '5678' });
   ok('★ 新密碼登得入、舊密碼失效', reLogin.ok === true
     && g.post({ action: 'authLogin', unit: '0082', ymis: '1000000001', password: '1234' }).ok === false);
-  const deleted = g.post({ action: 'authDeleteAccount', unit: '0082', actorUsername: 'leader@example.com', actorPassword: 'abcd', targetUsername: 'exco@example.com', sessionToken: login.sessionToken });
-  ok('團長可由 server-side 刪除執委帳戶', deleted.ok === true, JSON.stringify(deleted));
+  const escalatedCreate = g.post({ action: 'authCreateAccount', unit: '0082', role: 'leader',
+    username: 'forged-leader@example.com', email: 'forged-leader@example.com', name: '偽造領袖',
+    memberId: 'mNewExco', password: '1234', sessionToken: login.sessionToken });
+  ok('領袖 session 不可建立同級／更高權限帳戶', escalatedCreate.ok === false, JSON.stringify(escalatedCreate));
+  const mismatchedRole = g.post({ action: 'authCreateAccount', unit: '0082', role: 'exco',
+    username: 'member-as-exco@example.com', email: 'member-as-exco@example.com', name: '偽執委',
+    memberId: 'm1', password: '1234', sessionToken: login.sessionToken });
+  ok('帳戶權限不可高於／偏離名冊身份', mismatchedRole.ok === false, JSON.stringify(mismatchedRole));
+  const createdLower = g.post({ action: 'authCreateAccount', unit: '0082', role: 'exco',
+    username: 'new-exco@example.com', email: 'new-exco@example.com', name: '新執委',
+    memberId: 'mNewExco', password: '1234', sessionToken: login.sessionToken });
+  ok('領袖只憑 server session 可建立綁名冊的較低權限個人帳戶', createdLower.ok === true, JSON.stringify(createdLower));
+  const createdLogin = g.post({ action: 'authLogin', unit: '0082', username: 'new-exco@example.com', password: '1234' });
+  ok('server 建立的個人帳戶可登入並強制改密碼', createdLogin.ok === true && createdLogin.mustChangePw === true);
+  const platformCreated = g.serverPost({ action: 'authCreateAccount', unit: '0082', role: 'member',
+    username: 'platform-member@example.com', email: 'platform-member@example.com', name: '平台建立團員',
+    memberId: 'm1', password: '1234' });
+  ok('已驗 HMAC 的 platform super marker 可管理 Portal 個人帳戶，但仍必須綁名冊身份',
+    platformCreated.ok === true, JSON.stringify(platformCreated));
+  const forgedPlatformCreate = g.networkPost({ action: 'authCreateAccount', unit: '0082', apiKey: g.props.get('API_KEY'),
+    __serverSigned: true, role: 'member', username: 'forged@example.com', memberId: 'm1', password: '1234' });
+  ok('client 自報 platform marker 不可建立帳戶', forgedPlatformCreate.ok === false && forgedPlatformCreate.code === 'SESSION_REQUIRED');
+  const deleted = g.post({ action: 'authDeleteAccount', unit: '0082', targetUsername: 'exco@example.com', sessionToken: login.sessionToken });
+  ok('領袖只憑 server session 對回操作者，可刪除較低權限帳戶', deleted.ok === true, JSON.stringify(deleted));
   const excoLogin = g.post({ action: 'authLogin', unit: '0082', username: 'exco@example.com', password: 'exco-pass' });
   ok('已刪除帳戶不能再登入', excoLogin.ok === false);
-  const restored = g.post({ action: 'authRestoreAccount', unit: '0082', actorUsername: 'leader@example.com', actorPassword: 'abcd', targetEmail: 'exco@example.com', sessionToken: login.sessionToken });
-  ok('管理員可以由保留嘅成員資料復原帳戶', restored.ok === true, JSON.stringify(restored));
+  const restored = g.post({ action: 'authRestoreAccount', unit: '0082', targetEmail: 'exco@example.com', sessionToken: login.sessionToken });
+  ok('管理員只憑 server session 可由保留資料復原較低權限帳戶', restored.ok === true, JSON.stringify(restored));
   const restoredLogin = g.post({ action: 'authLogin', unit: '0082', username: 'exco@example.com', password: '1234' });
   ok('復原帳戶使用 1234 並強制改密碼', restoredLogin.ok === true && restoredLogin.mustChangePw === true);
+
+  const excoSnapshot = g.post({ action: 'loadDb', unit: '0082', sessionToken: restoredLogin.sessionToken });
+  const forgedMembers = JSON.parse(JSON.stringify(excoSnapshot.db.members));
+  forgedMembers.find(m => m.id === 'm1').identity = 'leader';
+  const forgedTableIdentity = g.post({ action: 'saveTables', unit: '0082', tables: { members: forgedMembers },
+    baseVersion: excoSnapshot.version, refreshReports: false, sessionToken: restoredLogin.sessionToken });
+  ok('執委不可繞過 UI 以 saveTables 改 members[].identity 升權',
+    forgedTableIdentity.ok === false && forgedTableIdentity.code === 'PROTECTED_AUTH_FIELD', JSON.stringify(forgedTableIdentity));
+
+  const forgedDb = JSON.parse(JSON.stringify(excoSnapshot.db));
+  forgedDb.members.find(m => m.id === 'm1').identity = 'leader';
+  const forgedWholeIdentity = g.post({ action: 'saveDb', unit: '0082', db: forgedDb,
+    baseVersion: excoSnapshot.version, refreshReports: false, sessionToken: restoredLogin.sessionToken });
+  ok('執委不可繞過 UI 以 saveDb 改身份',
+    forgedWholeIdentity.ok === false && forgedWholeIdentity.code === 'PROTECTED_AUTH_FIELD', JSON.stringify(forgedWholeIdentity));
+
+  const forgedAccountDb = JSON.parse(JSON.stringify(excoSnapshot.db));
+  forgedAccountDb.accounts.find(a => a.username === 'exco@example.com').role = 'chief';
+  const forgedAccountRole = g.post({ action: 'saveDb', unit: '0082', db: forgedAccountDb,
+    baseVersion: excoSnapshot.version, refreshReports: false, sessionToken: restoredLogin.sessionToken });
+  ok('generic DB 同步不可改 legacy account role／member 綁定充當帳戶管理',
+    forgedAccountRole.ok === false && forgedAccountRole.code === 'PROTECTED_AUTH_FIELD', JSON.stringify(forgedAccountRole));
+
+  const saveId = '0082-stg-protected-auth-test';
+  const staged = g.post({ action: 'saveDbPart', unit: '0082', data: forgedDb, partIdx: 0, parts: 1,
+    saveId, baseVersion: excoSnapshot.version, sessionToken: restoredLogin.sessionToken });
+  const stagedCommit = g.post({ action: 'saveDbCommit', unit: '0082', parts: 1, saveId,
+    baseVersion: excoSnapshot.version, refreshReports: false, sessionToken: restoredLogin.sessionToken });
+  ok('分件 saveDbCommit 同樣逐欄驗證，不能成為 identity bypass', staged.ok === true
+    && stagedCommit.ok === false && stagedCommit.code === 'PROTECTED_AUTH_FIELD', JSON.stringify(stagedCommit));
+
+  const forceDb = JSON.parse(JSON.stringify(excoSnapshot.db));
+  forceDb.members.find(m => m.id === 'm1').identity = 'chief';
+  const forgedForce = g.post({ action: 'saveDbForce', unit: '0082', db: forceDb, sessionToken: login.sessionToken });
+  ok('領袖的救援 force upload 亦不可把成員偽造成團長',
+    forgedForce.success === false && forgedForce.code === 'PROTECTED_AUTH_FIELD', JSON.stringify(forgedForce));
+
+  const allowedMembers = JSON.parse(JSON.stringify(excoSnapshot.db.members));
+  allowedMembers.find(m => m.id === 'm1').identity = 'exco';
+  const allowedIdentity = g.post({ action: 'saveTables', unit: '0082', tables: { members: allowedMembers },
+    baseVersion: excoSnapshot.version, refreshReports: false, sessionToken: login.sessionToken });
+  ok('已驗領袖仍可按產品權限更改另一位非團長成員身份', allowedIdentity.ok === true,
+    JSON.stringify(allowedIdentity));
+}
+
+section('團員入口安全投影＋本人 RSVP／答卷／請假');
+{
+  const g = makeGas({ apiKey: 'hub-test-key' });
+  const db = {
+    schema: 2, unitCode: '0082', unit: { code: '0082', name: '測試旅團' },
+    settings: { troopLinks: { facebook: 'https://facebook.example/troop' } },
+    publicProfile: { about: { text: '團員可見', vis: 'member' }, site: { url: '', vis: 'member' },
+      socials: [
+        { id: 's1', kind: 'instagram', url: 'https://instagram.example/member', vis: 'member' },
+        { id: 's2', kind: 'whatsapp', title: '領袖秘密', url: 'https://chat.example/leader', vis: 'leader' }
+      ], albums: [], links: [] },
+    accounts: [], members: [
+      { id: 'm1', ymis: '1000000001', name: '成員一', identity: 'member', status: 'active' },
+      { id: 'm2', ymis: '1000000002', name: '成員二', identity: 'leader', status: 'active', hubPw: { algo: 'sha256', salt: 'x', hash: 'secret-hash' } }
+    ],
+    events: [
+      { id: 'ev1', title: '團員活動', date: '2099-12-01', status: 'confirmed', vis: 'member', adminSecret: 'EVENT-SECRET',
+        rsvp: { m2: { status: 'present', name: '成員二', auditSecret: 'RSVP-SECRET' } }, rollcall: { m2: { status: 'present' } } },
+      { id: 'ev2', title: '領袖秘密活動', date: '2099-12-02', status: 'confirmed', vis: 'leader', rsvp: {} }
+    ],
+    quizzes: [
+      { id: 'q1', title: '團員試卷', status: 'open', vis: 'member', gradingSecret: 'QUIZ-SECRET',
+        questions: [{ id: 'a1', prompt: '1+1', type: 'single', options: ['1', '2'], required: true, answerKey: 'QUESTION-SECRET' }],
+        responses: { m2: { answers: { a1: '2' }, markerNote: 'RESPONSE-SECRET' } } },
+      { id: 'q2', title: '領袖試卷', status: 'open', vis: 'leader', questions: [], responses: {} }
+    ],
+    notices: [
+      { id: 'n1', title: { zh: '團員通告' }, status: 'published', vis: 'member', internalRecipients: 'NOTICE-SECRET', signups: [{ memberId: 'm2' }] },
+      { id: 'n2', title: { zh: '領袖秘密通告' }, status: 'published', vis: 'leader', signups: [] }
+    ],
+    absences: [
+      { id: 'ab1', memberId: 'm1', ymis: '1000000001', date: '2099-11-01', status: 'approved', reason: '本人原因' },
+      { id: 'ab2', memberId: 'm2', ymis: '1000000002', date: '2099-11-01', status: 'approved', reason: '他人私隱' }
+    ], transactions: []
+  };
+  ok('行政來源資料先正常寫入', g.post({ action: 'saveDb', unit: '0082', db }).ok === true);
+  const login = g.post({ action: 'authLogin', unit: '0082', ymis: '1000000001', password: '1234' });
+  ok('團員先取得真 GAS opaque session', login.ok === true && !!login.sessionToken);
+  const anonymous = g.post({ action: 'hubLoad', unit: '0082' });
+  ok('API Key 不能冒充團員 session 讀 hub', anonymous.code === 'SESSION_REQUIRED' && anonymous.db === undefined);
+  const memberAdmin = g.post({ action: 'loadDb', unit: '0082', sessionToken: login.sessionToken });
+  ok('有效 member session 仍不可讀行政資料', memberAdmin.ok === false && memberAdmin.code === 'ACTION_SCOPE_DENIED');
+  const view = g.post({ action: 'hubLoad', unit: '0082', sessionToken: login.sessionToken, memberId: 'm2', role: 'chief' });
+  const encoded = JSON.stringify(view.db || {});
+  ok('hubLoad 只回本人安全名冊，冇帳戶／hash／他人請假', view.ok === true
+    && view.db.members.length === 1 && view.db.members[0].id === 'm1' && view.db.members[0].identity === 'member'
+    && view.db.accounts.length === 0 && !/secret-hash|他人私隱/.test(encoded), encoded.slice(0, 300));
+  ok('hubLoad 在 server 過濾高權內容、他人 RSVP／答卷／點名', view.db.events.length === 1
+    && Object.keys(view.db.events[0].rsvp).length === 0 && !view.db.events[0].rollcall
+    && view.db.quizzes.length === 1 && Object.keys(view.db.quizzes[0].responses).length === 0
+    && view.db.notices.length === 1 && view.db.absences.length === 1 && !encoded.includes('領袖秘密'));
+  ok('event／quiz／notice 係正面欄位白名單，新增行政欄不會自動外洩',
+    !/EVENT-SECRET|RSVP-SECRET|QUIZ-SECRET|QUESTION-SECRET|RESPONSE-SECRET|NOTICE-SECRET/.test(encoded), encoded.slice(0, 500));
+  const rsvp = g.post({ action: 'hubRsvp', unit: '0082', sessionToken: login.sessionToken,
+    eventId: 'ev1', status: 'late', time: '19:30', memberId: 'm2', role: 'chief' });
+  ok('hubRsvp 忽略偽造 memberId／role，只寫 session 本人', rsvp.ok === true
+    && rsvp.db.events[0].rsvp.m1?.status === 'late' && !rsvp.db.events[0].rsvp.m2, JSON.stringify(rsvp));
+  ok('猜到領袖活動 id 亦寫唔入', g.post({ action: 'hubRsvp', unit: '0082', sessionToken: login.sessionToken,
+    eventId: 'ev2', status: 'present' }).ok === false);
+  const quiz = g.post({ action: 'hubQuiz', unit: '0082', sessionToken: login.sessionToken,
+    quizId: 'q1', answers: { a1: '2', injected: 'drop' }, memberId: 'm2' });
+  ok('hubQuiz 只保留定義咗嘅答案並固定本人', quiz.ok === true
+    && quiz.db.quizzes[0].responses.m1?.answers?.a1 === '2'
+    && quiz.db.quizzes[0].responses.m1?.answers?.injected === undefined);
+  const absencePayload = { action: 'hubAbsence', unit: '0082', sessionToken: login.sessionToken,
+    op: 'create', id: 'ab_new', date: '2099-12-03', slot: 'pm', reason: '測試請假', memberId: 'm2' };
+  const absence = g.post(absencePayload);
+  ok('hubAbsence 由 session 固定本人，而且回應仍不洩漏他人請假', absence.ok === true
+    && absence.db.absences.some(a => a.id === 'ab_new' && a.memberId === 'm1')
+    && !absence.db.absences.some(a => a.id === 'ab2'));
+  const absenceRetry = g.post(absencePayload);
+  ok('請假 create 固定 client id，response 失聯後重試係冪等而非重複新增', absenceRetry.ok === true
+    && absenceRetry.db.absences.filter(a => a.id === 'ab_new').length === 1);
+  const withdrawn = g.post({ action: 'hubAbsence', unit: '0082', sessionToken: login.sessionToken,
+    op: 'withdraw', id: 'ab_new' });
+  const withdrawnRetry = g.post({ action: 'hubAbsence', unit: '0082', sessionToken: login.sessionToken,
+    op: 'withdraw', id: 'ab_new' });
+  ok('請假 withdraw 重試亦係冪等成功', withdrawn.ok === true && withdrawnRetry.ok === true
+    && !withdrawnRetry.db.absences.some(a => a.id === 'ab_new'));
+  const admin = g.post({ action: 'loadDb', unit: '0082' });
+  ok('行政正本收到本人寫入，同時保留其他團員原資料', admin.db.events.find(e => e.id === 'ev1')?.rsvp?.m1?.status === 'late'
+    && admin.db.events.find(e => e.id === 'ev1')?.rsvp?.m2?.status === 'present'
+    && admin.db.quizzes.find(q => q.id === 'q1')?.responses?.m2
+    && admin.db.absences.some(a => a.id === 'ab2'));
 }
 
 /* ============================================================
@@ -306,7 +542,9 @@ section('v2.6.1 團長回報：同步生分身分頁＋成員進度重複');
   }
 
   /* ① 進度讀取：以「團員」＋「成員名單」合一，唔可以讀錯欄搞到重複 */
-  const load = g.get({ action: 'load', unit: '0082' });
+  const publicLoad = g.get({ action: 'load', unit: '0082' });
+  ok('★ GET load 冇 API Key 不會洩漏全團進度', publicLoad.ok === false && publicLoad.members === undefined, JSON.stringify(publicLoad).slice(0, 140));
+  const load = g.get({ action: 'load', unit: '0082', apikey: g.props.get('API_KEY') });
   const mem = load.members || [];
   ok('① 成員無重複（2 人，唔係 4 人）', mem.length === 2, JSON.stringify(mem));
   ok('① YMIS 正確（係 8202001／8202002，唔係攞咗姓名／身份）',
@@ -351,7 +589,7 @@ section('★ v2.7.2：一鍵修復（repairDb）＋強制覆蓋（saveDbForce）
   const noKeyRepair = g.post({ action: 'repairDb', unit: '0082', apiKey: 'wrong_key' });
   ok('repairDb 錯 API Key → 拒（唔會亂刪分頁）', noKeyRepair.ok === false, JSON.stringify(noKeyRepair).slice(0, 80));
 
-  const rep = g.post({ action: 'repairDb', unit: '0082', apiKey: KEY });
+  const rep = g.serverPost({ action: 'repairDb', unit: '0082', apiKey: KEY });
   ok('repairDb 成功（回報清咗幾多行）', rep.ok === true && rep.repaired?.ok === true, JSON.stringify(rep).slice(0, 160));
   ok('★ 清走晒 2 行 __staging__ 垃圾', rep.repaired.removedStaging === 2, JSON.stringify(rep.repaired));
   ok('★ 清走舊版本段（ver-broken 兩行）', rep.repaired.removedOldVersions === 2, JSON.stringify(rep.repaired));
@@ -379,7 +617,7 @@ section('★ v2.7.2：一鍵修復（repairDb）＋強制覆蓋（saveDbForce）
     { id: 'm2', name: '李小明', identity: 'member' },
     { id: 'm3', name: '搶救加入嘅人', identity: 'member' }
   ], transactions: [] };
-  const forced = g.post({ action: 'saveDbForce', unit: '0082', apiKey: KEY, db });
+  const forced = g.serverPost({ action: 'saveDbForce', unit: '0082', apiKey: KEY, db });
   ok('★ saveDbForce 成功寫入（跳過樂觀鎖）', forced.success === true && forced.forced === true, JSON.stringify(forced).slice(0, 160));
   ok('★ 回報覆蓋咗邊個舊版本（追溯用）', forced.overwroteVersion === 'ver-old',
     JSON.stringify({ got: forced.overwroteVersion, want: 'ver-old', dbInfo: info2.version }));
@@ -723,26 +961,38 @@ section('樂觀鎖：saveDb baseVersion（過時裝置唔可以盲蓋後端）')
 }
 
 /* ============================================================
-   ⑨ 團員自助申報（v2.2.0）：addRequest / myRequests
+   ⑨ 團員自助申報：只准可信 server bridge 代本人讀寫
    ------------------------------------------------------------
-   團員喺團員入口申報完成 → 寫入「待批完成」（pending），
-   執委喺審批中心批核。addRequest 免 API Key（同 claim/loan 睇齊）。
+   Browser 不能直接任填 YMIS；/api/progress 核對 session 後，先以
+   server-side API Key／link signature 將可信 YMIS 傳到 GAS。
    ============================================================ */
 section('團員自助申報：addRequest / myRequests');
 {
   const g = makeGas({ apiKey: 'test_key' });
   g.sandbox.initializeSheets();
-  const ar = g.post({ action: 'addRequest', unit: '0082', ymis: '2026000001', name: '陳大文', item_id: 'VS-C1', item_name: '技能科 第 1 項', requested_date: '2026-09-18', evidence: '夏季營完成' });
-  ok('addRequest 免 key 都寫得到（寫入待批完成）', ar.ok === true && !!ar.request_id, JSON.stringify(ar).slice(0, 160));
-  const mine = g.post({ action: 'myRequests', unit: '0082', ymis: '2026000001' });
-  ok('myRequests 攞返自己嘅申報', mine.ok === true && mine.requests?.length === 1, JSON.stringify(mine).slice(0, 200));
+  const KEY = g.props.get('API_KEY');
+  const publicAdd = g.post({ action: 'addRequest', unit: '0082', apiKey: '', ymis: '2026000001', name: '陳大文', item_id: 'VS-C1' });
+  ok('★ addRequest 冇 server credential 一律拒絕', publicAdd.ok === false && !publicAdd.request_id, JSON.stringify(publicAdd).slice(0, 160));
+  const publicRead = g.post({ action: 'myRequests', unit: '0082', apiKey: '', ymis: '2026000001' });
+  ok('★ myRequests 冇 server credential 一律拒絕', publicRead.ok === false && publicRead.requests === undefined, JSON.stringify(publicRead).slice(0, 160));
+
+  const ar = g.post({ action: 'addRequest', unit: '0082', apiKey: KEY, ymis: '2026000001', name: '陳大文', item_id: 'VS-C1', item_name: '技能科 第 1 項', requested_date: '2026-09-18', evidence: '夏季營完成' });
+  ok('server bridge 可以代已核對團員寫入待批完成', ar.ok === true && !!ar.request_id, JSON.stringify(ar).slice(0, 160));
+  const mine = g.post({ action: 'myRequests', unit: '0082', apiKey: KEY, ymis: '2026000001' });
+  ok('server bridge 攞返本人申報', mine.ok === true && mine.requests?.length === 1, JSON.stringify(mine).slice(0, 200));
   ok('申報狀態係 pending', mine.requests?.[0]?.status === 'pending', JSON.stringify(mine.requests?.[0]));
   ok('項目名／日期正確', mine.requests?.[0]?.item_name === '技能科 第 1 項' && mine.requests?.[0]?.requested_date === '2026-09-18', JSON.stringify(mine.requests?.[0]));
-  const other = g.post({ action: 'myRequests', unit: '0082', ymis: '9999999999' });
+  const other = g.post({ action: 'myRequests', unit: '0082', apiKey: KEY, ymis: '9999999999' });
   ok('第二個團員查唔到人哋嘅申報', other.ok === true && other.requests?.length === 0, JSON.stringify(other));
 
+  const mineProgress = g.post({ action: 'loadMine', unit: '0082', apiKey: KEY, ymis: '2026000001' });
+  ok('★ loadMine 只回指定 YMIS，冇完整 members payload', mineProgress.ok === true && mineProgress.members?.length === 1
+    && mineProgress.members[0].ymis === '2026000001', JSON.stringify(mineProgress).slice(0, 220));
+  const publicMine = g.post({ action: 'loadMine', unit: '0082', apiKey: '', ymis: '2026000001' });
+  ok('★ loadMine 冇 server credential 一律拒絕', publicMine.ok === false && publicMine.members === undefined, JSON.stringify(publicMine).slice(0, 160));
+
   /* 缺欄位要拒 */
-  const bad = g.post({ action: 'addRequest', unit: '0082', ymis: '', item_id: '' });
+  const bad = g.post({ action: 'addRequest', unit: '0082', apiKey: KEY, ymis: '', item_id: '' });
   ok('缺 ymis/item_id → 拒', bad.ok === false, JSON.stringify(bad).slice(0, 120));
 }
 
@@ -920,7 +1170,7 @@ section('v2.5.0：公開團章／通告讀正本、公開頁送出寫入資料�
    答案嘅根據 —— 三條寫入路線各寫各嘅分頁：
      執委系統 saveDb →「資料庫」分頁（成個 app db）
      進度前端 save →「進度追蹤」分頁（要 API Key＝執委身份）
-     團員入口 addRequest →「待批完成」分頁（免 key、只可 append）
+     團員入口 → session bridge → addRequest「待批完成」分頁（server key、只可 append）
    模擬三邊輪流＋穿插咁寫，驗證冇任何一邊嘅資料被蓋走。
    ============================================================ */
 section('寫入衝突模擬：執委 db ＋ 進度前端 ＋ 團員入口三路齊寫');
@@ -933,10 +1183,10 @@ section('寫入衝突模擬：執委 db ＋ 進度前端 ＋ 團員入口三路�
   const db1 = sampleDb();
   ok('① 執委 saveDb 推名冊成功', g.post({ action: 'saveDb', unit: '0082', db: db1, apiKey: KEY }).ok === true);
 
-  /* ② 兩個團員（唔同密碼都好，身份靠 YMIS）同時申報完成 —— 免 key */
-  const a1 = g.post({ action: 'addRequest', unit: '0082', ymis: '2008-001', name: '陳大文', item_id: 'L1-ACT-01', item_name: '參加六次活動', requested_date: '2026-09-01', evidence: 'A' });
-  const a2 = g.post({ action: 'addRequest', unit: '0082', ymis: '2009-002', name: '李小明', item_id: 'L1-ACT-01', item_name: '參加六次活動', requested_date: '2026-09-02', evidence: 'B' });
-  ok('② 兩個團員各自申報成功（免 key，各有一條 request_id）',
+  /* ② 兩個團員嘅可信 session bridge 同時申報完成 */
+  const a1 = g.post({ action: 'addRequest', unit: '0082', apiKey: KEY, ymis: '2008-001', name: '陳大文', item_id: 'L1-ACT-01', item_name: '參加六次活動', requested_date: '2026-09-01', evidence: 'A' });
+  const a2 = g.post({ action: 'addRequest', unit: '0082', apiKey: KEY, ymis: '2009-002', name: '李小明', item_id: 'L1-ACT-01', item_name: '參加六次活動', requested_date: '2026-09-02', evidence: 'B' });
+  ok('② 兩個團員經 server bridge 各自申報成功（各有一條 request_id）',
     a1.ok === true && a2.ok === true && a1.request_id !== a2.request_id,
     JSON.stringify([a1.request_id, a2.request_id]));
 
@@ -954,7 +1204,7 @@ section('寫入衝突模擬：執委 db ＋ 進度前端 ＋ 團員入口三路�
   ok('④ 執委再推新版 db（全份覆寫「資料庫」分頁）成功', sv2.ok === true, JSON.stringify(sv2).slice(0, 100));
 
   /* ★ 關鍵：db 覆寫之後，三邊資料全部原封不動 */
-  const ld = g.get({ action: 'load' });
+  const ld = g.get({ action: 'load', apikey: KEY });
   ok('★ db 覆寫後：進度追蹤紀錄仲喺度（唔會被 saveDb 蓋走）',
     ld.progress?.['2008-001']?.['L1-SRV-01']?.date === '2026-08-30', JSON.stringify(ld.progress));
   ok('★ db 覆寫後：兩個團員嘅申報仲喺度（pendingRequests 2 條）',
@@ -965,12 +1215,12 @@ section('寫入衝突模擬：執委 db ＋ 進度前端 ＋ 團員入口三路�
   /* ⑤ 執委批核陳大文嘅申請 → 寫入進度追蹤 */
   const rv = g.post({ action: 'reviewRequest', unit: '0082', apiKey: KEY, request_id: a1.request_id, decision: 'approved', review_note: 'OK', reviewer: '陳領袖', confirmed_date: '2026-09-19' });
   ok('⑤ 執委批核成功（批准＝寫入進度追蹤）', rv.ok === true, JSON.stringify(rv));
-  const my1 = g.post({ action: 'myRequests', unit: '0082', ymis: '2008-001' });
-  const my2 = g.post({ action: 'myRequests', unit: '0082', ymis: '2009-002' });
+  const my1 = g.post({ action: 'myRequests', unit: '0082', apiKey: KEY, ymis: '2008-001' });
+  const my2 = g.post({ action: 'myRequests', unit: '0082', apiKey: KEY, ymis: '2009-002' });
   ok('⑤ 陳大文見到自己申請「已批准」', my1.requests?.[0]?.status === 'approved', JSON.stringify(my1.requests?.[0]));
   ok('⑤ myRequests 只回自己（李小明仲係 pending，見唔到陳大文嘅）',
     my2.requests?.length === 1 && my2.requests[0]?.status === 'pending', JSON.stringify(my2.requests?.map(r => r.status)));
-  const ld2 = g.get({ action: 'load' });
+  const ld2 = g.get({ action: 'load', apikey: KEY });
   ok('★ 批核寫入咗進度追蹤：陳大文 L1-ACT-01 有日期＋批核人（兩個前端都即刻見到）',
     ld2.progress?.['2008-001']?.['L1-ACT-01']?.confirmer === '陳領袖', JSON.stringify(ld2.progress?.['2008-001']));
 
@@ -1182,7 +1432,7 @@ section('★ v2.8.1：自證＋報表合併＋真相欄位＋止血');
   const before = sTab._rows.length;
   sTab._rows.filter((r, i) => i > 0 && r[1] === 'members').forEach(r =>
     sTab._rows.push(['0082', 'members', r[2], r[3], r[4], 'SOLD-set']));
-  const rep = g.post({ action: 'repairDb', unit: '0082', apiKey: KEY });
+  const rep = g.serverPost({ action: 'repairDb', unit: '0082', apiKey: KEY });
   ok('⑥ ★ repairDb 清走「資料表」舊套', (rep.repaired?.removedOldSimple || 0) >= 1, JSON.stringify(rep.repaired));
   ok('⑥ 清完行數返原狀', sTab._rows.length === before, `${sTab._rows.length} vs ${before}`);
   const lt = g.post({ action: 'loadTables', unit: '0082', apiKey: KEY });
@@ -1196,28 +1446,33 @@ section('★ v2.8.1：自證＋報表合併＋真相欄位＋止血');
 }
 
 /* ============================================================
-   ★ v2.8.4 旅系統接駁（旅 > 團 > 支部）：本後端嘅「直接入口」掣
+   支部本地入口＋第 4 階段預留上游簽名控制
    ------------------------------------------------------------
-   同 VSBADGE 同一套協定（purpose／sig 公式／ALLOW_LOCAL_LOGIN）——
-   上游（旅系統）可以經簽名閂我；閂咗之後本地 apikey／登入一概拒。
+   第 3 階段 Sheet 選單不可關閉正常本地登入；未來真正旅系統完成 SSO
+   staging 後，仍可用相同 purpose／sig／ALLOW_LOCAL_LOGIN 合約控制。
    ============================================================ */
-section('★ v2.8.4 旅系統接駁：ALLOW_LOCAL_LOGIN 掣 ＋ 簽名 setLocalLogin');
+section('支部本地入口保全 ＋ 未來上游簽名 setLocalLogin');
 {
   const crypto = await import('node:crypto');
   const g = makeGas({ apiKey: 'my-own-sheet-key' });
   g.sandbox.initializeSheets();
   const KEY = 'my-own-sheet-key';
 
-  /* 直接入口（未閂）正常運作 */
+  /* 第 3 階段本地入口正常運作，Sheet 人手選單不可自鎖。 */
   ok('未閂口：load 照讀', g.post({ action: 'load', apiKey: KEY }).ok === true);
   ok('未閂口：apikey 直連照入', g.post({ action: 'dbInfo', unit: '0082', apiKey: KEY }).ok === true);
+  const phase3Close = g.sandbox.menuLocalLoginOff();
+  ok('未有旅系統時 Sheet 選單拒絕關閉本地入口',
+    phase3Close?.code === 'PHASE3_LOCAL_LOGIN_REQUIRED'
+      && g.post({ action: 'load', apiKey: KEY }).ok === true, JSON.stringify(phase3Close));
 
-  /* 簽名公式（同 vsbadge 一樣） */
+  /* 第 4 階段預留簽名公式（同 vsbadge 一樣） */
   const hm = (m, k) => crypto.createHmac('sha256', String(k)).update(String(m)).digest('hex');
   const gift = (k) => hm('vsbadge-troop-sig-v1', k);
+  let nonceSeq = 0;
   const signPost = (bodyOnly) => {
     const ts = String(Date.now());
-    const nonce = 'noncetest' + Date.now();
+    const nonce = 'noncetest' + Date.now() + String(++nonceSeq).padStart(4, '0');
     /* body 傳送時 digest 綁「去掉三個 sig 欄位後嘅 body」（同 vsbadge readLinkSig 一致） */
     const canonicalPayload = JSON.stringify(bodyOnly);
     const digest = crypto.createHash('sha256').update(canonicalPayload).digest('hex');
@@ -1243,6 +1498,12 @@ section('★ v2.8.4 旅系統接駁：ALLOW_LOCAL_LOGIN 掣 ＋ 簽名 setLocalL
   const loadBody = signPost({ action: 'load' });
   const loadSigned = g.post(loadBody);
   ok('閂咗口，簽名 load 照入（有 members／progress）', loadSigned.ok === true && 'members' in loadSigned, JSON.stringify(loadSigned).slice(0, 80));
+  const replayedLoad = g.post(loadBody);
+  ok('同一簽名 nonce 重放會被拒', replayedLoad.ok === false && replayedLoad.upstream_only === true);
+  ok('nonce 由共享 Script Cache 在 Script Lock 內原子消耗',
+    g.cacheWrites.some(w => w.key.startsWith('v82-link-nonce:') && w.ttl === 600)
+      && g.lockStats.waits > 0 && g.lockStats.waits === g.lockStats.releases,
+    JSON.stringify({ writes: g.cacheWrites.length, lock: g.lockStats }));
   const linkBody = signPost({ action: 'getLinkState' });
   const state = g.post(linkBody);
   ok('閂咗口，簽名 getLinkState 照答 allow_local_login:false', state.success === true && state.allow_local_login === false, JSON.stringify(state).slice(0, 160));

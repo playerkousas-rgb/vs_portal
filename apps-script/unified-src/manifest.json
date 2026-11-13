@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "output": "apps-script/UnifiedCode.gs",
+  "baseline": {
+    "repository": "playerkousas-rgb/vsbadge",
+    "commit": "bb073db722e568ef529a97daf2d32e271b029496",
+    "version": "v9.6",
+    "path": "apps-script/Code.gs",
+    "sha256": "34f8198da799b0cea5b87c27c6dd7f658302984d9dfa01ac5ae977352463194a"
+  },
+  "portalCompatibility": {
+    "repository": "playerkousas-rgb/vs_portal",
+    "branchBaseCommit": "c502e1fbb5703a67214b29e12a8c68812bab15aa",
+    "sourceCheckpoint": "arena/2d134fc0-vs-portal generated security checkpoint 2026-11-12",
+    "version": "v2.8.8",
+    "path": "apps-script/Code.gs",
+    "sha256": "c22e074349ed790997548d65de90dcac4b778b0e6d3df49d6136575a5b7ba48e",
+    "note": "Known generated working-tree checkpoint with direct-/exec session enforcement, atomic signed-request replay protection, 4 MiB administrative signature envelope, safe account actor resolution, protected identity/account fields across every DB write route, and one-use password reset. It remains IIFE-isolated; unified-extension owns every public route."
+  },
+  "extension": "apps-script/unified-src/unified-extension.gs",
+  "releaseChannel": "isolated-test-only"
+}

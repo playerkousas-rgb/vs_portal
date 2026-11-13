@@ -93,7 +93,7 @@ TROOP_0081_PROGRESSCATALOG
 7. member session 只可讀寫本人進度；staff session 才可管理進度。
 8. browser 偽造 `backend`、`apikey`、YMIS 或角色時，server 必須忽略或拒絕。
 9. 重跑 `initializeSheets` 兩次，既有資料、帳戶 hash、進度及 API Key 不變。
-10. （旅系統建立後才做）由旅系統端驗收單向讀取支部後端，正如 BOOK 讀 BADGE；支部 Progress 不新增設定或 action。
+10. （旅系統建立後才做）由旅系統端驗收單向讀取支部後端；支部 Progress 不新增設定或 action。BOOK 可另外提交待批匯入，但領袖確認前不得成為正式紀錄。
 
 ## 疑難排解
 

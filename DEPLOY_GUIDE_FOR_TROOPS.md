@@ -80,7 +80,8 @@ TROOP_0123_PROGRESSCATALOG
 - staff 管理 action 必須有 server-issued session；member action 只可操作 session 固定的本人 YMIS。
 - query string 的 role、YMIS、姓名不是授權依據。
 - 支部 `Users`／本地密碼核實後，由 Unified GAS 簽 opaque session；`ALLOW_LOCAL_LOGIN` 保持 `true`。
-- 未來旅系統只由旅系統 server 單向讀取支部後端，正如 BOOK 讀 BADGE；支部 browser、Progress 及登入流程不需要上游狀態或控制。
+- 未來旅系統只由旅系統 server 單向讀取支部後端；支部 browser、Progress 及登入流程不需要上游狀態或控制。
+- BOOK／BADGE 屬另一套受控流程：BOOK 可讀正式資料及提交待批匯入，但必須由領袖確認後才真正錄入，不能當成直接寫入。
 - 旅系統 reader 必須有獨立的 action allowlist、最小資料投影及 server-side 驗證；API Key 本身仍不等於任何支部用戶身份。
 
 ## 5. 進度紀錄
@@ -94,7 +95,7 @@ TROOP_0123_PROGRESSCATALOG
 - 「進度 → 資料來源」只交代同一 Unified Sheet 及實際 Progress action 結果，沒有 `/exec`、API Key、catalog URL、登入閘門或旅系統接口；
 - `進度追蹤` 分頁為空是正常成功結果，顯示 0 項而不是「讀取失敗」；
 - 審批 `reviewRequest`／`reviewLogRequest` 寫回同一張 Sheet；
-- 未來由旅系統單向讀取支部後端，正如 BOOK 讀 BADGE；毋須在 Progress 設定、查詢或顯示。
+- 未來由旅系統單向讀取支部後端；毋須在 Progress 設定、查詢或顯示。BOOK 的待批匯入流程不屬 Progress 設定。
 
 ## 6. 首次驗收
 

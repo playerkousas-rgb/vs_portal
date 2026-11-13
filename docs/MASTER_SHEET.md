@@ -66,7 +66,8 @@ API Key 只由 server Registry 注入，不能取代 session。browser 自報 ro
 - 考核項目固定讀同源 `data/progress/items.json`；不是第二資料後端。
 - 「進度 → 資料來源」沒有 backend、API Key、remote catalog、登入閘門或旅系統接口。
 - `進度追蹤` 沒有資料時正常回成功空集合，介面顯示 0 項，不得顯示「讀取失敗」。
-- 未來旅系統單向讀取支部後端，正如 BOOK 讀 BADGE；Progress 不參與該讀取契約。
+- 未來旅系統單向讀取支部後端；Progress 不參與該 reader 契約。
+- BOOK 可讀取 BADGE 正式資料，也可提交匯入候選；候選先進待批，只有領袖確認後才寫入正式進度／履歷。
 
 ## 6. 手機申報與通告
 

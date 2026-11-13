@@ -81,7 +81,7 @@
 > ⑦ 進度資料來源：管理系統、進度同 BADGE 使用**同一 Unified GAS／Sheet**；Vercel 只設
 > `TROOP_<ID>_NAME/BACKEND/APIKEY`。唔設任何 Portal／Progress 額外 secret、backend 或 key。
 > 各功能直接用不同 action 讀寫同一 Sheet 的指定分頁；Progress 只提供進度業務 actions。
-> 未來是旅系統單向讀支部後端，正如 BOOK 讀 BADGE，與 Progress 無關。
+> 未來旅系統仍只會單向讀支部後端，與 Progress 無關。BOOK／BADGE 是另一套受控流程：BOOK 可讀正式資料及提交待批匯入，但只有領袖確認後才真正錄入。
 > ⑧ **「人係讀到、但個個都冇進度」**：如果「進度追蹤」分頁存在但沒有紀錄，呢個係正常成功結果；
 > 介面會顯示已成功讀取、0 格進度，唔會將空分頁當成讀取失敗。
 > ~~進度 → 設定「後端資料檢查」（`diag`）~~ **【已於 v2.8.6 移除】**；`diag` action 同
@@ -453,7 +453,8 @@ Progress 不提供旅系統、登入閘門或其他整合 action。
 * **批**：`reviewRequest`／`reviewLogRequest` 要有效 staff session → **審批中心**批准／拒絕團員申報；
   批准即刻寫入「進度追蹤」／「活動履歷」，拒絕只改狀態、唔會刪紀錄
 * **資料來源**：server Registry 只登記 `TROOP_<ID>_NAME/BACKEND/APIKEY`；「進度 → 資料來源」只顯示實際 Progress action 成功／失敗，冇 `/exec`／Key 輸入欄。API Key **不代表執委身份**
-* **未來方向**：旅系統單向讀支部後端，正如 BOOK 讀 BADGE；這個讀取契約屬於旅系統與支部後端，Progress 毋須知道或顯示
+* **未來方向**：旅系統單向讀支部後端；這個 reader 契約屬於旅系統與支部後端，Progress 毋須知道或顯示
+* **BOOK 邊界**：BOOK 可讀取 BADGE 正式資料，也可提交匯入候選；候選只進待批，必須由領袖確認後才寫入正式紀錄
 * **空資料**：「進度追蹤」分頁存在但只有表頭時，`load` 仍回成功，介面顯示正常成員及 **0 項進度**
 * **考核項目**：第 11 版綱要固定內建喺 `data/progress/items.json`（離線可用），唔接受 browser remote catalog override
 * **後端範本**：`UnifiedCode.gs` 同時支援行政、進度同 BADGE；`initializeSheets` 會增補 `進度追蹤`／`其他獎章`／`待批完成`／`活動履歷`／`待批履歷`／`成員名單` 等分頁
@@ -553,7 +554,7 @@ npm run build:gas    # 由 assets/js/lib/gastemplate.js 產生 apps-script/Code.
 npm run check         # lint + build + 全套 Portal／真 Code.gs／Unified GS 回歸
 ```
 
-完整 build＋lint＋`npm test` 鏈於 **2026-11-12 exit 0**；所有 suite 均為 0 失敗（包括 usersim 33/0、Portal GAS 308/0、Unified 72/0）：
+完整 build＋lint＋`npm test` 鏈於 **2026-11-12 exit 0**；所有 suite 均為 0 失敗（包括 usersim 33/0、Portal GAS 308/0、Unified 74/0）：
 
 | 測試 | 內容 | 結果 |
 |---|---|---|
@@ -570,7 +571,7 @@ npm run check         # lint + build + 全套 Portal／真 Code.gs／Unified GS 
 | `node tests/reality.mjs` | 後端實況、逐表對數與一寫一讀驗證 | **19 / 0** |
 | `login.mjs` · `api.mjs` · `progress.mjs` · `pdftext.mjs` · `bake.mjs` · `selfserve.mjs` | 登入／session、API 防護、本人進度、PDF、焗名單、自助路線 | **43 · 75 · 48 · 47 · 15 · 35 / 0** |
 | `node tests/ui-ia.mjs` · `modal.mjs` | 權限／導航、兩個一般改密碼入口都要求目前密碼、modal null 語義 | **48 · 8 / 0** |
-| `npm run test:unified` | hash-locked vsbadge v9.6 composer、隔離 auth fixture／防重放、scope、delegated identity map／分件欄位守門、投影白名單、冪等本人寫入、初始化保全、公開入口控制拒絕 | **72 / 0** |
+| `npm run test:unified` | hash-locked vsbadge v9.6 composer、BOOK 待批匯入／領袖確認、隔離 auth fixture／防重放、scope、delegated identity map／分件欄位守門、投影白名單、冪等本人寫入、初始化保全、公開入口控制拒絕 | **74 / 0** |
 
 ---
 

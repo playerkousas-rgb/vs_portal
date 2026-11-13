@@ -246,6 +246,38 @@ ok('the same Unified load action reads each Progress tab instead of treating tab
     && unifiedLoad.logRequests.some(request => request.request_id === 'LOGREQ-1'),
   JSON.stringify(unifiedLoad));
 
+/* BOOK may submit import candidates, but requestComplete must stop in the pending tab.
+   Only a real branch leader/admin review may turn that candidate into an official record. */
+const bookImportRequest = signedRequest('requestComplete', {
+  on_behalf: '9000000001', on_behalf_role: 'member', on_behalf_name: 'VSBOOK',
+  items: [{ itemId: 'L1-BOOK-IMPORT', itemName: 'BOOK 匯入候選',
+    requested_date: '2026-02-08', evidence: 'book-import-test' }]
+});
+const bookImport = node.post(bookImportRequest.body, bookImportRequest.parameter);
+const bookPendingRow = node.sheets.get('待批完成')._rows.find(row => String(row[0]) === String(bookImport.request_id));
+ok('BOOK import is accepted only as a pending candidate, not an official progress record',
+  bookImport.success === true && bookPendingRow?.[7] === 'pending'
+    && !node.sheets.get('進度追蹤')._rows.some(row => row[0] === '9000000001' && row[1] === 'L1-BOOK-IMPORT'),
+  JSON.stringify(bookImport));
+const bookReviewerYmis = '2222222222';
+node.sheets.get('Users').appendRow([
+  bookReviewerYmis, 'BOOK 匯入確認領袖', 'book-reviewer@example.test', 'branch_leader',
+  sha256('bookleader9'), 'b4', true, 'existing', '2026-01-01', '2026-01-01', '', 'active', '*', false
+]);
+const bookReviewerLogin = node.post({ action: 'login', login_id: bookReviewerYmis, password: 'bookleader9' });
+const bookReview = node.post({ action: 'reviewRequest', token: bookReviewerLogin.token,
+  request_id: bookImport.request_id, decision: 'approved', review_note: '領袖確認 BOOK 匯入',
+  confirmed_date: '2026-02-09' });
+ok('BOOK import becomes official only after an authenticated branch leader review',
+  bookReviewerLogin.success === true && bookReviewerLogin.user?.role === 'branch_leader'
+    && bookReview.success === true
+    && node.sheets.get('進度追蹤')._rows.some(row => row[0] === '9000000001'
+      && row[1] === 'L1-BOOK-IMPORT' && row[2] === '2026-02-09'),
+  JSON.stringify(bookReview));
+node.context.destroyToken(bookReviewerLogin.token);
+const bookReviewerRow = node.sheets.get('Users')._rows.findIndex(row => row[0] === bookReviewerYmis);
+if (bookReviewerRow >= 0) node.sheets.get('Users').deleteRow(bookReviewerRow + 1);
+
 node.props.set('ALLOW_LOCAL_LOGIN', 'false');
 const blockedToggleRequest = signedRequest('setLocalLogin', { allow: 'false' });
 const blockedToggle = node.post(blockedToggleRequest.body, blockedToggleRequest.parameter);

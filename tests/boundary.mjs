@@ -6,8 +6,9 @@
      施工次序 = 4 本 BOOK → 4 套 BADGE → 5 個支部系統 → 最後旅系統。
      現在係第 3 階段，未有中央旅系統；支部必須可以獨立運作。
      Progress 是支部內部功能，只經同源 proxy 對本支部 Unified backend 執行業務 action。
-     未來方向是旅系統 → 讀取支部後端，正如 BOOK → 讀取 BADGE。
-     **支部之間冇 direct link，方向亦不可倒轉。**
+     未來方向是旅系統 → 單向讀取支部後端。
+     BOOK 可讀 BADGE 正式資料，亦可提交待批匯入；只有領袖確認後先算正式錄入。
+     **支部之間冇 direct link，旅系統 reader 方向亦不可倒轉。**
 
    ★ 用戶澄清（最重要，唔好誤解）：
      「其實佢地所謂既連係因為有旅係同接通兩者，再係旅係統表現出來的，
@@ -163,10 +164,18 @@ console.log('\n▌⑤ 邊界文件存在而且寫明「唔算連上」');
   ok('SCOPE 定義 Progress 為支部內部功能', /Progress 是支部系統內部功能/.test(scope));
   ok('SCOPE 固定未來方向為旅系統單向讀取支部後端',
     /旅系統[^\n]{0,40}單向讀取各支部後端/.test(scope));
-  ok('SCOPE 固定 BOOK 單向讀取 BADGE', /BOOK → 讀取 BADGE/.test(scope));
+  ok('SCOPE 固定 BOOK 可讀正式資料及提交待批匯入',
+    /BOOK[^\n]{0,50}讀取[^\n]{0,80}BADGE/.test(scope)
+      && /BOOK[^\n]{0,50}提交匯入候選/.test(scope));
+  ok('SCOPE 固定 BOOK 匯入要領袖確認先成正式紀錄',
+    /只有領袖確認後才寫入正式紀錄/.test(scope)
+      && /BOOK 匯入直接成為正式紀錄，或繞過領袖確認/.test(scope));
   const agents = read('AGENTS.md');
   ok('AGENTS 有施工級別（BRANCH）', /BRANCH（支部）/.test(agents));
   ok('AGENTS 禁止主動連另一個支部', /主動連另一個支部/.test(agents));
+  ok('AGENTS 守住 BOOK 待批匯入邊界',
+    /BOOK 可讀正式資料及提交待批匯入/.test(agents)
+      && /只有領袖確認後先可寫入正式紀錄/.test(agents));
 }
 
 console.log('\n▌⑥ 初始化保全鐵律有文件 + 有測試守');

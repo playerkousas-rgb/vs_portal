@@ -33,7 +33,7 @@
 - 分頁存在但沒有資料時回成功空集合／0 項，不得當成讀取失敗；
 - 登入閘門、未來上游或另一前端的狀態，不得成為讀取本 Sheet 進度分頁的前置檢查。
 
-Progress 的責任到此為止：只執行本支部的 Progress 業務 action。Progress client 及 `/api/progress` 均不提供 `getLinkState`、`setLocalLogin` 或任何旅系統接口。未來由旅系統單向讀取支部後端，方向與 BOOK 讀取 BADGE 相同；那是旅系統與支部後端的契約，不會改變 Progress，也不會在 Progress 顯示狀態或控制。
+Progress 的責任到此為止：只執行本支部的 Progress 業務 action。Progress client 及 `/api/progress` 均不提供 `getLinkState`、`setLocalLogin` 或任何旅系統接口。未來由旅系統單向讀取支部後端；那是旅系統與支部後端的 reader 契約，不會改變 Progress，也不會在 Progress 顯示狀態或控制。BOOK／BADGE 是另一套受控流程：BOOK 可讀正式資料及提交待批匯入，但只有領袖確認後才會錄入正式紀錄。
 
 ### 1.2 隔離 auth fixture（不屬 Progress 或旅層資料整合目標）
 
@@ -137,8 +137,8 @@ fixture 只使用既有 `API_KEY`。測試 issuer、Vercel 及該支部 Unified 
 
 - 身份及帳戶復原：`login`、`logout`、`changePassword`、忘記密碼；
 - 進度：`load`、`save`、`saveOtherBadge`；
-- 申報／審批：`requestComplete`、`reviewRequest`；
-- 活動履歷：`getLogRecords`、`saveLogRecord`、`requestLogRecord`、`reviewLogRequest` 等；
+- 申報／審批：`requestComplete` 只寫入待批，`reviewRequest` 由領袖批准後才寫正式進度；BOOK 匯入沿用這個待批語義；
+- 活動履歷：`getLogRecords`、`saveLogRecord`、`requestLogRecord`、`reviewLogRequest` 等；申報同樣先進待批履歷，批准後才寫入／更新正式履歷；
 - 用戶／權限、PBKDF2、用途分隔 HMAC transport、無損初始化。Pinned source 內的舊入口控制 helper 不成為 Unified 公開契約。
 
 ### 統一層新增／轉接

@@ -43,10 +43,10 @@
 - lint：22 / 0
 - Smoke：599 / 0
 - `tests/progress.mjs`: 48 / 0
-- 系統樹 boundary：34 / 0
+- 系統樹 boundary：36 / 0
 - 真 `Code.gs` contract `tests/gas.mjs`: 308 / 0
 - 真 `Code.gs` HTTP chain `tests/e2ereal.mjs`: 71 / 0
-- Unified `tests/unified-gas.mjs`: 72 / 0
+- Unified `tests/unified-gas.mjs`: 74 / 0
 - Portal compatibility SHA-256：`c22e074349ed790997548d65de90dcac4b778b0e6d3df49d6136575a5b7ba48e`
 - Unified SHA-256：`ffa17dee5bf9615543b29521c6f41d15a2ef2e904dcaf3788070e15a56eead69`
 

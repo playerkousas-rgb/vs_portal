@@ -1,18 +1,18 @@
 # Unified Sheet：行政、進度、通告與申報
 
-> 每個支部只有一張 Google Sheet 與一支 Unified Apps Script。管理系統、進度、BADGE、公開通告及申報都寫回這張 Sheet；不共用其他支部的後端。
+> 每個支部只有一張 Google Sheet 與一支**完整功能** Unified Apps Script。支部系統功能完整版前端與 BADGE 輕量前端都寫回這張 Sheet；不共用其他支部的後端，也不另建 BADGE 精簡後端。
 >
 > 現在是「BOOK → BADGE → 5 個支部系統」的第 3 階段，尚未有中央旅系統；本地支部帳戶是正常身份來源。
 
 ## 1. 拓撲
 
 ```text
-管理系統 ─────────────┐
-進度頁／BADGE ─────────┼──▶ 同一 Unified GAS /exec ──▶ 同一旅團 Sheet
-通告／申報公開頁 ──────┘
+功能完整版支部前端（vs_portal：行政＋Progress 等完整模組）──┐
+BADGE 輕量前端（vsbadge：只呈現部分流程）───────────────────┼──▶ 同一完整 Unified GAS /exec ──▶ 同一旅團 Sheet
+公開通告／申報入口───────────────────────────────────────────┘
 ```
 
-不同前端可以有不同 action，但 routing 與 server-to-server HMAC 根都使用該旅團同一 `API_KEY`。API Key 不等於用戶身份；行政與進度權限仍由 server-issued session 決定。
+完整功能屬 Unified GS；「輕量」只描述 BADGE 的前端能力面，不代表後端缺少行政、身份、進度、獎章、履歷或申報功能。不同前端可以有不同 action allowlist，但 routing 與 server-to-server HMAC 根都使用該旅團同一 `API_KEY`。API Key 不等於用戶身份；每個非公開 action 仍由後端按 server-issued session、role 及 scope 授權。
 
 ## 2. 建立 Unified Sheet
 
@@ -59,8 +59,8 @@ API Key 只由 server Registry 注入，不能取代 session。browser 自報 ro
 
 ## 5. 進度
 
-- 管理系統經同源 `/api/progress` 呼叫同一 Unified GAS；BADGE 亦用同一 `/exec` 與 API Key 讀寫同一 Sheet。
-- action dispatcher 直接選取 `進度追蹤`、`成員名單` 等分頁；所有分頁都屬於同一後端。
+- 功能完整版支部前端經同源 `/api/progress` 呼叫同一完整 Unified GAS；BADGE 輕量前端亦按其 allowlist 使用同一 `/exec` 與 API Key。
+- action dispatcher 直接選取 `進度追蹤`、`成員名單` 等分頁；所有分頁與行政能力都屬於同一完整後端。
 - staff 可管理全團；member action 由 session 固定本人 YMIS。
 - 審批 `reviewRequest`／`reviewLogRequest` 寫回同一張 Sheet。
 - 考核項目固定讀同源 `data/progress/items.json`；不是第二資料後端。
@@ -92,10 +92,11 @@ API Key 只由 server Registry 注入，不能取代 session。browser 自報 ro
 ## 8. 驗收
 
 - [ ] `/api/units` 顯示正確旅團 Registry 狀態，無 secret。
+- [ ] 同一支 Unified GS 具備身份、行政、Progress、獎章、履歷及申報能力；沒有 BADGE 精簡 GS。
 - [ ] 未登入不能下載完整行政 DB。
-- [ ] 管理寫入、進度寫入與 BADGE 寫入落在同一 Sheet。
-- [ ] 同一 YMIS 在所有前端對應同一人。
-- [ ] browser 偽造 backend／apikey／role／YMIS 不可改路或升權。
+- [ ] 功能完整版前端、其 Progress 模組與 BADGE 輕量前端的寫入落在同一 Sheet。
+- [ ] 同一 YMIS 在兩個前端對應同一人。
+- [ ] 兩個前端各自受 action allowlist 限制；browser 偽造 backend／apikey／role／YMIS 不可改路或升權。
 - [ ] member 只可本人；staff scope 正確。
 - [ ] 通告／申報只寫白名單欄位，不能讀完整 DB。
 - [ ] 重跑 `initializeSheets` 兩次，API Key、帳戶 hash、行政與進度資料不變。

@@ -1,4 +1,4 @@
-# 統一 GS 隔離測試版（支部獨立；Progress 僅本支部 actions）
+# 統一 GS 隔離測試版（完整支部後端；完整版與輕量版前端）
 
 > **狀態：只供本 repo／本分支私人測試。** 這不是 `vsbadge` 發佈版，沒有部署、沒有推送到 `vsbadge`，亦不會自動影響任何現有旅團。
 >
@@ -15,20 +15,23 @@
 ### 1.1 現在：支部獨立
 
 ```text
-每支部一張共用 Sheet＋一支 UnifiedCode.gs
+每支部一張共用 Sheet＋一支完整 UnifiedCode.gs
+  ├─ 完整後端能力：身份、支部行政、進度、獎章、履歷、申報
   ├─ 支部 Users／本地密碼／opaque session（正常日常登入）
-  ├─ BADGE：進度、獎章、履歷、申報
-  └─ 支部行政：財務、物資、會議、通告、報名、完整名冊
-       ├─ 完整支部前端（vs_portal）
-       └─ 輕量進度前端（vsbadge）
+  └─ 同一權威資料上的兩種前端定位
+       ├─ 功能完整版前端（vs_portal）：呈現完整支部管理及 Progress 模組
+       └─ 輕量版前端（vsbadge）：只呈現 BADGE 產品範圍內的部分流程
 ```
+
+「輕量版」只描述 vsbadge 的 UI／client surface，不描述 GS 能力。兩個前端都連到上面同一支完整 Unified GS；不存在另一支 BADGE 精簡 GS。每個請求仍須先通過該前端的 action allowlist，再由後端核對 server-issued session、role 及 scope；沒有顯示的按鈕不是授權機制。
 
 #### 已採用的成員／區系統參考模式
 
 本架構按 `member-portal@e7aafdce` 與 `scout-district-portal@6997ae7c` 的主 Sheet 模式校正：
 
-- 行政、Progress 與 BADGE 等多個 client 共用同一張主 Google Sheet、同一份 `Code.gs`、同一個 `/exec` 及同一 API Key；
-- 各前端只以 action allowlist 經 server proxy 呼叫同一 GAS；
+- `UnifiedCode.gs` 是完整能力 superset，同時具備身份、支部行政、Progress、獎章、履歷及申報 action；
+- 功能完整版 vs_portal 與輕量版 vsbadge 共用同一張主 Google Sheet、同一份 `Code.gs`、同一個 `/exec` 及同一 API Key；
+- 各前端只以自己的 action allowlist 經 server proxy／router 呼叫同一 GAS，後端再驗 session、role 及 scope；
 - GAS 按 action 直接讀寫同一張 Sheet 的不同分頁；
 - 分頁存在但沒有資料時回成功空集合／0 項，不得當成讀取失敗；
 - 登入閘門、未來上游或另一前端的狀態，不得成為讀取本 Sheet 進度分頁的前置檢查。
@@ -50,18 +53,17 @@ vs_portal /api/portal（驗 issuer、audience、unit、role、exp、jti）
   └─ 60 秒、單次使用、指定支部的 exchange token
           │
           ▼
-每支部一張共用 Sheet＋一支 UnifiedCode.gs
-  ├─ vsbadge v9.6：Users 授權鏡像、進度、獎章、履歷、申報
-  ├─ 支部行政：財務、物資、會議、通告、報名、完整名冊
-  └─ 同一個 8 小時 opaque session
-       ├─ 完整支部前端（vs_portal）
-       └─ 輕量進度前端（vsbadge）
+每支部一張共用 Sheet＋一支完整 UnifiedCode.gs
+  ├─ 完整能力：身份、支部行政、進度、獎章、履歷、申報
+  └─ 同一個 8 小時 opaque session／同一權威資料
+       ├─ 功能完整版前端（vs_portal）
+       └─ 輕量版前端（vsbadge；只呈現部分流程）
 ```
 
 無論隔離 auth fixture 是否保留，支部資料邊界不變：
 
-- 每個支部：**各 1 張共用 Sheet**；
-- 行政、Progress 與 BADGE 只按 action 使用同一支部後端，不能各自另建業務資料或帳戶；
+- 每個支部：**各 1 張共用 Sheet＋1 支完整 Unified GS**；
+- vs_portal 是功能完整版前端，vsbadge 是輕量版前端；兩者只按獲准 action 使用同一支部後端，不能各自另建業務資料、帳戶或精簡 GS；
 - 未來旅系統有自己的旅層資料，並由旅系統 reader 單向取得支部所需的最小投影。
 
 ## 2. 資料權威來源
@@ -70,8 +72,8 @@ vs_portal /api/portal（驗 issuer、audience、unit、role、exp、jti）
 |---|---|---|
 | 現階段支部登入帳戶／密碼 | 支部 `Users` | 正常日常身份來源；PBKDF2 hash 留在該支部 Sheet |
 | 現階段支部角色／action scope | 支部 `Users`＋server-issued session | 角色名稱與 action scope 兩者都要通過 |
-| 支部名冊及行政資料 | 該支部共用 Sheet | 完整支部前端讀寫此處 |
-| 進度、獎章、履歷、待批申報 | 同一張支部 Sheet | 保留 vsbadge v9.6 原有表格及流程 |
+| 支部名冊及行政資料 | 該支部共用 Sheet／完整 Unified GS | 功能完整版前端呈現；後端能力亦屬同一 superset |
+| 進度、獎章、履歷、待批申報 | 同一張支部 Sheet／完整 Unified GS | 完整版與輕量版前端按各自 allowlist 使用同一正式資料 |
 | 隔離 auth fixture 的中央帳戶／會籍 | 尚未存在的測試 issuer | 只供既有 assertion 測試，不是 Progress 或部署依賴 |
 | 隔離 auth fixture 的支部鏡像 | 支部 `Users` | 測試用無密碼授權映射；不取代本地帳戶 |
 | API Key | 該支部 Apps Script `ScriptProperties` | 初始化只在完全缺失時建立，永不輪換既有 Key |
@@ -147,7 +149,7 @@ fixture 只使用既有 `API_KEY`。測試 issuer、Vercel 及該支部 Unified 
 |---|---|
 | `authPortalExchange` | 隔離 fixture purpose token → 8 小時支部 session（不作正式旅系統入口） |
 | `authWhoAmI` | opaque session → 安全身份／角色／scope |
-| `authLogin` | 完整支部前端的正常本地登入；`ALLOW_LOCAL_LOGIN` 保持開啟 |
+| `authLogin` | 功能完整版支部前端的正常本地登入；`ALLOW_LOCAL_LOGIN` 保持開啟 |
 | `loadMine` | 只回 session 對應 YMIS 的進度／獎章／履歷／申報 |
 | `addRequest`／`myRequests` | 個人申報 bridge，YMIS 由 server session 固定 |
 | `hubLoad` | 團員入口安全投影：只回本人可見內容，不回完整行政 db |
@@ -202,7 +204,7 @@ assets/js/lib/unifiedtemplate.generated.js   # 同一 bytes 的 app 內下載模
 5. 部署測試 `/exec`，本分支 Preview 只設定 `TROOP_<ID>_NAME/BACKEND/APIKEY`，並指向同一 Unified GAS。
 6. 依次驗收，並保存時間、測試 deployment id、測試 Sheet id（可遮中段）及結果截圖／JSON：
    - 原 vsbadge 登入／進度／獎章／履歷仍可用；
-   - 支部本地帳戶可供行政、Progress 與 BADGE client 使用，`ALLOW_LOCAL_LOGIN=true`；staff／member 身份只取 server-issued session；
+   - 同一支部本地帳戶可供功能完整版 vs_portal 與輕量版 vsbadge 的獲准 action 使用，`ALLOW_LOCAL_LOGIN=true`；staff／member 身份只取 server-issued session；
    - member 不能寫行政資料；exco／leader scope 正確；
    - 團員入口只收到本人安全投影；在測試 event／quiz／notice 加一個未列入 schema 的 `STAGING_SECRET` 欄，回應不得出現；
    - 偽造 role／memberId、猜領袖內容 id、重放他人資料全部失敗；

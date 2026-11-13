@@ -1,11 +1,11 @@
 /* ============================================================
-   progress.js — 進度紀錄（一個 Unified 後端、多個前端）
+   progress.js — 進度紀錄（完整 Unified 後端；vs_portal 完整版前端內的模組）
    ------------------------------------------------------------
    統一設計：
-     · 行政、Progress 與 BADGE 都以業務 action 寫入旅團同一個 Google Sheet＋Unified /exec；
-       前端只係不同介面，共用同一份名冊及身份來源。
-     · 呢邊只做兩件事：讀同一後端、寫同一後端。API Key 只係 server routing／HMAC 根，
-       用戶身份必須由 server-issued session 核實。
+     · Unified GS 具備身份、行政、Progress、獎章、履歷及申報完整能力。
+       vs_portal 是功能完整版前端，vsbadge 是只呈現部分流程的輕量前端；兩者共用同一權威資料。
+     · 呢個模組只做兩件事：讀同一後端、寫同一後端。API Key 只係 server routing／HMAC 根，
+       每個 action 仍要經 allowlist，並由 server-issued session、role、scope 核實。
 
    讀：POST /api/progress { action:'load', unit, sessionToken }
    寫：POST /api/progress { action:'save'|'saveOtherBadge', unit, sessionToken }
@@ -72,10 +72,10 @@ function needSetup() {
   return `
   <div class="card" style="max-width:780px">
     <div class="card-head"><div><div class="card-title">同一 Unified Sheet 資料來源尚未登記</div>
-      <div class="card-sub">管理、Progress 及 BADGE 直接使用同一支 GAS 的不同 action</div></div></div>
+      <div class="card-sub">vs_portal 功能完整版與 vsbadge 輕量版前端使用同一支完整 Unified GS</div></div></div>
     <div style="padding:16px 18px" class="sm muted">
       ${noteBox('<b>唔好喺瀏覽器貼 API Key。</b>平台管理員只需在 Vercel 登記同 BADGE 完全相同的三個值；'
-        + '進度頁會自動沿用，亦不接受第二個進度後端。', 'brand')}
+        + '兩個前端會沿用同一完整後端，亦不接受第二個進度或 BADGE 精簡後端。', 'brand')}
       <pre class="code mt-12">TROOP_${esc(unit)}_NAME
 TROOP_${esc(unit)}_BACKEND
 TROOP_${esc(unit)}_APIKEY</pre>
@@ -256,7 +256,7 @@ function tickView() {
 
   return `
   <div class="note-box mb-16">${icon('check', 15)}<div>
-    喺呢度勾選＝直接寫入<b>同一 Unified Sheet</b>（管理系統同 BADGE 共用），效果一樣。
+    喺呢度勾選＝直接寫入<b>同一 Unified Sheet</b>（功能完整版支部前端同 BADGE 輕量前端共用），效果一樣。
     未撳「儲存」之前唔會送出。
   </div></div>
 
@@ -362,7 +362,7 @@ function reviewView() {
 
   return `
   ${noteBox(canTick
-    ? '喺呢度<b>直接批</b>：批准＝即時寫入同一 Unified Sheet（進度追蹤／活動履歷），管理系統同 BADGE 都即刻見到。'
+    ? '喺呢度<b>直接批</b>：批准＝即時寫入同一 Unified Sheet（進度追蹤／活動履歷），功能完整版支部前端同 BADGE 輕量前端都即刻見到。'
     : '你冇勾選／審批權限 —— 可以睇，但要領袖或執委先批得。',
     canTick ? 'ok' : 'warn')}
 
@@ -419,12 +419,12 @@ function settingsView() {
   <div class="grid g-2-1">
     <div class="card">
       <div class="card-head"><div><div class="card-title">同一 Unified Sheet 資料來源</div>
-        <div class="card-sub">管理、Progress 及 BADGE 直接由同一支 GAS 按 action 讀寫同一張 Sheet 嘅不同分頁</div></div>
+        <div class="card-sub">vs_portal 功能完整版與 vsbadge 輕量版前端按獲准 action 使用同一支完整 GS</div></div>
         <span class="badge ${remote ? 'b-ok' : errMsg ? 'b-danger' : 'b-warn'}"><span class="dot"></span>${remote ? '已成功讀取' : errMsg ? 'Progress 讀取失敗' : '尚未讀取'}</span></div>
       <div style="padding:16px 18px" class="sm muted">
         ${noteBox(`${icon('shield', 15)}<div>瀏覽器不保存 <code>/exec</code> 或 API Key；平台只使用<br>
           <code>TROOP_${esc(c.unit || '0082')}_NAME</code>、<code>_BACKEND</code>、<code>_APIKEY</code>。
-          一個 <code>/exec</code>、一個 API Key、一張 Sheet；API Key 不是用戶身份。</div>`, 'ok')}
+          一個 <code>/exec</code>、一個 API Key、一張 Sheet；API Key 不是用戶身份，功能有冇顯示亦唔係授權。</div>`, 'ok')}
         <div class="note-box info mt-12"><div class="sm"><b>空分頁亦係成功結果。</b>
           新 Sheet 的「進度追蹤」沒有紀錄時應顯示 0，唔會當成讀取失敗；Progress 亦不會另建或另查 BADGE 後端。</div></div>
         ${errMsg ? `<div class="note-box danger mt-12">${icon('alert', 15)}<div><b>最近一次 Progress action 失敗：</b>${esc(errMsg)}</div></div>` : ''}
@@ -590,7 +590,7 @@ export function mount(root, params) {
       title: decision === 'approved' ? '確定批准？' : '確定拒絕？',
       danger: decision !== 'approved',
       body: `<p class="sm">${decision === 'approved'
-          ? '批准會即刻寫入同一 Unified Sheet，管理系統同 BADGE 都見到。'
+          ? '批准會即刻寫入同一 Unified Sheet，功能完整版支部前端同 BADGE 輕量前端都見到。'
           : '拒絕只會改狀態，唔會刪紀錄，團員可以重新申報。'}</p>
         <div class="note-box mt-8"><div class="sm"><b>${who}</b> · ${what}<br>${when}</div></div>`,
       actions: [{ label: '取消', class: 'btn', value: false },

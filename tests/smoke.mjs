@@ -1611,6 +1611,10 @@ section('進度紀錄（同一 Unified Sheet · actions 分頁）');
   const { SHEET_TABS } = await import('../assets/js/lib/gastemplate.js');
   const { unifiedGasTemplate } = await import('../assets/js/lib/unifiedtemplate.generated.js');
   const code = unifiedGasTemplate();
+  ok('Unified Code.gs 標示完整後端、vs_portal 完整版及 vsbadge 輕量版定位',
+    /complete Unified branch backend/.test(code)
+      && /vs_portal is the full-featured frontend/.test(code)
+      && /vsbadge is the lightweight frontend/.test(code));
   ok('Code.gs 有進度分頁（進度追蹤／其他獎章／待批完成／活動履歷／待批履歷／成員名單）',
     ['進度追蹤', '其他獎章', '待批完成', '活動履歷', '待批履歷', '成員名單'].every(t => SHEET_TABS.includes(t) && code.includes("'" + t + "'")));
   ok('Code.gs 支援 ?action=load（讀進度）', /action === 'load'/.test(code) && /function loadProgressData/.test(code));
@@ -1880,9 +1884,9 @@ console.log('\n▌跨前端身份 key（同一 Unified Sheet，以 canonical YMI
   window.dispatchEvent(new window.HashChangeEvent('hashchange'));
   await new Promise(r => setTimeout(r, 80));
   const pv = doc.getElementById('view').textContent;
-  ok('進度頁講明管理、Progress 及 BADGE 直接使用同一 Unified GAS／Sheet',
-    /管理、Progress 及 BADGE 直接使用同一支 GAS 的不同 action/.test(pv)
-      && /同一 Unified Sheet/.test(pv));
+  ok('進度頁講明完整 Unified GS 服務功能完整版及 BADGE 輕量前端',
+    /vs_portal 功能完整版與 vsbadge 輕量版前端/.test(pv)
+      && /同一支完整 Unified GS/.test(pv) && /同一 Unified Sheet/.test(pv));
   ok('進度頁有唯讀「資料來源」入口',
     !!doc.querySelector('[data-act="settings"]') && /資料來源/.test(pv));
   ok('進度頁只列 server Registry 三項，不叫 browser 執行 showApiKey 貼 Key',
@@ -2001,11 +2005,15 @@ console.log('\n▌新旅團申請接入（送去 ADMIN 收件匣）');
     cl.length >= 5 && cl.some(x => x.includes('units.json')) && cl.some(x => /NAME／BACKEND／APIKEY/.test(x))
       && cl.some(x => /Unified Code\.gs/.test(x)) && cl.some(x => /通知支部/.test(x)),
     JSON.stringify(cl));
-  ok('checklist 講明管理系統、進度及 BADGE 共用同一後端／Key',
-    cl.some(x => /管理系統/.test(x) && /進度/.test(x) && /BADGE/.test(x) && /共用/.test(x)), JSON.stringify(cl));
+  ok('checklist 講明功能完整版支部前端與 BADGE 輕量前端共用完整後端',
+    cl.some(x => /功能完整版支部前端/.test(x) && /BADGE 輕量前端/.test(x)
+      && /共用/.test(x) && /完整 Unified GAS/.test(x)), JSON.stringify(cl));
+  ok('checklist 講明兩個前端各自受 allowlist 及 server 身份授權',
+    cl.some(x => /兩個前端/.test(x) && /action allowlist/.test(x)
+      && /session／role／scope/.test(x)), JSON.stringify(cl));
   ok('checklist 不會叫用戶去進度頁貼 Script／API Key',
     !cl.some(x => /進度 → 設定/.test(x) && /API Key/.test(x)), JSON.stringify(cl));
-  ok('checklist 唔再要求 portalOrigin（一個 Unified 後端、多個 client）',
+  ok('checklist 唔再要求 portalOrigin（同一完整 Unified 後端）',
     !cl.some(x => /portalOrigin/.test(x)), JSON.stringify(cl));
   ok('checklist 固定未來由旅系統端驗收 reader，不把中央 SSO 當支部工序',
     cl.some(x => /旅系統 reader/.test(x) && /旅系統端/.test(x))
@@ -2028,8 +2036,12 @@ console.log('\n▌新旅團申請接入（送去 ADMIN 收件匣）');
   window.dispatchEvent(new window.HashChangeEvent('hashchange'));
   await new Promise(r => setTimeout(r, 80));
   const pt = doc.getElementById('view').textContent;
-  ok('教學「進度紀錄」講明一個 Unified 後端、多個 client',
-    /一個 Unified 後端/.test(pt) && /多個 client/.test(pt) && /行政介面、Progress 與 BADGE/.test(pt));
+  ok('教學「進度紀錄」講明完整後端、功能完整版及輕量版前端',
+    /完整 Unified 後端/.test(pt) && /vs_portal 係功能完整版前端/.test(pt)
+      && /vsbadge 係輕量前端/.test(pt) && /Progress 係完整版前端內的模組/.test(pt));
+  ok('教學講明前端功能面不取代 action allowlist／role／scope 授權',
+    /功能有冇顯示亦唔係授權/.test(pt) && /action/.test(pt)
+      && /allowlist/.test(pt) && /角色及 scope/.test(pt));
   ok('教學列明與 BADGE 完全相同的 NAME／BACKEND／APIKEY',
     /NAME/.test(pt) && /BACKEND/.test(pt) && /APIKEY/.test(pt) && /BADGE/.test(pt));
   ok('教學講明 staff／團員要由 session 固定權限', /staff session/.test(pt) && /session 固定/.test(pt));
@@ -2287,8 +2299,8 @@ section('進度紀錄（讀 ＋ 勾 ＋ 寫，同一個後端）');
         && /不是用戶身份|唔係用戶身份/.test(sv.textContent));
     ok('Registry 登記後仍無 browser 後端／Key／另存設定欄',
       !sv.querySelector('#p-backend') && !sv.querySelector('#p-key') && !sv.querySelector('[data-act="save-cfg"]'));
-    ok('資料來源頁只交代同一 Sheet 的 Progress action，沒有任何接駁或入口控制',
-      /同一支 GAS 按 action 讀寫同一張 Sheet 嘅不同分頁/.test(sv.textContent)
+    ok('資料來源頁只交代兩種前端定位及同一完整 GS 的獲准 action，沒有接駁或入口控制',
+      /vs_portal 功能完整版與 vsbadge 輕量版前端按獲准 action 使用同一支完整 GS/.test(sv.textContent)
         && !/接駁|本地入口|入口狀態|旅系統/.test(sv.textContent)
         && !sv.querySelector('[data-act^="door-"]'));
     ok('Progress client 不再匯出入口狀態或開關 helper',

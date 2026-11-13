@@ -1319,7 +1319,7 @@ export function mount(root, params) {
         toast('已下載欄位對應表', 'ok');
       }
       if (act === 'copy-guide') {
-        const txt = `【Unified 後端設定】\n1. 開新 Google Sheet → 擴充功能 → Apps Script\n2. 貼上 App 下載嘅 Unified Code.gs\n3. 執行 initializeSheets，再執行 showApiKey\n4. 部署網頁應用程式（執行身分：我；存取權：任何人），複製正式 /exec\n5. 管理員喺 Vercel 只登記 TROOP_<編號>_NAME／BACKEND／APIKEY 三項並 Redeploy\n6. 管理系統、進度及 BADGE 自動使用同一 GAS／Sheet；唔好喺 browser 貼 Key。`;
+        const txt = `【完整 Unified 後端設定】\n1. 開新 Google Sheet → 擴充功能 → Apps Script\n2. 貼上 App 下載嘅 Unified Code.gs\n3. 執行 initializeSheets，再執行 showApiKey\n4. 部署網頁應用程式（執行身分：我；存取權：任何人），複製正式 /exec\n5. 管理員喺 Vercel 只登記 TROOP_<編號>_NAME／BACKEND／APIKEY 三項並 Redeploy\n6. 功能完整版支部前端（包括 Progress）與 BADGE 輕量前端自動使用同一完整 GAS／Sheet；唔好另建精簡後端或喺 browser 貼 Key。`;
         if (await copyText(txt)) toast('已複製部署步驟', 'ok');
       }
     }));

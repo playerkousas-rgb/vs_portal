@@ -4,7 +4,7 @@
 >
 > 施工次序：BOOK → BADGE → 5 個支部系統（現在）→ 最後才建立旅系統。現在沒有中央旅系統，本地支部帳戶／session 是正常登入。
 
-管理系統、進度及 BADGE 是多個前端，但資料與授權後端只有同一支 Unified Apps Script。API Key 只留在 server，不能當作執委身份。
+每支部只有一支具備身份、行政、Progress、獎章、履歷及申報能力的完整 Unified Apps Script。支部系統是功能完整版前端；BADGE 是只呈現部分流程的輕量前端，而不是另一支精簡 GS。兩者共用同一資料與授權後端；API Key 只留在 server，不能當作執委身份。
 
 ## 1. 申請人先完成
 
@@ -37,7 +37,7 @@ TROOP_0100_APIKEY=該 Unified GAS 的 showApiKey 值
 | `BACKEND` | 只接受 Google Apps Script 正式 `/exec`；不接受 `/dev` |
 | `APIKEY` | 與同一 Unified GAS 的 `API_KEY` 完全相同 |
 
-這三項就是 BADGE 使用的同一支部 Registry；Progress 直接以同一後端執行業務 action。
+這三項就是 BADGE 使用的同一支部 Registry；功能完整版 vs_portal 與輕量版 vsbadge 都連到同一支完整後端，Progress 只是完整版前端內的業務模組。
 
 ## 3. 禁止建立第二套接線
 
@@ -56,7 +56,8 @@ TROOP_<ID>_PROGRESSCATALOG
 
 - 把 backend 或 API Key 放進 `data/units.json`／`unit.json`；
 - 叫使用者在進度頁貼 `/exec` 或 Key；
-- 為進度另建 Apps Script／Sheet；
+- 為進度或 BADGE 輕量前端另建 Apps Script／Sheet；
+- 因 BADGE 未顯示某功能就把畫面隱藏當成授權；
 - 用 API Key、query `role`、YMIS 或姓名當使用者身份；
 - 以 browser 傳入的 backend／apikey 決定 server 轉發目標。
 
@@ -65,7 +66,8 @@ TROOP_<ID>_PROGRESSCATALOG
 ## 4. Registry 登記後的 server 行為
 
 - `/api/units` 只回公開資料及 `backendReady`／`progressServerSide` 狀態，不回完整 `/exec` 或 API Key。
-- `/api/proxy` 與 `/api/progress` 只從 Registry 取同一 `BACKEND`／`APIKEY`。
+- `/api/proxy` 與 `/api/progress` 只從 Registry 取同一完整 `BACKEND`／`APIKEY`。
+- 功能完整版與輕量版前端各自受 action allowlist 約束；Unified GS 再按 session、role、scope 授權。
 - browser 提交的 `backend`、`apikey`、角色、YMIS 不能覆蓋 Registry 或 session 身份。
 - 進度考核項目固定讀同源 `data/progress/items.json`，不接受 remote catalog proxy。
 - 本地支部登入先簽 opaque session，再由 `authWhoAmI` 對回 staff 角色；member action 由 server 固定本人 YMIS。
@@ -83,9 +85,10 @@ TROOP_<ID>_PROGRESSCATALOG
 □ 已選對 Production／Preview／Development environment
 □ 已 Redeploy
 □ /api/units 有旅團且不洩漏 URL／Key
-□ 管理系統、進度及 BADGE 都連到同一 Sheet
+□ Unified GS 同時具備身份、行政、Progress、獎章、履歷及申報能力
+□ 功能完整版 vs_portal 與輕量版 vsbadge 都連到同一 Sheet，沒有第二支精簡 GS
 □ 進度頁沒有 browser backend／Key 輸入欄
-□ staff 可管理進度；member 只能本人；未登入 fail closed
+□ 兩個前端均受 action allowlist 限制；staff 可管理進度，member 只能本人，未登入 fail closed
 □ browser 偽造 backend／apikey／role／YMIS 被忽略或拒絕
 □ initializeSheets 重跑兩次仍保留 API Key、帳戶 hash、行政及進度資料
 □ ALLOW_LOCAL_LOGIN=true；支部本地 staff／member 登入已實測
@@ -95,7 +98,7 @@ TROOP_<ID>_PROGRESSCATALOG
 
 ## 6. 身份對應
 
-所有現階段前端以支部同一 canonical YMIS 對人：
+功能完整版 vs_portal 與輕量版 vsbadge 以支部同一 canonical YMIS 對人：
 
 - 支部 `Users`、PBKDF2 密碼及 server-issued session 是現階段日常身份權威；
 - `ALLOW_LOCAL_LOGIN=true`，本地入口不是後備／救援模式；

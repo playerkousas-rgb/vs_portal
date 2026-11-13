@@ -78,9 +78,9 @@
 > 舊種子 `acc_leader`／`acc_exco` 自動清走；權限變更＝改名冊身份（執委冇呢個權）。
 > ⑥ **團長**（每團一位，最高權限）：**第一個開戶嗰位就係團長**（入到去即刻認領），
 > **只可以轉移**、唔可以自己改低自己身份；轉移後舊團長自動變返領袖（有審計紀錄）。
-> ⑦ 進度資料來源：管理系統、進度同 BADGE 使用**同一 Unified GAS／Sheet**；Vercel 只設
-> `TROOP_<ID>_NAME/BACKEND/APIKEY`。唔設任何 Portal／Progress 額外 secret、backend 或 key。
-> 各功能直接用不同 action 讀寫同一 Sheet 的指定分頁；Progress 只提供進度業務 actions。
+> ⑦ 每支部使用**同一支完整 Unified GAS／同一張 Sheet**；Vercel 只設
+> `TROOP_<ID>_NAME/BACKEND/APIKEY`。支部系統前端是功能完整版（行政＋Progress 等完整模組），
+> BADGE 是輕量前端，只呈現部分工作流程；輕量不代表另一支精簡 GS。所有 action 仍由後端按 role／scope 授權。
 > 未來旅系統仍只會單向讀支部後端，與 Progress 無關。BOOK／BADGE 是另一套受控流程：BOOK 可讀正式資料及提交待批匯入，但只有領袖確認後才真正錄入。
 > ⑧ **「人係讀到、但個個都冇進度」**：如果「進度追蹤」分頁存在但沒有紀錄，呢個係正常成功結果；
 > 介面會顯示已成功讀取、0 格進度，唔會將空分頁當成讀取失敗。
@@ -244,7 +244,7 @@
 >
 > 前次（2026-09-16）：團長 10 項要求已完成 9 項（第 10 項通告等緊附件）
 > （改名做「深資童軍管理系統」· 領袖免收團費 · 報告唔再混上年度結餘 · 帳目／過往紀錄分頁 · 冇紀錄嘅月份都揀得到 ·
-> 欄位改喺各自分頁 · 進度紀錄使用「一個 Unified 後端、多個 client」）。
+> 欄位改喺各自分頁 · 進度紀錄使用「一支完整 Unified 後端、功能完整版＋輕量版前端」）。
 > 前次（2026-09-15）8 項詳見 **[docs/UPDATES_2026-09-15.md](docs/UPDATES_2026-09-15.md)**。
 
 主色：**深資童軍棗紅 `#7B2233`**（配 `#5E1826` / `#4A111C`，金色 `#B8892B`）。
@@ -307,7 +307,7 @@ node dev-server.mjs             # 推薦（靜態＋/api，同 Vercel 行為一�
 | 5 | 生日內建、可改可輸出、當月＋前 7 日提示（顯示邊位） | 「用戶」頁自行輸入團員資料、「用戶與身份 → 生日表」頁（月曆／年表／下載 .ics）、儀表板提示卡（會顯示姓名） |
 | 6 | 物資紀錄＋借用面板，任何已登入帳戶可批核，借出／歸還自動加減庫存 | 「物資」頁：物資清單、借用與批核、盤點紀錄；`inv.approve` 三個角色都有；庫存由 `model.itemTotals()` 即時計算（批准即鎖定、歸還即回復） |
 | 7 | 財務內建，取代 Google Form；**出兩條數**（旅 31/3 年結 vs 旅團 AGM 起計） | 「財務」頁：帳目／過往紀錄／**團費收款表（每年每人 $360，逐人記錄邊個交咗）**／申報／預算／設定（含匯入舊帳），頂部「年結報告」；`assets/js/lib/fiscal.js` 同時計算**童軍年度（4/1–3/31）**同**旅年度（AGM → 下屆 AGM 前一日）**；AGM 日期**逐年輸入**（每年唔同） |
-| 8 | Progress（**一個 Unified 後端、多個 client**） | 行政介面、Progress 與 BADGE 只按不同業務 action 讀寫同一張 Google Sheet。行政／批核 action 必須先驗 server-issued session 與 role/scope；API Key 只由 server 用作支部路由，**不是執委身份**；團員只可讀寫 session 對應的本人進度 |
+| 8 | Progress（**完整 Unified 後端、兩種前端定位**） | 支部系統功能完整版前端包含行政及 Progress；BADGE 是輕量前端。兩者按不同業務 action 使用同一張 Sheet／同一支完整 GS。行政／批核 action 必須先驗 server-issued session 與 role/scope；API Key 只作支部路由，**不是執委身份** |
 | 9 | 多旅團系統（Git Registry） | `data/units.json` 係 Git Registry，每個旅團一個資料夾（`data/units/<編號>/*.json`）。示範資料（MOCK）已經喺 2026-09-24 拆走 |
 | 10 | 成員用手機**影相＋揀欄目**就入得帳（取代 Google Form）；領袖／執委亦可在 APP 內填 | 公開收集頁 **`entry.html?u=<旅團編號>`**（免登入：影相 → 揀欄目 → 金額 → 送出）＋ APP 內「儀表板 → 影相記一筆」／「財務 → 收支申報」；相機會自動壓縮，送出可經 Apps Script 直接入總表 |
 | 11 | 每個旅團可以**插入自己嘅 SHEET** 取代預設；欄目可改名／加減（內建類 Google Sheet） | 每個模組頁右上「**欄位**」掣（帳目／物資／借用／團員／通告／會議）：改名／加欄／改類型／必填／隱藏／排序／還原；「**插入自己嘅 Sheet**」喺「**資料管理**」 |
@@ -443,10 +443,10 @@ node dev-server.mjs             # 推薦（靜態＋/api，同 Vercel 行為一�
 Word／PDF／Markdown／單一 HTML／JSON 匯出、QR Code、
 **公開閱讀頁 `constitution.html`**（免登入、可獨立上載或貼連結）。
 
-### 進度紀錄（同一 Sheet、同一 GAS、多個前端）
-旅團只有**一個後端**：一張 Google Sheet ＋ 一支 Unified Apps Script（`/exec`）＋一個 API Key。
-管理系統、Progress 同 BADGE 只係不同前端；各自經 server proxy 的 allowlist action，直接讀寫同一 Sheet 的指定分頁。
-Progress 不提供旅系統、登入閘門或其他整合 action。
+### 進度紀錄（完整 Unified GS、功能完整版＋輕量版前端）
+旅團只有**一個完整後端**：一張 Google Sheet ＋ 一支 Unified Apps Script（`/exec`）＋一個 API Key。
+支部系統是功能完整版前端，包含行政及 Progress 等完整模組；BADGE 是輕量前端，只呈現及呼叫其產品範圍內的部分 action。兩者使用同一支具備完整功能的 GS，並非一支完整後端加另一支精簡後端。
+前端有沒有顯示某功能不是安全邊界；Unified GS 仍會按 server-issued session、role 及 scope 逐 action 授權。Progress 不提供旅系統、登入閘門或其他整合 action。
 
 * **讀**：staff 以 server-issued session 經同源 `/api/progress` 的 `load` action 讀同一 Sheet；團員只走 `loadMine`，YMIS 由 session 固定
 * **寫**：`save`／`saveOtherBadge` 要有效 staff session 與 action scope；支部 API Key 由 server 注入，只作路由
@@ -457,7 +457,7 @@ Progress 不提供旅系統、登入閘門或其他整合 action。
 * **BOOK 邊界**：BOOK 可讀取 BADGE 正式資料，也可提交匯入候選；候選只進待批，必須由領袖確認後才寫入正式紀錄
 * **空資料**：「進度追蹤」分頁存在但只有表頭時，`load` 仍回成功，介面顯示正常成員及 **0 項進度**
 * **考核項目**：第 11 版綱要固定內建喺 `data/progress/items.json`（離線可用），唔接受 browser remote catalog override
-* **後端範本**：`UnifiedCode.gs` 同時支援行政、進度同 BADGE；`initializeSheets` 會增補 `進度追蹤`／`其他獎章`／`待批完成`／`活動履歷`／`待批履歷`／`成員名單` 等分頁
+* **後端範本**：`UnifiedCode.gs` 是完整功能 superset，同時包含支部行政、Progress 及 BADGE 所需 action；前端只決定呈現哪一部分，`initializeSheets` 會增補全部必要分頁
 * **安全**：`/api/progress` 只使用 Registry 的 GAS `/exec`；browser 傳入 backend／apikey 會被忽略。payload ≤ 1 MB、上游有逾時，log 只記 metadata；所有 action 先驗 server-issued session，member YMIS 由 session 固定
 * **身份對應**：所有前端使用同一 canonical YMIS／中央 subject 對人，角色由 server session 決定
 
@@ -554,13 +554,13 @@ npm run build:gas    # 由 assets/js/lib/gastemplate.js 產生 apps-script/Code.
 npm run check         # lint + build + 全套 Portal／真 Code.gs／Unified GS 回歸
 ```
 
-完整 build＋lint＋`npm test` 鏈於 **2026-11-12 exit 0**；所有 suite 均為 0 失敗（包括 usersim 33/0、Portal GAS 308/0、Unified 74/0）：
+完整 build＋lint＋`npm test` 鏈於 **2026-11-12 exit 0**；所有 suite 均為 0 失敗（包括 usersim 33/0、Portal GAS 308/0、Unified 76/0）：
 
 | 測試 | 內容 | 結果 |
 |---|---|---|
 | `node tests/hub.mjs` | 團員入口端到端：新裝置登入、安全投影、本人 RSVP／答卷／請假、公開資料／可見範圍、進度、session、公開團章 | **93 / 0** |
 | `node tests/gas.mjs` | 真 `Code.gs` 契約：server session、setup bootstrap、identity／account 欄位級授權、token reset 單鎖、正面投影白名單、本人 mutation 冪等重試、nonce Lock＋Cache、資料保全／分件／衝突 | **308 / 0** |
-| `node tests/smoke.mjs real` | 真實模式：資料／權限／頁面／財務／物資／文件／同步／登出等完整產品回歸 | **599 / 0** |
+| `node tests/smoke.mjs real` | 真實模式：資料／權限／頁面／財務／物資／文件／同步／登出等完整產品回歸 | **602 / 0** |
 | `node tests/public.mjs` | 公開頁：團章（免登入、中英對照、語言切換、搜尋）＋ 通告公開頁（分享連結、報名表、送出、失效連結、**靜態檔＋旅團後端合併（同 id 以後端為準）**）＋ 手機記一筆 | **87 / 0** |
 | `node tests/gate.mjs` · `gate-env.mjs` | 旅團閘、登記、部署環境與登出清理 | **51 · 103 / 0** |
 | `node tests/tabs.mjs` | 分頁掣、hash、MOCK 清理與舊址導向 | **57 / 0** |
@@ -571,7 +571,8 @@ npm run check         # lint + build + 全套 Portal／真 Code.gs／Unified GS 
 | `node tests/reality.mjs` | 後端實況、逐表對數與一寫一讀驗證 | **19 / 0** |
 | `login.mjs` · `api.mjs` · `progress.mjs` · `pdftext.mjs` · `bake.mjs` · `selfserve.mjs` | 登入／session、API 防護、本人進度、PDF、焗名單、自助路線 | **43 · 75 · 48 · 47 · 15 · 35 / 0** |
 | `node tests/ui-ia.mjs` · `modal.mjs` | 權限／導航、兩個一般改密碼入口都要求目前密碼、modal null 語義 | **48 · 8 / 0** |
-| `npm run test:unified` | hash-locked vsbadge v9.6 composer、BOOK 待批匯入／領袖確認、隔離 auth fixture／防重放、scope、delegated identity map／分件欄位守門、投影白名單、冪等本人寫入、初始化保全、公開入口控制拒絕 | **74 / 0** |
+| `node tests/boundary.mjs` | 支部隔離、BOOK 待批契約、完整 Unified 後端與完整版／輕量版前端定位、allowlist＋server 授權文件守門 | **51 / 0** |
+| `npm run test:unified` | hash-locked vsbadge v9.6 composer、完整後端／兩種前端定位、BOOK 待批匯入／領袖確認、隔離 auth fixture／防重放、scope、delegated identity map／分件欄位守門、投影白名單、冪等本人寫入、初始化保全、公開入口控制拒絕 | **76 / 0** |
 
 ---
 
@@ -650,7 +651,7 @@ tests/                         jsdom 端對端測試
    一鍵可匯入。其他年度分頁如有需要，將連結（連 `gid=`）發我，我可以同樣內建。
 2. **AGM 日期**：現時用「8 月最後一個星期六」推算 2023–2026 並標示「未確認」，
    請到「財務 → 年結報告 → 逐年輸入 AGM 日期」填每年實際日期（每年唔同）。
-3. **進度紀錄**：管理系統、進度同 BADGE 讀寫同一 Unified GAS／Sheet，唔接受第二後端或 browser override。
+3. **進度紀錄**：同一支完整 Unified GAS／Sheet 服務功能完整版支部前端與 BADGE 輕量前端；Progress 是完整版內的模組，唔接受第二後端或 browser override。
    測試產物由 `npm run build:gas:unified` 生成 `apps-script/UnifiedCode.gs`。
 4. **多裝置同步**：登入攞後端 → 本機改 → 撳「儲存到後端」（三方逐格比對，撞先問）—— 見「資料儲存」一節。
    兩個人**同時**改同一格仍然要有人揀；系統唔會自己猜。

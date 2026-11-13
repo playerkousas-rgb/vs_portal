@@ -12,7 +12,7 @@
 - 一個 API Key；
 - Vercel 三項 `TROOP_<ID>_NAME/BACKEND/APIKEY`。
 
-深資童軍管理系統、進度頁與 BADGE 是不同前端，但全部讀寫同一張 Sheet。不要建立第二支進度 GAS，不要在 browser 保存 API Key。
+`UnifiedCode.gs` 是每個支部的**完整功能後端**，包含身份、行政、進度、獎章、履歷及申報能力。深資童軍管理系統（vs_portal）是功能完整版前端；BADGE（vsbadge）是連到同一完整後端的輕量前端，只呈現部分流程。不要因 BADGE 較輕而建立第二支精簡 GAS，也不要在 browser 保存 API Key。
 
 ## 1. 建立後端
 
@@ -60,7 +60,7 @@ TROOP_0123_APIKEY=同一 Unified GAS 的 API_KEY
 
 設定到正確的 Vercel Production／Preview／Development environment，然後 **Redeploy**。
 
-三項與 BADGE 完全相同；進度自動沿用。不設定：
+三項與 BADGE 完全相同；兩個前端會連到同一支完整 Unified GS，Progress 模組亦自動沿用。不設定：
 
 ```text
 TROOP_0123_PORTALSECRET
@@ -74,9 +74,10 @@ TROOP_0123_PROGRESSCATALOG
 ## 4. 後端與身份安全
 
 - `/api/units` 只回公開 metadata 及 Registry readiness，不回完整 `/exec` 或 API Key。
-- `/api/proxy` 與 `/api/progress` 只使用 server Registry 的同一 `BACKEND`／`APIKEY`。
+- `/api/proxy` 與 `/api/progress` 只使用 server Registry 的同一完整 `BACKEND`／`APIKEY`。
+- vs_portal 與 BADGE 各自只可呼叫其 server proxy／router allowlist 內的 action；BADGE 沒有顯示完整功能，不等於可繞過 allowlist 呼叫。
 - browser 傳入的 backend／apikey 會被忽略，不能改送另一支 GAS。
-- API Key 只作 routing 及用途分隔 HMAC 根，**不等於執委身份**。
+- API Key 只作 routing 及用途分隔 HMAC 根，**不等於執委身份**；每個非公開 action 仍須由 Unified GS 驗 session、role 及 scope。
 - staff 管理 action 必須有 server-issued session；member action 只可操作 session 固定的本人 YMIS。
 - query string 的 role、YMIS、姓名不是授權依據。
 - 支部 `Users`／本地密碼核實後，由 Unified GAS 簽 opaque session；`ALLOW_LOCAL_LOGIN` 保持 `true`。
@@ -104,12 +105,13 @@ TROOP_0123_PROGRESSCATALOG
 1. `/api/units` 顯示旅團 Registry 已備妥且不洩漏 secret。
 2. `/?u=0123` 可用支部本地帳戶登入；未登入不能讀完整行政 DB。
 3. 確認 `ALLOW_LOCAL_LOGIN=true`，staff／member 均取得自己角色的 server-issued session。
-4. 管理系統寫一筆測試資料，確認同一 Sheet 出現。
-5. 進度頁勾一項，確認 `進度追蹤` 出現；BADGE 即時讀到同一筆。
-6. BADGE 寫一筆，管理系統即時讀到。
-7. member 只能本人；exco／leader scope 正確；API Key 單獨不能登入。
-8. 偽造 browser backend／apikey／role／YMIS 全部無法改路或升權。
-9. 再執行 `initializeSheets` 兩次，API Key、帳戶 hash、行政及進度資料逐筆不變。
+4. 確認同一 Unified GS 同時存在行政、身份、Progress、獎章、履歷及申報 action；毋須另建 BADGE 精簡後端。
+5. 功能完整版支部前端寫一筆測試資料，確認同一 Sheet 出現。
+6. 支部前端的 Progress 模組勾一項，確認 `進度追蹤` 出現；BADGE 輕量前端即時讀到同一筆。
+7. BADGE 寫一筆，功能完整版支部前端即時讀到。
+8. member 只能本人；exco／leader scope 正確；API Key 單獨不能登入。
+9. 偽造 browser backend／apikey／role／YMIS 全部無法改路或升權。
+10. 再執行 `initializeSheets` 兩次，API Key、帳戶 hash、行政及進度資料逐筆不變。
 
 ### 旅系統建立後：單向讀取支部後端（現在不做）
 

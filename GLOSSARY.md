@@ -7,12 +7,12 @@
 | 詞 | 意思 | 唔好撈亂 |
 |---|---|---|
 | **旅系統**（TROOP） | 最後建立的旅層；由 server 單向讀各支部後端，係**唯一**跨支部交匯點 | 唔係支部嘅一部分；支部不反向控制佢 |
-| **支部系統**（BRANCH） | 本 repo（深資）；管一個團嘅團務，Progress 是其內部功能 | 5 個支部之一；彼此**冇連線** |
-| **Progress** | 支部內的進度／履歷／獎章業務 actions；按 action 讀寫同一 Unified Sheet 分頁 | 唔係獨立接駁、唔管理 BADGE／旅系統／登入閘門 |
-| **BADGE** | 同一支部 Unified backend 的另一個前端 | 同 Progress 共用資料，不代表兩者互相 request |
+| **支部系統**（BRANCH） | 本 repo（深資）；功能完整版前端，呈現團務行政及 Progress 等完整模組 | 5 個支部之一；彼此**冇連線** |
+| **Progress** | 完整支部前端內的進度／履歷／獎章業務模組；按 action 讀寫同一 Unified Sheet 分頁 | 唔係獨立接駁、唔管理 BADGE／旅系統／登入閘門 |
+| **BADGE** | 同一支部完整 Unified backend 的輕量前端，只呈現其產品範圍內的部分流程 | 輕量係前端定位，唔代表另有一支精簡 GS |
 | **BOOK** | 4 本（VSBOOK／SCOUTBOOK／ROVERBOOK／CUBSBOOK）；可讀取對應 BADGE 正式資料，亦可提交待批匯入 | 匯入唔會直接入正式紀錄；必須由領袖確認 |
-| **Unified 支部後端** | 一張支部 Google Sheet ＋一支 `/exec`＋一個 API Key | 分頁唔係不同系統 |
-| **同一後端、多個 client** | 管理介面、Progress 與 BADGE 以不同 action 使用同一份資料 | 唔係多個資料庫或多條整合關係 |
+| **完整 Unified 支部後端** | 一張支部 Google Sheet ＋一支具備完整功能的 `/exec`＋一個 API Key | 前端可輕可完整；後端唔因此拆分或刪功能 |
+| **同一後端、兩種前端定位** | 支部系統是功能完整版；BADGE 是輕量版；兩者按 action 使用同一份資料 | 唔係多個資料庫或多條整合關係 |
 
 ## 身份
 

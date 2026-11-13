@@ -1,14 +1,13 @@
 /* ============================================================
-   progress.js — Progress（一個 Unified 後端、多個 client）
+   progress.js — 功能完整版 vs_portal 內的 Progress client
    ------------------------------------------------------------
    設計：
-     · Progress 業務資料寫入旅團自己嘅 Google Sheet，由同一支 Unified Apps Script
-       按 action 選取進度分頁。
-     · 深資童軍管理系統與 BADGE 都只係呢個後端的 client。
+     · 完整 Unified GS 具備身份、行政、Progress、獎章、履歷及申報能力。
+     · vs_portal 係功能完整版前端，vsbadge 係只呈現部分流程的輕量前端；兩者使用同一權威資料。
      · 呢邊只做兩件事：讀後端（GET ?action=load）／寫後端（POST action=save）。
      · 固定使用旅團 Registry 已登記嘅同一 BACKEND／APIKEY；browser 冇第二套路線。
    設定：Vercel 只需 TROOP_<id>_NAME／BACKEND／APIKEY，與 BADGE 完全相同。
-   安全：API Key 只留 server；瀏覽器只送 unit＋opaque session，不能改後端或冒充身份。
+   安全：API Key 只留 server；瀏覽器只送 unit＋opaque session。client allowlist 唔取代後端 session／role／scope 驗證。
    ============================================================ */
 
 import { load, getSession } from './store.js';

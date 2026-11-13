@@ -34,20 +34,27 @@
 整個生態系按以下資料責任組成：
 
 ```text
-未來旅系統 ──單向讀取──▶ 各支部系統後端（5 個；彼此完全隔離）
+未來旅系統 ──單向讀取──▶ 各支部完整 Unified backend（5 個；彼此完全隔離）
 
-支部 browser
-  ├─ 行政功能
-  └─ Progress 內部功能 ──同源 server proxy──▶ 本支部 Unified /exec ──▶ 本支部 Sheet
-BADGE 前端 ────────────────────────────────────┘
+支部系統完整前端（vs_portal）
+  ├─ 行政、財務、物資、會議、通告、名冊等完整功能
+  └─ Progress／獎章／履歷／申報
+             │
+             ├──同源 server proxy──▶ 本支部完整 Unified GS ──▶ 本支部 Sheet
+             │
+BADGE 輕量前端（vsbadge）────┘ 只呈現／呼叫輕量工作流程
 
-BOOK ──讀取正式資料────────▶ BADGE
+BOOK ──讀取正式資料────────▶ BADGE／同一 Unified GS
 BOOK ──提交匯入候選────────▶ BADGE 待批區 ──領袖確認──▶ 正式紀錄
 ```
 
-Progress 是支部系統內部功能，不是一個要由支部建立、查詢或控制的跨系統關係。行政、
-Progress 與 BADGE 只是以不同 action 使用同一支部 Unified backend 的 client；同一 Sheet
-不同分頁不構成額外連結。
+每支部的 Unified GS 是**完整功能後端**，包含身份、進度、獎章、履歷、申報及支部行政功能。
+支部系統前端是功能完整版；BADGE 是同一後端的輕量前端，只呈現及呼叫其產品範圍內的
+部分 action。功能沒有在 BADGE 畫面出現，不代表後端缺少該功能；同樣，畫面隱藏亦不是
+安全邊界，所有 action 仍須由 Unified GS 依 session、角色及 scope 在 server 端授權。
+
+Progress 是完整支部前端內的業務模組，不是一個要由支部建立、查詢或控制的跨系統關係。
+完整支部前端與 BADGE 輕量前端使用同一支部 Unified backend；同一 Sheet 不同分頁不構成額外連結。
 
 BOOK 與 BADGE 亦**不是純讀取關係**：BOOK 除了讀取對應 BADGE 的正式資料，也可以提交
 匯入候選。匯入只會先成為待批資料；**只有領袖確認後才寫入正式紀錄**。BOOK 不可繞過
@@ -60,7 +67,8 @@ BOOK 與 BADGE 亦**不是純讀取關係**：BOOK 除了讀取對應 BADGE 的�
 | 未來旅系統 → 單向讀取支部系統後端 | ✅ | reader 由旅系統負責；支部前端不保存旅系統設定 |
 | BOOK → 讀取 BADGE 正式資料 | ✅ | BOOK 可讀取對應 BADGE 已確認的資料 |
 | BOOK → BADGE 待批匯入 | ✅ | 只提交候選資料；領袖確認後才錄入正式紀錄 |
-| 行政／Progress／BADGE → 本支部 Unified backend | ✅ | 同一後端的業務 action，不是三個系統互接 |
+| 支部完整前端 → 本支部完整 Unified backend | ✅ | 可呈現完整功能；實際可用 action 仍按登入角色／scope 授權 |
+| BADGE 輕量前端 → 同一完整 Unified backend | ✅ | 只呈現輕量工作流程；不是另一個精簡後端 |
 | 支部系統獨立運作 | ✅ | 現階段設計前提；未有旅系統不阻擋部署 |
 
 ### 1.2 禁止嘅資料路徑（❌ 一律唔准）
@@ -73,6 +81,7 @@ BOOK 與 BADGE 亦**不是純讀取關係**：BOOK 除了讀取對應 BADGE 的�
 | Progress 主動 request BADGE、旅系統或另一支部 | Progress 只執行本支部業務 action |
 | Progress 查詢／控制本地或上游登入閘門 | 登入入口不是 Progress 業務資料 |
 | 為 Progress 建第二 backend、Key、secret 或健康狀態 | 同一 Unified Sheet 已是唯一資料來源 |
+| 因 BADGE 前端較輕而另建「精簡 GS」或刪減後端能力 | 前端有輕／完整版本；每支部後端仍是一支完整 Unified GS |
 | 外部系統取得 browser session／完整 DB | 零特權（EXTERNAL） |
 
 ### 1.3 ★ 用戶澄清（2026-11-12）—— 「睇落連埋」唔等於「連上」
@@ -122,7 +131,8 @@ BOOK 與 BADGE 亦**不是純讀取關係**：BOOK 除了讀取對應 BADGE 的�
 |---|---|
 | 跨支部直連（§1.2） | 用戶定案；跨支部只喺旅層發生 |
 | 旅層聚合功能（跨團報表／全旅開關） | 屬旅系統，唔屬支部 repo |
-| 在 Progress 加旅系統／BADGE URL、Key、狀態或入口控制 | Progress 是支部內部業務功能，唔管理跨系統關係 |
+| 在 Progress 加旅系統／BADGE URL、Key、狀態或入口控制 | Progress 是完整支部前端內部業務模組，唔管理跨系統關係 |
+| 將 BADGE 輕量前端誤當成另一支精簡後端 | 輕量只係 UI／client surface；Unified GS 仍有完整功能 |
 | 外部系統直接改正式支部身份／紀錄，或繞過待批審批 | 身份錨點單一；BOOK 匯入亦只可先進待批 |
 | MOCK／示範資料 | 2026-09-24 團長已明確拆除 |
 | 登入閘嘅診斷／修復／搶救掣 | 2026-09-26 團長已明確清走 |

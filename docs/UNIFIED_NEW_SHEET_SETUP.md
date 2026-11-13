@@ -15,7 +15,7 @@
 - 一個 `API_KEY`；
 - Vercel 三項旅團設定：`NAME`、`BACKEND`、`APIKEY`。
 
-管理系統、進度頁與 BADGE 都經同一支 Unified GAS 讀寫同一張 Sheet。不要另建進度 GAS，也不要設定任何 `PORTAL*` 或 `PROGRESS*` secret／backend／key。
+這支 Unified GAS 是完整能力後端，包含身份、支部行政、Progress、獎章、履歷及申報 action。支部系統是功能完整版前端；BADGE 是連到同一後端的輕量前端，只呈現部分流程。不要另建進度或 BADGE 精簡 GAS，也不要設定任何 `PORTAL*` 或 `PROGRESS*` secret／backend／key。
 
 ## A. 建立全新 Sheet 與 Unified Apps Script
 
@@ -64,7 +64,7 @@ TROOP_0082_BACKEND=https://script.google.com/macros/s/你的部署/exec
 TROOP_0082_APIKEY=showApiKey 顯示的同一 API_KEY
 ```
 
-這三項與 BADGE 使用的登記完全相同。更新後要 Redeploy。
+這三項與 BADGE 使用的登記完全相同，並指向同一支完整 Unified GS；BADGE 不另設精簡後端。更新後要 Redeploy。
 
 不要設定：
 
@@ -102,11 +102,12 @@ repo 建立時另行設計及驗收。支部 Progress 不新增 URL、Key、狀�
 1. Vercel Redeploy 後確認 `/api/units` 只顯示 Registry readiness，不洩漏 `/exec` 或 API Key。
 2. 管理系統：`/?u=0082`。
 3. 團員入口：`/members.html?u=0082`。
-4. 進度頁確認沒有後端／API Key 輸入欄，讀寫均走同源 `/api/progress`。
-5. 測管理寫入、進度寫入及 BADGE 寫入都落在同一張 Sheet。
-6. 測本地 staff 與 member session 權限；API Key 不可直接冒充用戶。
-7. 確認 `ALLOW_LOCAL_LOGIN=true`，本地帳戶可正常登入。
-8. 填寫 [`UNIFIED_STAGING_RESULTS.md`](UNIFIED_STAGING_RESULTS.md) 的現階段項目；未通過前不要切換既有旅團或 Production。
+4. 確認 `UnifiedCode.gs` 同時具備身份、行政、Progress、獎章、履歷及申報能力；沒有第二支 BADGE 精簡 GS。
+5. 進度頁確認沒有後端／API Key 輸入欄，讀寫均走同源 `/api/progress`。
+6. 測功能完整版前端寫入、Progress 寫入及 BADGE 輕量前端寫入都落在同一張 Sheet。
+7. 測兩個前端各自的 action allowlist，以及本地 staff／member session、role、scope 權限；API Key 不可直接冒充用戶。
+8. 確認 `ALLOW_LOCAL_LOGIN=true`，本地帳戶可正常登入。
+9. 填寫 [`UNIFIED_STAGING_RESULTS.md`](UNIFIED_STAGING_RESULTS.md) 的現階段項目；未通過前不要切換既有旅團或 Production。
 
 ### E2. 旅系統建立後：reader 驗收（現在不做）
 

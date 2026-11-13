@@ -1,5 +1,5 @@
 /* ============================================================
-   tests/progress.mjs — Progress 同源轉發 API 測試（一個 Unified 後端、多個 client）
+   tests/progress.mjs — 功能完整版前端的 Progress 同源轉發 API 測試（同一完整 Unified 後端）
    ------------------------------------------------------------
    驗證 /api/progress 嘅安全規則同轉發行為：
      · 只接受 POST、action 白名單、後端一定要係 GAS /exec

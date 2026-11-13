@@ -130,7 +130,7 @@ function listView() {
       <b>可以同進度系統對上：${kc.percent}%</b>（${kc.matched}／${kc.total} 位）
       · 團員／執委 ${kc.youthWithYmis}／${kc.youthTotal} 有 YMIS
       · 領袖 ${kc.leaderWithEmail}／${kc.leaderTotal} 有 Email
-      <div class="xs">管理、進度同 BADGE 共用同一 Unified Sheet；<b>團員／執委以 YMIS（10 位數字）</b>做 canonical key，
+      <div class="xs">功能完整版支部前端同 BADGE 輕量前端共用同一完整 Unified Sheet；<b>團員／執委以 YMIS（10 位數字）</b>做 canonical key，
       <b>領袖 Email</b> 用嚟對應同一 Users 記錄。要按身份補啱欄位；姓名只作顯示，唔可以當授權身份。</div>
       <div class="xs mt-4">未對得上：${names}${kc.unmatchedList.length > 6 ? ` 等 ${kc.unmatchedList.length} 位` : ''}</div></div></div>`;
   })()}

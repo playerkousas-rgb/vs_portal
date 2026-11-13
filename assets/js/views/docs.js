@@ -348,9 +348,9 @@ function tablesDoc() {
   </div>
   ${noteBox('冇公開連結都可以：喺 Sheet 選取範圍 → Ctrl+C → 按「改為貼上 CSV」照樣讀得到。', 'info')}
 
-  ${H('③ Unified 總表：管理、進度及 BADGE 共用')}
+  ${H('③ Unified 總表：完整後端、完整版＋輕量版前端')}
   ${noteBox('<b>施工次序：BOOK → BADGE → 5 個支部系統（現在）→ 最後才建立旅系統。</b>現階段未有中央旅系統；支部本地帳戶／session 係正常主入口，<code>ALLOW_LOCAL_LOGIN</code> 必須保持開啟。', 'info')}
-  ${P('每個旅團只使用<b>一張專屬 Google Sheet ＋ 一支 Unified Apps Script</b>；行政、身份、進度、獎章及履歷不得拆成第二個資料後端。')}
+  ${P('每個旅團只使用<b>一張專屬 Google Sheet ＋ 一支完整 Unified Apps Script</b>；GS 具備行政、身份、進度、獎章、履歷及申報能力。支部系統係功能完整版前端，BADGE 係只呈現部分流程嘅輕量前端。')}
   <div class="steps">
     <div class="step"><div>開旅團專屬 Google Sheet → <b>擴充功能 → Apps Script</b></div></div>
     <div class="step"><div>APP 內免登入或於「總表同步 → <b>下載 Unified Code.gs</b>」→ 全部取代貼上</div></div>
@@ -360,7 +360,7 @@ function tablesDoc() {
     <div class="step"><div>登入後撳頂部「<b>儲存到後端</b>」；server 以 session 核對身份，browser 唔保存 API Key</div></div>
     <div class="step"><div>每次更新 Unified Code.gs 後在測試副本重跑一次 <code>initializeSheets</code>；只可增補，既有資料及 Key 必須不變</div></div>
   </div>
-  ${noteBox('<b>一個 Unified 後端、多個前端。</b>進度追蹤／其他獎章／活動履歷與行政資料都在同一 Sheet。不要設定 <code>PORTAL*</code>／<code>PROGRESS*</code> 第二套 secret、backend 或 key。', 'brand')}
+  ${noteBox('<b>完整 Unified 後端、兩種前端定位。</b>vs_portal 功能完整版與 vsbadge 輕量版共用同一 Sheet；不要設定 <code>PORTAL*</code>／<code>PROGRESS*</code> 第二套 secret、backend 或 key，亦不要另建 BADGE 精簡 GS。前端功能面唔取代 server role／scope 授權。', 'brand')}
 
   ${H('④ 儲存與備份')}
   ${P('所有資料存喺<b>你自己嘅瀏覽器</b>（localStorage，大約 5MB）。相片最佔位，所以：')}
@@ -411,11 +411,11 @@ function birthdayDoc() {
 function progressDoc() {
   const unit = currentUnit() || '0082';
   return `
-  ${H('設計：一個 Unified 後端、多個 client')}
-  ${P('旅團只有<b>一個後端</b> —— 一張 Google Sheet ＋ 一支 Unified Apps Script。'
-    + '<b>行政介面、Progress 與 BADGE</b>只係按不同業務 action 讀寫同一份資料的 client。')}
-  ${noteBox('瀏覽器不保存後端網址或 API Key；進度頁亦不接受第二支 GAS。'
-    + 'API Key 只作 server routing／用途分隔 HMAC 根，<b>不等於執委身份</b>。身份由 opaque session 的角色及 scope 決定。', 'brand')}
+  ${H('設計：完整 Unified 後端、功能完整版＋輕量版前端')}
+  ${P('旅團只有<b>一個完整後端</b> —— 一張 Google Sheet ＋ 一支具備身份、行政、Progress、獎章、履歷及申報能力的 Unified Apps Script。'
+    + '<b>vs_portal 係功能完整版前端；vsbadge 係輕量前端</b>，只呈現部分流程。Progress 係完整版前端內的模組。')}
+  ${noteBox('瀏覽器不保存後端網址或 API Key；進度頁亦不接受第二支 GAS 或 BADGE 精簡 GS。'
+    + 'API Key 只作 server routing／用途分隔 HMAC 根，<b>不等於執委身份</b>；功能有冇顯示亦唔係授權。每個 action 由 allowlist、opaque session 角色及 scope 共同限制。', 'brand')}
 
   ${H('三項設定（與 BADGE 完全相同）')}
   <pre class="code">TROOP_${esc(unit)}_NAME

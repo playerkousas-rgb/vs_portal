@@ -1,8 +1,9 @@
 /* ============================================================
-   api/progress.js — Progress 同源轉發層（一個 Unified 後端、多個 client）
+   api/progress.js — 功能完整版支部前端內的 Progress 同源轉發層
    ------------------------------------------------------------
-   旅團只有一個後端：Google Sheet ＋一支 Unified Apps Script（/exec）。
-   深資童軍管理系統同 BADGE 都係 client；呢度只會代 browser 執行本支部
+   旅團只有一個完整後端：Google Sheet ＋一支 Unified Apps Script（/exec），
+   具備身份、行政、Progress、獎章、履歷及申報能力。vs_portal 係功能完整版前端，
+   vsbadge 係輕量前端；呢度只會代 vs_portal browser 執行 allowlist 內的本支部
    Progress 業務 action，直接讀寫同一 Sheet 的指定分頁。
 
    讀：browser POST { action:'load', unit, sessionToken } → server GET Unified ?action=load
@@ -17,8 +18,9 @@
 
    安全：
      1. 只准 https://script.google.com/macros/s/…/exec（擋 open proxy；可用 V82_PROXY_TEST=1 放行本機 mock）
-     2. payload ≤ 1 MB；上游 45 秒逾時
-     3. log 只記 metadata：唔記 API Key、唔記 payload 內容、唔記完整後端網址
+     2. 前端／proxy allowlist 只係第一層；Unified GS 仍驗 server-issued session、role、scope
+     3. payload ≤ 1 MB；上游 45 秒逾時
+     4. log 只記 metadata：唔記 API Key、唔記 payload 內容、唔記完整後端網址
    ============================================================ */
 
 import crypto from 'node:crypto';

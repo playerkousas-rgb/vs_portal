@@ -6,6 +6,12 @@
 //   2. namespaced VS Portal v2.8.8 administrative storage compatibility
 //   3. this router (isolated auth fixture, action scopes, canonical identity projection)
 //
+// The generated GS is the complete branch capability superset: identity, branch
+// administration, progress, badges, logs, and submissions. vs_portal is the
+// full-featured frontend; vsbadge is a lightweight frontend over the same backend,
+// not a second reduced GS. Each client still needs an allowed action and the router
+// still enforces server-side session, role, and scope authorization.
+//
 // This file is test-only in vs_portal.  Its assertion/exchange route is a security
 // fixture, not a Progress or future travel-system contract.  The formal future
 // direction is travel-system server → branch backend reader.  It is not published

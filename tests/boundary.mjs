@@ -5,7 +5,8 @@
 
      施工次序 = 4 本 BOOK → 4 套 BADGE → 5 個支部系統 → 最後旅系統。
      現在係第 3 階段，未有中央旅系統；支部必須可以獨立運作。
-     Progress 是支部內部功能，只經同源 proxy 對本支部 Unified backend 執行業務 action。
+     Progress 是功能完整版支部前端內部模組，只經同源 proxy 對本支部 Unified backend 執行業務 action。
+     每支部 Unified GS 本身有完整功能；vs_portal 是功能完整版前端，vsbadge 是輕量前端。
      未來方向是旅系統 → 單向讀取支部後端。
      BOOK 可讀 BADGE 正式資料，亦可提交待批匯入；只有領袖確認後先算正式錄入。
      **支部之間冇 direct link，旅系統 reader 方向亦不可倒轉。**
@@ -21,7 +22,8 @@
      ① 有另一個支部嘅 backend URL / API key 設定槽（env 或 registry 欄位）
      ② 主動 request 另一個支部或旅系統
      ③ 在 Progress 加登入閘門／旅系統 action、狀態或第二 backend
-     ④ 出現跨支部聚合功能（嗰啲屬旅系統）
+     ④ 因 BADGE 前端輕量而拆第二支精簡 GS，或用隱藏 UI 取代 server 授權
+     ⑤ 出現跨支部聚合功能（嗰啲屬旅系統）
 
    呢個係靜態守門：掃原始碼，唔准出現橫向連結嘅入口。
    用法：node tests/boundary.mjs
@@ -161,7 +163,19 @@ console.log('\n▌⑤ 邊界文件存在而且寫明「唔算連上」');
   ok('SCOPE 講明現在未有中央旅系統', /現在沒有中央旅系統/.test(scope));
   ok('SCOPE 規定本地登入保持正常可用',
     /ALLOW_LOCAL_LOGIN[\s\S]{0,80}保持 `true`/.test(scope));
-  ok('SCOPE 定義 Progress 為支部內部功能', /Progress 是支部系統內部功能/.test(scope));
+  ok('SCOPE 定義 Progress 為功能完整版支部前端內部模組',
+    /Progress 是完整支部前端內的業務模組/.test(scope));
+  ok('SCOPE 固定 Unified GS 是完整功能後端',
+    /Unified GS 是\*\*完整功能後端\*\*/.test(scope)
+      && /身份、進度、獎章、履歷、申報及支部行政功能/.test(scope));
+  ok('SCOPE 固定 vs_portal 完整版、BADGE 輕量版前端定位',
+    /支部系統前端是功能完整版/.test(scope)
+      && /BADGE 是同一後端的輕量前端/.test(scope));
+  ok('SCOPE 禁止把 BADGE 輕量誤當精簡 GS',
+    /BADGE 前端較輕[\s\S]{0,100}精簡 GS/.test(scope));
+  ok('SCOPE 規定 UI 功能面不可取代 server-side 授權',
+    /畫面隱藏亦不是[\s\S]{0,20}安全邊界/.test(scope)
+      && /session、角色及 scope/.test(scope));
   ok('SCOPE 固定未來方向為旅系統單向讀取支部後端',
     /旅系統[^\n]{0,40}單向讀取各支部後端/.test(scope));
   ok('SCOPE 固定 BOOK 可讀正式資料及提交待批匯入',
@@ -176,6 +190,60 @@ console.log('\n▌⑤ 邊界文件存在而且寫明「唔算連上」');
   ok('AGENTS 守住 BOOK 待批匯入邊界',
     /BOOK 可讀正式資料及提交待批匯入/.test(agents)
       && /只有領袖確認後先可寫入正式紀錄/.test(agents));
+  ok('AGENTS 守住完整後端、完整版及輕量版前端定位',
+    /Unified GS 有完整功能/.test(agents)
+      && /vs_portal 是功能完整版前端/.test(agents)
+      && /BADGE 是輕量前端/.test(agents));
+
+  const glossary = read('GLOSSARY.md');
+  ok('GLOSSARY 定義 BADGE 輕量只係前端定位',
+    /BADGE[^\n]*輕量前端/.test(glossary)
+      && /輕量係前端定位[^\n]*精簡 GS/.test(glossary));
+  ok('GLOSSARY 定義 Unified 支部後端具備完整功能',
+    /完整 Unified 支部後端/.test(glossary)
+      && /具備完整功能/.test(glossary));
+
+  const readme = read('README.md');
+  ok('README 講明完整 Unified 後端配完整版及輕量版前端',
+    /同一支完整 Unified GAS/.test(readme)
+      && /支部系統前端是功能完整版/.test(readme)
+      && /BADGE 是輕量前端/.test(readme));
+  ok('README 講明前端功能面不取代 role／scope 授權',
+    /前端有沒有顯示某功能不是安全邊界/.test(readme)
+      && /session、role 及 scope/.test(readme));
+
+  const architecture = read('docs/UNIFIED_ARCHITECTURE_TEST.md');
+  ok('架構拓撲把完整能力放在 Unified GS，而不是 BADGE 子集',
+    /完整後端能力：身份、支部行政、進度、獎章、履歷、申報/.test(architecture)
+      && /功能完整版前端（vs_portal）/.test(architecture)
+      && /輕量版前端（vsbadge）/.test(architecture));
+  ok('架構禁止 BADGE 精簡 GS，並要求 allowlist＋後端授權',
+    /不存在另一支 BADGE 精簡 GS/.test(architecture)
+      && /action allowlist/.test(architecture)
+      && /session、role 及 scope/.test(architecture));
+
+  const deployDocs = [
+    'DEPLOY_GUIDE_FOR_TROOPS.md', 'docs/MASTER_SHEET.md',
+    'docs/UNIFIED_NEW_SHEET_SETUP.md', 'docs/ADMIN_ONBOARDING.md', 'docs/ADD_NEW_UNIT.md'
+  ].map(read).join('\n');
+  ok('部署文件固定完整後端、功能完整版及 BADGE 輕量前端',
+    /完整功能後端/.test(deployDocs)
+      && /功能完整版前端/.test(deployDocs)
+      && /BADGE[^\n]*輕量前端/.test(deployDocs));
+  ok('部署文件拒絕另建 BADGE 精簡後端',
+    /不要因 BADGE 較輕而建立第二支精簡 GAS/.test(deployDocs)
+      && /不要另設 BADGE 精簡後端/.test(deployDocs));
+
+  const builder = read('scripts/build-unified-gas.mjs');
+  const extension = read('apps-script/unified-src/unified-extension.gs');
+  ok('Unified 組裝來源標示完整 capability superset 及兩種前端定位',
+    /complete branch capability superset/.test(builder)
+      && /vs_portal is[\s\S]{0,80}full-featured frontend/.test(builder)
+      && /vsbadge is[\s\S]{0,80}lightweight frontend/.test(builder)
+      && /complete branch capability superset/.test(extension));
+  ok('Unified 組裝來源保留 allowlist＋server session／role／scope 邊界',
+    /action allowlists/.test(builder) && /session\/role\/scope/.test(builder)
+      && /allowed action/.test(extension) && /session, role, and scope/.test(extension));
 }
 
 console.log('\n▌⑥ 初始化保全鐵律有文件 + 有測試守');

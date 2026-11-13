@@ -190,6 +190,16 @@ ok('in-app download is byte-for-byte the generated UnifiedCode.gs', unifiedGasTe
 ok('in-app download publishes the generated artifact SHA-256', UNIFIED_GAS_SHA256 === sha256(SOURCE));
 ok('composed artifact contains no legacy PORTAL_SESSION_SECRET dependency', !SOURCE.includes('PORTAL_SESSION_SECRET'));
 ok('build includes exact pinned vsbadge commit provenance', SOURCE.includes(MANIFEST.baseline.commit));
+ok('generated artifact declares complete backend with full-featured and lightweight frontends',
+  SOURCE.includes('complete Unified branch backend')
+    && SOURCE.includes('vs_portal is the full-featured frontend')
+    && SOURCE.includes('vsbadge is the lightweight frontend'));
+ok('generated architecture keeps client surface separate from server authorization',
+  SOURCE.includes('Client surface never replaces server authorization')
+    && SOURCE.includes('complete branch capability superset')
+    && SOURCE.includes('not a second reduced GS')
+    && SOURCE.includes('allowed action')
+    && SOURCE.includes('session, role, and scope authorization'));
 ok('vsbadge v9.6 baseline is still present', SOURCE.includes("const VS_GS_VERSION = 'v9.6';"));
 ok('legacy Portal is namespaced instead of shadowing baseline globals', SOURCE.includes('var PortalAdminCompat_ = (function () {'));
 ok('generated pinned menu labels branch local login as required', SOURCE.includes(".addItem('ℹ️ 支部本地登入必須保持開啟','menuLocalLoginOff')"));

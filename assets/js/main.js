@@ -749,7 +749,7 @@ async function openDeployGuideModal() {
     body: `
       <div class="note-box info mb-12">
         ${icon('check', 16)}
-        <div><b>10 分鐘完成部署！</b>每個旅團一張 Google Sheet ＋ 一支 Unified GAS；管理、進度及 BADGE 共用。毋須登入即可下載並提交登記（申請會直接送去平台管理員嘅 ADMIN 系統）。</div>
+        <div><b>10 分鐘完成部署！</b>每個旅團一張 Google Sheet ＋ 一支完整 Unified GAS；支部系統係功能完整版前端，BADGE 係輕量前端，兩者共用。毋須登入即可下載並提交登記（申請會直接送去平台管理員嘅 ADMIN 系統）。</div>
       </div>
       
       <div class="col gap-12" style="font-size:13.5px;line-height:1.6">
@@ -776,7 +776,7 @@ async function openDeployGuideModal() {
           <ol class="xs mono" style="padding-left:18px;line-height:1.8">
             <li>在 Apps Script 函數下拉選單選擇 <code>initializeSheets</code></li>
             <li>點擊「▶ 執行」，依照 Google 提示完成授權（進階 → 前往 → 允許）</li>
-            <li>系統自動建立全部工作表（帳目、物資、團員、通告、報名、會議…＋同進度前端共用嘅
+            <li>系統自動建立完整後端所需嘅全部工作表（帳目、物資、團員、通告、報名、會議…＋支部前端 Progress 模組及 BADGE 輕量前端共用嘅
               <b>進度追蹤／其他獎章／活動履歷／待批完成／待批履歷／成員名單</b>）</li>
             <li>彈窗會顯示專屬 <b>API Key</b>，請複製保存（日後可執行 <code>showApiKey</code> 再次查看）</li>
           </ol>
@@ -801,7 +801,7 @@ async function openDeployGuideModal() {
             開好團（加好 <code>TROOP_&lt;編號&gt;_*</code> 環境變數）就會 email 通知你。
             如果幾日都冇消息，用申請內容 WhatsApp／電郵問一聲管理員就得。
             <br>管理員只會登記 <code>TROOP_&lt;編號&gt;_NAME／BACKEND／APIKEY</code> 三項；
-            管理系統、進度追蹤及 BADGE 自動共用同一 <code>/exec</code>、API Key 與 Sheet。
+            功能完整版支部前端（包括 Progress）與 BADGE 輕量前端自動共用同一完整 <code>/exec</code>、API Key 與 Sheet。
           </div>
           <button class="btn btn-sm btn-primary" id="guide-apply-btn">${icon('plus', 15)} 填寫申請表自動送出（入 ADMIN 系統）</button>
           <div class="xs faint mt-8">送唔到（例如網絡問題）？申請表會畀你<b>複製申請內容</b>，直接 WhatsApp／電郵畀管理員都一樣開得團。</div>
@@ -835,7 +835,7 @@ async function openApplication() {
       <div class="note-box mb-12">${icon('alert', 15)}<div>
         <b>申請之前請先起好你自己嘅後端</b>（每個旅團一張自己嘅 Google Sheet）：
         <div class="xs mt-4 mb-8">
-          1. 獲取 <b>Unified Code.gs</b>（免登入；管理、進度及 BADGE 共用）：
+          1. 獲取 <b>Unified Code.gs</b>（免登入；完整支部前端與 BADGE 輕量前端共用）：
           <button class="btn btn-xs btn-primary ml-8" id="ap-dl-btn" type="button">${icon('download', 13)} 下載 Unified Code.gs</button>
           <button class="btn btn-xs ml-4" id="ap-copy-btn" type="button">${icon('copy', 13)} 複製原始碼</button><br>
           2. 建一張新 Google Sheet → 擴充功能 → Apps Script → 貼上 Unified Code.gs<br>
@@ -859,7 +859,7 @@ async function openApplication() {
           <input class="input" value="${esc(mainUrl)}" readonly style="font-family:var(--mono);font-size:12px;background:var(--bg-2)">
           <div class="hint">呢個係<b>你而家睇緊嘅呢個網站</b>嘅網址，方便管理員核對同登記。</div></div>
       </div>
-      <div class="hint mt-8">送出後管理員會以同一組旅團名稱、<code>/exec</code> 與 API Key 登記 Registry。進度頁及 BADGE 自動沿用；不用亦不應在瀏覽器再貼 Key。</div>`,
+      <div class="hint mt-8">送出後管理員會以同一組旅團名稱、<code>/exec</code> 與 API Key 登記 Registry。功能完整版支部前端（包括 Progress）及 BADGE 輕量前端自動沿用同一完整後端；不用亦不應在瀏覽器再貼 Key。</div>`,
     actions: [
       { label: '取消', class: 'btn', value: null },
       { label: '送出申請', class: 'btn-primary', onClick: el => ({

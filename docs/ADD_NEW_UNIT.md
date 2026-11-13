@@ -11,7 +11,7 @@
 3. 同一個 `API_KEY`；
 4. Vercel 三項 `NAME`／`BACKEND`／`APIKEY`。
 
-管理系統、進度與 BADGE 都讀寫同一張 Sheet。不要另建進度 Script，不要在進度頁貼 `/exec` 或 Key，也不要建立任何 `PORTAL*`／`PROGRESS*` 變數。
+`UnifiedCode.gs` 是完整功能後端；支部系統是功能完整版前端，BADGE 是只呈現部分流程的輕量前端。兩者讀寫同一張 Sheet。不要另建進度或 BADGE 精簡 Script，不要在進度頁貼 `/exec` 或 Key，也不要建立任何 `PORTAL*`／`PROGRESS*` 變數。
 
 ## 旅團申請
 
@@ -48,7 +48,7 @@ TROOP_0081_APIKEY=showApiKey 顯示的同一 API_KEY
 | `TROOP_0081_BACKEND` | 唯一 Unified GAS `/exec`；`/dev` 或其他網域不接受 |
 | `TROOP_0081_APIKEY` | server routing 與用途分隔 HMAC 根；不會由 `/api/units` 回給 browser |
 
-這三項與 BADGE 的旅團登記完全相同。
+這三項與 BADGE 的旅團登記完全相同，並指向同一支完整 Unified GS；不要另設 BADGE 精簡後端。
 
 ### 不要設定
 
@@ -87,13 +87,14 @@ TROOP_0081_PROGRESSCATALOG
 1. `/api/units` 出現旅團，但 JSON 不含 `gasUrl`／`apiKey`。
 2. `/?u=0081` 可用支部本地帳戶登入；未登入不可先讀完整行政 DB。
 3. `ALLOW_LOCAL_LOGIN=true`；現階段本地入口是正常主入口。
-4. `#/progress/settings` 只顯示 Registry 資料來源及實際 Progress action 結果，沒有 `/exec`、Key、catalog URL、登入閘門或旅系統控制。
-5. 管理系統寫入、進度勾選及 BADGE 寫入均在同一張 Sheet 出現。
-6. 同一 YMIS 在所有前端對應同一人。
-7. member session 只可讀寫本人進度；staff session 才可管理進度。
-8. browser 偽造 `backend`、`apikey`、YMIS 或角色時，server 必須忽略或拒絕。
-9. 重跑 `initializeSheets` 兩次，既有資料、帳戶 hash、進度及 API Key 不變。
-10. （旅系統建立後才做）由旅系統端驗收單向讀取支部後端；支部 Progress 不新增設定或 action。BOOK 可另外提交待批匯入，但領袖確認前不得成為正式紀錄。
+4. 同一支 Unified GS 具備身份、行政、Progress、獎章、履歷及申報能力；沒有第二支 BADGE 精簡 GS。
+5. `#/progress/settings` 只顯示 Registry 資料來源及實際 Progress action 結果，沒有 `/exec`、Key、catalog URL、登入閘門或旅系統控制。
+6. 功能完整版前端寫入、Progress 勾選及 BADGE 輕量前端寫入均在同一張 Sheet 出現。
+7. 同一 YMIS 在兩個前端對應同一人。
+8. 兩個前端各自受 action allowlist 限制；member session 只可讀寫本人進度，staff session 才可管理進度。
+9. browser 偽造 `backend`、`apikey`、YMIS 或角色時，server 必須忽略或拒絕。
+10. 重跑 `initializeSheets` 兩次，既有資料、帳戶 hash、進度及 API Key 不變。
+11. （旅系統建立後才做）由旅系統端驗收單向讀取支部後端；支部 Progress 不新增設定或 action。BOOK 可另外提交待批匯入，但領袖確認前不得成為正式紀錄。
 
 ## 疑難排解
 

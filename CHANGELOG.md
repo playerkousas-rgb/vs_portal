@@ -10,6 +10,7 @@
 - **施工次序更正：BOOK 齊 → BADGE 齊 → 5 個支部系統（現在）→ 最後才建立並接通旅系統。** 現在未有中央系統；支部本地帳戶／session 是正常主入口，assertion／exchange auth fixture 不阻擋支部獨立驗收。
 - Progress 完全移除登入入口及旅系統責任：刪除 client `getLinkState`／`setLocalLogin` helpers，`/api/progress` allowlist 亦拒絕兩個 action。Progress 只執行本支部同一 Unified Sheet 的業務 action；未來旅系統 reader 仍由旅系統端單向讀支部後端。
 - **BOOK／BADGE 關係更正：** BOOK 不只讀取 BADGE；它也可提交匯入候選，但候選只會進入待批，必須由領袖確認後才寫入正式紀錄。BOOK 不得直接繞過審批修改正式資料。
+- **前後端定位更正：** 每支部 Unified GS／Sheet 是具備身份、行政、Progress、獎章、履歷及申報能力的完整後端；vs_portal 是功能完整版前端，vsbadge 是只呈現部分流程的輕量前端，不是另一支精簡 GS。兩個前端仍各自受 action allowlist 與 server-side session／role／scope 授權。
 - 以 `vsbadge@bb073db` 的 GS v9.6 為不可漂移基線，新增 SHA-256 manifest 及獨立 builder；輸出只寫 `apps-script/UnifiedCode.gs`，不覆蓋現行 `Code.gs`。
 - 把既有支部行政後端封入 namespaced compatibility module；vsbadge 身份、進度、獎章、履歷及申報流程維持全域基線，不會被同名函式 shadow。
 - 隔離 Unified 測試產物仍包含 auth-fixture assertion → 60 秒單次 exchange token → 8 小時支部 session 的實驗性驗證；現階段不啟用、不阻擋支部部署，也不屬於 Progress 或旅系統 reader 契約。未來旅層資料整合固定由旅系統 reader 單向讀支部後端。

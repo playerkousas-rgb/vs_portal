@@ -46,7 +46,8 @@ ok('getTrustedUnit 帶埋伺服器端 API Key', trusted?.apiKey === 'test9_secre
 ok('非白名單旅團回傳 null', getTrustedUnit('9999') === null);
 ok('0082 冇登記就攞唔到後端（唔會再借用舊旅團）', getTrustedUnit('0082') === null);
 
-// Portal SSO：網址 query 不再可偽造身份；只接受上游伺服器簽署的短期 assertion。
+// 隔離 auth fixture：網址 query 不可偽造身份；只接受測試 issuer 簽署的短期 assertion。
+// 呢組回歸不代表未來旅系統登入契約。
 {
   const response = () => ({
     statusCode: 0, headers: {}, body: null,

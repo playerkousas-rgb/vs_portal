@@ -1,13 +1,12 @@
 /* ============================================================
-   progress.js — 進度紀錄（一個後端、兩個前端）
+   progress.js — Progress（一個 Unified 後端、多個 client）
    ------------------------------------------------------------
-   設計（2026-09-16 團長更正）：
-     · 唔連任何「其他系統」——進度資料本來就係寫入**旅團自己嘅後端**
-       （同一個 Google Sheet ＋ 同一支 Apps Script）
-     · 兩個前端餵同一個後端：
-         ① 深資童軍管理系統（呢度）  ② 進度前端（團員／領袖用）
-     · 呢邊只做兩件事：讀後端（GET ?action=load）／寫後端（POST action=save）
-     · 固定使用旅團 Registry 已登記嘅同一 BACKEND／APIKEY；進度頁冇第二套路線。
+   設計：
+     · Progress 業務資料寫入旅團自己嘅 Google Sheet，由同一支 Unified Apps Script
+       按 action 選取進度分頁。
+     · 深資童軍管理系統與 BADGE 都只係呢個後端的 client。
+     · 呢邊只做兩件事：讀後端（GET ?action=load）／寫後端（POST action=save）。
+     · 固定使用旅團 Registry 已登記嘅同一 BACKEND／APIKEY；browser 冇第二套路線。
    設定：Vercel 只需 TROOP_<id>_NAME／BACKEND／APIKEY，與 BADGE 完全相同。
    安全：API Key 只留 server；瀏覽器只送 unit＋opaque session，不能改後端或冒充身份。
    ============================================================ */
@@ -18,7 +17,7 @@ import { unitEntry } from './units.js';
 /** 預設考核項目定義（app 內建，離線可用） */
 export const DEFAULT_CATALOG_URL = 'data/progress/items.json';
 
-/* ---------- 設定（browser 只有接駁狀態，沒有後端／Key／catalog override） ---------- */
+/* ---------- 資料來源（browser 沒有後端／Key／catalog override） ---------- */
 export function progressCfg(unitOverride = '') {
   const unit = unitOverride || load().unitCode || '';
   const serverSide = !!unitEntry(unit)?.progressServerSide;
@@ -58,13 +57,13 @@ async function callApi(payload, { timeoutMs = 60000 } = {}) {
     try { json = JSON.parse(text); } catch (e) { /* 唔係 JSON：多數係冇 API（純靜態伺服器） */ }
     if (!json) {
       return { ok: false, reason: 'no_api',
-        error: '呢部伺服器冇 /api/progress（進度接駁需要 Node 後端）。本機可以用 `npm run dev`，或在 Vercel 部署。' };
+        error: '呢部伺服器冇 /api/progress（Progress 要經同源 server API 讀寫支部 Unified Sheet）。本機可以用 `npm run dev`，或在 Vercel 部署。' };
     }
     return json;
   } catch (e) {
     const aborted = e?.name === 'AbortError';
     return { ok: false, reason: aborted ? 'timeout' : 'network',
-      error: aborted ? '連線逾時（進度系統後端冇回應）' : '連唔到本系統嘅 API（/api/progress）' };
+      error: aborted ? 'Progress action 逾時（Unified GAS 冇回應）' : '本系統 API（/api/progress）暫時無法回應' };
   } finally {
     clearTimeout(timer);
   }
@@ -72,7 +71,6 @@ async function callApi(payload, { timeoutMs = 60000 } = {}) {
 
 function sessionPayload(session = null) {
   const s = session || getSession() || {};
-  if (s.portalToken) return { portalToken: s.portalToken };
   return s.sessionToken ? { sessionToken: s.sessionToken } : {};
 }
 const cfgPayload = (session = null) => {
@@ -110,7 +108,7 @@ export async function saveOtherBadges(records) {
 
 /**
  * 審批中心：批／拒「待批完成」（團員申報嘅考核項目）
- * 批准＝寫入後端嘅「進度追蹤」，兩個前端都即刻見到。
+ * 批准＝寫入後端嘅「進度追蹤」，所有使用該分頁的 client 都即刻見到。
  */
 export async function reviewRequest(requestId, { decision = 'approved', note = '', reviewer = '', confirmedDate = '' } = {}) {
   return callApi({ ...cfgPayload(), action: 'reviewRequest',
@@ -152,26 +150,6 @@ export async function submitProgressRequest(req = {}, session = null) {
 /** 向後兼容獨立查詢；一樣由 session 決定本人，唔接受 ymis。 */
 export async function loadMyRequests(session) {
   return callApi({ ...cfgPayload(session), action: 'myRequests' });
-}
-
-/* ============================================================
-   Unified GAS 支部本地入口
-   ------------------------------------------------------------
-   第 3 階段尚未有中央旅系統，本地帳戶係正常主入口，所以前端只可讀狀態
-   或把錯誤關閉的入口重新開啟。未來第 4 階段才由真正旅系統直接簽名控制。
-   ============================================================ */
-/** 讀 Unified 後端的支部本地入口狀態（allow_local_login / link_flag_set…）。 */
-export async function getLinkState() {
-  return callApi({ ...cfgPayload(), action: 'getLinkState' });
-}
-
-/** 現階段只准 allow:true 開返；不可由支部 browser 關閉正常登入入口。 */
-export async function setLocalLogin(allow) {
-  if (!allow) {
-    return { ok: false, reason: 'phase3_local_login_required',
-      error: '現階段未有中央旅系統，支部本地入口必須保持開啟。' };
-  }
-  return callApi({ ...cfgPayload(), action: 'setLocalLogin', data: { allow: 'true' } });
 }
 
 /* ============================================================

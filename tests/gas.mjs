@@ -1221,7 +1221,7 @@ section('寫入衝突模擬：執委 db ＋ 進度前端 ＋ 團員入口三路�
   ok('⑤ myRequests 只回自己（李小明仲係 pending，見唔到陳大文嘅）',
     my2.requests?.length === 1 && my2.requests[0]?.status === 'pending', JSON.stringify(my2.requests?.map(r => r.status)));
   const ld2 = g.get({ action: 'load', apikey: KEY });
-  ok('★ 批核寫入咗進度追蹤：陳大文 L1-ACT-01 有日期＋批核人（兩個前端都即刻見到）',
+  ok('★ 批核寫入咗進度追蹤：陳大文 L1-ACT-01 有日期＋批核人（共用分頁的 client 即刻見到）',
     ld2.progress?.['2008-001']?.['L1-ACT-01']?.confirmer === '陳領袖', JSON.stringify(ld2.progress?.['2008-001']));
 
   /* ⑥ 同一項再批一次 → 拒（防重複入數） */
@@ -1446,27 +1446,28 @@ section('★ v2.8.1：自證＋報表合併＋真相欄位＋止血');
 }
 
 /* ============================================================
-   支部本地入口＋第 4 階段預留上游簽名控制
+   舊 Code.gs 本地入口／簽名兼容安全回歸
    ------------------------------------------------------------
-   第 3 階段 Sheet 選單不可關閉正常本地登入；未來真正旅系統完成 SSO
-   staging 後，仍可用相同 purpose／sig／ALLOW_LOCAL_LOGIN 合約控制。
+   呢段只保護仍存在於現行非 Unified 範本的 pinned legacy 行為；唔係
+   Progress API 或未來旅系統施工契約。支部正式方向仍保持本地登入。
    ============================================================ */
-section('支部本地入口保全 ＋ 未來上游簽名 setLocalLogin');
+section('舊 Code.gs 本地入口 ＋ 簽名兼容安全回歸');
 {
   const crypto = await import('node:crypto');
   const g = makeGas({ apiKey: 'my-own-sheet-key' });
   g.sandbox.initializeSheets();
   const KEY = 'my-own-sheet-key';
 
-  /* 第 3 階段本地入口正常運作，Sheet 人手選單不可自鎖。 */
+  /* 正常支部本地入口運作，legacy Sheet 人手選單不可自鎖。 */
   ok('未閂口：load 照讀', g.post({ action: 'load', apiKey: KEY }).ok === true);
   ok('未閂口：apikey 直連照入', g.post({ action: 'dbInfo', unit: '0082', apiKey: KEY }).ok === true);
-  const phase3Close = g.sandbox.menuLocalLoginOff();
-  ok('未有旅系統時 Sheet 選單拒絕關閉本地入口',
-    phase3Close?.code === 'PHASE3_LOCAL_LOGIN_REQUIRED'
-      && g.post({ action: 'load', apiKey: KEY }).ok === true, JSON.stringify(phase3Close));
+  const guardedClose = g.sandbox.menuLocalLoginOff();
+  ok('legacy Sheet 選單拒絕關閉正常本地入口',
+    guardedClose?.code === 'BRANCH_LOCAL_LOGIN_REQUIRED'
+      && guardedClose?.allow_local_login === true
+      && g.post({ action: 'load', apiKey: KEY }).ok === true, JSON.stringify(guardedClose));
 
-  /* 第 4 階段預留簽名公式（同 vsbadge 一樣） */
+  /* Pinned legacy 簽名公式（同 vsbadge 一樣） */
   const hm = (m, k) => crypto.createHmac('sha256', String(k)).update(String(m)).digest('hex');
   const gift = (k) => hm('vsbadge-troop-sig-v1', k);
   let nonceSeq = 0;
@@ -1487,7 +1488,7 @@ section('支部本地入口保全 ＋ 未來上游簽名 setLocalLogin');
   ok('簽名 setLocalLogin 閂口 → allow_local_login:false', closed.success === true && closed.allow_local_login === false, JSON.stringify(closed).slice(0, 160));
   ok('閂咗口之後本地 apikey 讀 → upstream_only（拒）', (() => {
     const r = g.post({ action: 'load', apiKey: KEY });
-    return r.ok === false && r.upstream_only === true && /直接入口/.test(r.error || '');
+    return r.ok === false && r.upstream_only === true && /本地登入旗標|initializeSheets/.test(r.error || '');
   })(), '');
   ok('閂咗口之後本地登入（authLogin）都拒', (() => {
     const r = g.post({ action: 'authLogin', unit: '0082', apiKey: KEY, username: 'x', password: 'y' });

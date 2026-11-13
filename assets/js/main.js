@@ -111,7 +111,7 @@ async function boot() {
   try {
     await loadRegistry();
     const portalEntry = await loginPortalFromUrl();
-    if (!portalEntry.skipped && !portalEntry.ok) return renderFatal(new Error(portalEntry.msg || '旅系統入口驗證失敗'));
+    if (!portalEntry.skipped && !portalEntry.ok) return renderFatal(new Error(portalEntry.msg || '隔離 auth fixture 驗證失敗'));
     /* 第一步：先揀旅團，揀完先出現登入畫面 */
     if (!unitChosen()) return renderUnitGate();
     await init();
@@ -854,7 +854,7 @@ async function openApplication() {
         <div class="field"><label class="label">聯絡人（電郵／電話）</label>
           <input class="input" id="ap-contact" placeholder="例：scouter@example.hk"></div>
         <div class="field" style="grid-column:1/-1"><label class="label">備註</label>
-          <input class="input" id="ap-note" placeholder="例：想同時接入進度追蹤系統"></div>
+          <input class="input" id="ap-note" placeholder="例：需要啟用本支部進度紀錄"></div>
         <div class="field" style="grid-column:1/-1"><label class="label">主系統網址（自動帶）</label>
           <input class="input" value="${esc(mainUrl)}" readonly style="font-family:var(--mono);font-size:12px;background:var(--bg-2)">
           <div class="hint">呢個係<b>你而家睇緊嘅呢個網站</b>嘅網址，方便管理員核對同登記。</div></div>

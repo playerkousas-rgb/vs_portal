@@ -7,21 +7,21 @@
 
 ## 統一 GS 隔離測試版（未發佈）— 2026-11-12
 
-- **施工次序更正：BOOK 齊 → BADGE 齊 → 5 個支部系統（現在）→ 最後才建立並接通旅系統。** 現在未有中央系統；支部本地帳戶／session 是正常主入口，缺少中央 signer 不阻擋支部獨立驗收。
-- 進度頁不再查詢或顯示 Unified 本地登入入口：入口門況與 Progress action 是兩個獨立契約，不能用前者判斷同一 Sheet 的進度分頁是否可讀。底層 client helper、server API 及 Sheet 選單仍拒絕關閉；第 3 階段 `ALLOW_LOCAL_LOGIN` 必須保持 `true`，第 4 階段才由真正旅系統簽名控制。
+- **施工次序更正：BOOK 齊 → BADGE 齊 → 5 個支部系統（現在）→ 最後才建立並接通旅系統。** 現在未有中央系統；支部本地帳戶／session 是正常主入口，assertion／exchange auth fixture 不阻擋支部獨立驗收。
+- Progress 完全移除登入入口及旅系統責任：刪除 client `getLinkState`／`setLocalLogin` helpers，`/api/progress` allowlist 亦拒絕兩個 action。Progress 只執行本支部同一 Unified Sheet 的業務 action；未來由旅系統單向讀支部後端，正如 BOOK 讀 BADGE。
 - 以 `vsbadge@bb073db` 的 GS v9.6 為不可漂移基線，新增 SHA-256 manifest 及獨立 builder；輸出只寫 `apps-script/UnifiedCode.gs`，不覆蓋現行 `Code.gs`。
 - 把既有支部行政後端封入 namespaced compatibility module；vsbadge 身份、進度、獎章、履歷及申報流程維持全域基線，不會被同名函式 shadow。
-- 預留第 4 階段中央 assertion → 60 秒單次 exchange token → 8 小時支部 session；assertion、exchange 與 deterministic exchange JTI 由同一旅團 API Key 以三個 purpose 分隔 key 派生，角色與 action scope 取交集。現階段不啟用。
+- 隔離 Unified 測試產物仍包含 auth-fixture assertion → 60 秒單次 exchange token → 8 小時支部 session 的實驗性驗證；現階段不啟用、不阻擋支部部署，也不屬於 Progress 或旅系統 reader 契約。未來旅層資料整合固定由旅系統 reader 單向讀支部後端。
 - 支部 link signature 的 query／body nonce 以 `ScriptLock` 包住共享 `ScriptCache` 原子消耗；重放、並發競態或 Cache／Lock 異常全部 fail closed。
-- 第 4 階段中央帳戶只可在支部建立無密碼授權鏡像；Portal client 提交的 shadow account／密碼欄不會保存。現階段本地 PBKDF2 帳戶是正常日常入口，不是救援帳戶。Unified router 只在記憶體注入 delegated actor＋中央 identity map，令分件 commit 亦不能用 compatibility server marker 繞過欄位授權。
+- 隔離 auth fixture 只會建立無密碼授權鏡像；Portal client 提交的 shadow account／密碼欄不會保存。本地 PBKDF2 帳戶是正常日常入口，不是救援帳戶。Unified router 只在記憶體注入 delegated actor＋identity map，令分件 commit 亦不能用 compatibility server marker 繞過欄位授權。
 - 行政 `/api/proxy` 不再把 API Key 當用戶身份；先以 `authWhoAmI` 核對 session，再由 GS 二次檢查 role／scope。Portal `Code.gs` 的直連 `/exec` 行政 action 同樣強制 session；client 自報內部 signed marker 會被清走。
 - 每旅 Vercel 接線收斂為與 BADGE 相同的 `TROOP_<ID>_NAME/BACKEND/APIKEY`；管理、進度與 BADGE 固定使用同一 Unified GAS／Sheet，不再接受額外 Portal secret、`PROGRESS*` 環境變數或 browser backend／Key／catalog override。
-- 進度「資料來源」頁只顯示同一 Registry／Unified Sheet 及實際 Progress action 結果；空的 `進度追蹤` 分頁正常顯示 0 項，入口狀態查詢不再影響成功狀態。考核項目固定使用同源 `data/progress/items.json`。
+- 進度「資料來源」頁只顯示同一 Registry／Unified Sheet 及實際 Progress action 結果；空的 `進度追蹤` 分頁正常顯示 0 項。考核項目固定使用同源 `data/progress/items.json`。
 - 平台 super 的 HMAC＋nonce server request 支援至同 proxy 一致的 4 MiB 有界 payload，避免大型 `saveTables` 因舊 900 KB簽名上限跌成 `SESSION_REQUIRED`；Unified 保留 pinned baseline 不變，僅在隔離 router 使用行政上限。
 - 團員入口改走 `hubLoad`／`hubRsvp`／`hubQuiz`／`hubAbsence`：GS 以正面欄位白名單重建 event／quiz／notice（含 nested question／本人 response），未來新增行政欄預設不會外洩；寫入身份固定由 opaque session 推導。
 - 團員投影使用獨立 `hub`／`hubbase` store namespace；非 hub scope 採用投影會 fail closed，不會再用裁剪資料覆蓋同瀏覽器行政 DB。無快取或舊污染 cache 只建立零名冊／零帳目安全空殼，不會先 fetch 完整靜態 seed；`?be=` 只加入經白名單的 routing metadata。
 - RSVP／答卷／請假取消 client optimistic mutation；server 成功回新投影才顯示，失敗有明確重試 banner。請假固定 request id，create／withdraw response 遺失後重試仍冪等。
-- 新增 `tests/unified-gas.mjs`，覆蓋基線來源、無損初始化、API Key／進度保全、SSO 防重放、角色上限、action scope、欄位白名單、本人寫入冪等、共用資料及本地入口開關。
+- 新增 `tests/unified-gas.mjs`，覆蓋基線來源、無損初始化、API Key／進度保全、auth-fixture 防重放、角色上限、action scope、欄位白名單、本人寫入冪等、共用資料及本地入口守門。Unified 公開 router 拒絕 legacy `getLinkState`／`setLocalLogin`，初始化會復原 `ALLOW_LOCAL_LOGIN=true`。
 - 完整架構、密鑰分工、action 對照、私人驗收及回退程序見 `docs/UNIFIED_ARCHITECTURE_TEST.md`。
 - **沒有更新 `vsbadge`、沒有部署、沒有改動任何現有旅團 Sheet。**
 

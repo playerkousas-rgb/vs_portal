@@ -23,14 +23,14 @@
 |---|---|
 | 改本團 Sheet 嘅資料結構／讀寫邏輯 | 改其他支部嘅 Sheet／backend |
 | 改本 repo 前端、`/api`、`Code.gs` 範本 | 冒充 ADMIN 改平台 `units.json` 以外單位嘅登記／Vercel env |
-| 做本團嘅通告／財務／物資／進度頁 | 幫進度 leaf 加管理層功能（通告／推送／訂閱） |
-| 經上游登記讀寫**自己嘅**下游進度 | 主動連另一個支部；下游反寫上游 |
+| 做本團嘅通告／財務／物資／Progress 內部功能 | 在 Progress 加 BADGE／旅系統 URL、Key、狀態或登入控制 |
+| 經同源 proxy 以業務 action 讀寫**自己嘅** Unified Sheet | 主動連另一個支部／旅系統；倒轉未來「旅讀支部」方向 |
 
 **跨支部聚合 = 旅系統嘅工作，唔係呢個 repo。**（`SCOPE.md` §1.3：星形，唔係網狀）
 
 ## 2. 身份同資料單一來源
 
-- 成員身份錨點 = **本團支部 Sheet 名冊**（`members`）。進度係消費者，搵唔到人 = 本團未開戶，唔會自己補。
+- 成員身份錨點 = **本團支部 Sheet 名冊**（`members`）。Progress 只按 YMIS 使用同一名冊；搵唔到人 = 本團未開戶，唔會自己補。
 - 旅團編號正規化只得一個實現（`82`/`082`/`0082` 同一團）—— `api/_registry.js`。
 - Secret 只住 Vercel env / GAS ScriptProperties；**永遠**唔入 Git／前端／URL／QR／Sheet 儲存格。
 - 前端唔揸 service key；經同源 `/api/proxy` 注入。新增 action 一定要入白名單（`npm run lint` 會擋）。

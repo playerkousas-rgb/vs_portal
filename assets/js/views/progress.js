@@ -2,10 +2,9 @@
    progress.js — 進度紀錄（一個 Unified 後端、多個前端）
    ------------------------------------------------------------
    統一設計：
-     · 深資童軍管理系統唔會另接進度系統或第二支 GAS。
-     · 行政、進度與 BADGE 都寫入旅團同一個 Google Sheet＋Unified /exec；
-       前端只係不同介面，唔會建立第二份名冊或身份來源。
-     · 所以呢邊只做兩件事：讀同一後端、寫同一後端。API Key 只係 server routing／HMAC 根，
+     · 行政、Progress 與 BADGE 都以業務 action 寫入旅團同一個 Google Sheet＋Unified /exec；
+       前端只係不同介面，共用同一份名冊及身份來源。
+     · 呢邊只做兩件事：讀同一後端、寫同一後端。API Key 只係 server routing／HMAC 根，
        用戶身份必須由 server-issued session 核實。
 
    讀：POST /api/progress { action:'load', unit, sessionToken }
@@ -56,14 +55,7 @@ async function fetchAll({ silent = false } = {}) {
   const r = await loadRemote();
   if (!r.ok) {
     loading = false; remote = null;
-    errMsg = r.error || '讀取失敗';
-    /* Unified GAS 閂咗本地直接入口時，API 會改用同一 API Key 派生的簽名。
-       如果 signed path 都失敗，就如實顯示 Registry／Key 不一致。 */
-    if (r.upstream_only) {
-      errMsg = (r.linked
-        ? '同一 Unified 後端閂咗「直接入口」，簽名亦被拒 —— 請管理員核對 Vercel APIKEY 同 GAS API_KEY 完全相同。'
-        : '同一 Unified 後端只接受簽名請求；請管理員核對 BADGE 與支部 APP 共用的 BACKEND／APIKEY。');
-    }
+    errMsg = r.error || 'Progress action 讀取失敗';
     refresh();
     return;
   }
@@ -74,13 +66,13 @@ async function fetchAll({ silent = false } = {}) {
   refresh();
 }
 
-/** 未接駁：只顯示 server Registry 合約，不再叫用戶把 Key 放入 browser。 */
+/** 未登記資料來源：只顯示 server Registry 合約，不叫用戶把 Key 放入 browser。 */
 function needSetup() {
   const unit = progressCfg().unit || '0082';
   return `
   <div class="card" style="max-width:780px">
     <div class="card-head"><div><div class="card-title">同一 Unified Sheet 資料來源尚未登記</div>
-      <div class="card-sub">管理、進度及 BADGE 共用一支 GAS；前端之間不需要互相接駁</div></div></div>
+      <div class="card-sub">管理、Progress 及 BADGE 直接使用同一支 GAS 的不同 action</div></div></div>
     <div style="padding:16px 18px" class="sm muted">
       ${noteBox('<b>唔好喺瀏覽器貼 API Key。</b>平台管理員只需在 Vercel 登記同 BADGE 完全相同的三個值；'
         + '進度頁會自動沿用，亦不接受第二個進度後端。', 'brand')}
@@ -112,7 +104,7 @@ function emptyProgressBanner() {
   const ticks = Object.values(raw).reduce((a, p) => a + Object.keys(p || {}).length, 0);
   return `<div class="note-box info">${icon('check', 15)}<div>
     <b>已成功讀到同一 Unified Sheet 嘅 ${sum.memberCount} 位成員；目前有 ${ticks} 格進度紀錄</b>
-    <div class="sm mt-4">連線正常。「進度追蹤」分頁而家係空，所以每個人顯示 0；新建 Sheet 本來就會係呢個狀態。
+    <div class="sm mt-4">Progress action 已成功。「進度追蹤」分頁而家係空，所以每個人顯示 0；新建 Sheet 本來就會係呢個狀態。
     之後經 Progress 或 BADGE 寫入同一分頁，數字就會直接更新。</div>
     <div class="row gap-8 mt-8 wrap">
       <button class="btn btn-sm" data-act="settings">${icon('settings', 15)} 查看同一 Sheet 資料來源</button>
@@ -123,8 +115,8 @@ function overviewView() {
   if (!progressConfigured()) return needSetup();
   if (errMsg) {
     return `<div class="note-box warn">${icon('alert', 15)}<div><b>讀唔到後端：</b>${esc(errMsg)}
-      <div class="xs mt-4">如果係「Invalid API Key」→ 去 Apps Script 重新複製 API Key；
-        如果係「搵唔到 <code>progress</code>」→ 喺後端執行一次 <code>initializeSheets</code>。</div></div></div>
+      <div class="xs mt-4">如果係「Invalid API Key」→ 請平台管理員核對 Vercel <code>APIKEY</code> 與同一 Unified GAS 的 Script Property；
+        如果係缺少進度分頁 → 喺後端執行一次 <code>initializeSheets</code>。瀏覽器毋須亦不可貼 Key。</div></div></div>
       <div class="row gap-8 mt-12"><button class="btn" data-act="settings">${icon('settings', 15)} 檢查設定</button>
       <button class="btn" data-act="reload">${icon('refresh', 15)} 再試</button></div>`;
   }
@@ -416,7 +408,7 @@ function reviewView() {
   </div>`;
 }
 
-/* ---------- 資料來源：同一 Unified Sheet，不做前端互相接駁 ---------- */
+/* ---------- 資料來源：同一 Unified Sheet 的 action 結果 ---------- */
 function settingsView() {
   const c = progressCfg();
   if (!c.serverSide) return needSetup();
@@ -427,14 +419,14 @@ function settingsView() {
   <div class="grid g-2-1">
     <div class="card">
       <div class="card-head"><div><div class="card-title">同一 Unified Sheet 資料來源</div>
-        <div class="card-sub">管理、進度及 BADGE 唔係互相接駁；同一支 GAS 按 action 讀同一張 Sheet 嘅不同分頁</div></div>
+        <div class="card-sub">管理、Progress 及 BADGE 直接由同一支 GAS 按 action 讀寫同一張 Sheet 嘅不同分頁</div></div>
         <span class="badge ${remote ? 'b-ok' : errMsg ? 'b-danger' : 'b-warn'}"><span class="dot"></span>${remote ? '已成功讀取' : errMsg ? 'Progress 讀取失敗' : '尚未讀取'}</span></div>
       <div style="padding:16px 18px" class="sm muted">
         ${noteBox(`${icon('shield', 15)}<div>瀏覽器不保存 <code>/exec</code> 或 API Key；平台只使用<br>
           <code>TROOP_${esc(c.unit || '0082')}_NAME</code>、<code>_BACKEND</code>、<code>_APIKEY</code>。
           一個 <code>/exec</code>、一個 API Key、一張 Sheet；API Key 不是用戶身份。</div>`, 'ok')}
         <div class="note-box info mt-12"><div class="sm"><b>空分頁亦係成功結果。</b>
-          新 Sheet 的「進度追蹤」沒有紀錄時應顯示 0，唔會當成連線失敗；亦唔需要另建或另查 BADGE 後端。</div></div>
+          新 Sheet 的「進度追蹤」沒有紀錄時應顯示 0，唔會當成讀取失敗；Progress 亦不會另建或另查 BADGE 後端。</div></div>
         ${errMsg ? `<div class="note-box danger mt-12">${icon('alert', 15)}<div><b>最近一次 Progress action 失敗：</b>${esc(errMsg)}</div></div>` : ''}
         <div class="row gap-8 mt-12">
           <button class="btn btn-primary" data-act="reload">${icon('refresh', 15)} 重新讀取同一 Sheet</button>

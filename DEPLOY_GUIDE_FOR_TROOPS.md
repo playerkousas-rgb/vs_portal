@@ -71,19 +71,17 @@ TROOP_0123_PROGRESSAPIKEY
 TROOP_0123_PROGRESSCATALOG
 ```
 
-## 4. 接駁與身份安全
+## 4. 後端與身份安全
 
-- `/api/units` 只回公開 metadata 及接駁狀態，不回完整 `/exec` 或 API Key。
+- `/api/units` 只回公開 metadata 及 Registry readiness，不回完整 `/exec` 或 API Key。
 - `/api/proxy` 與 `/api/progress` 只使用 server Registry 的同一 `BACKEND`／`APIKEY`。
 - browser 傳入的 backend／apikey 會被忽略，不能改送另一支 GAS。
 - API Key 只作 routing 及用途分隔 HMAC 根，**不等於執委身份**。
 - staff 管理 action 必須有 server-issued session；member action 只可操作 session 固定的本人 YMIS。
 - query string 的 role、YMIS、姓名不是授權依據。
-- **現階段：**支部 `Users`／本地密碼核實後，由 Unified GAS 簽 opaque session；`ALLOW_LOCAL_LOGIN` 保持 `true`。
-- **第 4 階段預留：**中央 SSO 才使用最長 90 秒 assertion → 最長 60 秒 branch exchange → Unified GAS opaque session。
-- assertion、exchange 與 deterministic exchange JTI 屆時由同一 API Key 以不同 purpose 派生；不需要額外 Portal secret。
-
-未來中央 signer 的完整 claims 契約見 [`docs/UNIFIED_NEW_SHEET_SETUP.md`](docs/UNIFIED_NEW_SHEET_SETUP.md)。未證明 signer 真實輸出符合契約前，不可標記「旅系統／中央 SSO 已接通」；這不阻擋現階段支部獨立部署。
+- 支部 `Users`／本地密碼核實後，由 Unified GAS 簽 opaque session；`ALLOW_LOCAL_LOGIN` 保持 `true`。
+- 未來旅系統只由旅系統 server 單向讀取支部後端，正如 BOOK 讀 BADGE；支部 browser、Progress 及登入流程不需要上游狀態或控制。
+- 旅系統 reader 必須有獨立的 action allowlist、最小資料投影及 server-side 驗證；API Key 本身仍不等於任何支部用戶身份。
 
 ## 5. 進度紀錄
 
@@ -93,15 +91,16 @@ TROOP_0123_PROGRESSCATALOG
 - BADGE 經同一 Unified GAS 讀寫；
 - 兩邊用同一 canonical YMIS 對人；
 - 考核項目固定讀 app 內建 `data/progress/items.json`，不是第二資料後端；
-- 「進度 → 資料來源」只交代同一 Unified Sheet 及實際讀取結果，沒有 `/exec`、API Key、catalog URL 或前端互相接駁控制；
-- `進度追蹤` 分頁為空是正常成功結果，顯示 0 項而不是「連線失敗」；
-- 審批 `reviewRequest`／`reviewLogRequest` 寫回同一張 Sheet。
+- 「進度 → 資料來源」只交代同一 Unified Sheet 及實際 Progress action 結果，沒有 `/exec`、API Key、catalog URL、登入閘門或旅系統接口；
+- `進度追蹤` 分頁為空是正常成功結果，顯示 0 項而不是「讀取失敗」；
+- 審批 `reviewRequest`／`reviewLogRequest` 寫回同一張 Sheet；
+- 未來由旅系統單向讀取支部後端，正如 BOOK 讀 BADGE；毋須在 Progress 設定、查詢或顯示。
 
 ## 6. 首次驗收
 
 ### 現階段：支部獨立
 
-1. `/api/units` 顯示旅團已接通且不洩漏 secret。
+1. `/api/units` 顯示旅團 Registry 已備妥且不洩漏 secret。
 2. `/?u=0123` 可用支部本地帳戶登入；未登入不能讀完整行政 DB。
 3. 確認 `ALLOW_LOCAL_LOGIN=true`，staff／member 均取得自己角色的 server-issued session。
 4. 管理系統寫一筆測試資料，確認同一 Sheet 出現。
@@ -111,9 +110,9 @@ TROOP_0123_PROGRESSCATALOG
 8. 偽造 browser backend／apikey／role／YMIS 全部無法改路或升權。
 9. 再執行 `initializeSheets` 兩次，API Key、帳戶 hash、行政及進度資料逐筆不變。
 
-### 第 4 階段：旅系統接通（現在不做）
+### 旅系統建立後：單向讀取支部後端（現在不做）
 
-旅系統建立後才測過期／錯 audience／錯 unit／錯 role／另一支部 Key／重放 assertion；確認中央 SSO 真正可用後，才測 `ALLOW_LOCAL_LOGIN=false`。
+由旅系統端驗收 reader 的 action allowlist、最小資料投影、錯支部／錯 Key、逾時及重放防護；並確認支部 Progress 完全不新增設定、狀態查詢或控制。支部本地登入維持正常運作。
 
 ## 7. 更新 Unified GAS
 
@@ -134,7 +133,7 @@ TROOP_0123_PROGRESSCATALOG
 - 是否 Redeploy；
 - `/exec` 是否符合 `https://script.google.com/macros/s/.../exec`。
 
-### 管理系統可開，但進度未接通
+### 管理系統可開，但 Progress action 失敗
 
 不要新增 `PROGRESS*`。核對：
 
@@ -147,17 +146,14 @@ TROOP_0123_PROGRESSCATALOG
 
 在測試副本執行 `initializeSheets`。它應只新增缺失分頁／欄，不覆寫既有資料。如不符合，停止部署並回退。
 
-### 第 4 階段：中央 SSO 不通（現在未有旅系統，不適用）
+### 未來旅系統讀不到支部後端（現在未有旅系統，不適用）
 
-只有旅系統已實作 signer 後才核對 assertion：
+只在旅系統 reader 排查：
 
-- `typ=central-sso-assertion`；
-- `iss=central-travel-system`；
-- `aud=vs-portal:branch:<unit>`；
-- `u`、role、subject、`iat/exp`、`jti` 齊全；
-- 最長 90 秒；
-- 用該旅團 API Key 派生的 assertion purpose key；
-- `jti` 未使用；
-- exchange audience 是 `unified-gas:branch:<unit>`。
+- action 是否在旅系統 reader allowlist；
+- unit 與支部 backend Registry 是否正確；
+- server-side 驗證、時限及重放防護是否通過；
+- 回應是否只含旅層需要的最小投影；
+- 錯支部、錯 Key 或未授權 action 是否 fail closed。
 
-不要以 query identity 或 API-Key-as-identity fallback「修好」SSO。
+不要在 Progress 加 URL、Key、狀態查詢、登入入口控制或 browser identity fallback。

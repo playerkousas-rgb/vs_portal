@@ -471,6 +471,6 @@ export function adminChecklist(troopId = '<編號>') {
     `Vercel：只加 TROOP_${troopId}_NAME／BACKEND／APIKEY；名稱、/exec、Key 必須與 BADGE 完全相同，再 Redeploy`,
     `旅團同一張 Sheet 貼 App 下載的 Unified Code.gs，執行 initializeSheets／showApiKey，再部署正式 /exec`,
     `管理系統、進度及 BADGE 固定共用上述 Unified GAS／Sheet；不要另設 Portal／Progress secret、後端或 browser Key`,
-    '實測三個前端讀寫同一 YMIS／Sheet及本地帳戶登入後，通知支部接入完成；中央 SSO 留待最後建立旅系統時另行驗收'
+    '實測三個前端讀寫同一 YMIS／Sheet及本地帳戶登入後，通知支部接入完成；未來旅系統 reader 由旅系統端另行驗收，支部不新增 SSO 或入口控制'
   ];
 }

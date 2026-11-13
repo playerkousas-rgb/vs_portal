@@ -358,7 +358,7 @@ try {
       body: JSON.stringify({ unit: '0082', action, data, sessionToken: token })
     })).json());
 
-    /* 主頁「我的進度」入口 → 自己嘅獎章項目（同一個後端、零設定接通） */
+    /* 主頁「我的進度」入口 → 自己嘅獎章項目（直接使用同一個後端） */
     const homeBtn = [...doc.querySelectorAll('[data-open]')].find(b => b.dataset.open === '#/home');
     homeBtn?.click();
     await wait(150);
@@ -371,7 +371,7 @@ try {
       progTxt = doc.getElementById('progressBody')?.textContent || '';
       if (/我的進度/.test(progTxt) && doc.querySelector('[data-claim]')) break;
     }
-    ok('進度頁睇到自己嘅獎章項目（env 旅團零設定接通同一個後端）',
+    ok('進度頁睇到自己嘅獎章項目（env 旅團直接使用同一個後端）',
       /我的進度/.test(progTxt) && !!doc.querySelector('[data-claim]'), progTxt.slice(0, 120));
 
     /* 申報完成 → 寫入後端「待批完成」（免 API Key） */
@@ -415,7 +415,7 @@ try {
 
     /* ===== 執委批核團員嘅申報 → 寫入「進度追蹤」 ===== */
     const rv = await progCall('reviewRequest', { request_id: mine?.request_id, decision: 'approved', review_note: '測試批核', reviewer: '陳領袖', confirmed_date: '2026-09-19' }, staffSession);
-    ok('執委批核成功（批准＝寫入進度追蹤，兩個前端即刻見到）', rv?.ok === true, JSON.stringify(rv).slice(0, 120));
+    ok('執委批核成功（批准＝寫入進度追蹤，共用該分頁的 client 即刻見到）', rv?.ok === true, JSON.stringify(rv).slice(0, 120));
 
     /* 團員再入進度頁 → 見到自己嗰項已完成＋申請紀錄「已批准」 */
     const backBtn = [...doc.querySelectorAll('[data-open]')].find(b => b.dataset.open === '#/home');

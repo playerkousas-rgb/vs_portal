@@ -263,7 +263,7 @@ hubStorage.set('v82.hub.auth.0082', JSON.stringify({ id: 'm1', ymis: '1000000999
 ok('★ 過期團員 token 即時清走', hubSession.loadHubAuth('0082') === null && !hubStorage.has('v82.hub.auth.0082'));
 
 /* ============================================================ */
-section('7. 中央 SSO purpose token 必須即時兌換，瀏覽器只保存支部 opaque session');
+section('7. 隔離 auth fixture：purpose token 即時兌換，瀏覽器只保存支部 opaque session');
 const ssoCalls = [];
 globalThis.fetch = async (url, init = {}) => {
   const body = JSON.parse(init.body || '{}');
@@ -282,7 +282,7 @@ globalThis.fetch = async (url, init = {}) => {
 };
 const portalLogin = await auth.loginPortalFromUrl(new URLSearchParams('from=portal&assertion=signed.central.assertion'));
 const centralSession = auth.current();
-ok('中央 assertion 先由 /api/portal 驗證，再向同一支部 GS 兌換', portalLogin.ok === true
+ok('fixture assertion 先由 /api/portal 驗證，再向同一支部 GS 兌換', portalLogin.ok === true
   && ssoCalls[0]?.body.assertion === 'signed.central.assertion'
   && ssoCalls[1]?.body.action === 'authPortalExchange' && ssoCalls[1]?.body.portalToken === 'one-use-purpose-token');
 ok('瀏覽器只保存支部 opaque session，不保存 purpose token', centralSession?.sessionToken === 'branch-opaque-session'

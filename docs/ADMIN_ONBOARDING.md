@@ -37,7 +37,7 @@ TROOP_0100_APIKEY=該 Unified GAS 的 showApiKey 值
 | `BACKEND` | 只接受 Google Apps Script 正式 `/exec`；不接受 `/dev` |
 | `APIKEY` | 與同一 Unified GAS 的 `API_KEY` 完全相同 |
 
-這三項就是 BADGE 使用的同一旅團登記；進度會自動沿用。
+這三項就是 BADGE 使用的同一支部 Registry；Progress 直接以同一後端執行業務 action。
 
 ## 3. 禁止建立第二套接線
 
@@ -62,15 +62,16 @@ TROOP_<ID>_PROGRESSCATALOG
 
 公開 `data/units.json` 只可放名稱、地區、贊助機構、主題等 metadata。敏感接線只在 Vercel environment。
 
-## 4. 接通後的 server 行為
+## 4. Registry 登記後的 server 行為
 
 - `/api/units` 只回公開資料及 `backendReady`／`progressServerSide` 狀態，不回完整 `/exec` 或 API Key。
 - `/api/proxy` 與 `/api/progress` 只從 Registry 取同一 `BACKEND`／`APIKEY`。
 - browser 提交的 `backend`、`apikey`、角色、YMIS 不能覆蓋 Registry 或 session 身份。
 - 進度考核項目固定讀同源 `data/progress/items.json`，不接受 remote catalog proxy。
-- 現階段本地支部登入先簽 opaque session，再由 `authWhoAmI` 對回 staff 角色；member action 由 server 固定本人 YMIS。
-- `ALLOW_LOCAL_LOGIN` 現階段必須保持 `true`。
-- 第 4 階段才啟用中央 SSO assertion、branch exchange 及 exchange JTI；它們屆時由同一 API Key 以不同 purpose 派生，但 API Key 本身不直接簽發 app session。
+- 本地支部登入先簽 opaque session，再由 `authWhoAmI` 對回 staff 角色；member action 由 server 固定本人 YMIS。
+- `ALLOW_LOCAL_LOGIN` 保持 `true`；支部本地帳戶是正常登入來源。
+- repo 內 assertion／exchange 只屬隔離 auth fixture，不在開團時啟用，也不是未來旅系統 reader 的規格。
+- 未來旅系統由旅系統 server 單向讀取支部後端最小投影；支部 Progress 不保存或控制該關係。
 
 ## 5. 每次收到申請的 checklist
 
@@ -88,8 +89,8 @@ TROOP_<ID>_PROGRESSCATALOG
 □ browser 偽造 backend／apikey／role／YMIS 被忽略或拒絕
 □ initializeSheets 重跑兩次仍保留 API Key、帳戶 hash、行政及進度資料
 □ ALLOW_LOCAL_LOGIN=true；支部本地 staff／member 登入已實測
+□ assertion／exchange fixture 沒有被當成開團或旅系統前置條件
 □ Email 通知旅團已開通
-□ （第 4 階段才做）中央 SSO 的短票、audience、unit、角色、時限及 replay 已在 staging 實測
 ```
 
 ## 6. 身份對應
@@ -101,4 +102,4 @@ TROOP_<ID>_PROGRESSCATALOG
 - API Key 永遠不是用戶身份；
 - browser query 或 shadow account 不能提高角色。
 
-第 4 階段旅系統建立後，才加入無本地密碼的中央 SSO 授權鏡像；中央 subject、角色及 signer 要另行 staging，不能由網址參數冒充。預留契約見 [`UNIFIED_NEW_SHEET_SETUP.md`](UNIFIED_NEW_SHEET_SETUP.md)。完整開團步驟見 [`ADD_NEW_UNIT.md`](ADD_NEW_UNIT.md)。
+未來旅系統建立後，只由旅系統端加入單向支部 reader；不在支部建立中央帳戶鏡像，亦不關閉本地登入。reader 的 allowlist、最小投影及 server-side 驗證須另行 staging。邊界見 [`UNIFIED_NEW_SHEET_SETUP.md`](UNIFIED_NEW_SHEET_SETUP.md)，完整開團步驟見 [`ADD_NEW_UNIT.md`](ADD_NEW_UNIT.md)。

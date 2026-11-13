@@ -187,16 +187,16 @@ export function migrateOpeningBalances(db) {
   return true;
 }
 
-/* ---------------- 跨系統身份（federation L1） ----------------
-   進度資料喺旅團自己嘅後端（一個後端、兩個前端）。要對得上同一個人，就要一個共同 key：
-     ymis      會籍編號／YMIS —— **權威** key（人手填，同對面系統一樣）
+/* ---------------- 跨 client canonical identity ----------------
+   行政、Progress 與 BADGE 以不同 action 使用同一支部後端。要對得上同一個人，就要共同 key：
+     ymis      會籍編號／YMIS —— **權威** key（人手填，所有 client 共用）
      systemId  本系統派嘅穩定 ID —— 冇 YMIS 時嘅 fallback（一旦產生就唔會再改）
-   冇呢兩個 key，任何同步都只可以靠姓名配對（會撞名、會漏）。 */
+   冇呢兩個 key，只可以靠姓名配對（會撞名、會漏）。 */
 
 /**
  * 產生穩定嘅系統 ID。
  * **必須係確定性嘅** —— 如果用隨機值，每部裝置都會產生唔同嘅 ID，
- * 咁呢個 key 就永遠對唔上，做唔到跨系統配對。所以用「旅團編號-用戶 id」推斷；
+ * 咁呢個 key 就永遠對唔上，做唔到跨 client 配對。所以用「旅團編號-用戶 id」推斷；
  * 兩樣都冇先至退返去隨機（只適用於即時新增、仲未同步嘅紀錄）。
  */
 export function newSystemId(unitCode = state.unitCode, memberId = '') {

@@ -314,7 +314,7 @@ function mobileDoc() {
     <div class="step"><div>成員／家長<b>免登入</b>撳連結／掃 QR 就睇到通告全文，順手報名</div></div>
     <div class="step"><div>返到 APP：通告 → 該通告 → <b>報名名單</b>（出席／唔出席／未回覆）可以睇／匯出 CSV／Word、列印簽到表</div></div>
   </div>
-  ${noteBox('公開頁係獨立嘅 <code>notice.html?u=0082&amp;n=通告編號</code>：只顯示該張通告，唔會露出其他資料。<b>每次分享一張</b>，到期就喺 APP 內改狀態，或者直接開新一張。報名會直接寫入旅團後端（同一個後端、兩個前端）。', 'info')}
+  ${noteBox('公開頁係獨立嘅 <code>notice.html?u=0082&amp;n=通告編號</code>：只顯示該張通告，唔會露出其他資料。<b>每次分享一張</b>，到期就喺 APP 內改狀態，或者直接開新一張。報名會以業務 action 直接寫入同一個旅團後端。', 'info')}
 
   ${H('常見問題')}
   ${P('<b>冇網絡？</b>APP 同公開頁都係靜態檔案，載入之後照用得；送出嘅紀錄會先存喺裝置，之後再傳畀司庫。')}
@@ -411,9 +411,9 @@ function birthdayDoc() {
 function progressDoc() {
   const unit = currentUnit() || '0082';
   return `
-  ${H('設計：一個 Unified 後端、兩個前端')}
+  ${H('設計：一個 Unified 後端、多個 client')}
   ${P('旅團只有<b>一個後端</b> —— 一張 Google Sheet ＋ 一支 Unified Apps Script。'
-    + '<b>深資童軍管理系統</b>與<b>進度／BADGE 前端</b>讀寫同一份資料。')}
+    + '<b>行政介面、Progress 與 BADGE</b>只係按不同業務 action 讀寫同一份資料的 client。')}
   ${noteBox('瀏覽器不保存後端網址或 API Key；進度頁亦不接受第二支 GAS。'
     + 'API Key 只作 server routing／用途分隔 HMAC 根，<b>不等於執委身份</b>。身份由 opaque session 的角色及 scope 決定。', 'brand')}
 
@@ -439,8 +439,8 @@ TROOP_${esc(unit)}_APIKEY</pre>
   ${P('第 11 版綱要已內建在 <code>data/progress/items.json</code>，離線可用；它是靜態目錄，不是第二個資料後端。')}
 
   ${H('身份對應')}
-  ${P('所有前端以同一 YMIS 對人；現階段由支部本地帳戶核實後簽發 session，'
-    + '再由 Unified GAS 限定本人／staff 可見及可寫範圍。中央 SSO 留待最後建立旅系統時才接通及驗收。')}`;
+  ${P('所有前端以同一 YMIS 對人；由支部本地帳戶核實後簽發 session，'
+    + '再由 Unified GAS 限定本人／staff 可見及可寫範圍。未來旅系統只由 server 單向讀取支部後端最小投影；不改變支部登入或 Progress。')}`;
 }
 
 /* 管理員專用（方法 A：Git Registry）—— 普通用戶冇 Git／Vercel 權限，唔需要見到 */

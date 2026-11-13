@@ -87,20 +87,20 @@ TROOP_0081_PROGRESSCATALOG
 1. `/api/units` 出現旅團，但 JSON 不含 `gasUrl`／`apiKey`。
 2. `/?u=0081` 可用支部本地帳戶登入；未登入不可先讀完整行政 DB。
 3. `ALLOW_LOCAL_LOGIN=true`；現階段本地入口是正常主入口。
-4. `#/progress/settings` 只顯示 Registry 接駁狀態，沒有 `/exec`、Key 或 catalog URL 輸入欄。
+4. `#/progress/settings` 只顯示 Registry 資料來源及實際 Progress action 結果，沒有 `/exec`、Key、catalog URL、登入閘門或旅系統控制。
 5. 管理系統寫入、進度勾選及 BADGE 寫入均在同一張 Sheet 出現。
 6. 同一 YMIS 在所有前端對應同一人。
 7. member session 只可讀寫本人進度；staff session 才可管理進度。
 8. browser 偽造 `backend`、`apikey`、YMIS 或角色時，server 必須忽略或拒絕。
 9. 重跑 `initializeSheets` 兩次，既有資料、帳戶 hash、進度及 API Key 不變。
-10. （第 4 階段才做）中央 SSO 按 [`UNIFIED_NEW_SHEET_SETUP.md`](UNIFIED_NEW_SHEET_SETUP.md) 的 assertion 契約另行驗收；API Key 本身不可登入。
+10. （旅系統建立後才做）由旅系統端驗收單向讀取支部後端，正如 BOOK 讀 BADGE；支部 Progress 不新增設定或 action。
 
 ## 疑難排解
 
 - **旅團沒有出現**：確認三項名稱拼對、選對 Vercel environment，然後 Redeploy。
-- **後端未接通**：確認 URL 是 `https://script.google.com/macros/s/.../exec`，不是 `/dev`。
+- **後端 action 無法執行**：確認 URL 是 `https://script.google.com/macros/s/.../exec`，不是 `/dev`。
 - **登入或進度失敗**：確認 Vercel `APIKEY` 與該 Unified GAS 的 `showApiKey()` 完全相同。
-- **管理頁可用但進度未接通**：不要加第二套 Progress 變數；檢查 `/api/units` 的 `progressServerSide`／`backendReady` 狀態及同一 Unified GAS 的 action。
-- **第 4 階段中央 SSO 失敗**：只有旅系統已建立才適用；核對 `typ`、issuer、audience、unit、role、90 秒時限及單次 `jti`，不要用 query string 身份 fallback。
+- **管理頁可用但 Progress action 失敗**：不要加第二套 Progress 變數；檢查 `/api/units` 的 `progressServerSide`／`backendReady` 狀態及同一 Unified GAS 的 action。
+- **未來旅系統讀不到支部資料**：在旅系統的支部後端 reader／allowlist 排查；不要在 Progress 新增 URL、Key、狀態查詢或控制。
 
 完整 staging 清單見 [`UNIFIED_STAGING_RESULTS.md`](UNIFIED_STAGING_RESULTS.md)。

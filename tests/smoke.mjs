@@ -1568,13 +1568,13 @@ section('公開資料（免登入公開頁）');
 
 }
 
-/* ---------- 7. 進度紀錄：一個後端、兩個前端 ---------- */
-section('進度紀錄（一個後端 · 兩個前端）');
+/* ---------- 7. 進度紀錄：同一 Unified Sheet 的 actions ---------- */
+section('進度紀錄（同一 Unified Sheet · actions 分頁）');
 {
   const vp = await import('../assets/js/views/progress.js');
   const lp = await import('../assets/js/lib/progress.js');
   const cfg = lp.progressCfg();
-  /* Browser config 永遠唔會持有 /exec 或 Key；接線只由 server units 狀態表示。 */
+  /* Browser config 永遠唔會持有 /exec 或 Key；資料來源只由 server Registry 決定。 */
   ok('進度 browser config 不保存後端／API Key',
     cfg.backend === '' && cfg.apiKey === '', JSON.stringify(cfg));
   ok('預設用內建考核項目定義（唔使連任何其他系統）',
@@ -1593,7 +1593,7 @@ section('進度紀錄（一個後端 · 兩個前端）');
   window.dispatchEvent(new window.HashChangeEvent('hashchange'));
   await new Promise(r => setTimeout(r, 60));
   const sv = doc.getElementById('view');
-  ok('未接通頁只列與 BADGE 相同的 NAME／BACKEND／APIKEY 合約',
+  ok('未登記頁只列與 BADGE 相同的 NAME／BACKEND／APIKEY 合約',
     /TROOP_0082_NAME/.test(sv.textContent) && /TROOP_0082_BACKEND/.test(sv.textContent)
       && /TROOP_0082_APIKEY/.test(sv.textContent));
   ok('瀏覽器不再提供 /exec、API Key 或第二進度後端輸入欄',
@@ -1626,7 +1626,7 @@ section('進度紀錄（一個後端 · 兩個前端）');
     && /function reviewProgressRequest/.test(code) && /function reviewLogRequest/.test(code));
   ok('批准待批完成會寫入「進度追蹤」（同一個後端）',
     /已批准並寫入進度/.test(code) && /由申請轉入/.test(code));
-  ok('Code.gs 會同步成員名單（兩個前端見同一批人）', /writeMemberList/.test(code));
+  ok('Code.gs 會同步成員名單（多個 client 見同一批人）', /writeMemberList/.test(code));
   ok('Code.gs 寫入用 LockService 排隊（全團同時撳都唔會撞）',
     /LockService\.getScriptLock/.test(code) && /withLock\(function/.test(code));
   const onDisk = fs.readFileSync(path.join(ROOT, 'apps-script', 'UnifiedCode.gs'), 'utf8');
@@ -1880,8 +1880,9 @@ console.log('\n▌跨前端身份 key（同一 Unified Sheet，以 canonical YMI
   window.dispatchEvent(new window.HashChangeEvent('hashchange'));
   await new Promise(r => setTimeout(r, 80));
   const pv = doc.getElementById('view').textContent;
-  ok('進度頁講明管理、進度及 BADGE 共用同一 Unified GAS／Sheet',
-    /管理、進度及 BADGE 共用一支 GAS/.test(pv) && /同一 Unified Sheet/.test(pv));
+  ok('進度頁講明管理、Progress 及 BADGE 直接使用同一 Unified GAS／Sheet',
+    /管理、Progress 及 BADGE 直接使用同一支 GAS 的不同 action/.test(pv)
+      && /同一 Unified Sheet/.test(pv));
   ok('進度頁有唯讀「資料來源」入口',
     !!doc.querySelector('[data-act="settings"]') && /資料來源/.test(pv));
   ok('進度頁只列 server Registry 三項，不叫 browser 執行 showApiKey 貼 Key',
@@ -2004,8 +2005,11 @@ console.log('\n▌新旅團申請接入（送去 ADMIN 收件匣）');
     cl.some(x => /管理系統/.test(x) && /進度/.test(x) && /BADGE/.test(x) && /共用/.test(x)), JSON.stringify(cl));
   ok('checklist 不會叫用戶去進度頁貼 Script／API Key',
     !cl.some(x => /進度 → 設定/.test(x) && /API Key/.test(x)), JSON.stringify(cl));
-  ok('checklist 唔再要求 portalOrigin（一個後端、兩個前端）',
+  ok('checklist 唔再要求 portalOrigin（一個 Unified 後端、多個 client）',
     !cl.some(x => /portalOrigin/.test(x)), JSON.stringify(cl));
+  ok('checklist 固定未來由旅系統端驗收 reader，不把中央 SSO 當支部工序',
+    cl.some(x => /旅系統 reader/.test(x) && /旅系統端/.test(x))
+      && !cl.some(x => /中央 SSO.*留待|接通中央 SSO/.test(x)), JSON.stringify(cl));
 
 }
 
@@ -2024,7 +2028,8 @@ console.log('\n▌新旅團申請接入（送去 ADMIN 收件匣）');
   window.dispatchEvent(new window.HashChangeEvent('hashchange'));
   await new Promise(r => setTimeout(r, 80));
   const pt = doc.getElementById('view').textContent;
-  ok('教學「進度紀錄」講明一個 Unified 後端、兩個前端', /一個 Unified 後端/.test(pt) && /兩個前端/.test(pt));
+  ok('教學「進度紀錄」講明一個 Unified 後端、多個 client',
+    /一個 Unified 後端/.test(pt) && /多個 client/.test(pt) && /行政介面、Progress 與 BADGE/.test(pt));
   ok('教學列明與 BADGE 完全相同的 NAME／BACKEND／APIKEY',
     /NAME/.test(pt) && /BACKEND/.test(pt) && /APIKEY/.test(pt) && /BADGE/.test(pt));
   ok('教學講明 staff／團員要由 session 固定權限', /staff session/.test(pt) && /session 固定/.test(pt));
@@ -2033,6 +2038,9 @@ console.log('\n▌新旅團申請接入（送去 ADMIN 收件匣）');
   ok('教學列出審批 action 並寫回同一 Sheet',
     /reviewRequest/.test(pt) && /reviewLogRequest/.test(pt) && /同一 Sheet/.test(pt));
   ok('教學講明所有前端用同一 YMIS 對人', /同一 YMIS/.test(pt));
+  ok('教學固定未來旅系統單向讀支部，唔改支部登入或 Progress',
+    /旅系統只由 server 單向讀取支部後端最小投影/.test(pt)
+      && /不改變支部登入或 Progress/.test(pt) && !/中央 SSO 留待/.test(pt));
 }
 
 /* ---------- 財務：領袖免收團費（2026-09-16 團長要求） ---------- */
@@ -2195,11 +2203,12 @@ section('欄位設定（每頁自己改）');
   ok('openFieldDesigner 係一支可以用嘅函式', typeof openFieldDesigner === 'function');
 }
 
-/* ---------- 進度紀錄：讀後端 ＋ 直接勾（一個後端、兩個前端） ---------- */
+/* ---------- Progress：同一 Unified 後端的讀／寫 actions ---------- */
 section('進度紀錄（讀 ＋ 勾 ＋ 寫，同一個後端）');
 {
   const vp = await import('../assets/js/views/progress.js');
-  const { progressCfg, getLinkState } = await import('../assets/js/lib/progress.js');
+  const progressLib = await import('../assets/js/lib/progress.js');
+  const { progressCfg } = progressLib;
   const units = await import('../assets/js/lib/units.js');
   const realFetch = globalThis.fetch;
   const calls = [];
@@ -2245,8 +2254,7 @@ section('進度紀錄（讀 ＋ 勾 ＋ 寫，同一個後端）');
         text: async () => text, json: async () => JSON.parse(text) };
     }
     let out = { ok: false, error: 'unknown_mock' };
-    if (body?.action === 'load') out = { ok: true, serverSideKey: true, data: loadFixture };
-    if (body?.action === 'getLinkState') out = { ok: false, reason: 'state_probe_failed', error: '入口狀態測試失敗' };
+    if (body?.action === 'load') out = { ok: true, action: 'load', data: loadFixture };
     if (body?.action === 'save') out = { ok: true, data: { processed: (body.data?.changes || []).length } };
     if (body?.action === 'reviewRequest') out = { ok: true, data: { success: true, message: body.data?.decision === 'approved' ? '已批准並寫入進度' : '已拒絕' } };
     if (body?.action === 'reviewLogRequest') out = { ok: true, data: { success: true, message: '已批准並寫入活動履歷', record_id: 'LOG_TEST' } };
@@ -2267,7 +2275,7 @@ section('進度紀錄（讀 ＋ 勾 ＋ 寫，同一個後端）');
 
     /* 模擬 /api/units 告知前端三項 server 設定已齊。 */
     await units.loadRegistry(true);
-    ok('server Registry 接通後 progress config 只見狀態，不見 secret',
+    ok('server Registry 載入後 progress config 只見資料來源狀態，不見 secret',
       progressCfg().serverSide === true && progressCfg().backend === '' && progressCfg().apiKey === '');
     window.location.hash = '#/progress/settings';
     window.dispatchEvent(new window.HashChangeEvent('hashchange'));
@@ -2277,18 +2285,14 @@ section('進度紀錄（讀 ＋ 勾 ＋ 寫，同一個後端）');
       /BADGE/.test(sv.textContent) && /NAME/.test(sv.textContent)
         && /BACKEND/.test(sv.textContent) && /APIKEY/.test(sv.textContent)
         && /不是用戶身份|唔係用戶身份/.test(sv.textContent));
-    ok('接通後仍無 browser 後端／Key／另存設定欄',
+    ok('Registry 登記後仍無 browser 後端／Key／另存設定欄',
       !sv.querySelector('#p-backend') && !sv.querySelector('#p-key') && !sv.querySelector('[data-act="save-cfg"]'));
-    ok('資料來源頁只按 Progress action 顯示結果，不再呈現入口門況或控制',
-      /同一支 GAS 按 action 讀同一張 Sheet 嘅不同分頁/.test(sv.textContent)
-        && !/本地入口|入口狀態/.test(sv.textContent)
+    ok('資料來源頁只交代同一 Sheet 的 Progress action，沒有任何接駁或入口控制',
+      /同一支 GAS 按 action 讀寫同一張 Sheet 嘅不同分頁/.test(sv.textContent)
+        && !/接駁|本地入口|入口狀態|旅系統/.test(sv.textContent)
         && !sv.querySelector('[data-act^="door-"]'));
-
-    /* 獨立入口狀態 action 可以失敗；呢個結果唔可以覆蓋 Progress load。 */
-    const stateFailure = await getLinkState();
-    ok('入口狀態查詢失敗係獨立結果',
-      stateFailure.ok === false && stateFailure.reason === 'state_probe_failed');
-    const stateProbeCount = calls.filter(c => c.body?.action === 'getLinkState').length;
+    ok('Progress client 不再匯出入口狀態或開關 helper',
+      typeof progressLib.getLinkState === 'undefined' && typeof progressLib.setLocalLogin === 'undefined');
 
     window.location.hash = '#/progress';
     window.dispatchEvent(new window.HashChangeEvent('hashchange'));
@@ -2298,9 +2302,9 @@ section('進度紀錄（讀 ＋ 勾 ＋ 寫，同一個後端）');
       !!loadCall && /api\/progress$/.test(loadCall.url)
         && loadCall.body.unit === '0082' && !loadCall.body.backend && !loadCall.body.apikey,
       JSON.stringify(loadCall?.body || {}));
-    ok('入口狀態查詢失敗不影響 Progress action 成功',
+    ok('Progress UI 只發業務 action，從不查詢或控制登入入口',
       calls.some(c => c.body?.action === 'load')
-        && calls.filter(c => c.body?.action === 'getLinkState').length === stateProbeCount);
+        && !calls.some(c => ['getLinkState', 'setLocalLogin'].includes(c.body?.action)));
 
     const view = () => doc.getElementById('view');
     window.location.hash = '#/progress';
@@ -2419,13 +2423,13 @@ section('進度紀錄（讀 ＋ 勾 ＋ 寫，同一個後端）');
     ok('空進度分頁仍顯示已成功讀到正常成員及 0 格進度',
       /已成功讀到同一 Unified Sheet 嘅 2 位成員/.test(view().textContent)
         && /目前有 0 格進度紀錄/.test(view().textContent)
-        && /連線正常/.test(view().textContent));
-    ok('空進度資料不會顯示連線失敗',
-      !/讀唔到後端|連線失敗/.test(view().textContent));
-    ok('入口狀態失敗後再讀空進度，UI 仍沒有自動查入口狀態',
-      calls.filter(c => c.body?.action === 'getLinkState').length === stateProbeCount);
+        && /Progress action 已成功/.test(view().textContent));
+    ok('空進度資料不會顯示讀取失敗',
+      !/讀唔到後端|讀取失敗/.test(view().textContent));
+    ok('空進度重新讀取仍只執行 Progress 業務 action',
+      !calls.some(c => ['getLinkState', 'setLocalLogin'].includes(c.body?.action)));
 
-    /* 測試連線（唔再需要 —— 「重新讀取同一 Sheet」就係實際 Progress action） */
+    /* 「重新讀取同一 Sheet」直接執行實際 Progress action。 */
     window.location.hash = '#/progress/settings';
     window.dispatchEvent(new window.HashChangeEvent('hashchange'));
     await new Promise(r => setTimeout(r, 120));

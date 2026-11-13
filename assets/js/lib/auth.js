@@ -574,7 +574,7 @@ async function changePasswordServer(oldPassword, newPassword, sessionOverride = 
 export async function changeMemberOwnPassword(memberId, oldPw, newPw, serverSession = null) {
   const s = serverSession || getSession();
   if (s?.sessionToken || s?.via === 'server') return changePasswordServer(oldPw, newPw, s);
-  if (s?.portalToken || s?.via === 'portal') return { ok: false, msg: '旅系統登入不設本地密碼' };
+  if (s?.portalToken || s?.via === 'portal') return { ok: false, msg: '隔離 auth fixture 身份不設支部本地密碼' };
 
   /* 只供開團／舊本機資料遷移 helper；正式 loginServer session 絕不落到呢條路。 */
   const m = find('members', memberId);
@@ -590,7 +590,7 @@ export async function changeMemberOwnPassword(memberId, oldPw, newPw, serverSess
   return setMemberHubPassword(memberId, newPw, { mustChange: false });
 }
 
-/** 後端身份一律優先使用已兌換的 opaque session；portalToken 只供舊部署過渡。 */
+/** 後端身份一律優先使用已兌換的 opaque session；portalToken 只供隔離 auth fixture／舊部署過渡。 */
 function backendAuthPayload(s) {
   if (s?.sessionToken) return { sessionToken: s.sessionToken };
   if (s?.portalToken) return { portalToken: s.portalToken, portalRole: s.portalRole, actorUsername: s.username };
@@ -639,33 +639,34 @@ export async function resetAccountPasswordServer(target, newPassword) {
 
 export async function loginPortalFromUrl(params = new URLSearchParams(location.search)) {
   if (params.get('from') !== 'portal') return { ok: false, skipped: true };
-  /* role／YMIS／src query 全部可偽造，絕不採用。上游只可以交一張由伺服器簽發、
-     最長 90 秒的 assertion；/api/portal 會核對 issuer／audience／旅團／身份。 */
+  /* 隔離 auth fixture only：呢條 assertion／exchange 路線不是現行入口或未來旅系統
+     施工契約。role／YMIS／src query 全部可偽造，絕不採用；fixture assertion 最長
+     90 秒，/api/portal 會核對 issuer／audience／支部／身份。 */
   const assertion = String(params.get('assertion') || '').trim();
-  if (!assertion) return { ok: false, msg: '旅系統入口缺少已簽署登入憑證' };
+  if (!assertion) return { ok: false, msg: '隔離 auth fixture 缺少已簽署憑證' };
   const r = await fetch('./api/portal', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ assertion })
   });
   const data = await r.json().catch(() => ({}));
-  if (!r.ok || !data.ok || !data.portalToken) return { ok: false, msg: data.reason || '旅系統入口驗證失敗' };
+  if (!r.ok || !data.ok || !data.portalToken) return { ok: false, msg: data.reason || '隔離 auth fixture 驗證失敗' };
 
-  /* /api/portal 只發 60 秒、只可用來兌換的 purpose token。真正 app session
-     由該支部統一 GS 發出；兌換後不在瀏覽器保留中央票據。 */
+  /* /api/portal fixture 只發 60 秒、只可用來兌換的 purpose token。真正 app session
+     由該支部 Unified GS 發出；兌換後不在瀏覽器保留 assertion／exchange token。 */
   const exchanged = await fetch('./api/proxy', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: 'authPortalExchange', unit: data.unit, portalToken: data.portalToken })
   });
   const session = await exchanged.json().catch(() => ({}));
   if (!exchanged.ok || !session.ok || !session.sessionToken || !session.account) {
-    return { ok: false, msg: session.error || '支部尚未接好中央 SSO，請聯絡管理員' };
+    return { ok: false, msg: session.error || '隔離 auth fixture 無法完成支部 session 兌換' };
   }
   const a = session.account;
   const role = ['chief', 'leader', 'exco', 'member'].includes(a.role) ? a.role : 'member';
   const subject = String(a.ymis || data.subject || '');
   setSession({
     role, accountId: `central:${a.id || subject}`, username: String(a.username || subject),
-    email: a.email || '', name: a.name || data.name || '旅系統使用者',
+    email: a.email || '', name: a.name || data.name || 'fixture 使用者',
     memberId: a.memberId || '', ymis: a.ymis || subject,
     at: Date.now(), via: 'portal', centralSso: true,
     sessionToken: session.sessionToken,
@@ -1117,7 +1118,7 @@ export async function changeOwnPassword(oldPw, newPw) {
   /* 正式登入身份一定由 GAS 以 opaque session 固定本人、核對目前密碼、撤銷舊票
      並換新票；不可只改瀏覽器 hash，否則另一部機仍會用舊密碼。 */
   if (s.sessionToken || s.via === 'server') return changePasswordServer(oldPw, newPw, s);
-  if (s.portalToken || s.via === 'portal') return { ok: false, msg: '中央旅系統帳戶不設支部本地密碼' };
+  if (s.portalToken || s.via === 'portal') return { ok: false, msg: '隔離 auth fixture 身份不設支部本地密碼' };
   /* 以下只供開團／舊本機資料遷移 helper。 */
   /* 名冊領袖（喺「用戶」頁開、用電郵入口入嚟）：密碼擺喺名冊 hubPw，唔喺 accounts */
   if (String(s.accountId || '').startsWith('member:')) {

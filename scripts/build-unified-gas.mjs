@@ -55,6 +55,38 @@ portal = replaceOne(portal,
   "PropertiesService.getScriptProperties().getProperty('PORTAL_SESSION_SECRET') || ''",
   "'' /* legacy Portal verifier disabled; Unified exchange is authoritative */",
   'legacy compatibility Portal secret');
+portal = replaceOne(portal,
+  '    /* ---- 進度追蹤：POST 讀（doGet ?action=load 之外，仲要 POST 版 ——\n       上游（旅系統）簽名讀進度嗰陣都係 POST；同一條 API Key 授權）---- */',
+  '    /* ---- 進度追蹤：POST 讀（供同源 server proxy 以用途分隔 HMAC\n       驗證同一個 load 業務 action）---- */',
+  'legacy Progress transport comment');
+portal = replaceOne(portal,
+  '    /* ↓↓↓ 同「進度前端」共用嘅分頁（一個後端、兩個前端）：欄位順序唔可以改 ↓↓↓ */',
+  '    /* ↓↓↓ 行政、Progress 與 BADGE 共用嘅分頁（一個 Unified 後端、多個 client）：欄位順序唔可以改 ↓↓↓ */',
+  'legacy shared-sheet comment');
+portal = replaceOne(portal,
+  '/** 收到 GET 時處理：?action=load 讀進度（兩個前端用同一份資料） */',
+  '/** 收到 GET 時處理：?action=load 讀進度（多個 client 用同一份資料） */',
+  'legacy Progress GET comment');
+portal = replaceOne(portal,
+  '    // 兩個前端都會用同一條 key（大寫 apiKey / 細寫 apikey 都收）',
+  '    // 多個 client 共用同一 Unified key（大寫 apiKey / 細寫 apikey 都收）',
+  'legacy shared-key comment');
+portal = replaceOne(portal,
+  ' * 兩個前端共用一個後端 —— 公開頁唔使等改 Git，同步完就見到新通告',
+  ' * 多個 client 共用一個後端 —— 公開頁唔使等改 Git，同步完就見到新通告',
+  'legacy shared-client comment');
+portal = replaceOne(portal,
+  '   一個後端、兩個前端：進度追蹤',
+  '   一個 Unified 後端、多個 client：Progress',
+  'legacy Progress heading');
+portal = replaceOne(portal,
+  '   呢個後端同時餵兩個前端：\n     ① 深資童軍管理系統（呢邊）   ② 進度追蹤前端（團員／領袖用）',
+  '   行政介面、Progress 與 BADGE 都係同一 Unified 後端的 client，以業務 action\n   直接讀寫指定分頁；唔存在另一個 Progress backend 或前端之間的接駁。',
+  'legacy two-client Progress description');
+portal = replaceOne(portal,
+  '   批准＝寫入「進度追蹤」（同一個後端、兩個前端都即刻見到）',
+  '   批准＝寫入「進度追蹤」（同一個後端的 client 都即刻見到）',
+  'legacy Progress approval comment');
 
 // Keep all baseline helpers global, but hand the four public entry points to the
 // unified router.  Internal menu callbacks that call initializeSheets() now
@@ -63,21 +95,29 @@ baseline = replaceOne(baseline, 'function initializeSheets() {', 'function badge
 baseline = replaceOne(baseline, 'function doGet(e){', 'function badgeDoGet_(e){', 'doGet');
 baseline = replaceOne(baseline, 'function doPost(e){', 'function badgeDoPost_(e){', 'doPost');
 baseline = replaceOne(baseline, 'function onOpen(){', 'function badgeOnOpen_(){', 'onOpen');
-/* Phase 3 has no central travel system. Keep the pinned implementation intact on
- * disk, but make the generated Sheet menu describe the guarded callback truthfully:
- * menuLocalLoginOff is overridden by unified-extension.gs and cannot close it. */
+/* Branch local accounts remain the normal login source. Keep the pinned implementation
+ * intact on disk, but make the generated Sheet menu describe the guarded callback
+ * truthfully: menuLocalLoginOff is overridden and cannot close it. */
 baseline = replaceOne(baseline,
   ".addItem('🔒 閂口（只收 sig）','menuLocalLoginOff')",
-  ".addItem('ℹ️ 現階段必須保持開啟','menuLocalLoginOff')",
-  'phase-3 local-login menu label');
+  ".addItem('ℹ️ 支部本地登入必須保持開啟','menuLocalLoginOff')",
+  'local-login menu label');
 baseline = replaceOne(baseline,
   '// 旅系統（旅 > 團 > 進度）：上游登記下游 URL 及 SHEET KEY，經 sig 讀寫下游；下游 ALLOW_LOCAL_LOGIN 閂口後只收 sig；\n//   選單「🔗 旅系統」提供匯出 JSON（含 hash）／匯入（upsertUser）／登記下游／直接入口掣',
-  '// 第 3 階段：本檔作支部獨立後端；正常身份來自支部 Users，本地登入必須保持開啟。\n// 第 4 階段預留：簽名上下游函數保留作未來旅系統契約，但支部 Sheet 選單不會顯示相關控制。',
-  'phase-3 architecture header');
+  '// 支部獨立後端：正常身份來自支部 Users，本地登入保持開啟。\n// Progress 只執行同一 Unified Sheet 的業務 action；簽名 helper 只作同一 /exec 的 server authentication transport。',
+  'architecture header');
+baseline = replaceOne(baseline,
+  '// 接入資料：initializeSheets／showApiKey 及旅系統選單只顯示 API Key；部署 URL 由 Google 部署視窗提供，旅團編號在 ADMIN FORM 填寫。',
+  '// 接入資料：initializeSheets／showApiKey 及支部系統選單只顯示 API Key；部署 URL 由 Google 部署視窗提供，旅團編號在 ADMIN FORM 填寫。',
+  'registration menu header');
+baseline = replaceOne(baseline,
+  '// ===== 旅系統：上下游接駁（旅 > 團 > 進度）=====',
+  '// ===== Pinned baseline signature compatibility helpers（not a Progress integration contract）=====',
+  'legacy signature section heading');
 baseline = replaceOne(baseline,
   '// ===== 旅系統：Sheet 選單（匯出／匯入／登記下游／直接入口掣）=====',
-  '// ===== Pinned phase-4 menu implementation（phase 3 onOpen is overridden below）=====',
-  'phase-3 menu section heading');
+  '// ===== Pinned baseline legacy menu implementation（Unified onOpen is overridden below）=====',
+  'legacy menu section heading');
 
 const wrappedPortal = [
   '// ===== Namespaced legacy administrative compatibility module =====',

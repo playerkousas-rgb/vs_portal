@@ -5,21 +5,22 @@
 
      施工次序 = 4 本 BOOK → 4 套 BADGE → 5 個支部系統 → 最後旅系統。
      現在係第 3 階段，未有中央旅系統；支部必須可以獨立運作。
-     最終系統樹 = 旅系統 ＋ 5 個支部系統 ＋ 4 套進度追蹤 ＋ 4 本 BOOK。
-     可以分開連結（例：旅＋進度；進度＋BOOK）。
-     **但冇跨支部連結。**
+     Progress 是支部內部功能，只經同源 proxy 對本支部 Unified backend 執行業務 action。
+     未來方向是旅系統 → 讀取支部後端，正如 BOOK → 讀取 BADGE。
+     **支部之間冇 direct link，方向亦不可倒轉。**
 
    ★ 用戶澄清（最重要，唔好誤解）：
      「其實佢地所謂既連係因為有旅係同接通兩者，再係旅係統表現出來的，
        所以嚴格來說不算連上」
 
-     → 即使 VS 同 ROVER 掛喺同一個旅下面，佢哋之間**依然冇 direct link**。
-       係旅系統「分別」接通兩邊，再喺旅層聚合呈現。星形，唔係網狀。
+     → 即使 VS 同 ROVER 同時由旅系統讀取，佢哋之間**依然冇 direct link**。
+       係旅系統以獨立 reader 分別讀兩邊，再喺旅層聚合呈現。星形，唔係網狀。
 
    所以本 repo（支部級）永遠唔准：
      ① 有另一個支部嘅 backend URL / API key 設定槽（env 或 registry 欄位）
-     ② 主動 request 另一個支部嘅 /exec
-     ③ 出現跨支部聚合功能（嗰啲屬旅系統）
+     ② 主動 request 另一個支部或旅系統
+     ③ 在 Progress 加登入閘門／旅系統 action、狀態或第二 backend
+     ④ 出現跨支部聚合功能（嗰啲屬旅系統）
 
    呢個係靜態守門：掃原始碼，唔准出現橫向連結嘅入口。
    用法：node tests/boundary.mjs
@@ -37,8 +38,8 @@ function ok(name, cond, extra = '') {
 }
 const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
 
-/* 其他支部系統／佢哋嘅進度 leaf —— 本 repo 唔准直接連任何一個。
-   註：vsbadge 係「深資自己嘅進度 leaf」（合法下游），所以唔列入禁區。 */
+/* 其他支部系統／BADGE host —— 本 repo 唔准直接 request 任何一個。
+   本支部 Progress 只會呼叫 Registry 指定的同一 Unified backend。 */
 const SIBLING_BRANCH_HOSTS = [
   'roverbadge', 'scoutbadge', 'cubsbadge',
   'roverportal', 'scoutportal', 'cubsportal', 'rover_portal', 'scout_portal', 'cubs_portal',
@@ -110,12 +111,27 @@ console.log('\n▌③ 前端唔准開「連去另一個支部」嘅設定入口'
     if (CROSS_BRANCH_FIELD.test(txt)) bad.push(f);
   }
   ok('前端冇跨支部 backend/key 設定槽', bad.length === 0, bad.join(', '));
+
+  const progressApi = read('api/progress.js');
+  const actionSet = progressApi.match(/const ACTIONS = new Set\(\[[\s\S]*?\]\);/)?.[0] || '';
+  ok('Progress API action set 只保留業務操作',
+    !!actionSet && !/getLinkState|setLocalLogin|portal|travel/i.test(actionSet), actionSet);
+  const progressClient = read('assets/js/lib/progress.js');
+  ok('Progress client 冇入口狀態／控制 helper',
+    !/export\s+(?:async\s+)?function\s+(?:getLinkState|setLocalLogin)\b/.test(progressClient));
+  ok('Progress client／API 只接受支部 session，不接 auth fixture portalToken',
+    !/portalToken/.test(progressClient)
+      && !/(?:body|payload)\.portalToken|firstStr\([^)]*portalToken/.test(progressApi)
+      && /'portalToken'/.test(progressApi));
+  const progressView = read('assets/js/views/progress.js');
+  ok('Progress view 冇發出入口／旅系統 action',
+    !/action\s*:\s*['"](?:getLinkState|setLocalLogin)['"]/.test(progressView));
 }
 
-console.log('\n▌④ 只准向上游／自己下游連線（白名單存在）');
+console.log('\n▌④ 執行期只准本支部 Registry 後端及固定 ADMIN 端點');
 {
   const proxy = read('api/proxy.js');
-  /* ADMIN 收件匣係固定受信端點（向上），唔係由前端傳入 */
+  /* ADMIN 收件匣係固定受信端點，唔係由前端傳入。 */
   ok('ADMIN 端點係伺服器端常數', /const SCOUT_ADMIN_API\s*=/.test(proxy));
   ok('ADMIN 端點要過 trusted exec URL 檢查', /isTrustedExecUrl\(SCOUT_ADMIN_API\)/.test(proxy));
   /* 後端請求目標只可以來自 registry（自己旅團）或伺服器端常數，
@@ -142,8 +158,12 @@ console.log('\n▌⑤ 邊界文件存在而且寫明「唔算連上」');
   ok('SCOPE 固定由下而上施工次序（BOOK → BADGE → 支部 → 旅）',
     /BOOK[\s\S]{0,120}BADGE[\s\S]{0,160}5 個支部系統[\s\S]{0,160}旅系統/.test(scope));
   ok('SCOPE 講明現在未有中央旅系統', /現在沒有中央旅系統/.test(scope));
-  ok('SCOPE 規定第 3 階段 ALLOW_LOCAL_LOGIN 保持 true',
+  ok('SCOPE 規定本地登入保持正常可用',
     /ALLOW_LOCAL_LOGIN[\s\S]{0,80}保持 `true`/.test(scope));
+  ok('SCOPE 定義 Progress 為支部內部功能', /Progress 是支部系統內部功能/.test(scope));
+  ok('SCOPE 固定未來方向為旅系統單向讀取支部後端',
+    /旅系統[^\n]{0,40}單向讀取各支部後端/.test(scope));
+  ok('SCOPE 固定 BOOK 單向讀取 BADGE', /BOOK → 讀取 BADGE/.test(scope));
   const agents = read('AGENTS.md');
   ok('AGENTS 有施工級別（BRANCH）', /BRANCH（支部）/.test(agents));
   ok('AGENTS 禁止主動連另一個支部', /主動連另一個支部/.test(agents));

@@ -416,7 +416,7 @@ section('⑧ ★ 進度讀寫 ＋ 直接對 Sheet（/api/progress）');
 
   /* 直接開張 Sheet 對數（唔經後端自我報告）——「人讀到但冇進度」嘅唯一真相。
      留意：status 係管理系統 action，行 /api/proxy（唔係 /api/progress，
-     後者只放行進度 leaf 嗰幾個 action）。 */
+     後者只放行 Progress 業務 actions）。 */
   const st = await (await fetch(`${BASE}/api/proxy`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: 'status', unit: UNIT })
@@ -443,10 +443,10 @@ section('⑧ ★ 進度讀寫 ＋ 直接對 Sheet（/api/progress）');
   const badKey = await post({ action: 'load', unit: UNIT, backend: REAL_EXEC, apikey: 'wrong_key_xxx' });
 
   /* 呢個部署有設伺服器端 Key（TROOP_0082_APIKEY）→ 前端填乜都唔會蓋過佢：
-     load 一樣由伺服器 key 認證（錯 key 唔會漏資料出去）。 */
-  ok('伺服器端有 Key：前端亂填都唔會用（serverSideKey:true）',
-    badKey.ok === true && badKey.serverSideKey === true,
-    JSON.stringify({ ok: badKey.ok, srv: badKey.serverSideKey }));
+     load 一樣由伺服器 key 認證，但回應不公開 Registry readiness。 */
+  ok('伺服器端有 Key：前端亂填都唔會用，回應亦不公開 Registry 狀態',
+    badKey.ok === true && !Object.prototype.hasOwnProperty.call(badKey, 'serverSideKey'),
+    JSON.stringify({ ok: badKey.ok, fields: Object.keys(badKey || {}) }));
 }
 
 /* ============================================================

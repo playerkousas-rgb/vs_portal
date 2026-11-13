@@ -43,7 +43,7 @@ TROOP_<ID>_APIKEY=showApiKey 顯示的值
 - 進度：`進度追蹤`、`其他獎章`、`待批完成`、`活動履歷`、`待批履歷`、`成員名單`；
 - 操作與同步紀錄。
 
-現階段 `Users` 本地帳戶保存 PBKDF2 hash，並在 `ALLOW_LOCAL_LOGIN=true` 時作正常日常登入。第 4 階段旅系統建立後，才可另加不保存本地密碼的中央 SSO 授權鏡像。
+`Users` 本地帳戶保存 PBKDF2 hash，並在 `ALLOW_LOCAL_LOGIN=true` 時作正常日常登入。未來旅系統的 server-side reader 不會取代這個身份來源、關閉本地登入，亦不會要求 Progress 建立上游帳戶鏡像。
 
 ## 4. 行政資料保存
 
@@ -60,12 +60,13 @@ API Key 只由 server Registry 注入，不能取代 session。browser 自報 ro
 ## 5. 進度
 
 - 管理系統經同源 `/api/progress` 呼叫同一 Unified GAS；BADGE 亦用同一 `/exec` 與 API Key 讀寫同一 Sheet。
-- action dispatcher 直接選取 `進度追蹤`、`成員名單` 等分頁；分頁不是另一個後端或另一段接駁。
+- action dispatcher 直接選取 `進度追蹤`、`成員名單` 等分頁；所有分頁都屬於同一後端。
 - staff 可管理全團；member action 由 session 固定本人 YMIS。
 - 審批 `reviewRequest`／`reviewLogRequest` 寫回同一張 Sheet。
 - 考核項目固定讀同源 `data/progress/items.json`；不是第二資料後端。
-- 「進度 → 資料來源」沒有 backend、API Key、remote catalog 或入口門況控制。
-- `進度追蹤` 沒有資料時正常回成功空集合，介面顯示 0 項，不得顯示「連線失敗」。
+- 「進度 → 資料來源」沒有 backend、API Key、remote catalog、登入閘門或旅系統接口。
+- `進度追蹤` 沒有資料時正常回成功空集合，介面顯示 0 項，不得顯示「讀取失敗」。
+- 未來旅系統單向讀取支部後端，正如 BOOK 讀 BADGE；Progress 不參與該讀取契約。
 
 ## 6. 手機申報與通告
 
@@ -83,13 +84,13 @@ API Key 只由 server Registry 注入，不能取代 session。browser 自報 ro
 
 - 每旅團各有一張 Sheet、一支 Unified GAS、一個 API Key。
 - Registry 以 `TROOP_<ID>_NAME/BACKEND/APIKEY` 分開。
-- 另一旅團 API Key、session、assertion 或 exchange token全部不可跨旅使用。
+- 另一旅團 API Key、session 或未授權 server reader request 全部不可跨旅使用。
 - 不存在「未登記旅團借用預設後端」fallback。
 - `/api/units` 不回傳 secret 或完整 `/exec`。
 
 ## 8. 驗收
 
-- [ ] `/api/units` 顯示正確旅團接通狀態，無 secret。
+- [ ] `/api/units` 顯示正確旅團 Registry 狀態，無 secret。
 - [ ] 未登入不能下載完整行政 DB。
 - [ ] 管理寫入、進度寫入與 BADGE 寫入落在同一 Sheet。
 - [ ] 同一 YMIS 在所有前端對應同一人。

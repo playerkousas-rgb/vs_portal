@@ -2,8 +2,9 @@
 
 > 適用於目前私人測試分支；不要修改既有旅團 Sheet 或 Production。不要把 API Key、token、完整 Sheet ID 貼到聊天或 Git。
 >
-> **施工階段：BOOK → BADGE → 5 個支部系統（現在）→ 旅系統（最後）。** 現在未有中央旅系統；
-> 本文件 A–C 及 E1 屬支部獨立部署，D 及 E2 只係第 4 階段預留契約。
+> **施工次序：BOOK → BADGE → 5 個支部系統（現在）→ 旅系統（最後）。** 現在未有中央旅系統；
+> 本文件 A–C 及 E1 是支部獨立部署規格。未來旅系統只由 server 單向讀取支部後端；
+> repo 內 assertion／exchange 是隔離 auth fixture，不是旅系統施工契約。
 
 ## 先講拓撲
 
@@ -14,7 +15,7 @@
 - 一個 `API_KEY`；
 - Vercel 三項旅團設定：`NAME`、`BACKEND`、`APIKEY`。
 
-管理系統、進度頁與 BADGE 都經同一支 Unified GAS 讀寫同一張 Sheet。不要另建進度 GAS，也不要設定任何 `PORTAL*` 或 `PROGRESS*` secret／backend／key。
+這支 Unified GAS 是完整能力後端，包含身份、支部行政、Progress、獎章、履歷及申報 action。支部系統是功能完整版前端；BADGE 是連到同一後端的輕量前端，只呈現部分流程。不要另建進度或 BADGE 精簡 GAS，也不要設定任何 `PORTAL*` 或 `PROGRESS*` secret／backend／key。
 
 ## A. 建立全新 Sheet 與 Unified Apps Script
 
@@ -23,7 +24,7 @@
 3. 刪除預設內容，把 [`apps-script/UnifiedCode.gs`](../apps-script/UnifiedCode.gs) 全部貼入 `Code.gs`。
 4. 儲存後，在函式下拉選單執行 **`initializeSheets`**；首次執行要授權 Sheet、Mail、Drive。
 5. 再執行 **`initializeSheets`** 兩次，確認既有資料、API Key 及進度資料沒有被重置。
-6. 執行 **`showApiKey`**（或 Sheet 選單「🔗 旅系統 → 顯示 API KEY」），安全保存顯示的 Key。
+6. 執行 **`showApiKey`**（或 Sheet 選單「🔗 支部系統 → 顯示 API KEY」），安全保存顯示的 Key。
 7. 可執行 **`getVsGsReleaseStatus`** 檢查 pinned vsbadge release 狀態。
 
 如要驗證生成產物，先在 repo 執行：
@@ -40,9 +41,9 @@ sha256sum apps-script/UnifiedCode.gs
 | 名稱 | 必要性 | 用途 |
 |---|---:|---|
 | `API_KEY` | 自動 | `initializeSheets()`／`showApiKey()` 管理；是 routing 與用途分隔 HMAC 的 server-side 根密鑰。 |
-| `ALLOW_LOCAL_LOGIN` | 可選 | 未設定視為 `true`。第 3 階段必須保持 `true`；第 4 階段接通旅系統並驗收中央 SSO 後才可測 `false`。 |
+| `ALLOW_LOCAL_LOGIN` | 可選 | 未設定視為 `true`；支部本地帳戶是正常登入來源，部署及未來旅系統 reader 均保持 `true`。 |
 
-**不要新增 `PORTAL_SESSION_SECRET`。** Portal assertion、branch exchange 與 exchange JTI 都由同一 `API_KEY` 以不同 purpose 派生；API Key 本身不等於使用者身份。
+**不要新增 `PORTAL_SESSION_SECRET`。** 隔離測試中的 assertion／exchange 由同一 `API_KEY` 以不同 purpose 派生，但不是現行登入或未來旅系統 reader 的部署設定；API Key 本身不等於使用者身份。
 
 以下由程式自動管理，不要手動改：`VS_GS_INITIALIZED_VERSION`、`UNIFIED_GS_INITIALIZED_VERSION`、session／reset／rate-limit properties。
 
@@ -63,7 +64,7 @@ TROOP_0082_BACKEND=https://script.google.com/macros/s/你的部署/exec
 TROOP_0082_APIKEY=showApiKey 顯示的同一 API_KEY
 ```
 
-這三項與 BADGE 使用的登記完全相同。更新後要 Redeploy。
+這三項與 BADGE 使用的登記完全相同，並指向同一支完整 Unified GS；BADGE 不另設精簡後端。更新後要 Redeploy。
 
 不要設定：
 
@@ -78,56 +79,40 @@ TROOP_0082_APIKEY=showApiKey 顯示的同一 API_KEY
 
 `SUPER_KEY` 是平台隱藏超管的獨立可選設定，不是旅團接線的一部分；不設即關閉超管。
 
-## D. 第 4 階段預留：中央 SSO 簽章契約（現在不啟用）
+## D. 隔離 auth fixture（不是部署或旅系統規格）
 
-現在未有中央旅系統，支部以自己的 `Users`、密碼及 opaque session 正常獨立運作。以下契約保留到五個支部系統完成、開始建立旅系統時才實作。
+支部以自己的 `Users`、密碼及 opaque session 正常運作，`ALLOW_LOCAL_LOGIN` 保持 `true`。
+`UnifiedCode.gs` 與 `/api/portal` 仍保留 assertion → exchange → branch session 的安全回歸 fixture，
+用來測 purpose separation、audience、時限及 replay 防護。不要在開團或未來旅系統 reader 啟用、
+依賴或照抄這條實驗路徑，也不可用 fixture 通過來聲稱旅系統已完成。
 
-屆時中央旅系統必須在 server 端使用該旅團同一 `APIKEY` 派生 assertion key：
+未來旅系統的正式資料方向只有：
 
 ```text
-assertionKey = HMAC-SHA256(key=APIKEY, message="vs-portal-central-assertion-v1")
-assertion    = base64url(JSON payload) + "." + base64url(HMAC-SHA256(key=assertionKey, message=payloadPart))
+旅系統 server ──單向讀取最小投影──▶ 支部 Unified backend
 ```
 
-payload 必須包括：
-
-```json
-{
-  "typ": "central-sso-assertion",
-  "iss": "central-travel-system",
-  "aud": "vs-portal:branch:0082",
-  "u": "0082",
-  "role": "member",
-  "sub": "中央權威身份 ID",
-  "name": "顯示名稱",
-  "iat": 0,
-  "exp": 0,
-  "jti": "單次唯一值"
-}
-```
-
-規則：assertion 最長 90 秒；`role` 只可為 `member`、`exco`、`leader`、`chief`、`admin`；`jti` 必須單次；query string 的 `role/src/ymis/name` 一律不可信。
-
-`/api/portal` 驗證後只簽最長 60 秒、指定支部 audience 的 exchange token。Unified GAS 必須兌換成 opaque branch session，並以 `ScriptLock`＋`ScriptCache` 阻止重放。
-
-> **第 4 階段接通阻擋條件：** 本 repo 現時只預留 verifier／exchange；未來中央旅系統的真實 assertion signer 必須先實作並通過 staging 契約測試，才可聲稱「中央 SSO／旅系統已接通」。這**不阻擋第 3 階段支部獨立部署**。
+reader 的 action allowlist、最小投影、server-side 驗證、逾時、重放與跨支部隔離，應在旅系統
+repo 建立時另行設計及驗收。支部 Progress 不新增 URL、Key、狀態查詢、入口控制或帳戶鏡像。
 
 ## E. 驗收順序
 
 ### E1. 現階段：支部獨立驗收
 
-1. Vercel Redeploy 後確認 `/api/units` 只顯示接駁狀態，不洩漏 `/exec` 或 API Key。
+1. Vercel Redeploy 後確認 `/api/units` 只顯示 Registry readiness，不洩漏 `/exec` 或 API Key。
 2. 管理系統：`/?u=0082`。
 3. 團員入口：`/members.html?u=0082`。
-4. 進度頁確認沒有後端／API Key 輸入欄，讀寫均走同源 `/api/progress`。
-5. 測管理寫入、進度寫入及 BADGE 寫入都落在同一張 Sheet。
-6. 測本地 staff 與 member session 權限；API Key 不可直接冒充用戶。
-7. 確認 `ALLOW_LOCAL_LOGIN=true`，本地帳戶可正常登入。
-8. 填寫 [`UNIFIED_STAGING_RESULTS.md`](UNIFIED_STAGING_RESULTS.md) 的現階段項目；未通過前不要切換既有旅團或 Production。
+4. 確認 `UnifiedCode.gs` 同時具備身份、行政、Progress、獎章、履歷及申報能力；沒有第二支 BADGE 精簡 GS。
+5. 進度頁確認沒有後端／API Key 輸入欄，讀寫均走同源 `/api/progress`。
+6. 測功能完整版前端寫入、Progress 寫入及 BADGE 輕量前端寫入都落在同一張 Sheet。
+7. 測兩個前端各自的 action allowlist，以及本地 staff／member session、role、scope 權限；API Key 不可直接冒充用戶。
+8. 確認 `ALLOW_LOCAL_LOGIN=true`，本地帳戶可正常登入。
+9. 填寫 [`UNIFIED_STAGING_RESULTS.md`](UNIFIED_STAGING_RESULTS.md) 的現階段項目；未通過前不要切換既有旅團或 Production。
 
-### E2. 第 4 階段：旅系統接通驗收
+### E2. 旅系統建立後：reader 驗收（現在不做）
 
-1. 中央 signer 已由中央登入 session 固定 claims，不相信 browser query 身份。
-2. 測 assertion 過期、錯 audience、錯 unit、錯 role、重放及另一旅團 Key 全部拒絕。
-3. 真實測試中央 SSO 可進兩個支部前端後，才將 `ALLOW_LOCAL_LOGIN=false`，再驗中央 SSO 與 server-to-server signed path。
-4. 未全數通過，只可保留支部獨立模式，不可標示旅系統已接通。
+1. 從旅系統 server 呼叫明確 allowlist 的支部 read action；browser 不持有 reader credential。
+2. 回應只含旅層需要的最小投影；不可回完整支部 DB、密碼 hash、session 或其他支部資料。
+3. 測錯 unit、錯 Key、未授權 action、逾時及重放全部 fail closed，並確認各支部互相隔離。
+4. 支部 Progress 沒有新增旅系統設定／狀態／控制，本地登入仍保持正常可用。
+5. 隔離 assertion／exchange fixture 的結果不可當作 reader 或旅系統完成證據。

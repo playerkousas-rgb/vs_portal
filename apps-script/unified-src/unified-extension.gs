@@ -4,10 +4,18 @@
 // Composition:
 //   1. exact vsbadge GS v9.6 baseline (identity, progress, badges, logs)
 //   2. namespaced VS Portal v2.8.8 administrative storage compatibility
-//   3. this router (central SSO, action scopes, canonical identity projection)
+//   3. this router (isolated auth fixture, action scopes, canonical identity projection)
 //
-// This file is test-only in vs_portal.  It is not published to vsbadge and does
-// not deploy itself.  Build with: npm run build:gas:unified
+// The generated GS is the complete branch capability superset: identity, branch
+// administration, progress, badges, logs, and submissions. vs_portal is the
+// full-featured frontend; vsbadge is a lightweight frontend over the same backend,
+// not a second reduced GS. Each client still needs an allowed action and the router
+// still enforces server-side session, role, and scope authorization.
+//
+// This file is test-only in vs_portal.  Its assertion/exchange route is a security
+// fixture, not a Progress or future travel-system contract.  The formal future
+// direction is travel-system server → branch backend reader.  It is not published
+// to vsbadge and does not deploy itself.  Build with: npm run build:gas:unified
 // ============================================================
 
 var UNIFIED_GS_VERSION = 'v9.6-u1-test';
@@ -114,8 +122,8 @@ function unifiedEffectiveRole_(localBackendRole, assertedPortalRole) {
   var localPortal = unifiedRoleFromBackend_(localBackendRole);
   var asserted = String(assertedPortalRole || '').toLowerCase();
   if (['member', 'exco', 'leader', 'chief', 'admin', 'super'].indexOf(asserted) < 0) asserted = 'member';
-  // Central SSO proves identity and membership, while the branch Users row remains
-  // the action-scope ceiling.  A stale/forged high role can therefore never elevate.
+  // The isolated auth fixture proves identity and membership, while the branch Users
+  // row remains the action-scope ceiling. A stale/forged high role can never elevate.
   return unifiedRoleRank_(localPortal) <= unifiedRoleRank_(asserted) ? localPortal : asserted;
 }
 
@@ -135,41 +143,41 @@ function unifiedVerifyPortalToken_(token, unit) {
      by BADGE is the root, while this fixed purpose derives a non-interchangeable
      exchange key. API_KEY by itself is never accepted as user identity. */
   var apiKey = String(getApiKey() || '');
-  if (!apiKey) return { ok: false, code: 'SSO_NOT_CONFIGURED', error: '中央 SSO 尚未設定' };
+  if (!apiKey) return { ok: false, code: 'SSO_NOT_CONFIGURED', error: '隔離 auth fixture 尚未設定' };
   var secret = hmacSha256Hex(UNIFIED_PORTAL_EXCHANGE_PURPOSE, apiKey);
   var parts = String(token || '').split('.');
   if (parts.length !== 2 || !parts[0] || !parts[1]) {
-    return { ok: false, code: 'SSO_TOKEN_INVALID', error: '中央 SSO 票據無效' };
+    return { ok: false, code: 'SSO_TOKEN_INVALID', error: '隔離 auth fixture 票據無效' };
   }
   var expected = unifiedB64UrlEncode_(Utilities.computeHmacSha256Signature(parts[0], secret));
   if (!safeEqualText(expected, String(parts[1]).replace(/=+$/, ''))) {
-    return { ok: false, code: 'SSO_TOKEN_INVALID', error: '中央 SSO 票據無效' };
+    return { ok: false, code: 'SSO_TOKEN_INVALID', error: '隔離 auth fixture 票據無效' };
   }
   var payload = unifiedDecodePortalPayload_(parts[0]);
   if (!payload || String(payload.typ || '') !== 'central-sso-exchange') {
-    return { ok: false, code: 'SSO_TOKEN_INVALID', error: '中央 SSO 票據格式不正確' };
+    return { ok: false, code: 'SSO_TOKEN_INVALID', error: '隔離 auth fixture 票據格式不正確' };
   }
   var nowMs = Date.now();
   var iat = Number(payload.iat || 0);
   var exp = Number(payload.exp || 0);
   if (!iat || !exp || iat > nowMs + 15000 || exp <= nowMs - 15000 || exp <= iat || exp - iat > UNIFIED_PORTAL_TOKEN_MAX_MS) {
-    return { ok: false, code: 'SSO_TOKEN_EXPIRED', error: '中央 SSO 票據已過期，請由旅系統重新進入' };
+    return { ok: false, code: 'SSO_TOKEN_EXPIRED', error: '隔離 auth fixture 票據已過期，請重新產生測試票據' };
   }
   if (String(payload.u || '') !== String(unit || '')) {
-    return { ok: false, code: 'SSO_UNIT_MISMATCH', error: '中央 SSO 票據不屬於此支部' };
+    return { ok: false, code: 'SSO_UNIT_MISMATCH', error: '隔離 auth fixture 票據不屬於此支部' };
   }
   if (String(payload.iss || '') !== UNIFIED_PORTAL_EXCHANGE_ISSUER
       || String(payload.aud || '') !== UNIFIED_PORTAL_EXCHANGE_AUDIENCE + String(unit || '')
       || String(payload.src || '') !== UNIFIED_PORTAL_CENTRAL_SOURCE) {
-    return { ok: false, code: 'SSO_TOKEN_INVALID', error: '中央 SSO 票據用途不正確' };
+    return { ok: false, code: 'SSO_TOKEN_INVALID', error: '隔離 auth fixture 票據用途不正確' };
   }
   var subject = String(payload.sub || '').trim();
   var role = String(payload.role || '').trim().toLowerCase();
   if (!subject || subject.length > 160 || ['member', 'exco', 'leader', 'chief', 'admin'].indexOf(role) < 0) {
-    return { ok: false, code: 'SSO_TOKEN_INVALID', error: '中央 SSO 身份資料不完整' };
+    return { ok: false, code: 'SSO_TOKEN_INVALID', error: '隔離 auth fixture 身份資料不完整' };
   }
   var jti = String(payload.jti || '').trim();
-  if (!jti || jti.length > 160) return { ok: false, code: 'SSO_TOKEN_INVALID', error: '中央 SSO 票據缺少識別碼' };
+  if (!jti || jti.length > 160) return { ok: false, code: 'SSO_TOKEN_INVALID', error: '隔離 auth fixture 票據缺少識別碼' };
   var scopes = Array.isArray(payload.scope) ? payload.scope.map(String) : [];
   return { ok: true, subject: subject, role: role, name: safeSheetText(payload.name, 100), scopes: scopes,
     issuer: String(payload.iss || ''), jti: jti };
@@ -274,7 +282,7 @@ function unifiedEnsureCentralUser_(member, assertedRole) {
   row[map.name] = safeSheetText(member.name || member.ymis, 100);
   row[map.email] = isEmail(member.contact) ? String(member.contact).trim() : '';
   row[map.role] = unifiedRoleToBackend_(assertedRole);
-  row[map.password_hash] = ''; // Deliberately passwordless: central SSO is the credential source.
+  row[map.password_hash] = ''; // Deliberately passwordless: the isolated fixture is the credential source.
   row[map.branch] = safeSheetText(member.branch, 100);
   row[map.can_tick] = unifiedRoleRank_(assertedRole) >= unifiedRoleRank_('exco');
   row[map.auth_by] = 'central-sso';
@@ -284,7 +292,7 @@ function unifiedEnsureCentralUser_(member, assertedRole) {
   row[map.allowed_badges] = defaultAllowedBadges(row[map.role]);
   row[map.force_change_password] = false;
   sheet.appendRow(row);
-  writeAudit('central-sso', 'sso_user_mirror', member.ymis, '由中央旅系統身份建立無密碼授權鏡像');
+  writeAudit('central-sso', 'sso_user_mirror', member.ymis, '由隔離 auth fixture 建立無密碼授權鏡像');
   return getUser(member.ymis);
 }
 
@@ -293,8 +301,8 @@ function unifiedRefreshCentralMirror_(user, assertedRole) {
   if (!rec) return user;
   var hash = rec.map.password_hash === undefined ? '' : String(rec.data[rec.map.password_hash] || '');
   var source = rec.map.auth_by === undefined ? '' : String(rec.data[rec.map.auth_by] || '');
-  // Only passwordless rows created by central SSO follow central membership role
-  // changes automatically. Existing vsbadge rescue accounts keep their local
+  // Only passwordless rows created by the isolated fixture follow fixture membership
+  // role changes automatically. Existing local accounts keep their branch
   // authorization ceiling and can never be elevated by an assertion alone.
   if (!hash && source === 'central-sso') {
     var wanted = unifiedRoleToBackend_(assertedRole);
@@ -302,7 +310,7 @@ function unifiedRefreshCentralMirror_(user, assertedRole) {
       rec.sheet.getRange(rec.row, rec.map.role + 1).setValue(wanted);
       if (rec.map.can_tick !== undefined) rec.sheet.getRange(rec.row, rec.map.can_tick + 1).setValue(unifiedRoleRank_(assertedRole) >= unifiedRoleRank_('exco'));
       if (rec.map.auth_date !== undefined) rec.sheet.getRange(rec.row, rec.map.auth_date + 1).setValue(now());
-      writeAudit('central-sso', 'sso_role_sync', user.ymis, '中央會籍角色同步為 ' + wanted);
+      writeAudit('central-sso', 'sso_role_sync', user.ymis, '隔離 fixture 角色同步為 ' + wanted);
       return getUser(user.ymis) || user;
     }
   }
@@ -316,7 +324,7 @@ function unifiedResolvePortalIdentity_(verified) {
   if (user) user = unifiedRefreshCentralMirror_(user, verified.role);
   if (!user) {
     return { ok: false, code: 'SSO_MEMBERSHIP_NOT_FOUND',
-      error: '中央帳戶尚未登記在此支部，請由旅系統同步支部會籍後再試' };
+      error: '隔離 auth fixture 身份未對應此支部名冊' };
   }
   var effectiveRole = unifiedEffectiveRole_(user.role, verified.role);
   return { ok: true, ymis: String(user.ymis || ''), user: user, member: member,
@@ -375,12 +383,12 @@ function unifiedPortalExchange_(body) {
   var verified = unifiedVerifyPortalToken_(body.portalToken, body.unit);
   if (!verified.ok) return unifiedJson_({ ok: false, success: false, code: verified.code, error: verified.error });
   if (!unifiedConsumePortalJti_(verified)) {
-    return unifiedJson_({ ok: false, success: false, code: 'SSO_TOKEN_REPLAYED', error: '中央 SSO 兌換票據已使用，請由旅系統重新進入' });
+    return unifiedJson_({ ok: false, success: false, code: 'SSO_TOKEN_REPLAYED', error: '隔離 auth fixture 兌換票據已使用' });
   }
   var identity = unifiedResolvePortalIdentity_(verified);
   if (!identity.ok) return unifiedJson_({ ok: false, success: false, code: identity.code, error: identity.error });
   var session = unifiedIssueSsoToken_(identity.ymis, identity.role, identity.scopes);
-  writeAudit(identity.ymis, 'central_sso_login', identity.ymis, '中央 SSO 登入；有效角色 ' + identity.role);
+  writeAudit(identity.ymis, 'central_sso_login', identity.ymis, '隔離 auth fixture 登入；有效角色 ' + identity.role);
   return unifiedJson_({ ok: true, success: true, sessionToken: session.token,
     sessionExpiresAt: session.expiresAt, account: unifiedAccountPayload_(identity),
     mustChangePw: false, centralSso: true, unifiedGsVersion: UNIFIED_GS_VERSION });
@@ -391,7 +399,7 @@ function unifiedResolveActor_(body, allowPortalExchangeToken) {
   if (body.portalToken && allowPortalExchangeToken) {
     var verified = unifiedVerifyPortalToken_(body.portalToken, body.unit);
     if (!verified.ok) return verified;
-    if (!unifiedConsumePortalJti_(verified)) return { ok: false, code: 'SSO_TOKEN_REPLAYED', error: '中央 SSO 兌換票據已使用' };
+    if (!unifiedConsumePortalJti_(verified)) return { ok: false, code: 'SSO_TOKEN_REPLAYED', error: '隔離 auth fixture 兌換票據已使用' };
     return unifiedResolvePortalIdentity_(verified);
   }
   var token = String(body.sessionToken || body.token || '');
@@ -401,7 +409,8 @@ function unifiedResolveActor_(body, allowPortalExchangeToken) {
   if (!user) return { ok: false, code: 'SESSION_ACCOUNT_MISSING', error: '登入帳戶已停用或不存在' };
   var meta = unifiedTokenMeta_(token);
   if (!localLoginAllowed() && (!meta || meta.source !== 'central-sso')) {
-    return { ok: false, code: 'CENTRAL_SSO_REQUIRED', error: '支部本地入口已關閉，請由旅系統登入' };
+    return { ok: false, code: 'CENTRAL_SSO_REQUIRED',
+      error: '隔離 fixture 的 legacy 入口旗標已關閉；正式支部請重新執行 initializeSheets()' };
   }
   var role = meta && meta.role ? String(meta.role) : unifiedRoleFromBackend_(user.role);
   return { ok: true, ymis: String(user.ymis || ymis), user: user,
@@ -454,7 +463,7 @@ function unifiedAuthAlias_(action, body) {
   if (!actor.ok) return unifiedJson_({ ok: false, success: false, code: actor.code || 'SESSION_REQUIRED', error: actor.error });
   if (actor.source === 'central-sso') {
     return unifiedJson_({ ok: false, success: false, code: 'CENTRAL_IDENTITY_MANAGED',
-      error: '此帳戶由中央旅系統管理；密碼及帳戶狀態請在旅系統處理' });
+      error: '隔離 auth fixture 身份不設支部本地密碼或帳戶 mutation' });
   }
   if (action === 'authChangePassword') {
     var changed = unifiedOutputObject_(handleChangePassword(actor.ymis, body.oldPassword, body.newPassword, body.sessionToken));
@@ -469,8 +478,8 @@ function unifiedAuthAlias_(action, body) {
     return unifiedJson_(changed);
   }
   // Account creation/deletion/reset through the old Portal aliases would create
-  // a second identity source. In phase 3, branch accounts are normally managed by
-  // the pinned BADGE Users actions; these legacy aliases therefore remain disabled.
+  // a second identity source. Branch accounts are managed by the pinned BADGE Users
+  // actions; these legacy aliases therefore remain disabled.
   return unifiedJson_({ ok: false, success: false, code: 'BRANCH_IDENTITY_MANAGED',
     error: '支部帳戶由 BADGE Users 管理；請使用支部帳戶管理功能' });
 }
@@ -534,7 +543,7 @@ function unifiedCanonicalMembers_(existing) {
     kept.email = isEmail(kept.email) ? String(kept.email).trim() : '';
     kept.phone = safeSheetText(kept.phone, 80);
     /* A newly submitted roster row has no Users authority yet and therefore
-       starts as member. Role changes only arrive through central SSO. */
+       starts as member. Role changes only arrive through authoritative branch Users data. */
     kept.identity = users[key] ? unifiedRoleFromBackend_(users[key].role || 'member') : 'member';
     delete kept.pw; delete kept.hubPw; delete kept.password; delete kept.hubPassword;
     out.push(kept); seen[key] = true;
@@ -1005,26 +1014,27 @@ function initializeSheets() {
       error: '進度基線已初始化，但行政分頁增補失敗：' + String(err && err.message || err),
       unifiedGsVersion: UNIFIED_GS_VERSION };
   }
-  PropertiesService.getScriptProperties().setProperty(UNIFIED_INITIALIZED_PROP, UNIFIED_GS_VERSION);
+  var props = PropertiesService.getScriptProperties();
+  props.setProperty('ALLOW_LOCAL_LOGIN', 'true');
+  props.setProperty(UNIFIED_INITIALIZED_PROP, UNIFIED_GS_VERSION);
   return { success: true, badge: badge, admin: admin, preservedExistingData: true,
     unifiedGsVersion: UNIFIED_GS_VERSION };
 }
 
-/* 第 3 階段未有中央旅系統：Sheet 選單不可把正常支部登入入口鎖死。
-   保留 setLocalLoginAllowed／signed setLocalLogin 給第 4 階段真正上游使用；
-   到時須在中央 SSO staging 通過後才重新開放人手關門。 */
+/* 支部本地帳戶／session 是正常登入，Sheet 選單不可關閉。Pinned BADGE
+   baseline 的 legacy helpers 只為來源兼容保留；Progress client 與 API 不路由入口控制。 */
 function menuLocalLoginOff() {
-  var message = '現階段未有中央旅系統，本地帳戶／session 係支部正常主入口，必須保持開啟。';
+  var message = '支部本地帳戶／session 係正常登入來源，必須保持開啟。';
   try { SpreadsheetApp.getUi().alert('不可關閉支部本地入口', message, SpreadsheetApp.getUi().ButtonSet.OK); } catch (e) {}
-  try { Logger.log(message); } catch (e2) {}
-  return { success: false, code: 'PHASE3_LOCAL_LOGIN_REQUIRED', error: message,
+  try { setLocalLoginAllowed(true, 'unified-branch-login-guard'); } catch (e2) {}
+  try { Logger.log(message); } catch (e3) {}
+  return { success: false, code: 'BRANCH_LOCAL_LOGIN_REQUIRED', error: message,
     allow_local_login: localLoginAllowed() };
 }
 
 function onOpen() {
-  /* Phase 3 branch deployment exposes only branch-safe owner operations. The pinned
-     BADGE downstream/travel controls remain available as phase-4 code contracts,
-     but must not appear in a branch Sheet before the central system exists. */
+  /* Branch deployment exposes only branch-safe owner operations. Pinned baseline
+     legacy controls are not a Progress contract and never appear in this Sheet menu. */
   try {
     var ui = SpreadsheetApp.getUi();
     ui.createMenu('🔗 支部系統')
@@ -1059,18 +1069,26 @@ function doPost(e) {
   if (Object.prototype.hasOwnProperty.call(body, '__serverActorSubject')) delete body.__serverActorSubject;
   if (Object.prototype.hasOwnProperty.call(body, '__serverIdentityMap')) delete body.__serverIdentityMap;
   var action = String(body.action || '');
+  /* Pinned BADGE keeps these historical handlers internally, but the Unified public
+     router never exposes an entrance-state or entrance-control contract. Invoking an
+     old action restores the required local-login flag and fails closed. */
+  if (action === 'getLinkState' || action === 'setLocalLogin') {
+    PropertiesService.getScriptProperties().setProperty('ALLOW_LOCAL_LOGIN', 'true');
+    return unifiedJson_({ ok: false, success: false, code: 'BRANCH_LOCAL_LOGIN_REQUIRED',
+      error: '支部本地登入必須保持開啟；Unified 不提供入口狀態或控制 action' });
+  }
   try {
     if (UNIFIED_PORTAL_AUTH_ACTIONS[action]) {
-      // authWhoAmI may be wrapped in an upstream link signature when the local
-      // gate is closed.  Verify/consume it, but identity still comes from the
-      // opaque user session — a link signature never becomes a user login.
+      // authWhoAmI may be wrapped in the pinned baseline's server signature
+      // transport. Verify/consume it, but identity still comes from the opaque
+      // user session — a transport signature never becomes a user login.
       if (body.sig || (e && e.parameter && e.parameter.sig)) {
         var signedAuthActions = action === 'authWhoAmI' ? { authWhoAmI: 1 } : UNIFIED_ACCOUNT_ADMIN_ACTIONS;
         if (!unifiedVerifyLinkSig_(e, body, parsed.raw, signedAuthActions)) {
           return unifiedJson_({ success: false, ok: false, error: '簽名無效' });
         }
-        /* Platform super 已由同源 API 驗證，但第 3 階段 Unified 帳戶權威係
-           pinned BADGE Users；不可藉舊 Portal alias 另建第二套身份。 */
+        /* Platform super 已由同源 API 驗證，但 Unified 帳戶權威係 pinned
+           BADGE Users；不可藉舊 Portal alias 另建第二套身份。 */
         if (UNIFIED_ACCOUNT_ADMIN_ACTIONS[action] && body.unified_super === true
             && String(body.on_behalf || '') === 'sheep') {
           return unifiedJson_({ success: false, ok: false, code: 'BRANCH_IDENTITY_MANAGED',

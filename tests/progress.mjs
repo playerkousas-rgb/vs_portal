@@ -1,5 +1,5 @@
 /* ============================================================
-   tests/progress.mjs — 進度紀錄同源轉發 API 測試（一個後端、兩個前端）
+   tests/progress.mjs — 功能完整版前端的 Progress 同源轉發 API 測試（同一完整 Unified 後端）
    ------------------------------------------------------------
    驗證 /api/progress 嘅安全規則同轉發行為：
      · 只接受 POST、action 白名單、後端一定要係 GAS /exec
@@ -64,7 +64,7 @@ function authResult(body = {}) {
   if (token === STAFF_TOKEN) {
     return { ok: true, success: true, account: { id: 'staff-1', memberId: 'member-staff-1', ymis: 'STAFF-9001', name: '可信領袖', role: 'leader' } };
   }
-  if (token === MEMBER_TOKEN || body.portalToken === 'member-portal-token') {
+  if (token === MEMBER_TOKEN) {
     return { ok: true, success: true, account: { id: 'member-1', memberId: 'member-1', ymis: MEMBER_YMIS, name: MEMBER_NAME, role: 'member' } };
   }
   return { ok: false, success: false, error: '登入狀態已失效' };
@@ -85,8 +85,7 @@ async function call(payload, method = 'POST') {
   const body = { ...(payload || {}) };
   if (method === 'POST') {
     if (!Object.prototype.hasOwnProperty.call(body, 'unit')) body.unit = '0082';
-    if (!Object.prototype.hasOwnProperty.call(body, 'sessionToken') &&
-        !Object.prototype.hasOwnProperty.call(body, 'portalToken')) body.sessionToken = STAFF_TOKEN;
+    if (!Object.prototype.hasOwnProperty.call(body, 'sessionToken')) body.sessionToken = STAFF_TOKEN;
   }
   const res = mockRes();
   await progressHandler({ method, body }, res);
@@ -149,11 +148,18 @@ ok('browser 亦不可把同一 GAS 改成 /dev',
       && !JSON.stringify(addCall.body).includes('VICTIM-9999') && !JSON.stringify(addCall.body).includes('冒認者'),
     JSON.stringify(addCall.body));
 
+  const beforePortalOnly = calls.length;
+  const portalOnly = await call({ action: 'myRequests', backend: BACKEND, apikey: API_KEY,
+    sessionToken: '', portalToken: 'legacy-portal-token', data: { ymis: 'OTHER-0001' } });
+  ok('★ Progress 不接受 auth fixture／舊 portalToken 代替支部 session',
+    portalOnly.statusCode === 401 && portalOnly.body?.reason === 'session_required'
+      && calls.length === beforePortalOnly, JSON.stringify(portalOnly.body));
+
   upstreamJson = { success: true, requests: [] };
   await call({ action: 'myRequests', backend: BACKEND, apikey: API_KEY,
-    portalToken: 'member-portal-token', data: { ymis: 'OTHER-0001' } });
+    sessionToken: MEMBER_TOKEN, data: { ymis: 'OTHER-0001' } });
   const requestCall = calls[calls.length - 1];
-  ok('★ myRequests 同樣忽略跨人 YMIS（Portal session 亦只讀本人）',
+  ok('★ myRequests 同樣忽略跨人 YMIS，只讀支部 session 本人',
     requestCall.body?.action === 'myRequests' && requestCall.body?.ymis === MEMBER_YMIS
       && !JSON.stringify(requestCall.body).includes('OTHER-0001'), JSON.stringify(requestCall.body));
 
@@ -180,6 +186,25 @@ ok('browser 亦不可把同一 GAS 改成 /dev',
   ok('load 用 GET 打 ?action=load&apikey=…', c.method === 'GET' && c.target.includes('action=load') && c.target.includes('apikey=' + API_KEY), c.target.slice(0, 80));
   ok('回傳 members / progress 原樣（前端要嚟畫進度）',
     r.body.data?.members?.[0]?.name === '陳大文' && !!r.body.data?.progress?.['1234567890']?.['L1-ACT-01']);
+
+  /* Response normalization must preserve a successful, header-only Progress tab. */
+  upstreamJson = {
+    success: true,
+    members: [{ ymis: MEMBER_YMIS, name: MEMBER_NAME }],
+    progress: {}, flatProgress: {}, pendingRequests: [], otherBadges: {}, logs: [], logRequests: []
+  };
+  const empty = await call({ action: 'load', unit: '0082' });
+  ok('同一後端有正常成員但進度分頁為空，proxy 仍回 ok:true',
+    empty.statusCode === 200 && empty.body?.ok === true
+      && empty.body?.data?.members?.[0]?.ymis === MEMBER_YMIS
+      && Object.keys(empty.body?.data?.progress || {}).length === 0,
+    JSON.stringify(empty.body));
+  upstreamJson = {
+    success: true,
+    members: [{ ymis: MEMBER_YMIS, name: MEMBER_NAME }],
+    progress: { [MEMBER_YMIS]: { 'L1-ACT-01': { date: '2026-09-01', confirmer: '團長' } } },
+    pendingRequests: [], otherBadges: {}, logs: [], logRequests: []
+  };
 }
 
 /* ---------- 3. save（勾進度） ---------- */
@@ -207,75 +232,14 @@ ok('browser 亦不可把同一 GAS 改成 /dev',
   ok('saveOtherBadge 帶 records 陣列', c.body?.action === 'saveOtherBadge' && Array.isArray(c.body?.records));
 }
 
-/* ---------- 4a2. Unified 支部本地入口（第 3 階段只准讀狀態／開返） ---------- */
+/* ---------- 4a2. Progress API 邊界：登入閘門／旅系統 action 不屬於此處 ---------- */
 {
-  const crypto = await import('node:crypto');
-  const sd = API_KEY;     // 同一 Unified GAS／BADGE 的 server-side API_KEY
-  const hm = (m, k) => crypto.createHmac('sha256', String(k)).update(String(m)).digest('hex');
-  const gift = (k) => hm('vsbadge-troop-sig-v1', k);
-  const linkCalls = [];
-  const savedFetch = globalThis.fetch;
-
-  /* Browser 即使送 backend／apikey，server 仍只用同一 Registry key 簽名。 */
-  globalThis.fetch = async (target, init = {}) => {
-    const url = String(target);
-    const method = init.method || 'GET';
-    const body = init.body ? JSON.parse(init.body) : null;
-    linkCalls.push({ target: url, method, body });
-    if (body?.action === 'authWhoAmI') return jsonResponse(authResult(body));
-    const parsed = new URL(url);
-    if (method === 'POST' && parsed.searchParams.get('sig') && parsed.searchParams.get('snonce')) {
-      /* 驗正簽名（免費）只能由抵得上嘅 code 做到 */
-      const sig = parsed.searchParams.get('sig');
-      const ts = parsed.searchParams.get('sts');
-      const nonce = parsed.searchParams.get('snonce');
-      const action = linkCalls[linkCalls.length - 1].body?.action || '';
-      const digest = crypto.createHash('sha256').update(String(init.body || '')).digest('hex');
-      const canonical = [action, ts, nonce, digest].join('\n');
-      ok(`⑦door 簽名（query）對得上（action=${action}）`, sig === hm(canonical, gift(sd)), String(sig).slice(0, 12));
-      if (action === 'getLinkState') {
-        return { status: 200, async text() { return JSON.stringify({ success: true, node: '0082', allow_local_login: true, link_flag_set: '（未設定＝開啟）' }); } };
-      }
-      if (action === 'setLocalLogin') {
-        return { status: 200, async text() { return JSON.stringify({ success: true, allow_local_login: true, message: '支部本地入口已開啟' }); } };
-      }
-    }
-    /* 未簽名嘅一律當閂咗口（呢啲 action 仲未行 apikey 舊路） */
-    return { status: 200, async text() { return JSON.stringify({ success: false, upstream_only: true, error: '此後端的直接入口已閂' }); } };
-  };
-
-  const ok_bad_allow = await call({ action: 'setLocalLogin', unit: '0082', backend: BACKEND, apikey: sd, data: { allow: 'maybe' } });
-  ok('門口 allow 唔正 → 400 bad_allow（唔放大錯誤）', ok_bad_allow.statusCode === 400 && ok_bad_allow.body?.reason === 'bad_allow');
-
-  const noBrowserKey = await call({ action: 'getLinkState', unit: '0082', backend: 'https://evil.example/exec', apikey: '' });
-  ok('browser 冇 Key／偽造 backend 都照用 server Registry 簽名',
-    noBrowserKey.statusCode === 200 && noBrowserKey.body?.ok === true && noBrowserKey.body?.linked === true);
-
-  const st = await call({ action: 'getLinkState', unit: '0082', backend: BACKEND, apikey: sd });
-  ok('getLinkState → ok、allow_local_login:true、linked:true', st.statusCode === 200 && st.body?.ok === true && st.body?.data?.allow_local_login === true && st.body.linked === true, JSON.stringify(st.body).slice(0, 160));
-  {
-    const c1 = linkCalls[linkCalls.length - 1];
-    ok('getLinkState 用簽名 POST（唔係 GET+apikey）', c1.method === 'POST' && c1.body?.action === 'getLinkState' && !c1.target.includes('apikey='), c1.target.slice(-40));
-    ok('getLinkState body 唔漏任何 key 去 VSBADGE（sig 之外冇 apikey）', c1.body?.apikey === undefined && c1.body?.sig && c1.body?.sig_ts && c1.body?.sig_nonce);
-  }
-
-  const beforeClose = linkCalls.length;
-  const cl = await call({ action: 'setLocalLogin', unit: '0082', backend: BACKEND, apikey: sd, data: { allow: 'false' } });
-  ok('未有旅系統時拒絕關閉支部本地入口',
-    cl.statusCode === 409 && cl.body?.reason === 'phase3_local_login_required', JSON.stringify(cl.body).slice(0, 160));
-  ok('拒絕關閉時不會向 Unified GAS 發請求', linkCalls.length === beforeClose);
-
-  const cl2 = await call({ action: 'setLocalLogin', unit: '0082', backend: BACKEND, apikey: sd, data: { allow: 'true' } });
-  ok('setLocalLogin 仍可開返錯誤關閉的入口', cl2.statusCode === 200 && cl2.body?.ok === true && cl2.body?.data?.allow_local_login === true);
-  {
-    const c2 = linkCalls[linkCalls.length - 1];
-    ok('開返入口用簽名 POST、固定帶 allow:true',
-      c2.method === 'POST' && c2.body?.action === 'setLocalLogin' && c2.body?.allow === 'true', JSON.stringify(c2.body).slice(0, 120));
-    ok('setLocalLogin body 唔漏 apikey', c2.body?.apikey === undefined);
-  }
-
-  globalThis.fetch = savedFetch;
-  upstreamJson = { success: true, members: [], progress: {} };
+  const before = calls.length;
+  const state = await call({ action: 'getLinkState', unit: '0082' });
+  const toggle = await call({ action: 'setLocalLogin', unit: '0082', data: { allow: 'true' } });
+  ok('Progress API 拒絕入口狀態 action', state.statusCode === 400 && state.body?.ok === false);
+  ok('Progress API 拒絕入口控制 action', toggle.statusCode === 400 && toggle.body?.ok === false);
+  ok('被拒 action 不會核對 session 或碰 Unified GAS', calls.length === before);
 }
 
 /* ---------- 4b. 審批中心（批／拒團員申報） ---------- */
@@ -338,7 +302,8 @@ ok('browser 亦不可把同一 GAS 改成 /dev',
   ok('只用主 Registry 後端（前端可以完全唔填）', r.body.ok === true && c.target.startsWith(BACKEND));
   ok('只用與 BADGE 相同的主 API Key，舊 PROGRESS* 不可改路',
     c.target.includes(API_KEY) && !c.target.includes('old_separate_key'));
-  ok('回覆標示 serverSideKey（前端可以交代「由管理員設定」）', r.body.serverSideKey === true);
+  ok('回覆只含 action 結果，不公開 Registry readiness',
+    !Object.prototype.hasOwnProperty.call(r.body, 'serverSideKey'));
   delete process.env.TROOP_0082_PROGRESSBACKEND;
   delete process.env.TROOP_0082_PROGRESSAPIKEY;
 }
@@ -357,12 +322,10 @@ ok('browser 亦不可把同一 GAS 改成 /dev',
   ok('★ 進度代理白名單冇留低 diag', !/'diag'/.test(src));
 }
 
-/* ---------- 7c. ★ VSBADGE 旅系統接駁（閂咗直接入口 → 轉簽名 POST） ---------- */
+/* ---------- 7c. ★ 同一 Unified GAS 的 server-signature transport ---------- */
 {
-  /* vsbadge 閂咗口（ALLOW_LOCAL_LOGIN=false）嗰陣，doGet ?action=load 同 apikey save
-     會回 { success:false, upstream_only:true, error:'此後端的直接入口已閂…' }。
-     vs_portal 伺服器端有嗰條 SHEET KEY，就要自動轉去簽名 POST（同 vsbadge
-     callDownstream 一樣嘅 sig），而唔係淨係回個 error 就算。 */
+  /* 如果標準 action 回應要求 server signature，proxy 以 Registry 的同一 API Key
+     向同一 /exec 重送同一 action。呢個只係 transport authentication，與旅系統無關。 */
 
   /* 預先計定 vsbadge 簽名要用嘅嘢，嚟驗證 helpers 出嚟嘅 sig */
   const crypto = await import('node:crypto');
@@ -388,10 +351,17 @@ ok('browser 亦不可把同一 GAS 改成 /dev',
       const canonical = ['load', ts, nonce, digest].join('\n');
       const expect = hm(canonical, gift(sd));
       sigCheckOk = (sig === expect);
-      return { status: 200, async text() { return JSON.stringify({ success: true, members: [{ ymis: '1', name: '簽名成功' }], progress: {} }); } };
+      return { status: 200, async text() { return JSON.stringify({
+        success: true,
+        members: [{ ymis: '1', name: '簽名成功', integration_status: 'legacy', connectionState: 'old' }],
+        progress: {}, linked: true, allow_local_login: false, serverSideKey: true,
+        transport: { upstream_only: false, link_flag_set: 'false', integrationStatus: 'legacy',
+          connection_status: 'old', server_side_key: true, apiKey: 'must-not-leak',
+          backend: 'https://secret.example/exec', portalToken: 'must-not-leak' }
+      }); } };
     }
-    /* 未簽名（apikey）→ 扮閂咗口 */
-    return { status: 200, async text() { return JSON.stringify({ success: false, upstream_only: true, error: '此後端的直接入口已閂（ALLOW_LOCAL_LOGIN=false），只接受上游簽名（sig）請求' }); } };
+    /* 標準 GET 要求改用 server signature。 */
+    return { status: 200, async text() { return JSON.stringify({ success: false, upstream_only: true, error: 'server signature required' }); } };
   };
   let sigCheckOk = false;
 
@@ -400,11 +370,15 @@ ok('browser 亦不可把同一 GAS 改成 /dev',
   const r = await call({ action: 'load', unit: '0082' });   // 冇帶 backend/apikey（server-side）
   process.env.TROOPS_JSON = registryBeforeSigned;
 
-  ok('⑦ 閂口後端＋server-side key → 自動兜去簽名 POST 並讀成功',
+  ok('⑦ 同一 /exec 要求 server signature 時仍可完成 load action',
     r.statusCode === 200 && r.body.ok === true && r.body.data?.members?.[0]?.name === '簽名成功',
     JSON.stringify({ code: r.statusCode, ok: r.body.ok, d: r.body.data }));
-  ok('⑦ 兜出去嗰支簽名係啱嘅（query sig 對得上砍正嘅 sha256(body)）', sigCheckOk === true, String(sigCheckOk));
-  ok('⑦ 回覆標示 linked:true（前端知得到用咗旅系統接駁）', r.body.linked === true, JSON.stringify(r.body.linked));
+  ok('⑦ server signature 對得上 sha256(body)', sigCheckOk === true, String(sigCheckOk));
+  ok('⑦ response 只交代 action 結果，不暴露 Registry／整合／入口狀態欄', (() => {
+    const serialized = JSON.stringify(r.body);
+    return !Object.prototype.hasOwnProperty.call(r.body, 'serverSideKey')
+      && !/linked|upstream_only|allow_local_login|link_flag_set|integration_status|integrationStatus|connectionState|connection_status|serverSideKey|server_side_key|must-not-leak|secret\.example/.test(serialized);
+  })(), JSON.stringify(r.body));
 
   /* 主 Registry 冇 Key 時，browser 不可補一條 Key 繞過 server 設定。 */
   {
@@ -445,5 +419,5 @@ else process.env.TROOPS_JSON = previousTroopsJson;
 /* 有失敗就一定要睇到（測試期間 log 被攔截，所以要喺呢度補印） */
 if (fail) logLines.filter(l => l.includes('✗')).forEach(l => realLog(l));
 
-console.log(`\n──────── 進度接駁 API 測試結果：${pass} 通過 / ${fail} 失敗 ────────`);
+console.log(`\n──────── Progress action API 測試結果：${pass} 通過 / ${fail} 失敗 ────────`);
 process.exit(fail ? 1 : 0);

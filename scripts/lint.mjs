@@ -322,7 +322,9 @@ section('⑦ 孤兒 action 守門（後端有、前端冇人 call ＝ 死碼）'
     ['saveDbForce', '人手搶救：用留住資料嗰部機強制覆蓋（部署指南）'],
     ['syncCheck', '後端寫入＋讀回自證（tests/e2ereal.mjs 經 proxy 驗）'],
     ['authWhoAmI', '/api/progress server-to-server 核對 opaque session；唔由瀏覽器直接 call'],
-    ['loadMine', '/api/progress 將 myProgress 改寫成只回本人嘅 server-to-server action']
+    ['loadMine', '/api/progress 將 myProgress 改寫成只回本人嘅 server-to-server action'],
+    ['getLinkState', '現行非 Unified Code.gs 的 legacy 簽名兼容；Progress client/API 明確不路由，待正式遷移後刪除'],
+    ['setLocalLogin', '現行非 Unified Code.gs 的 legacy 簽名兼容；Progress client/API 明確不路由，待正式遷移後刪除']
   ]);
   const feActions = new Set();
   for (const f of ALL.filter(f => (/^assets\/js\//.test(rel(f)) && /\.js$/.test(f)) || rel(f) === 'reset-password.html')) {

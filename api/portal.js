@@ -1,8 +1,9 @@
-// 中央旅系統 → 支部入口驗證。
+// 隔離 auth fixture：assertion → branch exchange 驗證。
 //
-// 正式拓撲只有每旅既有的 NAME／BACKEND／APIKEY。中央旅系統像 BOOK／BADGE
-// 一樣，使用已登記的同一支部 APIKEY；不需要另一組 Vercel／中央環境變數。
-// API Key 只作 server-side HMAC 根密鑰，絕不交給 browser，也不直接代表身份。
+// 呢個 endpoint 只保留既有安全回歸，唔係現行登入入口，亦唔係未來旅系統施工契約。
+// 正式未來方向係旅系統 server 單向讀取支部後端；支部本地帳戶／session 繼續正常運作。
+// fixture 只用每支部既有 NAME／BACKEND／APIKEY，唔新增 secret。API Key 只作
+// server-side HMAC 根密鑰，絕不交俾 browser，亦唔直接代表身份。
 //
 // 安全規則：
 //   · GET／網址 query 絕不可以憑 role／subject 產生登入票據。

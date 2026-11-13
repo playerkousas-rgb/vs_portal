@@ -18,7 +18,7 @@ export const APP_NAME = '深資童軍管理系統';        // 全名，方便管
 /** 登入前／任何時候直接下載同 builder 完全一致的 Unified Code.gs。 */
 export function downloadCodeGs() {
   download('Code.gs', unifiedGasTemplate(), 'text/plain;charset=utf-8');
-  toast('已下載 Unified Code.gs（管理、進度及 BADGE 共用）', 'ok');
+  toast('已下載完整 Unified Code.gs（支部完整版＋BADGE 輕量版前端共用）', 'ok');
 }
 
 /** 登入前／任何時候直接複製 Unified Code.gs 原始碼到剪貼簿。 */
@@ -469,8 +469,8 @@ export function adminChecklist(troopId = '<編號>') {
   return [
     `（可選公開名單）data/units.json：喺 units 加 "${troopId}" entry，只放 code／name／section 等公開資料；唔好放 backend／apiKey 落 Git`,
     `Vercel：只加 TROOP_${troopId}_NAME／BACKEND／APIKEY；名稱、/exec、Key 必須與 BADGE 完全相同，再 Redeploy`,
-    `旅團同一張 Sheet 貼 App 下載的 Unified Code.gs，執行 initializeSheets／showApiKey，再部署正式 /exec`,
-    `管理系統、進度及 BADGE 固定共用上述 Unified GAS／Sheet；不要另設 Portal／Progress secret、後端或 browser Key`,
-    '實測三個前端讀寫同一 YMIS／Sheet及本地帳戶登入後，通知支部接入完成；中央 SSO 留待最後建立旅系統時另行驗收'
+    `旅團同一張 Sheet 貼 App 下載的完整 Unified Code.gs，執行 initializeSheets／showApiKey，再部署正式 /exec`,
+    `功能完整版支部前端（包括 Progress）與 BADGE 輕量前端固定共用上述完整 Unified GAS／Sheet；不要另設精簡 BADGE／Progress 後端或 browser Key`,
+    '實測兩個前端按各自 action allowlist 讀寫同一 YMIS／Sheet，並以本地 session／role／scope 授權後，通知支部接入完成；未來旅系統 reader 由旅系統端另行驗收，支部不新增 SSO 或入口控制'
   ];
 }

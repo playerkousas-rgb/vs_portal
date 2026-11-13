@@ -11,7 +11,7 @@ import { APP_VERSION } from './version.js';
 
 /* ★ 自 v2.8.0 起：「資料表」＝簡單寫入（逐表寫）嘅正本；「資料庫」＝舊嘅整份 blob（留底／後備） */
 export const SHEET_TABS = ['資料表', '資料庫', '帳目', '物資', '團員', '收支申報', '通告', '通告全文', '報名', '物資借用', '會議', '設定', '同步紀錄',
-  '進度追蹤', '其他獎章', '待批完成', '活動履歷', '待批履歷', '成員名單'];   // 後 6 個 = 同進度前端共用嘅分頁
+  '進度追蹤', '其他獎章', '待批完成', '活動履歷', '待批履歷', '成員名單'];   // 後 6 個 = Unified 後端供 Progress／BADGE action 使用嘅分頁
 
 export function gasTemplate() {
   return `/**
@@ -190,13 +190,12 @@ function showApiKey() {
   return apiKey;
 }
 
-/* 第 3 階段支部獨立運作：本地帳戶係正常主入口，Sheet 選單只可查看提示／開返。
-   第 4 階段旅系統建立並完成 SSO staging 後，才由真正上游簽名控制關門。 */
+/* 支部本地帳戶／session 係正常登入來源；Sheet 選單只提供支部安全操作。 */
 function onOpen() {
   try {
     var ui = SpreadsheetApp.getUi();
-    ui.createMenu('🔗 支部接駁')
-      .addItem('ℹ️ 本地入口（現階段必須開）', 'menuLocalLoginOff')
+    ui.createMenu('🔗 支部系統')
+      .addItem('ℹ️ 支部本地登入必須保持開啟', 'menuLocalLoginOff')
       .addItem('🔓 開啟／復原本地登入', 'menuLocalLoginOn')
       .addToUi();
   } catch (e) { /* headless（執行緊 script）冇 UI，靜靜略過 */ }
@@ -204,10 +203,11 @@ function onOpen() {
 function menuLocalLoginOff() {
   var ui = null;
   try { ui = SpreadsheetApp.getUi(); } catch (e) { /* headless */ }
-  var message = '現階段未有中央旅系統，本地帳戶／session 係支部正常主入口，必須保持開啟。';
+  var message = '支部本地帳戶／session 係正常登入來源，必須保持開啟。';
+  PropertiesService.getScriptProperties().setProperty(LINK_FLAG, 'true');
   if (ui) ui.alert('不可關閉支部本地入口', message, ui.ButtonSet.OK);
   try { Logger.log(message); } catch (e2) { /* ignore */ }
-  return { success: false, code: 'PHASE3_LOCAL_LOGIN_REQUIRED', error: message,
+  return { success: false, code: 'BRANCH_LOCAL_LOGIN_REQUIRED', error: message,
     allow_local_login: localLoginAllowed() };
 }
 function menuLocalLoginOn() {
@@ -223,18 +223,17 @@ function sha256HexGs(s) {
 }
 
 /* ============================================================
-   旅系統：上下游接駁（旅 > 團 > 支部）
+   Legacy server-signature compatibility（非 Progress／旅系統 reader 契約）
    ------------------------------------------------------------
-   同 VSBADGE 一套協定（相同 LINK_SIG_PURPOSE／sig 公式），等「旅系統」出現嗰陣：
-     · 上游（旅）喺佢自己 Script Properties 登記我呢支 /exec（BACKEND）＋我條 SHEET KEY（APIKEY）；
-     · 之後上游可以經 **簽名（sig）** 讀寫我呢支後端；
-     · 我呢度 Script Properties 有旗仔 ALLOW_LOCAL_LOGIN —— 未設定＝開啟（現有旅團零影響）；
-       設成 false＝閂口，我之後只接受帶有效 sig 嘅上游請求，本地 apikey／登入一概拒。
-   開關掣搞喺呢支 GAS（Sheet「🔗 旅系統」選單）＋ 上游 setLocalLogin 兩條路。
-   登記資料、sig、nonce 只存 Script Properties / Cache，一律唔寫入工作表。
+   保留同 VSBADGE 相同的 LINK_SIG_PURPOSE／sig 公式，讓既有 server proxy 可向
+   本支部同一 /exec 重送業務 action。正式支部登入仍由本地帳戶／session 提供，
+   initializeSheets() 及 Sheet 選單會維持 ALLOW_LOCAL_LOGIN=true。
+   未來旅系統只由旅系統端單向讀支部最小投影；不可把下面的 legacy action
+   allowlist、入口旗標或 auth fixture 當作旅系統施工契約。
+   sig、nonce 只存 Script Properties / Cache，一律唔寫入工作表。
    ============================================================ */
 var LINK_FLAG = 'ALLOW_LOCAL_LOGIN';
-var LINK_SIG_PURPOSE = 'vsbadge-troop-sig-v1';     // 同 VSBADGE 一樣（有齊兩邊就互相認得）
+var LINK_SIG_PURPOSE = 'vsbadge-troop-sig-v1';     // 與既有 VSBADGE transport 兼容
 var LINK_SIG_WINDOW_MS = 5 * 60 * 1000;
 var LINK_SIG_NONCE_TTL = 600;
 /* Admin saveTables payload can legitimately approach the 4 MiB proxy ceiling. HMAC hashes
@@ -243,8 +242,8 @@ var LINK_MAX_SIGNED_BYTES = 4 * 1024 * 1024;
 var LINK_SIG_HEX_RE = /^[0-9a-f]{64}$/i;
 var LINK_NONCE_RE = /^[0-9A-Za-z_-]{8,64}$/;
 var LINK_RESERVED_BODY_KEYS = ['sig', 'sig_ts', 'sig_nonce'];
-/* 上游可以經簽名喺我做嘅 action。authWhoAmI 仍然必須另帶有效短期 sessionToken；
-   簽名只讓閂咗直接入口時到達核對邏輯，唔會代替登入。 */
+/* Legacy server proxy 可經簽名執行以下 action。authWhoAmI 仍然必須另帶有效
+   支部 sessionToken；transport signature 永遠唔會代替用戶登入。 */
 var LINK_SIG_READ_ACTIONS = ['load', 'loadMine', 'myRequests', 'getLinkState', 'getLoginMode', 'dbInfo', 'loadDb', 'loadDbPart', 'loadTables', 'loadTablesPart', 'syncCheck', 'authWhoAmI'];
 var LINK_SIG_WRITE_ACTIONS = ['save', 'saveOtherBadge', 'reviewRequest', 'reviewLogRequest', 'addRequest', 'saveDb', 'saveDbPart', 'saveDbCommit', 'saveTables', 'sync', 'uploadPhotos', 'repairDb', 'saveDbForce', 'setLocalLogin', 'authResetPassword', 'authDeleteAccount', 'authRestoreAccount', 'authCreateAccount'];
 
@@ -263,7 +262,7 @@ function linkCanonicalGs(action, ts, nonce, digest) {
   return [String(action || ''), String(ts || ''), String(nonce || ''), String(digest || '')].join('\\n');
 }
 
-/* ---- 直接入口掣（寫喺我支 GAS 自己個 Script Properties）---- */
+/* ---- Legacy 入口旗標（正式初始化固定復原為 true）---- */
 function localLoginAllowed() {
   var v = String(PropertiesService.getScriptProperties().getProperty(LINK_FLAG) || '').trim().toLowerCase();
   if (!v) return true;   // 未設定＝開啟（fail-open，同 VSBADGE 現有旅團零影響）
@@ -272,7 +271,7 @@ function localLoginAllowed() {
 function linkClosedResponse(action) {
   return {
     success: false, ok: false, local_login: false, upstream_only: true,
-    error: '此後端的直接入口已閂（' + LINK_FLAG + '=false），只接受上游簽名（sig）請求；請由上游（旅／團）入口登入。' + (action ? '（已拒絕：' + action + '）' : '')
+    error: '支部本地登入旗標異常（' + LINK_FLAG + '=false）；請重新執行 initializeSheets() 復原正常支部入口。' + (action ? '（已拒絕：' + action + '）' : '')
   };
 }
 function getLinkState() {
@@ -358,11 +357,11 @@ function verifyLinkSig(e, body, rawBody) {
   }
 }
 
-/* ---- 上游簽名請求路由（閂咗口都入到；行 body.action 白名單）---- */
+/* ---- Legacy server-signature transport（只行 body.action 白名單）---- */
 function handleSignedRequest(e, body, rawBody) {
   var a = String((body && body.action) || '');
   if (LINK_SIG_READ_ACTIONS.indexOf(a) < 0 && LINK_SIG_WRITE_ACTIONS.indexOf(a) < 0) {
-    return json({ success: false, ok: false, error: '上游簽名請求不接受此操作：' + a });
+    return json({ success: false, ok: false, error: 'server-signature transport 不接受此操作：' + a });
   }
   /* 簽名已由共享 nonce＋HMAC 驗證；用只在 server 內加入的 marker 交給 dispatcher。
      API Key 仍只作路由，絕不因為「有 key」就自動變成用戶身份。 */
@@ -474,7 +473,7 @@ function verifySetupKey(key) {
    點解要補欄：舊寫法只在 getLastRow() === 0 先寫 header，
    即係一張已有資料嘅舊 Sheet **永遠加唔到新欄位** —— 升級後新欄靜靜缺失。
    而家逐欄比對 header 名，只把缺少嘅補喺最右邊（唔郁現有欄位位置，
-   因為進度前端係按欄位位置讀共用分頁，重排會即刻讀錯）。
+   因為 Progress／BADGE action 係按欄位位置讀共用分頁，重排會即刻讀錯）。
    守護測試：tests/init-preserve.mjs（前後逐表快照對比）。
    ============================================================ */
 var INITIALIZED_VERSION_PROP = 'INITIALIZED_VERSION';
@@ -562,7 +561,7 @@ function initializeSheets() {
     { name: '會議', headers: ['旅團', 'id', '日期', '標題', '地點', '狀態', '備註', '同步時間'] },
     { name: '同步紀錄', headers: ['時間', '旅團', '旅團名稱', '統計內容'] },
     { name: '審計紀錄', headers: ['時間', '旅團', 'action', '結果', '途徑', '操作者'] },
-    /* ↓↓↓ 同「進度前端」共用嘅分頁（一個後端、兩個前端）：欄位順序唔可以改 ↓↓↓ */
+    /* ↓↓↓ 行政、Progress 與 BADGE 共用嘅分頁（一個 Unified 後端、多個 client）：欄位順序唔可以改 ↓↓↓ */
     { name: '進度追蹤', headers: ['YMIS', '項目 ID', '完成日期', '更新時間', '確認者', '備註'] },
     { name: '其他獎章', headers: ['YMIS', '獎章 ID', '獎章名稱', '完成日期', '證書編號', '備註', '更新時間'] },
     { name: '待批完成', headers: ['request_id', 'ymis', 'name', 'item_id', 'item_name', 'requested_date', 'evidence', 'status', 'created_at', 'reviewed_by', 'reviewed_at', 'review_note', 'confirmed_date'] },
@@ -584,7 +583,9 @@ function initializeSheets() {
   /* 成功完成後寫初始化標記（學 VSBADGE VS_GS_INITIALIZED_VERSION）：
      咁先分得清「淨係貼咗新 Code.gs」同「真係行咗初始化」。 */
   try {
-    PropertiesService.getScriptProperties().setProperty(INITIALIZED_VERSION_PROP, BACKEND_VERSION);
+    var initProps = PropertiesService.getScriptProperties();
+    initProps.setProperty(LINK_FLAG, 'true');
+    initProps.setProperty(INITIALIZED_VERSION_PROP, BACKEND_VERSION);
   } catch (e) { /* ScriptProperties 配額／權限問題唔應該令初始化本身失敗 */ }
 
   var created = report.filter(function(r) { return r.created; }).map(function(r) { return r.tab; });
@@ -781,7 +782,7 @@ function hubFindActor_(db, session) {
 /* 行政 actor 同 hub actor 有一個刻意差異：歷史個人 accounts 可能尚未綁 memberId，
    但仍要容許其有效 session 管理／搬遷資料。優先用 hubFindActor_ 取得名冊最新身份；
    只有本地 account session 且確實對到 active account id 時，才 fallback 到 account role。
-   中央 SSO 永遠必須對到支部名冊，不設此 fallback。 */
+   隔離 auth fixture 身份永遠必須對到支部名冊，不設此 fallback。 */
 function adminFindActor_(db, session) {
   var linked = hubFindActor_(db, session);
   if (linked.ok || !session || session.portal || session.kind !== 'account') return linked;
@@ -829,7 +830,7 @@ function validateDelegatedIdentityMap_(members, identityMap) {
     var expected = key && Object.prototype.hasOwnProperty.call(identityMap, key)
       ? textOf(identityMap[key]).toLowerCase() : 'member';
     if (protectedMemberRole_(member) !== (expected || 'member')) {
-      return protectedWriteDenied_('成員身份必須跟中央身份來源一致');
+      return protectedWriteDenied_('成員身份必須跟已核實的支部身份對照一致');
     }
     if (member.hubPw || member.hubPassword) {
       return protectedWriteDenied_('統一模式不可透過行政資料寫入本地密碼');
@@ -839,7 +840,7 @@ function validateDelegatedIdentityMap_(members, identityMap) {
 }
 function validateProtectedAdminWrite_(unit, incoming, writeAuth) {
   if (!incoming || typeof incoming !== 'object') return protectedWriteDenied_('寫入內容格式不正確');
-  /* 已驗 server HMAC 代表中央 platform-super；setup session 係首次建庫憑證。
+  /* 已驗 server HMAC 代表平台 super；setup session 係首次建庫憑證。
      兩者都唔係由 browser 自報（網絡入口會先刪除 marker）。 */
   if (writeAuth && ((writeAuth.serverSigned && !writeAuth.delegated) || writeAuth.setup)) return { success: true };
   var touchesMembers = Object.prototype.hasOwnProperty.call(incoming, 'members');
@@ -853,7 +854,7 @@ function validateProtectedAdminWrite_(unit, incoming, writeAuth) {
 
   var current = loadDb(textOf(unit));
   /* Unified 首次寫入時 compatibility DB 尚未存在；delegated actor 已由 pinned
-     baseline／中央 SSO 核實，identity map 亦已在上面逐項核對。一旦有現行版本，
+     baseline／隔離 auth fixture 核實，identity map 亦已在上面逐項核對。一旦有現行版本，
      下面仍以 server 狀態逐欄比較。 */
   if ((!current.success || !current.db) && writeAuth && writeAuth.delegated) return { success: true };
   if (!current.success || !current.db) return protectedWriteDenied_('未能讀取目前身份資料，已拒絕寫入');
@@ -1132,7 +1133,7 @@ var SUPPORTED_ACTIONS = ['ping', 'test', 'status', 'sync', 'claim', 'noticeSignu
   'repairDb', 'saveDbForce',
   /* ★ v2.8.0：簡單寫入（逐表寫／逐表讀）—— 見下面 saveTables／loadTables／loadTablesPart */
   'saveTables', 'loadTables', 'loadTablesPart', 'syncCheck',
-  /* ★ v2.8.4：旅系統接駁 —— 讀／寫「直接入口」掣（旅 > 團 > 支部） */
+  /* Legacy 非 Unified 簽名兼容；Progress client／API 不路由，亦非未來 reader 契約。 */
   'getLinkState', 'setLocalLogin'];
 
 /**
@@ -1186,9 +1187,8 @@ function doPost(e) {
     if (body && Object.prototype.hasOwnProperty.call(body, '__serverActorSubject')) delete body.__serverActorSubject;
     if (body && Object.prototype.hasOwnProperty.call(body, '__serverIdentityMap')) delete body.__serverIdentityMap;
     auditAccess(body, 'received');
-    /* ★ 旅系統接駁（旅 > 團 > 支部）：上游簽名（sig）請求優先路由——
-       喺「直接入口」掣同 API Key 核對**之前**先驗簽名，等閂咗口（ALLOW_LOCAL_LOGIN=false）
-       嗰陣上游照樣入到，本地 apikey 就唔得。 */
+    /* Legacy server-signature transport 先驗 HMAC，再交同一個 dispatcher；簽名只係
+       server authentication，唔係用戶登入、Progress 整合狀態或未來旅系統契約。 */
     if (verifyLinkSig(e, body, rawBody)) return handleSignedRequest(e, body, rawBody);
     if (!localLoginAllowed()) return json(linkClosedResponse(textOf(body && body.action)));
     return dispatchBody(e, body);
@@ -1200,11 +1200,11 @@ function doPost(e) {
   }
 }
 
-/** doPost 實質派發（閂口／簽名檢查已喺 doPost 做咗；呢度係原本嘅既有邏輯） */
+/** doPost 實質派發（legacy 旗標／transport 檢查已喺 doPost 做咗） */
 function dispatchBody(e, body) {
   try {
     var expectedKey = PropertiesService.getScriptProperties().getProperty('API_KEY');
-    // 兩個前端都會用同一條 key（大寫 apiKey / 細寫 apikey 都收）
+    // 多個 client 共用同一 Unified key（大寫 apiKey / 細寫 apikey 都收）
     var key = body.apiKey || body.apikey || '';
     body.apiKey = key;
 
@@ -1233,14 +1233,14 @@ function dispatchBody(e, body) {
       /* 同 BADGE／proxy 共用 API_KEY，但用固定 purpose 派生獨立 exchange key；
          不需要另一條 Portal session secret，API Key 本身亦不會直接成為身份。 */
       var secret = hmacSha256HexGs('vs-portal-branch-exchange-v1', getApiKey());
-      if (!secret || parts.length !== 2) return { ok: false, error: '旅系統登入未設定' };
+      if (!secret || parts.length !== 2) return { ok: false, error: '隔離 auth fixture 未設定' };
       var expected = Utilities.computeHmacSha256Signature(parts[0], Utilities.newBlob(secret).getBytes())
         .map(function (b) { return ('0' + (b & 255).toString(16)).slice(-2); }).join('');
       var supplied = '';
       try { supplied = Utilities.base64EncodeWebSafe(Utilities.base64DecodeWebSafe(parts[1])); } catch (e) { supplied = ''; }
       /* GAS web-safe base64 比對轉 hex 較麻煩；用重新簽名的 base64 字串核對。 */
       var expectedB64 = Utilities.base64EncodeWebSafe(Utilities.computeHmacSha256Signature(parts[0], Utilities.newBlob(secret).getBytes())).replace(/=+$/, '');
-      if (supplied.replace(/=+$/, '') !== expectedB64) return { ok: false, error: '旅系統登入票據無效' };
+      if (supplied.replace(/=+$/, '') !== expectedB64) return { ok: false, error: '隔離 auth fixture 票據無效' };
       var payload = null;
       try { payload = JSON.parse(Utilities.newBlob(Utilities.base64DecodeWebSafe(parts[0])).getDataAsString()); } catch (e2) { payload = null; }
       var nowMs = Date.now();
@@ -1252,9 +1252,9 @@ function dispatchBody(e, body) {
           || textOf(payload.aud) !== 'unified-gas:branch:' + textOf(unit)
           || textOf(payload.src) !== 'central-travel-system'
           || !iat || !exp || iat > nowMs + 15000 || exp <= nowMs - 15000 || exp <= iat || exp - iat > 120000) {
-        return { ok: false, error: '旅系統登入票據已過期或用途不正確' };
+        return { ok: false, error: '隔離 auth fixture 票據已過期或用途不正確' };
       }
-      if (wantedRole && textOf(payload.role) !== textOf(wantedRole)) return { ok: false, error: '旅系統身份不符合' };
+      if (wantedRole && textOf(payload.role) !== textOf(wantedRole)) return { ok: false, error: '隔離 auth fixture 身份不符合' };
       return { ok: true, portal: true, role: textOf(payload.role), subject: textOf(payload.sub) };
     }
 
@@ -1470,7 +1470,7 @@ function dispatchBody(e, body) {
     if (body.action === 'authChangePassword') {
       var changeSession = requireAuthSession(body);
       if (!changeSession.ok) return json({ ok: false, success: false, error: changeSession.error, code: 'SESSION_REQUIRED' });
-      if (changeSession.portal) return json({ ok: false, success: false, error: '旅系統登入不設支部本地密碼', code: 'CENTRAL_IDENTITY_MANAGED' });
+      if (changeSession.portal) return json({ ok: false, success: false, error: '隔離 auth fixture 身份不設支部本地密碼', code: 'CENTRAL_IDENTITY_MANAGED' });
       if (textOf(body.newPassword) === '1234') return json({ ok: false, success: false, error: '新密碼唔可以繼續用預設 1234' });
       var changedPassword = withLock(function () {
         var changedDb = loadDb(textOf(body.unit));
@@ -1546,7 +1546,7 @@ function dispatchBody(e, body) {
         var targetName = textOf(body.targetUsername || body.targetEmail || body.targetYmis).toLowerCase();
         var target = null;
         /* 操作者只由已驗證 session 對回後端紀錄；actorUsername／actorRole 等 client
-           欄位全部不參與授權，中央 SSO opaque session 亦走同一路徑。 */
+           欄位全部不參與授權，隔離 auth fixture 的 opaque session 亦走同一路徑。 */
         var resetActor = resetSession.serverSigned
           ? { ok: true, role: 'super', record: null, serverSigned: true }
           : adminFindActor_(resetDb.db, resetSession);
@@ -1923,8 +1923,8 @@ function dispatchBody(e, body) {
         at: mineData.at || '', error: mineData.error || '' });
     }
 
-    /* ---- 進度追蹤：POST 讀（doGet ?action=load 之外，仲要 POST 版 ——
-       上游（旅系統）簽名讀進度嗰陣都係 POST；同一條 API Key 授權）---- */
+    /* ---- 進度追蹤：POST 讀（doGet ?action=load 之外，供同源 server proxy
+       以用途分隔 HMAC 驗證同一個 load 業務 action）---- */
     if (body.action === 'load') {
       var loadAuth = requireAuth(expectedKey, key);
       if (!loadAuth.ok) return json(loadAuth);
@@ -2106,9 +2106,8 @@ function dispatchBody(e, body) {
       });
       return json(forcedSaved);
     }
-    /* ★ v2.8.4：旅系統接駁 —— 讀／寫我呢支後端嘅「直接入口」掣。
-       要 API Key（＝自己條 SHEET KEY）先做得；上游（旅／團）就會調咁調：
-       callDownstream(id, 'setLocalLogin', { allow: 'true'|'false' }) 經簽名閂／開我。 */
+    /* Legacy 非 Unified 入口旗標兼容：只供舊安全回歸，Progress client／API 不路由；
+       Unified 公開 router 會拒絕兩個 action。未來旅系統 reader 不使用此契約。 */
     if (body.action === 'getLinkState') {
       var lsAuth = requireAuth(expectedKey, key);
       if (!lsAuth.ok) return json(lsAuth);
@@ -2128,7 +2127,7 @@ function dispatchBody(e, body) {
       }
       PropertiesService.getScriptProperties().setProperty(LINK_FLAG, allow ? 'true' : 'false');
       return json({ success: true, ok: true, allow_local_login: allow,
-        message: allow ? '直接入口已開啟' : '直接入口已閂，只收上游 sig' });
+        message: allow ? '支部本地登入已開啟' : 'legacy 入口旗標已關閉' });
     }
     // 兼容：冇 action 但係 82venture 嘅資料（當 sync）
     if (!body.action && body.tables) {
@@ -2144,7 +2143,7 @@ function dispatchBody(e, body) {
   }
 }
 
-/** 收到 GET 時處理：?action=load 讀進度（兩個前端用同一份資料） */
+/** 收到 GET 時處理：?action=load 讀進度（多個 client 用同一份資料） */
 function doGet(e) {
   var action = '';
   var supplied = '';
@@ -2152,7 +2151,7 @@ function doGet(e) {
     action = String((e && e.parameter && e.parameter.action) || '');
     supplied = String((e.parameter && (e.parameter.apikey || e.parameter.apiKey)) || '');
   } catch (err0) { action = ''; }
-  /* ★ v2.8.4 旅系統接駁：閂咗口，本地 apikey GET 讀一律拒（公開通告／團章照出街） */
+  /* Legacy 旗標異常為 false 時拒絕非公開 GET；initializeSheets() 會復原為 true。 */
   if (action !== 'notices' && action !== 'constitution' && !localLoginAllowed()) {
     return json(linkClosedResponse(action));
   }
@@ -3340,7 +3339,7 @@ function syncAll(body) {
   counts['invItems'] = writeTab(ss, body, '物資', tables.invItems, schema.invItems, ['code', 'name', 'category', 'total', 'unit', 'location', 'condition', 'note']);
   counts['members'] = writeTab(ss, body, '團員', tables.members, schema.members, ['ymis', 'systemId', 'name', 'eng', 'identity', 'birthday', 'role', 'status', 'phone', 'email', 'join', 'note']);
 
-  // 成員名單（同進度前端共用，兩邊見同一批人）
+  // 成員名單（行政、Progress 與 BADGE action 共用同一批人）
   counts['memberList'] = writeMemberList(ss, tables.members || []);
 
   // 通告：一張通告一行
@@ -3455,7 +3454,7 @@ function writeNoticesFull(ss, unit, notices) {
 
 /**
  * 讀公開通告（免登入）：只回 published
- * 兩個前端共用一個後端 —— 公開頁唔使等改 Git，同步完就見到新通告
+ * 多個 client 共用一個後端 —— 公開頁唔使等改 Git，同步完就見到新通告
  *
  * 自 v2.5.0 起：改為由「資料庫」分頁（APP 儲存嘅正本）讀 ——
  * 以前淨係讀「通告全文」分頁，但嗰分頁要手動撳「總表同步」先會更新，
@@ -3534,10 +3533,10 @@ function writeSignups(ss, body, notices) {
 }
 
 /* ============================================================
-   一個後端、兩個前端：進度追蹤
+   一個 Unified 後端、多個 client：Progress
    ------------------------------------------------------------
-   呢個後端同時餵兩個前端：
-     ① 深資童軍管理系統（呢邊）   ② 進度追蹤前端（團員／領袖用）
+   行政介面、Progress 與 BADGE 都係同一 Unified 後端的 client，以業務 action
+   直接讀寫指定分頁；唔存在另一個 Progress backend 或前端之間的接駁。
    共用分頁：進度追蹤 / 其他獎章 / 待批完成 / 活動履歷 / 待批履歷 / 成員名單
    讀：GET  ?action=load[&apikey=…]
    寫：POST { action:'save' | 'saveOtherBadge', apikey, changes / records }
@@ -3558,12 +3557,10 @@ function dateOf(v) {
 /* ============================================================
    ★ v2.7.1（2026-09-24 團長回報：「人係讀到，但係個個都冇進度」）
    ------------------------------------------------------------
-   load 只回資料，唔回「呢啲資料係邊張 Sheet 嘅」。同一個 /exec 可以係
-   （甲）呢個管理系統嘅後端 —— 進度追蹤／成員名單分頁喺同一張 Sheet；
-   （乙）另一支腳本／另一張 Sheet（例如淨係進度嗰張）。
-   症狀一樣（人讀到、進度全空），但原因同做法完全唔同，所以要有辦法睇
-   清楚：邊張 Sheet、有邊啲分頁、每張幾多行、進度同名冊對唔對得上。
-   要 API Key（會報分頁名同行數，唔應該公開）。
+   正式路徑只准指向本支部同一個 Unified /exec／Sheet。若人讀到但進度全空，
+   要核對 Registry 是否誤指舊 deployment，以及 active Sheet 的「進度追蹤」／
+   「成員名單」分頁是否有資料。因此保留管理員診斷：顯示 active Sheet、分頁、
+   行數及進度／名冊對應結果。要 API Key（會報分頁名同行數，唔應該公開）。
    ============================================================ */
 
 function progressMembers() {
@@ -3612,7 +3609,7 @@ function progressMembers() {
   return out;
 }
 
-/** 讀全部進度資料（同進度前端嘅 /exec?action=load 同一種格式） */
+/** 讀全部進度資料（Unified /exec?action=load 的 Progress 業務格式） */
 function loadProgressData() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var progress = {};
@@ -3756,7 +3753,7 @@ function withLock(fn) {
   }
 }
 
-/** 勾／取消勾（同進度前端寫入同一個分頁） */
+/** 勾／取消勾（Progress action 寫入同一個「進度追蹤」分頁） */
 function saveProgress(changes, confirmer) {
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('進度追蹤');
   if (!sheet) return { success: false, error: '搵唔到「進度追蹤」分頁（請先執行 initializeSheets）' };
@@ -3864,7 +3861,7 @@ function loadMyRequests(ymis) {
 
 /* ============================================================
    審批中心：待批完成（團員申報 → 執委／領袖喺深資童軍管理系統批）
-   批准＝寫入「進度追蹤」（同一個後端、兩個前端都即刻見到）
+   批准＝寫入「進度追蹤」（同一個後端的 client 都即刻見到）
    ============================================================ */
 function reviewProgressRequest(reqId, decision, note, reviewer, confirmedDate) {
   reqId = textOf(reqId);

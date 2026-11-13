@@ -1,12 +1,14 @@
 /* ============================================================
-   api/progress.js — 進度紀錄同源轉發層（一個後端、兩個前端）
+   api/progress.js — 功能完整版支部前端內的 Progress 同源轉發層
    ------------------------------------------------------------
-   旅團只有一個後端：Google Sheet ＋ 一支 Apps Script（/exec）。
-   深資童軍管理系統同進度前端都係前端，讀寫同一份資料 —— 所以呢度只係
-   「代瀏覽器讀／寫旅團自己嘅後端」，唔會連去任何其他系統。
+   旅團只有一個完整後端：Google Sheet ＋一支 Unified Apps Script（/exec），
+   具備身份、行政、Progress、獎章、履歷及申報能力。vs_portal 係功能完整版前端，
+   vsbadge 係輕量前端；呢度只會代 vs_portal browser 執行 allowlist 內的本支部
+   Progress 業務 action，直接讀寫同一 Sheet 的指定分頁。
 
-   讀：POST { action:'load', unit, backend, apikey }  → GET 後端 ?action=load
-   寫：POST { action:'save' | 'saveOtherBadge', … }   → POST 後端 action=save
+   讀：browser POST { action:'load', unit, sessionToken } → server GET Unified ?action=load
+   寫：browser POST { action:'save' | 'saveOtherBadge', unit, sessionToken, data }
+       → server POST 同一 Unified /exec
    批：POST { action:'reviewRequest' | 'reviewLogRequest', … }
         → 審批中心：批／拒團員申報（待批完成／待批履歷），批准會寫入進度／活動履歷
    考核項目固定讀 app 內建 data/progress/items.json，不接受 remote override。
@@ -16,8 +18,9 @@
 
    安全：
      1. 只准 https://script.google.com/macros/s/…/exec（擋 open proxy；可用 V82_PROXY_TEST=1 放行本機 mock）
-     2. payload ≤ 1 MB；上游 45 秒逾時
-     3. log 只記 metadata：唔記 API Key、唔記 payload 內容、唔記完整後端網址
+     2. 前端／proxy allowlist 只係第一層；Unified GS 仍驗 server-issued session、role、scope
+     3. payload ≤ 1 MB；上游 45 秒逾時
+     4. log 只記 metadata：唔記 API Key、唔記 payload 內容、唔記完整後端網址
    ============================================================ */
 
 import crypto from 'node:crypto';
@@ -27,29 +30,17 @@ import { verifySuperSession } from './_super-session.js';
 export const config = { maxDuration: 60 };
 
 /* ============================================================
-   ★ VSBADGE 旅系統接駁（2026-09-25）
+   Unified GAS server-signature transport
    ------------------------------------------------------------
-   進度前端（VSBADGE）升級做「旅 > 團 > 進度」之後，進度嗰支 GAS 若果
-   「閂咗直接入口（ALLOW_LOCAL_LOGIN=false）」，舊式 apikey 讀寫會俾佢
-   拒（回 success:false, upstream_only:true, error:「此後端的直接入口已閂…」）
-   —— 呢個正正係「VSBADGE 連唔上」（以前經 ECPORTAL／apikey 直連嗰陣通）。
-   
-   閂咗口嘅後端**只收簽名**（sig）。而簽名用嘅根密鑰就係**呢支進度後端
-   自己**嘅 API_KEY（vsbadge Code.gs：linkSigKey() = HMAC-SHA256(
-   "vsbadge-troop-sig-v1", getApiKey())；verifyLinkSig 用同一條 API_KEY 驗，
-   doPost 喺「直接入口」掣**之前**先路由簽名請求）。所以我哋（Vercel 伺服器）
-   有嗰條 SHEET KEY（＝TROOP_<id>_APIKEY）就出到同一款簽名，
-   直接 POST 到同一 Unified GAS /exec 就入得。
-   key 唔落瀏覽器，仲硬淨過舊式 apikey，亦唔會再撞「閂咗口」。
+   Progress 永遠只讀寫本支部同一支 Unified GAS。若 GAS 要求 server-signed
+   request，proxy 會用 Registry 的同一 API_KEY 派生用途分隔 HMAC，再向同一
+   /exec 重送同一 action；呢個只係 server authentication transport，與
+   其他前端的狀態或旅系統整合無關。
 
-   簽名公式（同 vsbadge Code.gs makeLinkSig / verifyLinkSig 完全一致）：
+   簽名公式與 Unified GAS verifyLinkSig 一致：
      linkSigKey = hex( HMAC-SHA256( message = "vsbadge-troop-sig-v1", key = SHEET_KEY ) )
      canonical  = action + "\n" + ts + "\n" + nonce + "\n" + hex(SHA-256(rawBody))
      sig        = hex( HMAC-SHA256( canonical, linkSigKey ) )
-   傳送：POST 到後端 /exec；body 帶 {…服務參數, sig, sig_ts, sig_nonce}
-   （digest 綁「去掉三個 sig 欄位後嘅 body」；query 都帶多一組 sig，
-   因為 GAS 302 轉址有機會甩咗 query —— 同 vsbadge callDownstream 一樣）。
-   讀（load）都係經 signed POST 垂詢，唔使 GET（閂咗口嘅 doGet 一律拒）。
    ============================================================ */
 const LINK_SIG_PURPOSE = 'vsbadge-troop-sig-v1';
 const LINK_SIG_MAX_BODY = 900000;   // sig 請求 body 上限（同 vsbadge 一樣）
@@ -84,14 +75,10 @@ const UPSTREAM_TIMEOUT_MS = (() => {
 })();
 const MAX_DATA_BYTES = 1024 * 1024;        // 前端送上去嘅資料上限 1MB
 
-// 旅團後端（Code.gs）支援嘅 action（唔會放寬）
+// Progress 業務 action；旅系統、登入閘門及其他整合不屬於呢個 API。
 const ACTIONS = new Set(['load', 'save', 'saveOtherBadge', 'reviewRequest', 'reviewLogRequest',
   /* 團員入口只可走個人 bridge：由 server session 對出 YMIS，再叫後端只回／寫本人。 */
-  'myProgress', 'addRequest', 'myRequests',
-  /* Unified 支部本地入口：getLinkState 讀狀態；現階段 setLocalLogin 只准
-     allow:true 開返，防止未有中央旅系統時把正常登入入口鎖死。GAS 保留未來
-     上游簽名控制能力，但第 4 階段旅系統會直接 server-to-server 呼叫。 */
-  'getLinkState', 'setLocalLogin']);
+  'myProgress', 'addRequest', 'myRequests']);
 
 function sendJson(res, status, obj) {
   res.setHeader('Cache-Control', 'no-store');
@@ -108,6 +95,26 @@ function firstStr(v) {
   if (typeof v === 'string') return v;
   if (Array.isArray(v) && typeof v[0] === 'string') return v[0];
   return '';
+}
+
+/* Unified GAS may still carry legacy transport or entrance metadata.  None of it is
+   part of the Progress business contract, so remove it before replying to browser code. */
+const INTERNAL_STATE_FIELDS = new Set([
+  'linked', 'upstream_only', 'allow_local_login', 'local_login', 'link_flag_set',
+  'link_state', 'link_status', 'link_mode', 'integration_state', 'integration_status',
+  'connection_state', 'connection_status', 'server_side_key',
+  'serverSideKey', 'allowLocalLogin', 'localLogin', 'linkFlagSet', 'linkState', 'linkStatus', 'linkMode',
+  'integrationState', 'integrationStatus', 'connectionState', 'connectionStatus',
+  'apiKey', 'apikey', 'api_key', 'backend', 'gasUrl', 'gas_url', 'portalToken', 'portal_token', 'secret'
+]);
+function progressBusinessData(value) {
+  if (Array.isArray(value)) return value.map(progressBusinessData);
+  if (!value || typeof value !== 'object') return value;
+  const clean = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (!INTERNAL_STATE_FIELDS.has(key)) clean[key] = progressBusinessData(child);
+  }
+  return clean;
 }
 
 async function readRawBody(req) {
@@ -136,7 +143,7 @@ async function upstream(url, { method = 'POST', payload = null } = {}) {
   return { status: up.status, json, raw: text };
 }
 
-/** 閂咗直接入口時，用同一套 link signature 做 server-to-server 請求。 */
+/** 用 Unified GAS 協定的用途分隔 HMAC 做 server-to-server 請求。 */
 async function signedUpstream(url, action, payload, key) {
   const bodyOnly = { ...(payload || {}), action };
   const inner = makeLinkSig(action, JSON.stringify(bodyOnly), key);
@@ -164,25 +171,23 @@ async function authenticate(unitCode, body) {
     return { ok: false, status: 503, reason: 'auth_backend_not_configured', error: '旅團登入後端未設定' };
   }
   const sessionToken = firstStr(body.sessionToken);
-  const portalToken = firstStr(body.portalToken);
-  if (!sessionToken && !portalToken) {
+  if (!sessionToken) {
     return { ok: false, status: 401, reason: 'session_required', error: '登入狀態已失效，請重新登入' };
   }
   const payload = {
-    action: 'authWhoAmI', unit: unit.code, apiKey: unit.apiKey,
-    ...(portalToken ? { portalToken } : { sessionToken })
+    action: 'authWhoAmI', unit: unit.code, apiKey: unit.apiKey, sessionToken
   };
   let check = await upstream(unit.gasUrl, { method: 'POST', payload });
   if (check.json?.upstream_only && canSign(unit.apiKey)) {
     const signed = await signedUpstream(unit.gasUrl, 'authWhoAmI', {
-      unit: unit.code, ...(portalToken ? { portalToken } : { sessionToken })
+      unit: unit.code, sessionToken
     }, unit.apiKey);
     if (signed.tooBig) return { ok: false, status: 413, reason: 'auth_request_too_big', error: '登入核對請求太大' };
     check = signed.resp;
   }
   const account = check.json?.account;
   if (!check.json?.ok || !account) {
-    return { ok: false, status: 401, reason: 'session_invalid', error: check.json?.error || '登入狀態已失效，請重新登入' };
+    return { ok: false, status: 401, reason: 'session_invalid', error: '登入狀態已失效，請重新登入' };
   }
   return {
     ok: true,
@@ -218,18 +223,7 @@ export default async function handler(req, res) {
     return sendJson(res, 400, { ok: false, error: '旅團編號格式不正確' });
   }
 
-  /* 第 3 階段沒有中央旅系統，關閉支部唯一正常登入入口永遠不是有效操作。
-     在 session 核對（本身亦會打 Unified GAS）之前拒絕，確保這類請求不會向
-     GAS 發出任何流量，更不可能因下游／驗證流程改動而意外關門。 */
-  if (action === 'setLocalLogin') {
-    const requested = String(data.allow ?? '').trim().toLowerCase();
-    if (['0', 'false', 'no', 'off', 'close', 'closed'].indexOf(requested) >= 0) {
-      return sendJson(res, 409, { ok: false, reason: 'phase3_local_login_required',
-        error: '現階段未有中央旅系統，支部本地入口必須保持開啟。' });
-    }
-  }
-
-  /* 除上述無條件拒絕的危險操作外，所有進度 action 都要先由 server session 對回可信身份。 */
+  /* 所有 Progress action 都要先由 server session 對回可信身份。 */
   let actor = null;
   if (!unit) return sendJson(res, 400, { ok: false, reason: 'unit_required', error: '缺少旅團編號' });
   try { actor = await authenticate(unit, body); }
@@ -249,9 +243,9 @@ export default async function handler(req, res) {
   const backend = String(reg.backend || '').trim();
   const apiKey = String(reg.apiKey || '').trim();
 
-  const usingServerSide = !!(reg.backend && reg.apiKey);
   /* 簽名根密鑰＝同一 Unified GAS 的 API_KEY。Browser 提交的 backend／apikey
-     不參與選路或驗證；有條 ≥8 字元 KEY，收到 upstream_only 就兜去簽名。 */
+     不參與選路或驗證；如標準 transport 要求 server signature，就向同一 /exec
+     重送同一個業務 action。 */
 
   // ---- 2. 旅團後端（GAS /exec）驗證 ----
   if (!backend) {
@@ -271,7 +265,7 @@ export default async function handler(req, res) {
 
   try {
     let up;
-    let sentVia = 'api';
+    let usedSignature = false;
     let targetAction = action;
     let safeData = data;
     if (action === 'myProgress') {
@@ -289,12 +283,11 @@ export default async function handler(req, res) {
         evidence: String(data.evidence || '').slice(0, 2000)
       };
     }
-    /* 純簽名 POST：閂咗直接入口嘅 vsbadge 後端 doPost 會喺「直接入口」掣之前先驗簽名。
-       簽名完全照 vsbadge callDownstream：body 一組（digest 綁去 sig 欄位後嘅 body）、
-       query 一組（digest 綁成支原始 body），驗收時 query 優先，兩粒 nonce 一齊消耗。 */
+    /* Server-signed POST：同一 action、同一 /exec，只改用用途分隔 HMAC 驗證。
+       body 同 query 各有一組簽名，兼容 GAS 302 redirect；兩粒 nonce 都由 GAS 消耗。 */
     const signReady = canSign(apiKey);
     /* @param targetAction 落喺 body 嘅 action（簽名 canonical 同 body 都用佢） */
-    /* @param payload      除 action 外嘅業務欄位（setLocalLogin 用 {allow:true|false}） */
+    /* @param payload      除 action 外嘅業務欄位 */
     const signedPost = async (signedAction = targetAction, payload = safeData) => {
       const bodyOnly = { ...payload, action: signedAction };
       const rows = JSON.stringify(bodyOnly);
@@ -313,7 +306,7 @@ export default async function handler(req, res) {
     };
 
     if (action === 'load') {
-      /* 舊路（快、唔使簽名）：讀多數用 GET + apikey；收到 upstream_only 先至兜去簽名 POST */
+      /* 先用同一 GAS 的標準 GET action；如部署要求 server signature，再向同一 /exec 重送。 */
       let qs = new URLSearchParams({ action: 'load' });
       if (apiKey) qs.set('apikey', apiKey);
       up = await upstream(backend + (backend.includes('?') ? '&' : '?') + qs.toString(), { method: 'GET' });
@@ -322,7 +315,7 @@ export default async function handler(req, res) {
         if (signed.tooBig) {
           return sendJson(res, 413, { ok: false, reason: 'sig_body_too_big', error: '資料太大，簽唔到去進度後端' });
         }
-        up = signed.resp; sentVia = 'link';
+        up = signed.resp; usedSignature = true;
       }
     } else if (PERSONAL_ACTIONS.has(action)) {
       /* 個人 bridge 不可用 API Key 代替身份。上面已由 server session 固定 YMIS；
@@ -334,35 +327,7 @@ export default async function handler(req, res) {
       if (signed.tooBig) {
         return sendJson(res, 413, { ok: false, reason: 'sig_body_too_big', error: '個人進度請求太大' });
       }
-      up = signed.resp; sentVia = 'link';
-    } else if (action === 'getLinkState' || action === 'setLocalLogin') {
-      /* 支部本地入口狀態／復原。兩個 action 都要 server-side link signature；
-         第 3 階段只容許查狀態或 allow:true 開返，不容許由支部 browser 關閉。
-         第 4 階段旅系統建立後，才由真正上游直接簽名控制 GAS。 */
-      if (!signReady) {
-        return sendJson(res, 400, { ok: false, reason: 'no_sign_key',
-          error: '未設定 Unified GAS API Key，無法讀取或復原支部本地入口。' });
-      }
-      if (action === 'setLocalLogin') {
-        const raw = String(data.allow ?? '').trim().toLowerCase();
-        const allow = ['1', 'true', 'yes', 'on', 'open'].indexOf(raw) >= 0;
-        if (!allow && ['0', 'false', 'no', 'off', 'close', 'closed'].indexOf(raw) < 0) {
-          return sendJson(res, 400, { ok: false, reason: 'bad_allow',
-            error: '開關值唔正確（現階段只接受 allow: true 開返本地入口）。' });
-        }
-        /* 第 3 階段未有中央旅系統：本地帳戶係正常主入口。支部 UI/API
-           不可把自己鎖死；第 4 階段完成 SSO staging 後，旅系統會直接以
-           上游簽名控制 GAS，而不是由 browser 經呢條路關門。 */
-        if (!allow) {
-          return sendJson(res, 409, { ok: false, reason: 'phase3_local_login_required',
-            error: '現階段未有中央旅系統，支部本地入口必須保持開啟。' });
-        }
-      }
-      const signed = await signedPost(action, action === 'setLocalLogin' ? { allow: 'true' } : {});
-      if (signed.tooBig) {
-        return sendJson(res, 413, { ok: false, reason: 'sig_body_too_big', error: '資料太大，簽唔到去 VSBADGE 後端' });
-      }
-      up = signed.resp; sentVia = 'link';
+      up = signed.resp; usedSignature = true;
     } else {
       const payload = { ...safeData, action: targetAction };
       if (apiKey) payload.apikey = apiKey;
@@ -372,7 +337,7 @@ export default async function handler(req, res) {
         if (signed.tooBig) {
           return sendJson(res, 413, { ok: false, reason: 'sig_body_too_big', error: '資料太大，簽唔到去進度後端' });
         }
-        up = signed.resp; sentVia = 'link';
+        up = signed.resp; usedSignature = true;
       }
     }
 
@@ -384,21 +349,18 @@ export default async function handler(req, res) {
       return sendJson(res, 502, { ok: false, reason: 'upstream_bad_response', error: hint });
     }
 
-    // GAS 業務錯誤（success:false）要照樣俾前端睇到（例：Invalid API Key／閂咗直接入口）
-    const closed = up.json.upstream_only === true;
-    const ok = closed ? false : up.json.success !== false;
-    const fellBack = sentVia === 'link';
-    safeLog({ result: ok ? 'ok' : (closed ? 'upstream_only' : 'gas_error'), action, fellBack, status: up.status, ms: Date.now() - t0 });
+    // GAS 業務錯誤（success:false）要照樣俾前端睇到；空集合仍然係 success:true。
+    const signatureRequired = up.json.upstream_only === true;
+    const ok = !signatureRequired && up.json.success !== false;
+    safeLog({ result: ok ? 'ok' : (signatureRequired ? 'signature_required' : 'gas_error'),
+      action, signed: usedSignature, status: up.status, ms: Date.now() - t0 });
     return sendJson(res, 200, {
       ok,
       action,
-      serverSideKey: usingServerSide,
-      upstream_only: closed,
-      linked: fellBack,
-      error: ok ? undefined : (closed
-        ? (up.json.error || '進度後端閂咗「直接入口」——請核對 API Key，或者喺 Vercel 更新 KEY 再 Redeploy。')
-        : (up.json.error || '進度系統拒絕咗呢個要求')),
-      data: up.json
+      error: ok ? undefined : (signatureRequired
+        ? 'Unified GAS 拒絕咗呢個 Progress action；請管理員核對 Registry APIKEY 同正式 deployment。'
+        : (up.json.error || 'Unified GAS 拒絕咗呢個 Progress action')),
+      data: progressBusinessData(up.json)
     });
   } catch (e) {
     const timeout = e && (e.name === 'TimeoutError' || e.name === 'AbortError');

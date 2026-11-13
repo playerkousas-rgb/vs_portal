@@ -3,7 +3,7 @@
    dev-server.mjs — 本機開發伺服器（零依賴）
    ------------------------------------------------------------
    本系統係純靜態網站（HTML + JS），本來用 `python3 -m http.server` 就夠。
-   但「進度系統直接接駁」需要一個同源嘅伺服器端 API（Vercel 上係 /api/progress），
+   Progress 業務 action 必須經同源伺服器端 API（Vercel 上係 /api/progress），
    所以呢個 script 會：
      1) 當普通靜態伺服器serve 成個 repo
      2) 將 /api/<name> 交俾 api/<name>.js（同 Vercel Serverless Function 一樣嘅 handler）
@@ -217,5 +217,5 @@ http.createServer((req, res) => {
   if (envTroops.length) console.log(`環境變數旅團（.env.local／env）：${envTroops.join(', ')}`);
   else console.log('（未載入任何 TROOP_* 環境變數 → 旅團選擇閘只會有 Git 登記嘅旅團；想本地預覽有多啲旅團，喺項目加 .env.local，見 docs/ADD_NEW_UNIT.md）');
   console.log(`深資童軍管理系統（本機）→ http://localhost:${PORT}/?u=0082`);
-  console.log(`API（進度接駁）→ http://localhost:${PORT}/api/progress`);
+  console.log(`API（Progress actions）→ http://localhost:${PORT}/api/progress`);
 });

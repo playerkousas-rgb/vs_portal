@@ -1,12 +1,11 @@
 /* ============================================================
-   progress.js — 進度紀錄（一個 Unified 後端、多個前端）
+   progress.js — 進度紀錄（完整 Unified 後端；vs_portal 完整版前端內的模組）
    ------------------------------------------------------------
    統一設計：
-     · 深資童軍管理系統唔會另接進度系統或第二支 GAS。
-     · 行政、進度與 BADGE 都寫入旅團同一個 Google Sheet＋Unified /exec；
-       前端只係不同介面，唔會建立第二份名冊或身份來源。
-     · 所以呢邊只做兩件事：讀同一後端、寫同一後端。API Key 只係 server routing／HMAC 根，
-       用戶身份必須由 server-issued session 核實。
+     · Unified GS 具備身份、行政、Progress、獎章、履歷及申報完整能力。
+       vs_portal 是功能完整版前端，vsbadge 是只呈現部分流程的輕量前端；兩者共用同一權威資料。
+     · 呢個模組只做兩件事：讀同一後端、寫同一後端。API Key 只係 server routing／HMAC 根，
+       每個 action 仍要經 allowlist，並由 server-issued session、role、scope 核實。
 
    讀：POST /api/progress { action:'load', unit, sessionToken }
    寫：POST /api/progress { action:'save'|'saveOtherBadge', unit, sessionToken }
@@ -16,15 +15,14 @@
    ============================================================ */
 
 import { profile, members, keyCoverage, progressRoster, progressIgnored, identityOf } from '../lib/model.js';
-import { esc, icon, modal, toast, todayISO, confirmDlg } from '../lib/util.js';
+import { esc, icon, modal, toast, todayISO } from '../lib/util.js';
 import { go } from '../lib/router.js';
 import { can, current } from '../lib/auth.js';
 import { pageHead, tabs, stat, empty, noteBox, kv, chipbar, progressBar } from './ui.js';
 import {
   progressCfg, progressConfigured,
   loadRemote, loadItems, saveTicks, flattenItems, summarizeRemote, memberDetail,
-  reviewRequest, reviewLogRequest,
-  getLinkState, setLocalLogin
+  reviewRequest, reviewLogRequest
 } from '../lib/progress.js';
 
 /* ---------- 狀態 ---------- */
@@ -40,8 +38,6 @@ let tickDate = '';        // 勾選日期
 let memberSearch = '';
 let reviewing = false;    // 審批中
 let reviewDate = '';      // 審批：確認日期（留空＝用申報日期）
-let linkMode = '';        // ''＝server session／'link'＝用途分隔簽名／'closed'＝Unified 閂咗本地直接入口
-let door = null;          // Unified 支部本地入口狀態：{ allow_local_login, link_flag_set, node, loading, hasKey }
 
 export function title() { return '進度紀錄'; }
 export function refresh() { window.dispatchEvent(new CustomEvent('v82:refresh')); }
@@ -59,35 +55,27 @@ async function fetchAll({ silent = false } = {}) {
   const r = await loadRemote();
   if (!r.ok) {
     loading = false; remote = null;
-    errMsg = r.error || '讀取失敗';
-    /* Unified GAS 閂咗本地直接入口時，API 會改用同一 API Key 派生的簽名。
-       如果 signed path 都失敗，就如實顯示 Registry／Key 不一致。 */
-    if (r.upstream_only) {
-      errMsg = (r.linked
-        ? '同一 Unified 後端閂咗「直接入口」，簽名亦被拒 —— 請管理員核對 Vercel APIKEY 同 GAS API_KEY 完全相同。'
-        : '同一 Unified 後端只接受簽名請求；請管理員核對 BADGE 與支部 APP 共用的 BACKEND／APIKEY。');
-    }
+    errMsg = r.error || 'Progress action 讀取失敗';
     refresh();
     return;
   }
   remote = { data: r.data || {}, at: new Date().toLocaleString('zh-HK', { hour12: false }) };
-  linkMode = r.linked ? 'link' : (r.upstream_only ? 'closed' : '');
   const it = await loadItems();
   if (it.ok) catalog = flattenItems(it.data);
   loading = false;
   refresh();
 }
 
-/** 未接駁：只顯示 server Registry 合約，不再叫用戶把 Key 放入 browser。 */
+/** 未登記資料來源：只顯示 server Registry 合約，不叫用戶把 Key 放入 browser。 */
 function needSetup() {
   const unit = progressCfg().unit || '0082';
   return `
   <div class="card" style="max-width:780px">
-    <div class="card-head"><div><div class="card-title">旅團共用後端尚未接通</div>
-      <div class="card-sub">管理系統、進度前端及 BADGE 必須使用同一 Unified GAS／Sheet</div></div></div>
+    <div class="card-head"><div><div class="card-title">同一 Unified Sheet 資料來源尚未登記</div>
+      <div class="card-sub">vs_portal 功能完整版與 vsbadge 輕量版前端使用同一支完整 Unified GS</div></div></div>
     <div style="padding:16px 18px" class="sm muted">
       ${noteBox('<b>唔好喺瀏覽器貼 API Key。</b>平台管理員只需在 Vercel 登記同 BADGE 完全相同的三個值；'
-        + '進度頁會自動沿用，亦不接受第二個進度後端。', 'brand')}
+        + '兩個前端會沿用同一完整後端，亦不接受第二個進度或 BADGE 精簡後端。', 'brand')}
       <pre class="code mt-12">TROOP_${esc(unit)}_NAME
 TROOP_${esc(unit)}_BACKEND
 TROOP_${esc(unit)}_APIKEY</pre>
@@ -106,61 +94,6 @@ function reviewCount() {
   return (d.pendingRequests || []).length + (d.logRequests || []).length;
 }
 
-const maskUrl = u => String(u || '').replace(/\/macros\/s\/[^/]+/, '/macros/s/…');
-
-
-/* ============================================================
-   Unified GAS 支部本地入口
-   ------------------------------------------------------------
-   現階段未有中央旅系統：本地帳戶／session 是正常主入口，必須保持開啟。
-   未來第 4 階段接通旅系統並完成 SSO staging 後，才由上游簽名控制此旗標。
-   ============================================================ */
-async function refreshDoor() {
-  door = { loading: true, hasKey: false };
-  refresh();
-  const r = await getLinkState();
-  if (r.ok && r.data) {
-    door = {
-      loading: false,
-      hasKey: true,
-      allow_local_login: r.data.allow_local_login,
-      node: r.data.node || '',
-      link_flag_set: r.data.link_flag_set,
-      at: new Date().toLocaleString('zh-HK', { hour12: false })
-    };
-  } else {
-    /* 讀唔到多數係 Unified 版本太舊，或者 Registry Key 與 GAS 不一致。 */
-    door = { loading: false, hasKey: false, error: r.error || '讀唔到 Unified 後端入口狀態' };
-  }
-  refresh();
-  return door;
-}
-
-async function doorToggle(toClose) {
-  if (door?.loading) return;
-  if (toClose) {
-    toast('現階段未有中央旅系統，本地入口係正常主入口，唔可以關閉。', 'warn');
-    return;
-  }
-  const sure = await confirmDlg({
-    title: '開返 Unified GAS 嘅支部本地入口？',
-    okText: '確定開',
-    message: '現階段支部獨立運作，本地帳戶／session 係正常主入口。開返後，管理系統、進度及 BADGE 會繼續讀寫同一張 Sheet。'
-  });
-  if (!sure) return;
-  door = { ...(door || {}), loading: true };
-  refresh();
-  const r = await setLocalLogin(true);
-  if (r.ok) {
-    toast('已開返 Unified GAS 支部本地入口。', 'ok');
-    await refreshDoor();
-  } else {
-    door = { ...(door || {}), loading: false };
-    toast(r.error || '開關失敗', 'err');
-    refresh();
-  }
-}
-
 /* ---------- 總覽 ---------- */
 /** ★「人讀到、但個個冇進度」橫額 —— 直接講出下一步，唔使人自己猜 */
 function emptyProgressBanner() {
@@ -169,12 +102,12 @@ function emptyProgressBanner() {
   if (!sum.memberCount || sum.withProgress > 0) return '';
   const raw = remote.data?.progress || {};
   const ticks = Object.values(raw).reduce((a, p) => a + Object.keys(p || {}).length, 0);
-  return `<div class="note-box warn">${icon('alert', 15)}<div>
-    <b>讀到 ${sum.memberCount} 位成員，但係冇任何人有進度紀錄</b>
-    <div class="sm mt-4">後端回嘅「進度追蹤」係空嘅（${ticks} 格）——所以每個人都顯示 0。
-    多數係：Registry 指向的 Unified Sheet 入面「進度追蹤」分頁未建立、係空，或者 YMIS 對唔上。</div>
+  return `<div class="note-box info">${icon('check', 15)}<div>
+    <b>已成功讀到同一 Unified Sheet 嘅 ${sum.memberCount} 位成員；目前有 ${ticks} 格進度紀錄</b>
+    <div class="sm mt-4">Progress action 已成功。「進度追蹤」分頁而家係空，所以每個人顯示 0；新建 Sheet 本來就會係呢個狀態。
+    之後經 Progress 或 BADGE 寫入同一分頁，數字就會直接更新。</div>
     <div class="row gap-8 mt-8 wrap">
-      <button class="btn btn-sm" data-act="settings">${icon('settings', 15)} 查看接駁狀態</button>
+      <button class="btn btn-sm" data-act="settings">${icon('settings', 15)} 查看同一 Sheet 資料來源</button>
     </div></div></div>`;
 }
 
@@ -182,8 +115,8 @@ function overviewView() {
   if (!progressConfigured()) return needSetup();
   if (errMsg) {
     return `<div class="note-box warn">${icon('alert', 15)}<div><b>讀唔到後端：</b>${esc(errMsg)}
-      <div class="xs mt-4">如果係「Invalid API Key」→ 去 Apps Script 重新複製 API Key；
-        如果係「搵唔到 <code>progress</code>」→ 喺後端執行一次 <code>initializeSheets</code>。</div></div></div>
+      <div class="xs mt-4">如果係「Invalid API Key」→ 請平台管理員核對 Vercel <code>APIKEY</code> 與同一 Unified GAS 的 Script Property；
+        如果係缺少進度分頁 → 喺後端執行一次 <code>initializeSheets</code>。瀏覽器毋須亦不可貼 Key。</div></div></div>
       <div class="row gap-8 mt-12"><button class="btn" data-act="settings">${icon('settings', 15)} 檢查設定</button>
       <button class="btn" data-act="reload">${icon('refresh', 15)} 再試</button></div>`;
   }
@@ -323,7 +256,7 @@ function tickView() {
 
   return `
   <div class="note-box mb-16">${icon('check', 15)}<div>
-    喺呢度勾選＝直接寫入<b>同一 Unified Sheet</b>（管理系統同 BADGE 共用），效果一樣。
+    喺呢度勾選＝直接寫入<b>同一 Unified Sheet</b>（功能完整版支部前端同 BADGE 輕量前端共用），效果一樣。
     未撳「儲存」之前唔會送出。
   </div></div>
 
@@ -429,7 +362,7 @@ function reviewView() {
 
   return `
   ${noteBox(canTick
-    ? '喺呢度<b>直接批</b>：批准＝即時寫入同一 Unified Sheet（進度追蹤／活動履歷），管理系統同 BADGE 都即刻見到。'
+    ? '喺呢度<b>直接批</b>：批准＝即時寫入同一 Unified Sheet（進度追蹤／活動履歷），功能完整版支部前端同 BADGE 輕量前端都即刻見到。'
     : '你冇勾選／審批權限 —— 可以睇，但要領袖或執委先批得。',
     canTick ? 'ok' : 'warn')}
 
@@ -475,93 +408,54 @@ function reviewView() {
   </div>`;
 }
 
-/* ---------- 設定：Unified 支部本地入口 ---------- */
-function doorCard() {
-  if (door?.loading) {
-    return `<div class="sm muted">讀取 Unified 後端入口狀態中…</div>`;
-  }
-  if (!door) {
-    /* 第一次入設定／未讀狀態 */
-    return `<div class="col gap-8">
-      <div class="faint xs">撳「讀取狀態」睇同一 Unified GAS 嘅支部本地入口係開定閂。</div>
-      <div><button class="btn btn-sm" data-act="door-refresh">${icon('refresh', 14)} 讀取狀態</button></div>
-    </div>`;
-  }
-  if (door.error) {
-    return `<div class="note-box warn">${icon('alert', 14)}<div>
-      <b>讀唔到 Unified 後端入口狀態</b>
-      <div class="xs mt-4">${esc(door.error)}
-        <div class="faint">（多數係：同一支 Unified /exec 未更新，或者
-        <code>TROOP_${esc((progressCfg().unit || '0082'))}_APIKEY</code> 與 GAS <code>API_KEY</code> 不一致。）</div>
-      </div>
-      <div class="mt-8"><button class="btn btn-sm" data-act="door-refresh">${icon('refresh', 14)} 再試</button></div>
-    </div></div>`;
-  }
-  const open = door.allow_local_login;
-  return `<div class="col gap-10">
-    <div>${open
-      ? `<span class="badge b-ok"><span class="dot"></span>支部本地入口：開（現階段正常主入口）</span>`
-      : `<span class="badge b-danger"><span class="dot"></span>支部本地入口：錯誤地關閉</span>`}</div>
-    ${door.node ? `<div class="xs faint">後端節點：${esc(door.node)}${door.link_flag_set ? ` · flag＝${esc(door.link_flag_set)}` : ''}</div>` : ''}
-    ${door.at ? `<div class="xs faint">上次讀取：${esc(door.at)}</div>` : ''}
-    ${open
-      ? `<div class="note-box info"><div class="xs"><b>第 3 階段：支部獨立運作。</b>而家未有中央旅系統，本地帳戶／session 係正常日常登入，必須保持開啟。</div></div>`
-      : `<div class="note-box danger"><div class="xs"><b>請立即開返。</b>中央旅系統尚未建立；保持關閉會令支部用戶無法正常登入。</div></div>`}
-    <div class="row gap-8 wrap">
-      <button class="btn btn-sm" data-act="door-refresh">${icon('refresh', 14)} 讀取狀態</button>
-      ${open ? '' : `<button class="btn btn-sm btn-primary" data-act="door-open">${icon('unlock', 14)} 立即開返本地入口</button>`}
-    </div>
-    <div class="xs faint">第 4 階段接通旅系統並完成中央 SSO staging 後，才由旅系統以簽名控制關閉；現階段不提供關閉按鈕。</div>
-  </div>`;
-}
-
-/* ---------- 設定 ---------- */
+/* ---------- 資料來源：同一 Unified Sheet 的 action 結果 ---------- */
 function settingsView() {
   const c = progressCfg();
   if (!c.serverSide) return needSetup();
+  const ticks = remote
+    ? Object.values(remote.data?.progress || {}).reduce((total, person) => total + Object.keys(person || {}).length, 0)
+    : null;
   return `
   <div class="grid g-2-1">
-    <div class="col gap-16">
-      <div class="card">
-        <div class="card-head"><div><div class="card-title">共用 Unified 後端已準備好</div>
-          <div class="card-sub">管理系統、進度前端及 BADGE 使用同一 GAS／Sheet</div></div>
-          <span class="badge b-ok"><span class="dot"></span>已接通</span></div>
-        <div style="padding:16px 18px" class="sm muted">
-          ${noteBox(`${icon('shield', 15)}<div>瀏覽器不保存 <code>/exec</code> 或 API Key；平台只使用<br>
-            <code>TROOP_${esc(c.unit || '0082')}_NAME</code>、<code>_BACKEND</code>、<code>_APIKEY</code>，
-            而且值與 BADGE 完全相同。API Key 不是用戶身份。</div>`, 'ok')}
-          <div class="row gap-8 mt-12">
-            <button class="btn btn-primary" data-act="reload">${icon('refresh', 15)} 重新讀取</button>
-            <button class="btn" data-go="#/progress/overview">返回進度總覽</button>
-          </div>
+    <div class="card">
+      <div class="card-head"><div><div class="card-title">同一 Unified Sheet 資料來源</div>
+        <div class="card-sub">vs_portal 功能完整版與 vsbadge 輕量版前端按獲准 action 使用同一支完整 GS</div></div>
+        <span class="badge ${remote ? 'b-ok' : errMsg ? 'b-danger' : 'b-warn'}"><span class="dot"></span>${remote ? '已成功讀取' : errMsg ? 'Progress 讀取失敗' : '尚未讀取'}</span></div>
+      <div style="padding:16px 18px" class="sm muted">
+        ${noteBox(`${icon('shield', 15)}<div>瀏覽器不保存 <code>/exec</code> 或 API Key；平台只使用<br>
+          <code>TROOP_${esc(c.unit || '0082')}_NAME</code>、<code>_BACKEND</code>、<code>_APIKEY</code>。
+          一個 <code>/exec</code>、一個 API Key、一張 Sheet；API Key 不是用戶身份，功能有冇顯示亦唔係授權。</div>`, 'ok')}
+        <div class="note-box info mt-12"><div class="sm"><b>空分頁亦係成功結果。</b>
+          新 Sheet 的「進度追蹤」沒有紀錄時應顯示 0，唔會當成讀取失敗；Progress 亦不會另建或另查 BADGE 後端。</div></div>
+        ${errMsg ? `<div class="note-box danger mt-12">${icon('alert', 15)}<div><b>最近一次 Progress action 失敗：</b>${esc(errMsg)}</div></div>` : ''}
+        <div class="row gap-8 mt-12">
+          <button class="btn btn-primary" data-act="reload">${icon('refresh', 15)} 重新讀取同一 Sheet</button>
+          <button class="btn" data-go="#/progress/overview">返回進度總覽</button>
         </div>
-      </div>
-      <div class="card">
-        <div class="card-head"><div class="card-title">Unified GAS 支部本地入口</div>
-          <div class="card-sub">現階段未有旅系統：本地帳戶／session 是正常主入口，必須保持開啟</div></div>
-        <div style="padding:14px 16px" class="sm muted">${doorCard()}</div>
       </div>
     </div>
     <div class="col gap-16">
       <div class="card">
-        <div class="card-head"><div class="card-title">連線狀態</div></div>
+        <div class="card-head"><div class="card-title">資料讀取結果</div></div>
         <div style="padding:14px 16px">
           ${kv([
-            ['資料後端', '<span style="color:var(--ok)">共用 Registry BACKEND</span>'],
-            ['HMAC 根', '<span style="color:var(--ok)">共用 Registry APIKEY（server-only）</span>'],
-            ['接駁方式', linkMode === 'link'
-              ? '<span style="color:var(--ok)">用途分隔 HMAC 簽名</span>'
-              : linkMode === 'closed'
-                ? '<span style="color:var(--warn)">後端只收簽名</span>'
-                : '<span>server session＋同一後端</span>'],
+            ['資料來源', '<span style="color:var(--ok)">同一 Unified GAS／Sheet</span>'],
+            ['Registry', 'NAME／BACKEND／APIKEY 已由 server 登記'],
+            ['進度分頁', '進度追蹤／其他獎章／待批完成／活動履歷／待批履歷／成員名單'],
+            ['讀取結果', remote
+              ? '<span style="color:var(--ok)">Progress action 成功</span>'
+              : errMsg
+                ? `<span style="color:var(--danger)">Progress action 失敗：${esc(errMsg)}</span>`
+                : '尚未執行 Progress action'],
             ['考核項目', catalog ? `${Object.keys(catalog).length} 項` : '未讀取'],
-            ['上次讀取', remote ? esc(remote.at) : '—'],
-            ['讀到嘅成員', remote ? String((remote.data.members || []).length) : '—']
+            ['讀到嘅成員', remote ? String((remote.data.members || []).length) : '—'],
+            ['進度紀錄', ticks == null ? '—' : `${ticks} 格`],
+            ['上次讀取', remote ? esc(remote.at) : '—']
           ])}
         </div>
       </div>
       <div class="card">
-        <div class="card-head"><div class="card-title">跨系統對人</div></div>
+        <div class="card-head"><div class="card-title">同一 Sheet 對人</div></div>
         <div style="padding:14px 16px" class="sm muted">
           用<b>會籍編號（YMIS）</b>對同一個人。現時對得上：<b>${keyCoverage(members(), { youthOnly: true }).percent}%</b>
           （${keyCoverage(members(), { youthOnly: true }).matched}／${keyCoverage(members(), { youthOnly: true }).total} 位團員／執委。）
@@ -589,11 +483,11 @@ export function render(params) {
   ${pageHead({
     title: '進度紀錄',
     sub: configured
-      ? `${progressCfg().name} · 同 BADGE 共用 Unified 後端${remote ? ` · 上次讀取 ${remote.at}` : ''}`
-      : '未接駁 —— 請平台管理員核對共用 NAME／BACKEND／APIKEY',
+      ? `${progressCfg().name} · 直接讀同一 Unified Sheet 嘅進度分頁${remote ? ` · 上次讀取 ${remote.at}` : ''}`
+      : '未登記資料來源 —— 請平台管理員核對 NAME／BACKEND／APIKEY',
     actions: `
       <button class="btn btn-sm" data-act="reload" ${configured ? '' : 'disabled'}>${icon('refresh', 15)} ${loading ? '讀取中…' : '重新讀取'}</button>
-      <button class="btn btn-sm" data-act="settings">${icon('settings', 15)} 接駁狀態</button>`
+      <button class="btn btn-sm" data-act="settings">${icon('settings', 15)} 資料來源</button>`
   })}
 
   ${tabs([
@@ -603,7 +497,7 @@ export function render(params) {
       ['tick', can('progress.tick') ? '勾選進度' : '勾選進度（無權限）', Object.keys(pending).length || undefined],
       ['review', `審批中心${reviewCount() ? `（${reviewCount()}）` : ''}`]
     ] : []),
-    ['settings', configured ? '接駁狀態' : '接駁狀態（未接通）']
+    ['settings', configured ? '資料來源' : '資料來源（未登記）']
   ], tab)}
 
   ${tab === 'settings' ? settingsView()
@@ -696,7 +590,7 @@ export function mount(root, params) {
       title: decision === 'approved' ? '確定批准？' : '確定拒絕？',
       danger: decision !== 'approved',
       body: `<p class="sm">${decision === 'approved'
-          ? '批准會即刻寫入同一 Unified Sheet，管理系統同 BADGE 都見到。'
+          ? '批准會即刻寫入同一 Unified Sheet，功能完整版支部前端同 BADGE 輕量前端都見到。'
           : '拒絕只會改狀態，唔會刪紀錄，團員可以重新申報。'}</p>
         <div class="note-box mt-8"><div class="sm"><b>${who}</b> · ${what}<br>${when}</div></div>`,
       actions: [{ label: '取消', class: 'btn', value: false },
@@ -713,15 +607,6 @@ export function mount(root, params) {
     toast(r.data?.message || (decision === 'approved' ? '已批准 ✓' : '已拒絕'), 'ok');
     await fetchAll({ silent: true });
   }));
-
-  /* 現階段只准讀取狀態／開返支部本地入口；未有旅系統前不提供關閉按鈕。 */
-  root.querySelector('[data-act="door-refresh"]')?.addEventListener('click', () => { refreshDoor(); });
-  root.querySelector('[data-act="door-open"]')?.addEventListener('click', () => { doorToggle(false); });
-  if (tab === 'settings' && progressConfigured() && (!door || !door.at)) {
-    /* 入到設定先至靜靜讀一次門況（冇 key 就唔讀，慳一程） */
-    const c = progressCfg();
-    if (c.serverSide || c.apiKey) setTimeout(() => refreshDoor(), 30);
-  }
 
   /* 第一次入嚟：自動讀一次 */
   if (progressConfigured() && !remote && !loading && !errMsg) setTimeout(() => fetchAll({ silent: true }), 30);

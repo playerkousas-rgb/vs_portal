@@ -190,16 +190,26 @@ ok('in-app download is byte-for-byte the generated UnifiedCode.gs', unifiedGasTe
 ok('in-app download publishes the generated artifact SHA-256', UNIFIED_GAS_SHA256 === sha256(SOURCE));
 ok('composed artifact contains no legacy PORTAL_SESSION_SECRET dependency', !SOURCE.includes('PORTAL_SESSION_SECRET'));
 ok('build includes exact pinned vsbadge commit provenance', SOURCE.includes(MANIFEST.baseline.commit));
+ok('generated artifact declares complete backend with full-featured and lightweight frontends',
+  SOURCE.includes('complete Unified branch backend')
+    && SOURCE.includes('vs_portal is the full-featured frontend')
+    && SOURCE.includes('vsbadge is the lightweight frontend'));
+ok('generated architecture keeps client surface separate from server authorization',
+  SOURCE.includes('Client surface never replaces server authorization')
+    && SOURCE.includes('complete branch capability superset')
+    && SOURCE.includes('not a second reduced GS')
+    && SOURCE.includes('allowed action')
+    && SOURCE.includes('session, role, and scope authorization'));
 ok('vsbadge v9.6 baseline is still present', SOURCE.includes("const VS_GS_VERSION = 'v9.6';"));
 ok('legacy Portal is namespaced instead of shadowing baseline globals', SOURCE.includes('var PortalAdminCompat_ = (function () {'));
-ok('phase 3 generated pinned menu labels local login as required', SOURCE.includes(".addItem('ℹ️ 現階段必須保持開啟','menuLocalLoginOff')"));
-const phase3MenuSource = SOURCE.slice(SOURCE.lastIndexOf('function onOpen()'), SOURCE.lastIndexOf('function doGet(e)'));
-ok('phase 3 active Sheet menu exposes only branch-safe controls',
-  phase3MenuSource.includes("createMenu('🔗 支部系統')")
-    && phase3MenuSource.includes("'menuLocalLoginOn'")
-    && !phase3MenuSource.includes('menuLocalLoginOff')
-    && !phase3MenuSource.includes('menuRegisterDownstream')
-    && !phase3MenuSource.includes('badgeOnOpen_'));
+ok('generated pinned menu labels branch local login as required', SOURCE.includes(".addItem('ℹ️ 支部本地登入必須保持開啟','menuLocalLoginOff')"));
+const activeMenuSource = SOURCE.slice(SOURCE.lastIndexOf('function onOpen()'), SOURCE.lastIndexOf('function doGet(e)'));
+ok('active Sheet menu exposes only branch-safe controls',
+  activeMenuSource.includes("createMenu('🔗 支部系統')")
+    && activeMenuSource.includes("'menuLocalLoginOn'")
+    && !activeMenuSource.includes('menuLocalLoginOff')
+    && !activeMenuSource.includes('menuRegisterDownstream')
+    && !activeMenuSource.includes('badgeOnOpen_'));
 ok('unfinished legacy authChangePassword is not an exposed compatibility route', !/PortalAdminCompat_\.authChangePassword/.test(SOURCE));
 
 const node = makeNode();
@@ -222,9 +232,90 @@ const initialized = node.context.initializeSheets();
 ok('combined initializer succeeds', initialized.success === true, JSON.stringify(initialized));
 ok('initializer preserves existing API key', node.props.get('API_KEY') === 'existing-api-key-do-not-change');
 ok('initializer does not create or require a separate PORTAL_SESSION_SECRET', !node.props.has('PORTAL_SESSION_SECRET'));
+ok('initializer restores branch local login as the required normal entrance', node.props.get('ALLOW_LOCAL_LOGIN') === 'true');
 ok('initializer preserves existing progress row', node.sheets.get('進度追蹤')._rows.some(r => r[1] === 'L1-KEEP' && r[5] === 'must survive'));
 ok('initializer records isolated unified version', node.props.get('UNIFIED_GS_INITIALIZED_VERSION') === 'v9.6-u1-test');
 ok('initializer adds administrative tabs without replacing progress baseline', node.sheets.has('資料表') && node.sheets.has('Users') && node.sheets.has('活動履歷'));
+
+/* One action dispatcher reads the different Progress tabs from this same active Sheet. */
+node.sheets.get('其他獎章').appendRow(['9000000001', 'OB-1', '急救章', '2026-02-01', 'CERT-1', '', '2026-02-01']);
+node.sheets.get('待批完成').appendRow(['REQ-1', '9000000002', '中央領袖', 'L1-PENDING', '待批項目', '2026-02-02', '', 'pending', '2026-02-03']);
+node.sheets.get('活動履歷').appendRow(['LOG-1', 'service', '9000000001', '中央團員', '2026-02-04', '社區服務', '組員', '2', '', '', 'leader', '2026-02-05', '2026-02-05']);
+node.sheets.get('待批履歷').appendRow(['LOGREQ-1', 'new', '', 'service', '9000000002', '中央領袖', '2026-02-06', '待批服務', '組員', '1', '', '', 'pending', '2026-02-07', '', '', '']);
+const unifiedLoadRequest = signedRequest('load', { unit: '0082' });
+const unifiedLoad = node.post(unifiedLoadRequest.body, unifiedLoadRequest.parameter);
+ok('one Unified load action returns normal members and progress from the same active Sheet',
+  unifiedLoad.success === true
+    && unifiedLoad.members.some(member => member.ymis === '9000000001')
+    && unifiedLoad.progress['9000000001']?.['L1-KEEP']?.note === 'must survive',
+  JSON.stringify(unifiedLoad));
+ok('the same Unified load action reads each Progress tab instead of treating tabs as separate backends',
+  unifiedLoad.otherBadges['9000000001']?.['OB-1']?.name === '急救章'
+    && unifiedLoad.pendingRequests.some(request => request.request_id === 'REQ-1')
+    && unifiedLoad.logs.some(log => log.record_id === 'LOG-1')
+    && unifiedLoad.logRequests.some(request => request.request_id === 'LOGREQ-1'),
+  JSON.stringify(unifiedLoad));
+
+/* BOOK may submit import candidates, but requestComplete must stop in the pending tab.
+   Only a real branch leader/admin review may turn that candidate into an official record. */
+const bookImportRequest = signedRequest('requestComplete', {
+  on_behalf: '9000000001', on_behalf_role: 'member', on_behalf_name: 'VSBOOK',
+  items: [{ itemId: 'L1-BOOK-IMPORT', itemName: 'BOOK 匯入候選',
+    requested_date: '2026-02-08', evidence: 'book-import-test' }]
+});
+const bookImport = node.post(bookImportRequest.body, bookImportRequest.parameter);
+const bookPendingRow = node.sheets.get('待批完成')._rows.find(row => String(row[0]) === String(bookImport.request_id));
+ok('BOOK import is accepted only as a pending candidate, not an official progress record',
+  bookImport.success === true && bookPendingRow?.[7] === 'pending'
+    && !node.sheets.get('進度追蹤')._rows.some(row => row[0] === '9000000001' && row[1] === 'L1-BOOK-IMPORT'),
+  JSON.stringify(bookImport));
+const bookReviewerYmis = '2222222222';
+node.sheets.get('Users').appendRow([
+  bookReviewerYmis, 'BOOK 匯入確認領袖', 'book-reviewer@example.test', 'branch_leader',
+  sha256('bookleader9'), 'b4', true, 'existing', '2026-01-01', '2026-01-01', '', 'active', '*', false
+]);
+const bookReviewerLogin = node.post({ action: 'login', login_id: bookReviewerYmis, password: 'bookleader9' });
+const bookReview = node.post({ action: 'reviewRequest', token: bookReviewerLogin.token,
+  request_id: bookImport.request_id, decision: 'approved', review_note: '領袖確認 BOOK 匯入',
+  confirmed_date: '2026-02-09' });
+ok('BOOK import becomes official only after an authenticated branch leader review',
+  bookReviewerLogin.success === true && bookReviewerLogin.user?.role === 'branch_leader'
+    && bookReview.success === true
+    && node.sheets.get('進度追蹤')._rows.some(row => row[0] === '9000000001'
+      && row[1] === 'L1-BOOK-IMPORT' && row[2] === '2026-02-09'),
+  JSON.stringify(bookReview));
+node.context.destroyToken(bookReviewerLogin.token);
+const bookReviewerRow = node.sheets.get('Users')._rows.findIndex(row => row[0] === bookReviewerYmis);
+if (bookReviewerRow >= 0) node.sheets.get('Users').deleteRow(bookReviewerRow + 1);
+
+node.props.set('ALLOW_LOCAL_LOGIN', 'false');
+const blockedToggleRequest = signedRequest('setLocalLogin', { allow: 'false' });
+const blockedToggle = node.post(blockedToggleRequest.body, blockedToggleRequest.parameter);
+ok('Unified public router rejects legacy entrance control and restores local login',
+  blockedToggle.success === false && blockedToggle.code === 'BRANCH_LOCAL_LOGIN_REQUIRED'
+    && node.props.get('ALLOW_LOCAL_LOGIN') === 'true', JSON.stringify(blockedToggle));
+const blockedStateRequest = signedRequest('getLinkState', {});
+const blockedState = node.post(blockedStateRequest.body, blockedStateRequest.parameter);
+ok('Unified public router does not expose legacy entrance state',
+  blockedState.success === false && blockedState.code === 'BRANCH_LOCAL_LOGIN_REQUIRED'
+    && !Object.prototype.hasOwnProperty.call(blockedState, 'allow_local_login'), JSON.stringify(blockedState));
+
+/* A header-only progress tab is a successful zero-record action result. */
+const emptyProgressNode = makeNode();
+const emptyInitialized = emptyProgressNode.context.initializeSheets();
+emptyProgressNode.sheets.get('成員名單').appendRow(['9000000099', '空進度團員', '2026-01-01', 'VS', 'empty@example.test']);
+const emptyLoadRequest = signedRequest('load', { unit: '0082' });
+const emptyLoad = emptyProgressNode.post(emptyLoadRequest.body, emptyLoadRequest.parameter);
+ok('header-only progress tab returns success, a normal member, and zero progress records',
+  emptyInitialized.success === true && emptyLoad.success === true
+    && emptyLoad.members.some(member => member.ymis === '9000000099')
+    && Object.keys(emptyLoad.progress || {}).length === 0,
+  JSON.stringify(emptyLoad));
+ok('Progress load response contains business data only, not integration or entrance state',
+  !Object.prototype.hasOwnProperty.call(emptyLoad, 'allow_local_login')
+    && !Object.prototype.hasOwnProperty.call(emptyLoad, 'link_flag_set')
+    && !Object.prototype.hasOwnProperty.call(emptyLoad, 'upstream_only'),
+  JSON.stringify(emptyLoad));
 
 const forgot = node.post({ action: 'authForgotPassword', unit: '0082', email: 'admin@example.com' });
 const forgotMailBody = String(node.mail[0]?.[0]?.body || '');
@@ -297,13 +388,13 @@ ok('branch GS rejects an expired purpose token before creating a session', expir
 
 const memberPurposeToken = assertion('0082', '9000000001', 'member', '中央團員');
 const memberExchange = node.post({ action: 'authPortalExchange', unit: '0082', portalToken: memberPurposeToken });
-ok('central SSO exchanges a short assertion for an opaque branch session', memberExchange.success === true && /^sso_/.test(memberExchange.sessionToken || ''));
+ok('isolated auth fixture exchanges a short assertion for an opaque branch session', memberExchange.success === true && /^sso_/.test(memberExchange.sessionToken || ''));
 const replayedExchange = node.post({ action: 'authPortalExchange', unit: '0082', portalToken: memberPurposeToken });
 ok('branch GS rejects replay of the one-use SSO exchange token', replayedExchange.code === 'SSO_TOKEN_REPLAYED');
 ok('replay protection uses shared Script Cache under an atomic Script Lock',
   node.cacheWrites.some(write => write.key.startsWith('unified-sso-jti:') && write.ttl === 180)
     && node.lockStats.waits >= 2 && node.lockStats.waits === node.lockStats.releases);
-ok('central SSO creates only a passwordless authorization mirror', (() => {
+ok('isolated auth fixture creates only a passwordless authorization mirror', (() => {
   const row = node.sheets.get('Users')._rows.find(r => String(r[0]) === '9000000001');
   return row && row[4] === '' && row[3] === 'member';
 })());
@@ -316,11 +407,11 @@ ok('member session is denied administrative write scope and cannot forge interna
   memberWrite.code === 'ACTION_SCOPE_DENIED');
 const promoted = node.post({ action: 'authPortalExchange', unit: '0082',
   portalToken: assertion('0082', '9000000001', 'exco', '中央團員') });
-ok('central role changes update only the passwordless SSO authorization mirror', promoted.success === true
+ok('fixture role changes update only the passwordless authorization mirror', promoted.success === true
   && promoted.account.role === 'exco' && node.sheets.get('Users')._rows.find(r => String(r[0]) === '9000000001')?.[4] === '');
 
 const leaderExchange = node.post({ action: 'authPortalExchange', unit: '0082', portalToken: assertion('0082', 'leader@example.test', 'leader', '中央領袖') });
-ok('central SSO maps an e-mail subject to the branch roster', leaderExchange.success === true && leaderExchange.account.ymis === '9000000002', JSON.stringify(leaderExchange));
+ok('isolated auth fixture maps an e-mail subject to the branch roster', leaderExchange.success === true && leaderExchange.account.ymis === '9000000002', JSON.stringify(leaderExchange));
 ok('leader mirror has branch-leader ceiling and no local credential', (() => {
   const row = node.sheets.get('Users')._rows.find(r => String(r[0]) === '9000000002');
   return row && row[3] === 'branch_leader' && row[4] === '';
@@ -344,7 +435,7 @@ const saved = node.post({
 });
 ok('authorised leader can write administrative tables', saved.success === true && saved.confirmed === true, JSON.stringify(saved));
 const loaded = node.post({ action: 'loadTables', unit: '0082', sessionToken: leaderExchange.sessionToken });
-ok('both frontends read one administrative data copy', loaded.success === true && Array.isArray(loaded.db?.members));
+ok('all clients read one administrative data copy', loaded.success === true && Array.isArray(loaded.db?.members));
 ok('canonical roster overlays Portal member identity fields', loaded.db.members.some(m => m.ymis === '9000000001' && m.name === '中央團員（更新）'));
 ok('legacy account payload is replaced by safe Users projection', loaded.db.accounts.every(a => !a.pw && !a.password && a.source === 'central-or-rescue'));
 ok('no client-supplied shadow account survives', !loaded.db.accounts.some(a => a.username === 'shadow'));
@@ -463,23 +554,25 @@ ok('administrative copy receives member writes without losing other members data
 
 const centralPassword = node.post({ action: 'authChangePassword', unit: '0082', sessionToken: leaderExchange.sessionToken,
   oldPassword: 'x', newPassword: 'y1234' });
-ok('central SSO session cannot create a second local password', centralPassword.code === 'CENTRAL_IDENTITY_MANAGED');
+ok('auth-fixture session cannot create a second local password', centralPassword.code === 'CENTRAL_IDENTITY_MANAGED');
 
 const localNormal = node.post({ action: 'authLogin', unit: '0082', username: '1111111111', password: 'changed99' });
-ok('phase 3 local branch account is a normal login source', localNormal.success === true
+ok('local branch account is the normal login source', localNormal.success === true
   && typeof localNormal.sessionToken === 'string' && localNormal.sessionToken.length > 10
   && localNormal.localLogin === true, JSON.stringify(localNormal));
 const menuClose = node.context.menuLocalLoginOff();
-ok('phase 3 Sheet menu cannot close the only local login entrance', menuClose.success === false
-  && menuClose.code === 'PHASE3_LOCAL_LOGIN_REQUIRED' && node.context.localLoginAllowed() === true);
+ok('Sheet menu cannot close the branch local login entrance', menuClose.success === false
+  && menuClose.code === 'BRANCH_LOCAL_LOGIN_REQUIRED' && node.context.localLoginAllowed() === true);
 
-/* 第 4 階段預留合約：真正上游簽名仍可在完成 SSO staging 後控制旗標。 */
-node.context.setLocalLoginAllowed(false, 'test-future-upstream');
+/* Isolated auth-fixture regression only: directly exercise pinned compatibility code.
+   This is not a deployment state or a future travel-system contract. */
+node.context.setLocalLoginAllowed(false, 'test-isolated-auth-fixture');
 const localClosed = node.post({ action: 'authLogin', unit: '0082', username: '1111111111', password: 'changeme' });
-ok('future phase can close local login without disabling central SSO', localClosed.success === false
+ok('auth fixture can exercise the legacy closed-gate branch', localClosed.success === false
   && /本地入口|旅團入口/.test(localClosed.error || ''), JSON.stringify(localClosed));
 const centralStillWorks = node.post({ action: 'authPortalExchange', unit: '0082', portalToken: assertion('0082', '9000000002', 'leader', '中央領袖') });
-ok('future central SSO remains available while local entrance is closed', centralStillWorks.success === true);
+ok('isolated exchange fixture still exercises its dedicated token path', centralStillWorks.success === true);
+node.context.setLocalLoginAllowed(true, 'test-fixture-cleanup');
 
 const beforeRows = node.sheets.get('進度追蹤')._rows.map(r => JSON.stringify(r));
 const again = node.context.initializeSheets();

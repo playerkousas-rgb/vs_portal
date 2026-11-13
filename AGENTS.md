@@ -23,14 +23,14 @@
 |---|---|
 | 改本團 Sheet 嘅資料結構／讀寫邏輯 | 改其他支部嘅 Sheet／backend |
 | 改本 repo 前端、`/api`、`Code.gs` 範本 | 冒充 ADMIN 改平台 `units.json` 以外單位嘅登記／Vercel env |
-| 做本團嘅通告／財務／物資／進度頁 | 幫進度 leaf 加管理層功能（通告／推送／訂閱） |
-| 經上游登記讀寫**自己嘅**下游進度 | 主動連另一個支部；下游反寫上游 |
+| 做本團嘅通告／財務／物資／Progress 內部功能 | 在 Progress 加 BADGE／旅系統 URL、Key、狀態或登入控制 |
+| 經同源 proxy 以業務 action 讀寫**自己嘅** Unified Sheet | 主動連另一個支部／旅系統；倒轉未來「旅讀支部」方向 |
 
 **跨支部聚合 = 旅系統嘅工作，唔係呢個 repo。**（`SCOPE.md` §1.3：星形，唔係網狀）
 
 ## 2. 身份同資料單一來源
 
-- 成員身份錨點 = **本團支部 Sheet 名冊**（`members`）。進度係消費者，搵唔到人 = 本團未開戶，唔會自己補。
+- 成員身份錨點 = **本團支部 Sheet 名冊**（`members`）。Progress 只按 YMIS 使用同一名冊；搵唔到人 = 本團未開戶，唔會自己補。
 - 旅團編號正規化只得一個實現（`82`/`082`/`0082` 同一團）—— `api/_registry.js`。
 - Secret 只住 Vercel env / GAS ScriptProperties；**永遠**唔入 Git／前端／URL／QR／Sheet 儲存格。
 - 前端唔揸 service key；經同源 `/api/proxy` 注入。新增 action 一定要入白名單（`npm run lint` 會擋）。
@@ -44,6 +44,8 @@
 | 衝突 | 三方逐格比對；同格唔同值要列出、未寫入、等用戶確認 |
 | 收據 | 寫完要 readback 核對；唔確定唔准自動重送（F6-b） |
 | 公開資料 | 只讀總覽；真正編輯返所屬模組；按可見權限過濾 |
+| 前後端定位 | 每支部 Unified GS 有完整功能；vs_portal 是功能完整版前端，BADGE 是輕量前端。唔准因 BADGE 輕量而拆第二支精簡 GS；授權仍由 server role／scope 決定 |
+| BOOK／BADGE | BOOK 可讀正式資料及提交待批匯入；只有領袖確認後先可寫入正式紀錄，唔准直接匯入繞過審批 |
 | 已拆除 | MOCK、登入閘診斷／修復／搶救掣 —— 唔准加返 |
 
 ## 4. 改 `Code.gs` 嘅鐵律（★ 模版重點）

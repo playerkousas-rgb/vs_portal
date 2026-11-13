@@ -235,8 +235,8 @@ async function callBackend(payload, { timeoutMs = 60000 } = {}) {
     return { ok: false, reason: 'not_configured', error: notConfiguredMessage(cfg) };
   }
 
-  /* 統一 GS 對行政資料逐 action 驗身份；API Key 只係路由密鑰，唔再當用戶登入。
-     中央 SSO 已兌換成同一款 opaque sessionToken，所以兩個前端共用此路徑。 */
+  /* 統一 GS 對行政資料逐 action 驗身份；API Key 只係路由密鑰，唔當用戶登入。
+     正常路徑使用支部 opaque sessionToken；portalToken 只保留畀隔離 auth fixture／舊部署過渡。 */
   const session = getSession();
   const auth = (payload?.sessionToken || payload?.portalToken) ? {}
     : (session?.sessionToken

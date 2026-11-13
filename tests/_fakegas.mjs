@@ -17,7 +17,7 @@ let sheet = [];
 let simpleSheet = [];
 /* 模擬「待批完成」分頁（addRequest / myRequests） */
 const requests = [];
-/* 模擬「進度追蹤」分頁（save / reviewRequest；同一個後端、兩個前端共用） */
+/* 模擬「進度追蹤」分頁（save / reviewRequest；完整版及輕量版前端共用同一完整 Unified 後端） */
 const progressRows = [];          // { ymis, itemId, date, confirmer, note }
 /* 模擬「成員名單」分頁（saveDb 會由名冊更新 —— 同真 Code.gs syncMembers） */
 const progressMembers = [];       // { ymis, name }
@@ -33,7 +33,7 @@ function syncProgressMembers(db) {
   });
 }
 
-/* GET ?action=load —— 同真 Code.gs loadProgressData 同一種格式（兩個前端共用） */
+/* GET ?action=load —— 同真 Code.gs loadProgressData 同一種格式（兩種前端定位共用） */
 function loadProgress() {
   const progress = {}, flat = {};
   progressRows.forEach(r => {

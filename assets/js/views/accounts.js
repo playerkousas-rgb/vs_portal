@@ -275,9 +275,9 @@ export async function ownPasswordForm() {
     body: `<div class="field"><label class="label">目前密碼 <span class="req">*</span></label>
         <input class="input" id="q-old" type="password"></div>
       <div class="field mt-12"><label class="label">新密碼 <span class="req">*</span></label>
-        <input class="input" id="q-p1" type="text"></div>
+        <input class="input" id="q-p1" type="password" autocomplete="new-password"></div>
       <div class="field mt-12"><label class="label">再輸入一次 <span class="req">*</span></label>
-        <input class="input" id="q-p2" type="text"></div>
+        <input class="input" id="q-p2" type="password" autocomplete="new-password"></div>
       <div id="q-err" class="err mt-8"></div>`,
     actions: [{ label: '取消', class: 'btn', value: null },
       { label: '更改', class: 'btn-primary', onClick: el => {

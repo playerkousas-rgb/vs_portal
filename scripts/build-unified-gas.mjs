@@ -1,0 +1,116 @@
+#!/usr/bin/env node
+/*
+ * Build the isolated unified Apps Script test artifact.
+ *
+ * Source order is intentional:
+ *   - exact vsbadge v9.6 is the executable global baseline;
+ *   - the old Portal backend is enclosed in an IIFE, so none of its 89 global
+ *     names can shadow the baseline;
+ *   - unified-extension.gs owns only the public entry points.
+ *
+ * This script never writes apps-script/Code.gs. It writes the isolated GS artifact
+ * plus a generated browser module so the private test UI downloads that exact build;
+ * existing Apps Script deployments remain untouched until somebody deploys it.
+ */
+import fs from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import url from 'node:url';
+
+const ROOT = path.resolve(path.dirname(url.fileURLToPath(import.meta.url)), '..');
+const SRC = path.join(ROOT, 'apps-script', 'unified-src');
+const OUT = path.join(ROOT, 'apps-script', 'UnifiedCode.gs');
+const BROWSER_OUT = path.join(ROOT, 'assets', 'js', 'lib', 'unifiedtemplate.generated.js');
+const manifest = JSON.parse(fs.readFileSync(path.join(SRC, 'manifest.json'), 'utf8'));
+
+function read(name) { return fs.readFileSync(path.join(SRC, name), 'utf8').replace(/\r\n/g, '\n'); }
+function sha256(text) { return crypto.createHash('sha256').update(text).digest('hex'); }
+function replaceOne(source, needle, replacement, label) {
+  const count = source.split(needle).length - 1;
+  if (count !== 1) throw new Error(`${label}: expected one occurrence, found ${count}`);
+  return source.replace(needle, replacement);
+}
+
+let baseline = read('vsbadge-v9.6.gs');
+let portal = read('portal-admin-v2.8.8.gs');
+const extension = read('unified-extension.gs');
+
+if (sha256(baseline) !== manifest.baseline.sha256) {
+  throw new Error('vsbadge baseline hash mismatch; refresh manifest deliberately instead of silently drifting');
+}
+if (sha256(portal) !== manifest.portalCompatibility.sha256) {
+  throw new Error('Portal compatibility hash mismatch; it must stay a known generated artifact');
+}
+if (!baseline.includes(`const VS_GS_VERSION = '${manifest.baseline.version}';`)) {
+  throw new Error('manifest baseline version does not match the vendored source');
+}
+/* The vendored checkpoint remains byte-exact; only normalize historical EOL spaces
+ * in the generated artifact so repository whitespace checks stay actionable. */
+baseline = baseline.replace(/[ \t]+$/gm, '');
+
+/* The pinned compatibility checkpoint still contains its historical Portal-token
+ * verifier. Unified owns the only exchange route, so disable that unreachable
+ * fallback in the composed artifact instead of retaining a second secret model. */
+portal = replaceOne(portal,
+  "PropertiesService.getScriptProperties().getProperty('PORTAL_SESSION_SECRET') || ''",
+  "'' /* legacy Portal verifier disabled; Unified exchange is authoritative */",
+  'legacy compatibility Portal secret');
+
+// Keep all baseline helpers global, but hand the four public entry points to the
+// unified router.  Internal menu callbacks that call initializeSheets() now
+// deliberately call the unified additive initializer.
+baseline = replaceOne(baseline, 'function initializeSheets() {', 'function badgeInitializeSheets_() {', 'initializeSheets');
+baseline = replaceOne(baseline, 'function doGet(e){', 'function badgeDoGet_(e){', 'doGet');
+baseline = replaceOne(baseline, 'function doPost(e){', 'function badgeDoPost_(e){', 'doPost');
+baseline = replaceOne(baseline, 'function onOpen(){', 'function badgeOnOpen_(){', 'onOpen');
+/* Phase 3 has no central travel system. Keep the pinned implementation intact on
+ * disk, but make the generated Sheet menu describe the guarded callback truthfully:
+ * menuLocalLoginOff is overridden by unified-extension.gs and cannot close it. */
+baseline = replaceOne(baseline,
+  ".addItem('🔒 閂口（只收 sig）','menuLocalLoginOff')",
+  ".addItem('ℹ️ 現階段必須保持開啟','menuLocalLoginOff')",
+  'phase-3 local-login menu label');
+baseline = replaceOne(baseline,
+  '// 旅系統（旅 > 團 > 進度）：上游登記下游 URL 及 SHEET KEY，經 sig 讀寫下游；下游 ALLOW_LOCAL_LOGIN 閂口後只收 sig；\n//   選單「🔗 旅系統」提供匯出 JSON（含 hash）／匯入（upsertUser）／登記下游／直接入口掣',
+  '// 第 3 階段：本檔作支部獨立後端；正常身份來自支部 Users，本地登入必須保持開啟。\n// 第 4 階段預留：簽名上下游函數保留作未來旅系統契約，但支部 Sheet 選單不會顯示相關控制。',
+  'phase-3 architecture header');
+baseline = replaceOne(baseline,
+  '// ===== 旅系統：Sheet 選單（匯出／匯入／登記下游／直接入口掣）=====',
+  '// ===== Pinned phase-4 menu implementation（phase 3 onOpen is overridden below）=====',
+  'phase-3 menu section heading');
+
+const wrappedPortal = [
+  '// ===== Namespaced legacy administrative compatibility module =====',
+  'var PortalAdminCompat_ = (function () {',
+  portal,
+  'return {',
+  '  initializeSheets: initializeSheets,',
+  '  dispatchBody: dispatchBody,',
+  '  doGet: doGet,',
+  '  doPost: doPost,',
+  '  loadDb: loadDb,',
+  '  loadTables: loadTables',
+  '};',
+  '})();',
+  ''
+].join('\n');
+
+const banner = [
+  '// AUTO-GENERATED. DO NOT EDIT THIS FILE DIRECTLY.',
+  '// Build: npm run build:gas:unified',
+  `// Baseline: playerkousas-rgb/vsbadge@${manifest.baseline.commit} (${manifest.baseline.version})`,
+  '// Release channel: isolated test only; not deployed and not copied to vsbadge.',
+  ''
+].join('\n');
+
+const output = `${banner}${baseline.trimEnd()}\n\n${wrappedPortal}${extension.trimEnd()}\n`;
+fs.writeFileSync(OUT, output, 'utf8');
+const browserModule = [
+  '// AUTO-GENERATED by scripts/build-unified-gas.mjs. DO NOT EDIT.',
+  `export const UNIFIED_GAS_SHA256 = ${JSON.stringify(sha256(output))};`,
+  `export function unifiedGasTemplate() { return ${JSON.stringify(output)}; }`,
+  ''
+].join('\n');
+fs.writeFileSync(BROWSER_OUT, browserModule, 'utf8');
+console.log(`apps-script/UnifiedCode.gs built (${Buffer.byteLength(output)} bytes, sha256 ${sha256(output)})`);
+console.log('assets/js/lib/unifiedtemplate.generated.js updated for in-app download');

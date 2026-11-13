@@ -1,283 +1,162 @@
-# 🗺️ 深資童軍管理系統 旅團部署指南 · 多旅團架構與進度追蹤整合
+# 支部部署指南：Unified GAS／Sheet
 
-> 10 分鐘完成部署。本系統為深資童軍團**深資童軍管理系統**；進度紀錄採用**一個後端、兩個前端**（Google Sheet ＋ Apps Script 一個，執委系統同進度前端兩個）。
+> **施工次序：BOOK → BADGE → 5 個支部系統（現在）→ 最後才建立並接通旅系統。**
+> 現在沒有中央旅系統；本指南先驗收支部獨立運作，本地帳戶／session 是正常主入口。
 
----
+## 一句講清楚
 
-## 🌟 系統架構概念
+每個旅團只需要：
 
-### 1. 雙系統聯邦運作 (Hub & Progress Tracker)
-* **模型：一個後端、兩個前端** —— 旅團只有**一個後端**（Google Sheet ＋ Apps Script `/exec`），
-  深資童軍管理系統同進度前端都係前端，讀寫同一份資料。所以執委系統**唔會連去任何其他系統**。
-* **主系統（深資童軍管理系統 · ecportal）**：
-  - 執委會日常行政：會議紀錄、物資借用及庫存（自動扣除）、團章中英對照、活動通告與即時出席回覆（`notice.html`）、成員手機影相快速記帳（`entry.html`）、雙財政年度（AGM 旅年度 ＋ 4/1–3/31 童軍年度）。
-  - 進度紀錄：直接讀／寫旅團自己嘅後端（`?action=load` / `action=save`）。預設用返 `data/units.json` 登記嘅 `backend.gasUrl` / `apiKey`；要覆蓋先喺「進度 → 設定」填。
-* **進度前端（團員／領袖用嗰個）**：
-  - 專注深資童軍各階段獎章、活動段章、專科章及訓練班紀錄與審批。
+- 一張 Google Sheet；
+- 一支 Unified Apps Script；
+- 一個 API Key；
+- Vercel 三項 `TROOP_<ID>_NAME/BACKEND/APIKEY`。
 
-### 2. 多旅團獨立後端與「雙試算表隔離」原則 (重要原則)
-* **每個旅團嚴格維持 2 張獨立 Google Sheet**：
-  - **試算表 ①（深資童軍管理系統專屬）**：儲存帳目、收支申報、物資庫存、物資借用、團員名冊、通告發布、報名出席、會議紀錄。
-  - **同一個試算表**：進度追蹤（進度追蹤／其他獎章／待批完成／活動履歷／待批履歷／成員名單分頁）—— 執委系統同進度前端讀寫同一份。
-  - **❌ 嚴禁合併為單一 Sheet**：
-    - **權限與私隱隔離**：深資童軍管理系統涉及全團銀行結餘、單據與內部行政會議；進度系統涉及個別團員考核與領袖審批。分開確保各持所需權限，避免權限外洩。
-    - **架構獨立升級**：兩套系統的 Apps Script 腳本與資料結構各自迭代，分開後任一系統升級均不影響另一方運作。
-    - **Apps Script 效能**：避免單一試算表過大觸發 Google 執行逾時（Quota Limit）。
-* **不能在登入後才下載 GS**：
-  在多旅團架構下，新旅團尚未開戶，不可能亦不需要先登入。
-  因此 **`Code.gs` 可在首頁／旅團選擇閘／登入頁面免登入直接下載**。
-* **流程順序**：
-  1. 旅團負責人先下載 `Code.gs`
-  2. 在 Google Sheets 建立試算表並部署 Apps Script Web App
-  3. 取得 `/exec` URL 及 API Key
-  4. 提交給管理員登記進 `data/units.json` 或 Vercel 環境變數
-  5. 重新部署後，旅團正式上線！
+深資童軍管理系統、進度頁與 BADGE 是不同前端，但全部讀寫同一張 Sheet。不要建立第二支進度 GAS，不要在 browser 保存 API Key。
 
----
+## 1. 建立後端
 
-## 🔧 部署五部曲 (所有旅團共通，10 分鐘)
+1. 開一張新的 Google Sheet。
+2. **擴充功能 → Apps Script**。
+3. 把 [`apps-script/UnifiedCode.gs`](apps-script/UnifiedCode.gs) 全部貼到 `Code.gs`。
+4. 儲存並執行 `initializeSheets`；首次會要求 Sheet、Mail、Drive 權限。
+5. 再執行 `initializeSheets` 兩次，確認資料及 API Key 沒有重置。
+6. 執行 `showApiKey`，安全保存 Key。
+7. **部署 → 新部署 → 網頁應用程式**：
+   - 執行身分：我；
+   - 存取權：任何人；
+   - 複製正式 `/exec`，不要用 `/dev`。
 
-### 第 1 步：下載後端程式碼 (App 內免登入)
-- 訪問系統網址（例 `https://ecportal.vercel.app/` 或本地環境）
-- 於首頁旅團選擇閘直接點擊 **「⬇️ 下載 Code.gs」** 或 **「📋 複製原始碼」**（全於 App 介面完成，毋須登入，亦毋須進入 Git）
+`UnifiedCode.gs` 是生成產物。維護者改 source 後用：
 
-### 第 2 步：建立 Google Sheet
-1. 開啟 [Google Sheets](https://sheets.google.com) → 建立新試算表（例如命名為「第82旅 深資童軍管理系統總表」）
-2. 點擊上方選單 **「擴充功能」→「Apps Script」**
-
-### 第 3 步：貼上代碼並初始化
-1. 清空預設代碼，貼上 `Code.gs` 全部內容
-2. 點擊 💾 儲存
-3. 函數下拉選單選擇 **`initializeSheets`** → 點擊 **▶ 執行**
-4. 依照 Google 提示完成授權（進階 → 前往 → 允許）
-5. 系統會自動建立 9 個棗紅主題工作表：
-   - `帳目`（收支明細、付款方式、單據編號）
-   - `收支申報`（手機 `entry.html` 影相記帳待批資料）
-   - `物資`（器材清單、數量、存放位置）
-   - `物資借用`（公開頁 `borrow.html` 借用申請）
-   - `團員`（YMIS、姓名、身份、生日、職位）
-   - `通告`（通告內容、發布狀態、費用、活動日期）
-   - `報名`（公開頁 `notice.html` 即時報名與出席回覆）
-   - `會議`（會議紀錄、決議）
-   - `同步紀錄`（每次總表同步時間與統計）
-6. 彈窗會顯示專屬 **API Key**（格式如 `v82_xxxxxxxxxxxxxxxx`）→ **複製保存**（日後可執行 `showApiKey` 再次查看）
-
-### 第 4 步：部署為網頁應用程式 (Web App)
-1. 點擊右上角 **「部署」→「新增部署作業」**
-2. 點擊齒輪圖示，選擇 **「網頁應用程式」**
-3. 設定：
-   - 描述：`深資童軍管理系統 82旅`
-   - 執行身分：**我**
-   - 具有存取權的使用者：**任何人**（Anyone）
-4. 點擊「部署」→ 複製 **網頁應用程式網址**（`https://script.google.com/macros/s/…/exec`）
-
-### 第 5 步：登記至系統 (於 App 內送出或交由管理員登記)
-
-於首頁旅團選擇閘點擊 **「新旅團申請接入」** 直接填寫送出，或將以下資料交由系統管理員：
-
-| 欄位 | 範例 | 說明 |
-|---|---|---|
-| **旅團編號** | `0123` | 4 位數字或自訂編號 |
-| **旅團名稱** | 第一二三旅深資童軍團 | 旅團完整中文名稱 |
-| **Apps Script URL** | `https://script.google.com/macros/s/…/exec` | 剛部署的 Web App URL |
-| **API Key** | `v82_xxxxxxxxxxxxxxxx` | 執行 initializeSheets 獲得的密鑰 |
-| **聯絡人** | `scouter@example.hk` | 旅團負責領袖聯絡 |
-
----
-
-## 🛠️ 管理員登記指南 (Git / Vercel 維護者)
-
-### 方式 A：登記於 Git（`data/units.json`）
-在 `data/units.json` 的 `units` 下加入該旅團：
-```jsonc
-"0123": {
-  "code": "0123",
-  "name": "第一二三旅深資童軍團",
-  "nameEn": "123rd Hong Kong Group Venture Scout Unit",
-  "short": "深資童軍管理系統",
-  "backend": {
-    "gasUrl": "https://script.google.com/macros/s/AKfyc.../exec",
-    "apiKey": "v82_xxxxxxxxxxxxxxxx"
-  },
-  "progress": {
-    "name": "進度紀錄（同一個後端）",
-    "mode": "portal",
-    "portal": {
-      "unitParam": "0123",
-      "role": "exec_committee",
-      "ymis": "",
-      "extraParams": """
-    }
-  }
-}
-```
-並建立 `data/units/<編號>/` 資料夾（複製範本並填入初始 `unit.json`, `members.json`, `constitution.json`, `finance.json`, `inventory.json`）。
-
-### 方式 B：使用 Vercel 環境變數（免改 Git 即可熱更新後端）
-在 Vercel 專案 Settings → Environment Variables 加入：
-- `TROOP_0123_BACKEND` = `https://script.google.com/macros/s/…/exec`
-- `TROOP_0123_APIKEY` = `v82_xxxxxxxxxxxxxxxx`
-- （進度紀錄）**唔使設** —— 要埋讀進度就去「進度 → 設定」填 `/exec` ＋ API Key；想收埋條 Key 先自己用 env 覆蓋（`TROOP_0123_PROGRESSBACKEND` / `_PROGRESSAPIKEY` / `_PROGRESSCATALOG`）
-
----
-
-## 🔗 進度紀錄：一個後端、兩個前端
-
-```
-                    ┌───────────────────────────────┐
-   深資童軍管理系統 ───▶ │  旅團自己嘅後端（只有一個）      │ ◀─── 進度前端（團員／領袖用）
-   （前端 ①）        │  Google Sheet ＋ Apps Script    │      （前端 ②）
-                    └───────────────────────────────┘
+```bash
+npm run build:gas:unified
+npm run test:unified
 ```
 
-1. **後端只有一個**：旅團自己嘅 Google Sheet ＋ Apps Script（`/exec`）。進度資料（`進度追蹤`／`其他獎章`／
-   `活動履歷`／`待批完成`／`待批履歷`／`成員名單` 分頁）就住喺呢度。
-2. **深資童軍管理系統唔連任何其他系統**：只係**讀後端**（`GET ?action=load`）／**寫後端**
-   （`POST {action:'save'|'saveOtherBadge', apikey, changes}`）。冇外連、冇 portal、冇 `referer_mismatch`。
-3. **API Key＝執委身份**：Key 對得上就讀得、勾得；Key 只會由瀏覽器傳去**同源** `/api/progress`，
-   唔會出現在網址、唔會交畀第三方、唔會寫入 log。
-4. **考核項目定義**：第 11 版綱要已內建喺 app（`data/progress/items.json`），離線用都得；
-   旅團自己改過項目就喺「進度 → 設定」填自訂 https 網址。
-5. **兩個前端共用同一批人**：靠 **YMIS（團員／執委）** 同 **Email（領袖）** 對人；
-   「總表同步」會同時更新 `成員名單`，所以兩邊見到同一份名冊。
+不要直接手改 generated `UnifiedCode.gs`。
 
-### 後端範本（`Code.gs`）已經支援兩個前端
+## 2. 申請接入
 
-* 執委系統用：`sync` / `claim` / `noticeSignup` / `loan` / `status` / `ping`
-* 進度用：`GET ?action=load`、`POST action=save`、`action=saveOtherBadge`
-* 執行一次 `initializeSheets` 會建立所有分頁（包括進度用嘅 5 張 ＋ `成員名單`）
-* 改完範本記得跑 `npm run build:gas`（會重新產生 `apps-script/Code.gs`，`npm test` 會檢查兩邊一致）
+在系統閘頁選「新旅團申請接入」，提交：
 
-### 伺服器端設定（可選：只有想收埋條 Key 先需要；唔設就去「進度 → 設定」填）
+- 旅團編號；
+- 旅團名稱；
+- Unified GAS `/exec`；
+- `showApiKey()` 顯示的 Key；
+- 聯絡資料。
 
-喺 Vercel 專案 Settings → Environment Variables 加：
+申請經同源 `/api/proxy` 送到 server 固定的管理員收件匣。API Key 是敏感 server secret，不要貼到 Git、issue、截圖或群組。
 
-- `TROOP_0123_PROGRESSBACKEND` = `https://script.google.com/macros/s/…/exec`
-- `TROOP_0123_PROGRESSAPIKEY` = `v82_xxxxxxxxxxxxxxxx`
-- `TROOP_0123_PROGRESSCATALOG` = `https://…/items.json`（自訂考核項目定義，可選）
+## 3. 管理員只設定三項
 
-設定咗之後，前端「進度 → 設定」可以留空，API Key 完全唔會落前端。
+以 `0123` 為例：
 
-### 通告報名（同一個後端）
+```dotenv
+TROOP_0123_NAME=第一二三旅深資童軍團
+TROOP_0123_BACKEND=https://script.google.com/macros/s/部署識別碼/exec
+TROOP_0123_APIKEY=同一 Unified GAS 的 API_KEY
+```
 
-「通告」→「分享報名」：一撳 **WhatsApp** 分享（文字＋報名連結自動填好）、QR 圖可儲存落手機貼落群組、
-免登入報名頁 `notice.html?u=<旅團>&n=<通告>`；報名直接寫入後端 `報名` 分頁，執委喺「通告 → 報名紀錄」睇統計。
+設定到正確的 Vercel Production／Preview／Development environment，然後 **Redeploy**。
 
-## 📊 活動通告出席與活動履歷（進度紀錄）聯動
+三項與 BADGE 完全相同；進度自動沿用。不設定：
 
-### 1. 核心需求背景
-深資童軍需要累積活動紀錄（如團集會、露營營夜數、遠足歷程、服務時數等）以符合深資童軍獎章（VCS / VAA / DofA）的要求；呢啲紀錄就存喺旅團後端嘅「活動履歷」分頁。深資童軍管理系統嘅通告（Notices）已經完整記錄活動日期、地點、類別及團員出席回覆（RSVP）。
+```text
+TROOP_0123_PORTALSECRET
+TROOP_0123_PORTALSESSIONSECRET
+PORTAL_SESSION_SECRET
+TROOP_0123_PROGRESSBACKEND
+TROOP_0123_PROGRESSAPIKEY
+TROOP_0123_PROGRESSCATALOG
+```
 
-### 2. 整合與橋接設計（已內建）
-在「通告詳情」中，系統已實作 **活動履歷匯出**：
-1. **自動配對 YMIS**：系統自動將出席名單透過名冊比對出 10 位數字的童軍會籍編號（YMIS），名冊以外回覆則自動標記。
-2. **一鍵匯出活動履歷格式**：
-   - **`匯出活動履歷（CSV）`**：可直接匯入後端「活動履歷」分頁，或者交畀進度前端。
-   - **`匯出活動履歷（JSON）`**：結構化 Payload，包含旅團編號、活動標題、類別標籤、日期、地點及出席成員列表。
-3. **無縫交接**：執委於深資童軍管理系統完成點名後，點擊「匯出活動履歷」即可將出席數據帶到後端，供支部領袖進行獎章考核勾選。
-4. **批核都喺執委系統**：團員喺進度前端申報之後，執委／領袖喺「進度記錄 → **審批中心**」直接批准／拒絕；批准即刻寫入同一份 `進度追蹤`／`活動履歷`，兩個前端都見到。
+## 4. 接駁與身份安全
 
-### 3. 複雜度與可用性評估 (Evaluation)
+- `/api/units` 只回公開 metadata 及接駁狀態，不回完整 `/exec` 或 API Key。
+- `/api/proxy` 與 `/api/progress` 只使用 server Registry 的同一 `BACKEND`／`APIKEY`。
+- browser 傳入的 backend／apikey 會被忽略，不能改送另一支 GAS。
+- API Key 只作 routing 及用途分隔 HMAC 根，**不等於執委身份**。
+- staff 管理 action 必須有 server-issued session；member action 只可操作 session 固定的本人 YMIS。
+- query string 的 role、YMIS、姓名不是授權依據。
+- **現階段：**支部 `Users`／本地密碼核實後，由 Unified GAS 簽 opaque session；`ALLOW_LOCAL_LOGIN` 保持 `true`。
+- **第 4 階段預留：**中央 SSO 才使用最長 90 秒 assertion → 最長 60 秒 branch exchange → Unified GAS opaque session。
+- assertion、exchange 與 deterministic exchange JTI 屆時由同一 API Key 以不同 purpose 派生；不需要額外 Portal secret。
 
-| 評估維度 | 評估結論 | 說明 |
-|---|---|---|
-| **系統複雜度 (Complexity)** | **極低 (Very Low)** | 採用 Loose Coupling（鬆散耦合）架構，透過標準資料交換協定（JSON / CSV / SSO Payload），毋須在底層強行合併 Google Sheets 或跨庫關聯。 |
-| **維護性 (Maintainability)** | **極佳 (Excellent)** | 兩邊系統的資料庫與後端各自獨立演進，任何一方更新欄位均不影響另一方，完全避免權限或 Schema 衝突。 |
-| **使用者操作體驗 (Usability)** | **極高 (High)** | 執委毋須重複鍵入活動資料與出席名冊，一鍵即可完成資料轉換；進度資料同一個後端，領袖喺執委系統就可以直接勾。 |
-| **資料安全性 (Security)** | **同一後端、分頁隔離** | 財務與內部行政資料留喺深資童軍管理系統；進度考核放喺後端嘅進度分頁，API Key 只去同源 `/api/progress`，唔會出現在網址或 log。 |
+未來中央 signer 的完整 claims 契約見 [`docs/UNIFIED_NEW_SHEET_SETUP.md`](docs/UNIFIED_NEW_SHEET_SETUP.md)。未證明 signer 真實輸出符合契約前，不可標記「旅系統／中央 SSO 已接通」；這不阻擋現階段支部獨立部署。
 
----
+## 5. 進度紀錄
 
-## 👤 首次使用與登入（一個人一個帳號）
+進度資料在同一 Sheet 的 `進度追蹤`、`其他獎章`、`待批完成`、`活動履歷`、`待批履歷`、`成員名單` 等分頁。
 
-**一個門**：打自己嘅 **Email**（團長／領袖）或者 **YMIS**（執委／團員）＋ 自己嘅密碼；
-入到去嘅權限＝你喺名冊嘅**身份**。**冇「領袖共用帳戶」、冇「執行委員會帳號」**
-（舊版種落嘅 `acc_leader`／`acc_exco` 會自動清走）。
+- 管理系統經同源 `/api/progress` 讀寫；
+- BADGE 經同一 Unified GAS 讀寫；
+- 兩邊用同一 canonical YMIS 對人；
+- 考核項目固定讀 app 內建 `data/progress/items.json`，不是第二資料後端；
+- 「進度 → 接駁狀態」是唯讀頁，沒有 `/exec`、API Key 或 catalog URL 輸入欄；
+- 審批 `reviewRequest`／`reviewLogRequest` 寫回同一張 Sheet。
 
-- **新團第一個人**：Apps Script 執行 `issueSetupKey()`（72 小時 KEY）→ 貼上登入頁 → 入到去即刻
-  被問「**認領團長身份**」—— 第一個開戶嗰位就係**團長**（每團永遠一位，最高權限）。
-- **之後加人**：團長／領袖喺「用戶與身份」逐個設登入密碼（可用暫用密碼 `1234`，首次登入即刻要改）；
-  或者申請／批量開戶。**換屆唔使換帳號** —— 改某個人嘅**身份**就得（執委改唔到身份，只有團長／領袖改到）。
-- **轉團長**：「用戶與身份 → 轉移團長」—— 只有現任團長／超管撳得到；轉移之後舊團長自動變返領袖（有紀錄）。
-  團長身份**唔可以**喺身份下拉直接改低，亦唔可以自己改自己（防止鎖死）。
+## 6. 首次驗收
 
-想睇齊流程、未加入嘅旅團：首頁揀 **試用示範（MOCK）**。
+### 現階段：支部獨立
 
-### 更新 Code.gs 之後要唔要 Run Setup？
+1. `/api/units` 顯示旅團已接通且不洩漏 secret。
+2. `/?u=0123` 可用支部本地帳戶登入；未登入不能讀完整行政 DB。
+3. 確認 `ALLOW_LOCAL_LOGIN=true`，staff／member 均取得自己角色的 server-issued session。
+4. 管理系統寫一筆測試資料，確認同一 Sheet 出現。
+5. 進度頁勾一項，確認 `進度追蹤` 出現；BADGE 即時讀到同一筆。
+6. BADGE 寫一筆，管理系統即時讀到。
+7. member 只能本人；exco／leader scope 正確；API Key 單獨不能登入。
+8. 偽造 browser backend／apikey／role／YMIS 全部無法改路或升權。
+9. 再執行 `initializeSheets` 兩次，API Key、帳戶 hash、行政及進度資料逐筆不變。
 
-> ★ **v2.8.5 起改變（2026-11-12）**：**每次更新 `Code.gs` 之後都執行一次 `initializeSheets()`**。
-> 而家佢保證「只補唔改」，所以再冇需要擔心清資料 —— 跟 VSBADGE 同一做法。
+### 第 4 階段：旅系統接通（現在不做）
 
-| 情況 | 要做咩 |
-|---|---|
-| **第一次**起後端 | 貼上 Code.gs → 執行 **`initializeSheets`**（建分頁＋出 API Key）→ **部署**做網頁應用程式 |
-| **之後更新程式** | 全部取代貼上 → 儲存 → **執行一次 `initializeSheets`** → **部署 → 管理部署作業 → 編輯 → 版本選「新版本」→ 部署**（`/exec` 網址同 API Key 都不變） |
-| 要一條開團 KEY | 函數選 **`issueSetupKey`** → 執行（同初始化無關；每次 72 小時，過期再執行） |
+旅系統建立後才測過期／錯 audience／錯 unit／錯 role／另一支部 Key／重放 assertion；確認中央 SSO 真正可用後，才測 `ALLOW_LOCAL_LOGIN=false`。
 
-**點解每次都要跑**：舊版 `initializeSheets` 只喺分頁**全空**時先寫標題列，
-即係一張已有資料嘅舊 Sheet **永遠加唔到新欄位** —— 升級完新欄會靜靜缺失。
-v2.8.5 起改為逐欄比對，只將缺少嘅欄位**加喺最右邊**：
+## 7. 更新 Unified GAS
 
-- 現有每一格資料（包括你自己加嘅自訂欄）**一個字都唔會改**
-- 現有欄位**位置不變**（進度前端按位置讀共用分頁，重排會讀錯）
-- **API Key 唔會換**（唔會令你所有裝置斷線）
-- **可以重複跑**：連跑兩三次，第二次開始零改動
-- 萬一分頁第一行唔似標題列，佢會**停手並報告**，唔會亂加欄污染你嘅資料
+1. 先在 Sheet 副本測試，不要直接覆蓋 Production 首測。
+2. 在 repo 執行完整 `npm run check`。
+3. 貼入同一 commit 生成的 `UnifiedCode.gs`。
+4. 執行一次 `initializeSheets`；它只能增補缺失 schema，不可清空或重編資料。
+5. 建立新的 Web App version，保留 `/exec` 接線。
+6. 依 [`docs/UNIFIED_STAGING_RESULTS.md`](docs/UNIFIED_STAGING_RESULTS.md) 做真 Apps Script staging。
+7. 任何一項失敗，回退到上一 deployment version。
 
-執行完會彈窗講明「新建咗幾多個分頁、補咗邊啲欄位」。
-另外，`status` 而家會回報初始化狀態，分得清「淨係貼咗新 code」同「真係行咗初始化」。
+## 8. 疑難排解
 
-### 儲存／讀取出現過事？（`Code.gs` v2.7.2）
+### 旅團未出現
 
-「資料寫入到資料庫分頁，但開張 Sheet 好似冇嘢／新儲嘅讀唔到／每次儲存都話後端有較新版本」——
-v2.7.0 已經由後端根治（按版本分組讀，只讀最新一套完整段；寫入路徑同讀取路徑用同一套判斷）。
-中過舊版招嘅 Sheet，更新 Code.gs（**v2.7.2**）＋重新部署之後，喺 Apps Script 執行**一次**：
+- 三項變數名稱是否用相同四位旅團編號；
+- 是否設定在目前網址所屬 Vercel environment；
+- 是否 Redeploy；
+- `/exec` 是否符合 `https://script.google.com/macros/s/.../exec`。
 
-| 函數 | 幾時用 |
-|---|---|
-| `cleanStaleStaging()` | 「資料庫」分頁塞咗舊版留低嘅 `__staging__` 暫存垃圾行（症狀：分頁越嚟越大、儲存／讀取變慢） |
-| `pruneOldDbVersions()` | 同一個旅團有**兩套以上嘅版本段**（症狀：永遠只讀到之前儲嘅資料）—— 只清舊段，保留最新一套**砌得返 JSON** 嘅；萬一全部套都壞，會一行都唔刪（寧願留住等你救） |
+### 管理系統可開，但進度未接通
 
-執行完開返張 Sheet 睇：`Logger.log` 會講清走幾行、剩返幾行。平時正常儲存**唔會**再產生呢啲行。
+不要新增 `PROGRESS*`。核對：
 
-### 只有我一部機睇得到？其他人／無痕空白？
+- `/api/units` 的 `backendReady` 與 `progressServerSide`；
+- Vercel API Key 是否與 `showApiKey()` 相同；
+- Unified GAS 是否為最新 build，並有進度 actions／分頁；
+- 使用者是否有有效 session 及正確 role。
 
-「資料綁死喺我部機」＝ **後端嗰份讀唔到**（有快取嗰部機照開門，冇快取嘅（無痕、新同事）就一片空白）。
-（2026-09-26 起 app 入面嘅「檢查後端／修復後端／用呢部機上載」搶救掣已經移除 ——
-正常情況根本用唔到；真係出事按下面順序處理：）
+### 更新後缺分頁
 
-1. **對返啱後端**：喺「總表同步」對一對 `/exec` 網址係咪啱（或者 Vercel `TROOP_0082_BACKEND`）
-   —— 兩邊寫緊唔同嘅 Sheet 就係真正病根。
-2. **更新 `Code.gs` 再清理**：貼最新範本 → 部署「新版本」；再喺 Apps Script 執行
-   `cleanStaleStaging()` ／ `pruneOldDbVersions()`（見上一節）。
-3. **仍然唔得** → 撳「**求救（回報問題）**」通知平台管理員跟進。
+在測試副本執行 `initializeSheets`。它應只新增缺失分頁／欄，不覆寫既有資料。如不符合，停止部署並回退。
 
-救完**開一個無痕視窗**登入核對：見到同一份資料 ＝ 全團都見到。
+### 第 4 階段：中央 SSO 不通（現在未有旅系統，不適用）
 
-### 「進度」睇唔到嘢？（`Code.gs` v2.7.1）
+只有旅系統已實作 signer 後才核對 assertion：
 
-「進度 → 設定」填好兩個值 → 撳「**儲存**」→ 撳「**重新讀取**」；見到團員名單＝接通。
-一片空白＝最常見兩種（2026-09-26 起「後端資料檢查」診斷掣已移除，直接照下面自查）：
+- `typ=central-sso-assertion`；
+- `iss=central-travel-system`；
+- `aud=vs-portal:branch:<unit>`；
+- `u`、role、subject、`iat/exp`、`jti` 齊全；
+- 最長 90 秒；
+- 用該旅團 API Key 派生的 assertion purpose key；
+- `jti` 未使用；
+- exchange audience 是 `unified-gas:branch:<unit>`。
 
-* **填入嘅係另一張 Sheet 嘅 /exec**（例如管理系統嗰張，但進度資料喺進度前端嗰張）→ 改用進度資料嗰支。
-* **`進度追蹤` 分頁唔見咗**（舊版 `Code.gs` v2.6.1／v2.6.2 有 bug 會刪 4 個字嘅分頁）→
-  執行 `initializeSheets()` 補返分頁（唔會刪資料）；啱啱唔見嘅可以喺 Google Sheets
-  「檔案 → 版本記錄」還原舊版（連分頁資料）。新版已經修好，唔會再發生。
-
-> 仲有：進度設定係跟**旅團資料庫**走嘅 —— 填完記得撳頂部「**儲存到後端**」，
-> 否則只有填嗰部機讀得到（無痕／另一部機就會似「讀唔到後端」）。
-
----
-
-## 📱 公開功能連結（成員免登入使用）
-
-| 網址 | 功能說明 |
-|---|---|
-| `/?u=0123` | 管理系統後台（個人身份登入：團長／領袖／執委／團員） |
-| `/entry.html?u=0123` | 成員手機拍照快速記帳與報銷申報 |
-| `/borrow.html?u=0123` | 成員物資借用線上申請 |
-| `/notice.html?u=0123&n=<通告編號>` | 活動通告查閱與 RSVP 出席回覆 |
-| `/constitution.html?u=0123` | 旅團團章中英對照公開查閱頁面 |
-
----
-COPYRIGHT 2026 深資童軍管理系統 & Scout System
+不要以 query identity 或 API-Key-as-identity fallback「修好」SSO。

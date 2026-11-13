@@ -3,7 +3,9 @@
    ------------------------------------------------------------
    用戶定案（2026-11-12）：
 
-     整個系統樹 = 旅系統 ＋ 5 個支部系統 ＋ 4 套進度追蹤 ＋ 4 本 BOOK。
+     施工次序 = 4 本 BOOK → 4 套 BADGE → 5 個支部系統 → 最後旅系統。
+     現在係第 3 階段，未有中央旅系統；支部必須可以獨立運作。
+     最終系統樹 = 旅系統 ＋ 5 個支部系統 ＋ 4 套進度追蹤 ＋ 4 本 BOOK。
      可以分開連結（例：旅＋進度；進度＋BOOK）。
      **但冇跨支部連結。**
 
@@ -90,9 +92,9 @@ console.log('\n▌② Registry 唔准有跨支部連結欄位');
   ok('冇跨支部／兄弟支部嘅 backend/key 欄位', !CROSS_BRANCH_FIELD.test(block),
     (block.match(CROSS_BRANCH_FIELD) || [''])[0]);
 
-  /* 允許嘅下游：進度（PROGRESS*）。呢個係合法「支部 → 進度」連線。 */
-  ok('保留合法下游欄位 PROGRESSBACKEND', /PROGRESSBACKEND/.test(block));
-  ok('保留合法下游欄位 PROGRESSAPIKEY', /PROGRESSAPIKEY/.test(block));
+  /* 統一版進度固定沿用支部主 BACKEND／APIKEY，不可另開第二條資料路線。 */
+  ok('Registry 保留唯一主 BACKEND／APIKEY', /\bBACKEND:/.test(block) && /\bAPIKEY:/.test(block));
+  ok('Registry 不再接受任何 PROGRESS* 第二套設定', !/PROGRESS[A-Z_]*:/.test(block));
 
   /* 冇「另一个支部」嘅概念欄位 */
   ok('冇 peer / sibling / crossBranch 欄位別名',
@@ -137,6 +139,11 @@ console.log('\n▌⑤ 邊界文件存在而且寫明「唔算連上」');
   ok('SCOPE 記錄咗用戶「唔算連上」澄清', /不算連上/.test(scope));
   ok('SCOPE 講明係星形（旅為中心）', /星形/.test(scope));
   ok('SCOPE 講明跨支部聚合屬旅系統', /屬\*\*旅系統\*\*|屬旅系統/.test(scope));
+  ok('SCOPE 固定由下而上施工次序（BOOK → BADGE → 支部 → 旅）',
+    /BOOK[\s\S]{0,120}BADGE[\s\S]{0,160}5 個支部系統[\s\S]{0,160}旅系統/.test(scope));
+  ok('SCOPE 講明現在未有中央旅系統', /現在沒有中央旅系統/.test(scope));
+  ok('SCOPE 規定第 3 階段 ALLOW_LOCAL_LOGIN 保持 true',
+    /ALLOW_LOCAL_LOGIN[\s\S]{0,80}保持 `true`/.test(scope));
   const agents = read('AGENTS.md');
   ok('AGENTS 有施工級別（BRANCH）', /BRANCH（支部）/.test(agents));
   ok('AGENTS 禁止主動連另一個支部', /主動連另一個支部/.test(agents));

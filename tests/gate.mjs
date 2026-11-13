@@ -158,15 +158,15 @@ ok('申請表有齊欄位（編號／名稱／後端網址／API Key／聯絡人
 ok('申請表教埋點起後端（Code.gs → initializeSheets → 部署）',
   /Code\.gs/.test(apBody) && /initializeSheets/.test(apBody) && /網頁應用程式/.test(apBody));
 ok('申請表自動帶主系統網址（方便管理員核對）', /主系統網址/.test(apBody));
-ok('申請表講清楚進度系統由旅團自己填 Script ＋ API Key（唔使外連）',
-  /進度 → 設定/.test(apBody) && /API Key/.test(apBody) && /唔使外連/.test(apBody));
+ok('申請表講清楚管理、進度及 BADGE 共用 Unified GAS／API Key',
+  /Unified Code\.gs/.test(apBody) && /API Key/.test(apBody) && /進度頁及 BADGE 自動沿用/.test(apBody));
 /* 驗證：填錯嘢要擋得住 */
 {
   const ob = await import('../assets/js/lib/onboard.js');
   const bad = ob.validateApplication({ troopId: '', troopName: '', scriptUrl: 'http://x.com' });
   ok('空申請唔會通過驗證', bad.ok === false && bad.errors.length >= 3, JSON.stringify(bad.errors));
   const good = ob.validateApplication({ troopId: '0100', troopName: '第一百旅',
-    scriptUrl: 'https://script.google.com/macros/s/AKfycbTESTTESTTESTTESTTESTTESTTEST/exec' });
+    scriptUrl: 'https://script.google.com/macros/s/AKfycbTESTTESTTESTTESTTESTTESTTEST/exec', apiKey: 'K1' });
   ok('填齊就通過，payload 帶 appType=82venture',
     good.ok === true && good.payload.appType === '82venture', JSON.stringify(good.errors));
   ok('管理員收件匣已設定', ob.adminInbox().configured === true, ob.adminInbox().url);

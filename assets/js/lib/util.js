@@ -229,9 +229,24 @@ export function toastAction(message, actionLabel, onAction, kind = '', ms = 6500
 
 /* ---------- modal ---------- */
 let openModals = [];
+function closeModalRecord(rec, value) {
+  if (!rec || rec.closed) return false;
+  rec.closed = true;
+  const i = openModals.indexOf(rec);
+  if (i >= 0) openModals.splice(i, 1);
+  rec.el.remove();
+  rec.resolve(value);
+  return true;
+}
+/** 向後兼容：冇指定 record 時關最頂一層。 */
 export function closeModal(value) {
-  const m = openModals.pop();
-  if (m) { m.el.remove(); m.resolve(value); }
+  return closeModalRecord(openModals[openModals.length - 1], value);
+}
+/** 換頁／登出保險：清走所有仍然存在的 overlay，避免透明遮罩令全站按鈕失效。 */
+export function closeAllModals(value = null) {
+  [...openModals].reverse().forEach(rec => closeModalRecord(rec, value));
+  /* 舊版／熱更新遺下、已不在 stack 的 overlay 亦一併清走。lightbox 自己管理，唔郁。 */
+  document.querySelectorAll('.overlay:not(.lightbox)').forEach(el => el.remove());
 }
 export function modal({ title, sub = '', body = '', actions = [], wide = false, onMount = null }) {
   return new Promise(resolve => {
@@ -251,28 +266,51 @@ export function modal({ title, sub = '', body = '', actions = [], wide = false, 
           `<button class="btn ${a.class || ''}" data-act="${i}" ${a.disabled ? 'disabled' : ''}>${a.label}</button>`).join('')}</div>` : ''}
       </div>`;
     document.body.appendChild(el);
-    const rec = { el, resolve };
+    const rec = { el, resolve, closed: false, busy: false };
     openModals.push(rec);
 
-    el.addEventListener('click', e => {
-      if (e.target === el) { closeModal(null); return; }
-      if (e.target.closest('[data-close-x]')) { closeModal(null); return; }
-      const btn = e.target.closest('[data-act]');
-      if (btn) {
-        const a = actions[Number(btn.dataset.act)];
-        if (!a || a.disabled) return;
-        const out = a.onClick ? a.onClick(el) : undefined;
-        if (out !== false) closeModal(out === undefined ? (a.value ?? true) : out);
+    el.addEventListener('click', async e => {
+      if (e.target === el || e.target.closest('[data-close-x]')) {
+        closeModalRecord(rec, null);   // 必須關呢一層；唔可以 pop 到另一個 nested modal
+        return;
       }
+      const btn = e.target.closest('[data-act]');
+      if (!btn || rec.closed || rec.busy) return;
+      const a = actions[Number(btn.dataset.act)];
+      if (!a || a.disabled) return;
+      let out;
+      try {
+        out = a.onClick ? a.onClick(el) : undefined;
+        if (out && typeof out.then === 'function') {
+          rec.busy = true;
+          const buttons = [...el.querySelectorAll('.modal-foot button')];
+          const states = buttons.map(b => b.disabled);
+          buttons.forEach(b => { b.disabled = true; });
+          btn.setAttribute('aria-busy', 'true');
+          try { out = await out; }
+          finally {
+            rec.busy = false;
+            buttons.forEach((b, i) => { b.disabled = states[i]; });
+            btn.removeAttribute('aria-busy');
+          }
+        }
+      } catch (err) {
+        console.error(err);
+        if (!rec.closed) toast(err?.message || '操作失敗，請再試一次', 'err');
+        return;
+      }
+      if (rec.closed || out === false) return;
+      /* value:null 係真正「稍後／取消」。用 ?? 會把明確 null 誤變 true，
+         強制改密碼視窗因而把布林 true 當新密碼送出，並撤銷原 session。 */
+      const value = Object.prototype.hasOwnProperty.call(a, 'value') ? a.value : true;
+      closeModalRecord(rec, out === undefined ? value : out);
     });
-    const closeBtn = el.querySelector('[data-close-x]');
-    if (closeBtn) closeBtn.onclick = () => closeModal(null);
 
     if (typeof onMount === 'function') {
-      try { onMount(el, v => closeModal(v)); } catch (err) { console.error(err); }
+      try { onMount(el, v => closeModalRecord(rec, v)); } catch (err) { console.error(err); }
     }
     const first = el.querySelector('input,textarea,select,button.btn-primary');
-    if (first && window.innerWidth > 560) setTimeout(() => first.focus(), 60);
+    if (first && window.innerWidth > 560) setTimeout(() => { if (!rec.closed) first.focus(); }, 60);
   });
 }
 export function confirmDlg({ title = '確認', message = '', okText = '確認', cancelText = '取消', danger = false }) {

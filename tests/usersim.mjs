@@ -7,7 +7,7 @@
 
    呢個檔唔係由 remote.js 入手，而係**真係開個 app**（jsdom 載入
    assets/js/main.js，行真 HTTP）：
-     ① 開網站 → 揀旅團 → 登入頁 → 打 leader／8202 → 撳登入
+     ① 開網站 → 揀旅團 → 首次以超管 server session 建置；其後用個人帳戶登入
      ② 改嘢（加團員、加一筆帳）
      ③ 撳頂部「儲存到後端」掣 —— 記低**用戶睇到嘅字**（toast／狀態 chip）
      ④ 直接問後端：dbInfo／loadDb、而家真係有咩
@@ -205,6 +205,7 @@ if (process.argv[2] === 'device') {
    指揮部：起後端＋起裝置＋直接問後端
    ============================================================ */
 const KEY = 'v82_usersim_key';
+const SUPER_PASSWORD = 'usersim-super-session-password';
 const freePort = () => new Promise((resolve, reject) => {
   const srv = net.createServer();
   srv.once('error', reject);
@@ -274,20 +275,30 @@ section('起真後端（Code.gs）＋ dev-server（/api/proxy，同 Vercel 同�
 spawnBg([path.join(ROOT, 'tests', '_realgas.mjs'), String(GAS_PORT)], { REALGAS_APIKEY: KEY });
 spawnBg([path.join(ROOT, 'dev-server.mjs')], {
   PORT: String(WEB_PORT), V82_PROXY_TEST: '1',
-  TROOP_0082_BACKEND: REAL_EXEC, TROOP_0082_APIKEY: KEY
+  TROOP_0082_BACKEND: REAL_EXEC, TROOP_0082_APIKEY: KEY,
+  SUPER_KEY: SUPER_PASSWORD
 });
 ok('後端＋代理已啟動', (await waitPort(GAS_PORT)) && (await waitPort(WEB_PORT)));
+const platformAuth = await fetch(`${BASE}/api/auth`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ user: 'sheep', password: SUPER_PASSWORD })
+}).then(r => r.json());
+const platformSessionToken = String(platformAuth.sessionToken || '');
+ok('行政實況查詢先取得平台短期 session（API Key 唔冒充身份）', platformAuth.ok === true && !!platformSessionToken);
 
 /* ---------------- ① 團長部機：開機 → 登入 → 改嘢 → 撳儲存 ---------------- */
 section('① 用戶視角：開網站 → 登入 → 加團員 → 撳「儲存到後端」');
-const A = await runDevice({ addMember: '陳大文', addTx: '團費收入', save: true, seedRoster: true });
+/* 全新空後端未有可核對帳戶：首次建置用伺服器簽發嘅隱藏超管 session；
+   儲存名冊後，其他全新裝置先改用 leader 個人帳戶登入。 */
+const A = await runDevice({ addMember: '陳大文', addTx: '團費收入', save: true, seedRoster: true,
+  user: 'sheep', pass: SUPER_PASSWORD });
 ok('裝置 A 全程冇爆', A.ok === true, A.error || '');
 show(A);
 ok('開機真係出到登入頁（＝後端答到，硬閘通過；連唔到會停喺連線閘）',
   got(A, '開機後係咪停喺連線閘（連唔到後端）') === false);
-ok('開團 KEY（未有用户）→ 種好名冊之後出現登入表單（有用户＝登入框）',
+ok('fresh device 可直接登入；種好名冊後登入表單仍然存在',
   got(A, '種好名冊後登入表單出現未') === true, String(got(A, '種好名冊後登入表單出現未')));
-ok('用 leader／8202 登入到主控頁', got(A, '登入有冇入到主控頁（見到頂部狀態 chip）') === true);
+ok('首次建置用超管短期 session 登入到主控頁', got(A, '登入有冇入到主控頁（見到頂部狀態 chip）') === true);
 const toastA = String(got(A, '★ 用戶撳完「儲存到後端」見到嘅提示（toast）') || '');
 ok('★ 撳「儲存到後端」之後用戶見到「已儲存到後端」', /已儲存到後端/.test(toastA), toastA.slice(0, 200));
 ok('★ 提示會講明寫咗去邊（「資料庫」分頁 ＋ 報表分頁）—— 唔會再令人以為「完全冇寫入」',
@@ -367,7 +378,8 @@ say(`而家「資料庫」分頁嘅旅團欄值＝${JSON.stringify(unitsSeen)}`)
 /* app 行嘅係同源代理 —— 用代理問先至係真實路徑（直連 /exec 唔經 Registry，
    所以唔會校正編號；前端嗰邊由 gotoUnit／setUnitCode 校正）。 */
 const askProxy = async (payload) => {
-  const r = await fetch(`${BASE}/api/proxy`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+  const r = await fetch(`${BASE}/api/proxy`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...payload, sessionToken: platformSessionToken }) });
   return { http: r.status, ...(await r.json().catch(() => ({}))) };
 };
 const info0082 = await askProxy({ action: 'dbInfo', unit: '0082' });

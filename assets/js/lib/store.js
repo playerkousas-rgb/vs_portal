@@ -20,6 +20,7 @@ import {
   registry, unitEntry, backendOf, dataPathOf, fetchUnitData, defaultUnitCode, localUnits
 } from './units.js';
 import { scoutFYLabel } from './fiscal.js';
+import { isExecUrl, normExecUrl } from './gateway.js';
 import {
   SKIP_TOP, diffDb as _diffDb, applyChanges as _applyChanges, clone as _clone,
   threeWay as _threeWay, overridesFor as _overridesFor
@@ -35,6 +36,9 @@ const K = {
   lastReal: 'venture82.lastRealUnit.v2'
 };
 export const dbKey = (code) => `venture82.unit.${code}.db.v${SCHEMA}`;
+/* 團員安全投影必須同行政工作副本完全分開。members.html 只會讀寫呢個 key，
+   即使同一瀏覽器同時開住管理頁，hubLoad 都不可能用裁剪投影覆蓋行政 DB。 */
+export const hubDbKey = (code) => `venture82.unit.${code}.hub.v${SCHEMA}`;
 
 /* ---------------- 帳戶名單（**已取消共用帳戶**） ----------------
    ★ 2026-09-24 團長定案：「唔好再設執行委員會帳號／領袖共用帳戶」。
@@ -112,11 +116,13 @@ export function migrateSharedAccounts(db) {
 /* ---------------- 狀態 ---------------- */
 const state = {
   unitCode: null,
+  scope: 'admin',
   db: null,
   seedSource: '',
   seedFailed: false,
   ready: false
 };
+function activeDbKey(code = state.unitCode) { return state.scope === 'hub' ? hubDbKey(code) : dbKey(code); }
 let memoryStore = {};   // localStorage 不可用時嘅後備
 
 /* ---------------- storage 包裝 ---------------- */
@@ -309,6 +315,28 @@ async function buildSeed(code) {
   return db;
 }
 
+/**
+ * 團員入口未驗證 session 前只可建立安全空殼。
+ *
+ * 絕對唔可以重用 buildSeed()：佢會讀取靜態 members／finance／inventory 等完整
+ * 行政種子。團員成功登入後，remote.loadHubView() 才會用後端正面白名單投影取代
+ * 呢個空殼。`backendUrl` 只接受既有 /exec 白名單，供未登記旅團的 ?be= 自助路線。
+ */
+function buildHubShell(code, backendUrl = '') {
+  const entry = unitEntry(code) || {};
+  const db = blankDb(code, entry);
+  db.profile = { ...db.unit };
+  db.meta = { ...(db.meta || {}), hubShell: true,
+    seedSource: '（團員安全空殼：登入後載入本人投影）' };
+  seedBackend(db, code);
+  const direct = normExecUrl(backendUrl);
+  if (direct && isExecUrl(direct)) {
+    db.backend = { gasUrl: direct, apiKey: '', name: '旅團後端（團員連結）', shared: false };
+    db.sync = { url: direct, unit: code, apiKey: '', log: [] };
+  }
+  return db;
+}
+
 /* ---------------- 後端（Apps Script 總表）：所有流出資料都用同一條 /exec ----------------
    優先次序：unit.json settings.sync / tables.json → 旅團 registry backend → Registry 共用 backend */
 function seedBackend(db, code) {
@@ -355,24 +383,45 @@ function resolveTarget(opts = {}, url = new URLSearchParams(location.search)) {
 
 export async function init(opts = {}) {
   const { code } = resolveTarget(opts);
+  const nextScope = opts.scope === 'hub' || opts.mode === 'hub' ? 'hub' : 'admin';
+  /* 測試／單頁若重新 init 另一旅團或 scope，唔可以沿用上一個記憶體 DB。 */
+  if (state.unitCode !== code || state.scope !== nextScope) {
+    state.db = null; state.ready = false; state.seedSource = ''; state.seedFailed = false;
+    baseMem = undefined;
+  }
   state.unitCode = code;
+  state.scope = nextScope;
 
-  const key = dbKey(code);
+  const key = activeDbKey(code);
   const raw = lsGet(key);
   if (raw) {
     try {
       const parsed = JSON.parse(raw);
-      if (parsed && parsed.schema === SCHEMA) {
+      /* 舊版 hub key 可能曾誤存 buildSeed() 的完整行政種子。只接受明確標記的
+         安全空殼／server hub projection；其餘一律丟棄並重建空殼。 */
+      const safeHubCache = parsed?.meta?.hubView === true || parsed?.meta?.hubShell === true;
+      if (parsed && parsed.schema === SCHEMA && (state.scope !== 'hub' || safeHubCache)) {
         state.db = parsed;
         state.seedSource = parsed.meta?.seedSource || '';
       }
     } catch (e) { console.warn('DB 解析失敗，重新種入種子資料', e); }
   }
   if (!state.db) {
-    state.db = await buildSeed(code);
+    state.db = state.scope === 'hub'
+      ? buildHubShell(code, opts.backendUrl || '')
+      : await buildSeed(code);
     state.seedFailed = !!state.db.meta?.seedFailed;
     state.seedSource = state.db.meta?.seedSource || '';
     persistLocalOnly();
+  } else if (state.scope === 'hub') {
+    /* 有效 projection refresh 時仍要採用今次連結的 ?be=；只覆蓋 routing metadata，
+       絕不把 query 內容混入 member／event 等資料。 */
+    const direct = normExecUrl(opts.backendUrl || '');
+    if (direct && isExecUrl(direct)) {
+      state.db.backend = { gasUrl: direct, apiKey: '', name: '旅團後端（團員連結）', shared: false };
+      state.db.sync = { ...(state.db.sync || {}), url: direct, unit: code, apiKey: '' };
+      persistLocalOnly();
+    }
   }
   /* 開機升級（帳戶名單／身份／systemId／期初結餘／後端設定）全部只寫本機 ——
      佢哋唔係用家嘅改動，唔應該令 pending 由 0 變 1（否則一開機就話「未儲存」）。 */
@@ -414,6 +463,7 @@ export async function init(opts = {}) {
 }
 
 export function ready() { return state.ready; }
+export function storeScope() { return state.scope; }
 export function currentUnit() { return state.unitCode; }
 export function unitProfile() { return load().profile || load().unit; }
 export function seedInfo() { return { source: state.seedSource || load()?.meta?.seedSource || '', failed: state.seedFailed, real: true }; }
@@ -483,7 +533,7 @@ function persist({ remote = true, critical = false, reason = '' } = {}) {
        （登入核對讀嘅係後端嗰份名冊）。頂部會明確講出嚟，登出／閂頁會擋住問。 */
     if (critical) state.db.sync.pendingAccounts = Number(state.db.sync.pendingAccounts || 0) + 1;
   }
-  lsSet(dbKey(state.unitCode), JSON.stringify(state.db));
+  lsSet(activeDbKey(), JSON.stringify(state.db));
   /* 本機寫完 → 通知介面／後端儲存排程 */
   if (bump && saveHook) {
     try { saveHook({ critical: !!critical, reason: String(reason || '') }); }
@@ -518,7 +568,7 @@ export function commitCritical(reason = '') { persist({ critical: true, reason }
  */
 export function commitMeta() {
   if (!state.db) return state.db;
-  lsSet(dbKey(state.unitCode), JSON.stringify(state.db));
+  lsSet(activeDbKey(), JSON.stringify(state.db));
   return state.db;
 }
 
@@ -630,7 +680,9 @@ export function importAll(jsonText) {
    sync／meta／backend 之後嘅 db。冇佢就分唔到「我改咗乜」同「對方改咗乜」。
    ============================================================ */
 
-const baseKey = (code) => `venture82.unit.${code}.base.v${SCHEMA}`;
+const baseKey = (code, scope = state.scope) => scope === 'hub'
+  ? `venture82.unit.${code}.hubbase.v${SCHEMA}`
+  : `venture82.unit.${code}.base.v${SCHEMA}`;
 let baseMem = undefined;           // localStorage 寫唔入（配額）嗰陣嘅後備
 
 /* ★ v2.8.0：「資料表」分頁係**逐表**寫 —— 某個表未寫過，後端回傳就會冇呢個 key。
@@ -817,7 +869,7 @@ export function markBackendEmpty() {
 
 /** 由 localStorage 重新讀返本機 db（測試／另一個視窗改咗 localStorage 之後用） */
 export function reloadFromStorage() {
-  const raw = lsGet(dbKey(state.unitCode));
+  const raw = lsGet(activeDbKey());
   if (!raw) return state.db;
   try {
     const parsed = JSON.parse(raw);
@@ -899,7 +951,7 @@ export function bindCrossTabSync(onChange) {
     const key = ev?.key || '';
     if (!key) return;
     if (key === SESSION_KEY) { fire({ kind: 'session' }); return; }
-    if (key !== dbKey(state.unitCode) || !ev.newValue) return;
+    if (key !== activeDbKey() || !ev.newValue) return;
     let other = null;
     try { other = JSON.parse(ev.newValue); } catch { return; }
     const r = mergeFromOtherTab(other);
@@ -955,7 +1007,23 @@ export function wipe() {
 
 /* ---------------- session（登入狀態） ---------------- */
 export function getSession() {
-  try { const raw = lsGet(K.session); return raw ? JSON.parse(raw) : null; } catch { return null; }
+  try {
+    const raw = lsGet(K.session);
+    const session = raw ? JSON.parse(raw) : null;
+    if (!session) return null;
+    /* Server／Portal session 一律要有有效到期時間。集中喺最底層 reader 執行，
+       確保 currentRole()、can() 同所有帳戶操作唔會各自漏驗 expiry。 */
+    const serverBacked = !!(session.sessionToken || session.portalToken ||
+      ['server', 'super-server', 'portal'].includes(String(session.via || '')));
+    const expiresAt = Number(session.sessionExpiresAt || 0);
+    if (serverBacked && (!Number.isFinite(expiresAt) || expiresAt <= Date.now())) {
+      lsDel(K.session);
+      return null;
+    }
+    return session;
+  } catch {
+    return null;
+  }
 }
 export function setSession(s) {
   if (!s) lsDel(K.session); else lsSet(K.session, JSON.stringify(s));

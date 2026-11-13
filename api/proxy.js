@@ -10,7 +10,9 @@
 //
 // 同時兼容前端直接打 GAS 或透過同源 proxy 轉發。
 
+import crypto from 'node:crypto';
 import { getTrustedUnit, isTrustedExecUrl } from './_registry.js';
+import { verifySuperSession } from './_super-session.js';
 
 export const config = { maxDuration: 60 };
 
@@ -35,7 +37,11 @@ const SCOUT_ADMIN_API = process.env.SCOUT_ADMIN_API ||
   'https://script.google.com/macros/s/AKfycbxj5BDDGgjs559smkK4Z5aYImWYeXbN5af8U1ObON0z9WnsN6QJW4I1XWolhs5kQ_H-UQ/exec';
 
 const ALLOWED_ACTIONS = new Set([
-  'ping', 'status', 'test', 'authLogin', 'authResetPassword', 'authDeleteAccount', 'authRestoreAccount', 'authCreateAccount', 'authForgotPassword', 'sync', 'claim', 'loan', 'noticeSignup',
+  'ping', 'status', 'test', 'authLogin', 'authWhoAmI', 'authPortalExchange', 'authChangePassword', 'authResetPassword', 'authDeleteAccount', 'authRestoreAccount', 'authCreateAccount', 'authForgotPassword', 'authResetByToken', 'authCompletePasswordReset',
+  /* 團員入口：全部由支部 GAS 用 opaque session 對回本人；hubLoad 只回安全投影，
+     其餘三個 action 只可改本人 RSVP／答卷／請假，唔經行政整庫同步。 */
+  'hubLoad', 'hubRsvp', 'hubQuiz', 'hubAbsence',
+  'sync', 'claim', 'loan', 'noticeSignup',
   /* 整份資料庫讀／寫 —— app 嘅真正儲存（換機／清 cache 都唔會冇咗）。
      saveDbPart／saveDbCommit ＝ v2.4.0 分件儲存（大資料庫拆件上，冇硬天花板）
      loadDbPart            ＝ v2.6.0 分段讀取（大資料庫分段落，唔會撞 Vercel 4.5MB 回應上限） */
@@ -66,6 +72,38 @@ const ALLOWED_ACTIONS = new Set([
      ADMIN 收到登記做「問題回報」再轉寄返報告者 Email。 */
   'submitIssue'
 ]);
+
+/* 行政資料唔可以再靠「代理識得 API Key」當登入。正常用戶先由同一支 GS
+   authWhoAmI 對回身份；平台超管則由本 API 驗 HMAC session 後再簽 server request。 */
+const ADMIN_READ_ACTIONS = new Set(['dbInfo', 'loadDb', 'loadDbPart', 'loadTables', 'loadTablesPart', 'syncCheck']);
+const ADMIN_WRITE_ACTIONS = new Set(['saveDb', 'saveDbPart', 'saveDbCommit', 'saveTables', 'sync', 'uploadPhotos']);
+const ADMIN_DANGEROUS_ACTIONS = new Set(['repairDb', 'saveDbForce']);
+const ADMIN_ACTIONS = new Set([...ADMIN_READ_ACTIONS, ...ADMIN_WRITE_ACTIONS, ...ADMIN_DANGEROUS_ACTIONS]);
+/* 支部 session 由 GAS 自己核對；只有已由 /api/auth 驗證的 platform super
+   需要轉成 HMAC＋nonce server request，API Key 本身仍不會成為身份。 */
+const ACCOUNT_ADMIN_ACTIONS = new Set(['authResetPassword', 'authDeleteAccount', 'authRestoreAccount', 'authCreateAccount']);
+const ROLE_RANK = { member: 0, exco: 20, exec_committee: 20, leader: 40, branch_leader: 40,
+  chief: 60, group_leader: 60, admin: 80, super: 100, super_admin: 100 };
+const LINK_SIG_PURPOSE = 'vsbadge-troop-sig-v1';
+
+function roleRank(role) { return ROLE_RANK[String(role || '').toLowerCase()] || 0; }
+function sha256Hex(text) { return crypto.createHash('sha256').update(String(text ?? '')).digest('hex'); }
+function hmacHex(message, key) { return crypto.createHmac('sha256', String(key)).update(String(message)).digest('hex'); }
+function linkSignature(action, raw, key) {
+  const ts = String(Date.now());
+  const nonce = crypto.randomUUID().replace(/-/g, '');
+  const canonical = [action, ts, nonce, sha256Hex(raw)].join('\n');
+  return { sig: hmacHex(canonical, hmacHex(LINK_SIG_PURPOSE, key)), ts, nonce };
+}
+function signedServerRequest(action, payload, key) {
+  const body = { ...payload, action };
+  delete body.sig; delete body.sig_ts; delete body.sig_nonce;
+  const inner = linkSignature(action, JSON.stringify(body), key);
+  const outgoing = { ...body, sig: inner.sig, sig_ts: inner.ts, sig_nonce: inner.nonce };
+  const raw = JSON.stringify(outgoing);
+  const outer = linkSignature(action, raw, key);
+  return { payload: outgoing, query: new URLSearchParams({ sig: outer.sig, sts: outer.ts, snonce: outer.nonce }).toString() };
+}
 
 /* 呢啲 action 會夾帶資料庫／相片 base64 上去，body 可以幾 MB ——
    全部一律行上面同一條 4MB 線（見 MAX_DATA_BYTES 註解）。 */
@@ -108,6 +146,40 @@ async function callUpstream(url, payload) {
   return { status: up.status, json, raw: text };
 }
 
+async function authorizeAdminAction(unit, body, action) {
+  const superSession = verifySuperSession(String(body.sessionToken || ''));
+  if (superSession) return { ok: true, role: 'super', subject: superSession.subject, super: true };
+  const sessionToken = String(body.sessionToken || '');
+  const portalToken = String(body.portalToken || '');
+  if (!sessionToken && !portalToken) {
+    return { ok: false, status: 401, error: '要先登入才可讀寫支部資料', code: 'session_required' };
+  }
+  const probe = {
+    action: 'authWhoAmI', unit: unit.code, apiKey: unit.apiKey,
+    ...(sessionToken ? { sessionToken } : { portalToken })
+  };
+  let checked;
+  try { checked = await callUpstream(unit.gasUrl, probe); }
+  catch (error) {
+    const timeout = error && (error.name === 'TimeoutError' || error.name === 'AbortError');
+    return { ok: false, status: timeout ? 504 : 502,
+      error: timeout ? '登入核對逾時' : '暫時無法核對登入狀態', code: 'auth_unavailable' };
+  }
+  const account = checked.json?.account;
+  if (!checked.json?.ok || !account) {
+    return { ok: false, status: 401, error: checked.json?.error || '登入狀態已失效，請重新登入', code: 'session_invalid' };
+  }
+  const isSetup = checked.json?.setup === true && account.id === 'setup';
+  /* setup session 只係首次建立資料庫用：可讀／一般寫入，但永遠不可 repair／force。 */
+  if (isSetup && ADMIN_DANGEROUS_ACTIONS.has(action)) {
+    return { ok: false, status: 403, error: '開團身份不可以執行修復或強制覆寫', code: 'action_scope_denied' };
+  }
+  const rank = isSetup ? 40 : roleRank(account.role || account.backendRole);
+  const needed = ADMIN_DANGEROUS_ACTIONS.has(action) ? 40 : 20;
+  if (rank < needed) return { ok: false, status: 403, error: '你的身份不可以執行此操作', code: 'action_scope_denied' };
+  return { ok: true, role: String(account.role || ''), subject: String(account.ymis || account.id || '') };
+}
+
 export default async function handler(req, res) {
   const t0 = Date.now();
 
@@ -135,11 +207,20 @@ export default async function handler(req, res) {
       safeLog({ result: 'admin_api_misconfig', ms: Date.now() - t0 });
       return sendJson(res, 500, { success: false, error: '伺服器設定錯誤，請聯絡管理員' });
     }
+    const troopId = String(body.troopId || body.unit || '').trim();
+    const troopName = String(body.troopName || '').trim();
+    const scriptUrl = String(body.scriptUrl || '').trim();
+    const apiKey = String(body.apiKey || '').trim();
+    if (!/^[0-9A-Za-z_-]{1,32}$/.test(troopId) || !troopName || !isTrustedExecUrl(scriptUrl) || !apiKey) {
+      safeLog({ result: 'registration_invalid', ms: Date.now() - t0 });
+      return sendJson(res, 400, { success: false, reason: 'registration_invalid',
+        error: '申請必須包含旅團編號、名稱、Unified GAS /exec 及 API Key' });
+    }
     const regPayload = {
-      troopId: String(body.troopId || body.unit || '').substring(0, 32),
-      troopName: String(body.troopName || '').substring(0, 100),
-      scriptUrl: String(body.scriptUrl || '').substring(0, 300),
-      apiKey: String(body.apiKey || '').substring(0, 120),
+      troopId: troopId.substring(0, 32),
+      troopName: troopName.substring(0, 100),
+      scriptUrl: scriptUrl.substring(0, 300),
+      apiKey: apiKey.substring(0, 120),
       appType: '82venture',
       appName: '深資童軍管理系統',
       contact: String(body.contact || '').substring(0, 120),
@@ -230,8 +311,40 @@ export default async function handler(req, res) {
   }
   if (unit.apiKey) payload.apiKey = unit.apiKey;
 
+  let upstreamUrl = unit.gasUrl;
+  let upstreamPayload = payload;
+  if (ADMIN_ACTIONS.has(action)) {
+    const auth = await authorizeAdminAction(unit, body, action);
+    if (!auth.ok) {
+      safeLog({ result: auth.code || 'admin_auth_denied', unitCode, action, ms: Date.now() - t0 });
+      return sendJson(res, auth.status || 401, { success: false, ok: false, code: auth.code, error: auth.error });
+    }
+    if (auth.super) {
+      if (!unit.apiKey) return sendJson(res, 503, { success: false, error: '伺服器未設定此支部 API Key' });
+      delete upstreamPayload.sessionToken;
+      delete upstreamPayload.portalToken;
+      upstreamPayload.unified_super = true;
+      upstreamPayload.on_behalf = 'sheep';
+      const signed = signedServerRequest(action, upstreamPayload, unit.apiKey);
+      upstreamPayload = signed.payload;
+      upstreamUrl += (upstreamUrl.includes('?') ? '&' : '?') + signed.query;
+    }
+  } else if (ACCOUNT_ADMIN_ACTIONS.has(action)) {
+    const platformSuper = verifySuperSession(String(body.sessionToken || ''));
+    if (platformSuper) {
+      if (!unit.apiKey) return sendJson(res, 503, { success: false, error: '伺服器未設定此支部 API Key' });
+      delete upstreamPayload.sessionToken;
+      delete upstreamPayload.portalToken;
+      upstreamPayload.unified_super = true;
+      upstreamPayload.on_behalf = platformSuper.subject || 'sheep';
+      const signed = signedServerRequest(action, upstreamPayload, unit.apiKey);
+      upstreamPayload = signed.payload;
+      upstreamUrl += (upstreamUrl.includes('?') ? '&' : '?') + signed.query;
+    }
+  }
+
   try {
-    const up = await callUpstream(unit.gasUrl, payload);
+    const up = await callUpstream(upstreamUrl, upstreamPayload);
     if (!up.json) {
       safeLog({ result: 'upstream_bad_response', unitCode, action, status: up.status, ms: Date.now() - t0 });
       const msg = up.status >= 400

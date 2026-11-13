@@ -15,8 +15,12 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import proxyHandler from '../api/proxy.js';
+import { TEST_SUPER_PASSWORD } from './_authstub.mjs';
+import { issueSuperSession } from '../api/_super-session.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+/* 所有真 HTTP 裝置先以平台測試 session 登入；API Key 本身不可再當身份。 */
+process.env.SUPER_KEY = TEST_SUPER_PASSWORD;
 /* 留低真 fetch：後面有啲測試會用 stub 蓋住佢，但 proxy 要真嘢先連到本機假 GAS */
 const realFetchForProxy = globalThis.fetch;
 const t0 = Date.now();
@@ -65,9 +69,10 @@ section('同源 Proxy 支援「整份資料庫」讀寫');
   const logLines = [];
   console.log = (...a) => { logLines.push(a.join(' ')); };
 
+  const platformTicket = issueSuperSession('sheep');
   const call = async (payload) => {
     const res = mockRes();
-    await proxyHandler({ method: 'POST', body: payload }, res);
+    await proxyHandler({ method: 'POST', body: { ...payload, sessionToken: platformTicket.token } }, res);
     return res;
   };
 
@@ -85,7 +90,7 @@ section('同源 Proxy 支援「整份資料庫」讀寫');
   ok('dbInfo 可以經 proxy 轉發', rInfo.statusCode === 200 && rInfo.body?.ok === true);
   ok('未知 action 仍然會被擋', rBad.statusCode === 400);
   ok('未登記旅團唔會轉發（唔會寫錯去人哋張 Sheet）', rUnknownUnit.statusCode === 404, JSON.stringify(rUnknownUnit.body));
-  ok('轉發目的地係旅團自己嘅 /exec', calls[0]?.target === GAS, calls[0]?.target);
+  ok('轉發目的地係旅團自己嘅 /exec', calls[0]?.target?.startsWith(GAS), calls[0]?.target);
   ok('saveDb 有把整個資料庫帶上去', Array.isArray(calls[0]?.body?.db?.members));
   ok('Proxy log 唔會記低資料庫內容（唔外洩團員姓名）',
     !logLines.join('\n').includes('測試'), logLines.join(' | ').slice(0, 120));
@@ -150,8 +155,10 @@ section('Apps Script 範本（Code.gs）');
     })(),
     `header=${(code.match(/\*\s*版本：v?(\d+\.\d+\.\d+)/) || [])[1]} decl=${(code.match(/var BACKEND_VERSION = '(\d+\.\d+\.\d+)'/) || [])[1]}`);
   ok('doGet 都讀得（換機時用瀏覽器直接開都拎得返）', /action === 'loadDb' \|\| action === 'dbInfo'/.test(code));
+  const routedSaveDb = code.slice(code.indexOf("if (body.action === 'saveDb')"), code.indexOf("if (body.action === 'saveDbPart')"));
   ok('寫入用 LockService 包住（兩個執委同時改都唔會爛）',
-    /withLock\(function \(\) \{ return saveDb\(body\); \}\)/.test(code));
+    /var sv = withLock\(function \(\) \{/.test(routedSaveDb)
+      && /return dbGuard\.success === true \? saveDb\(body\) : dbGuard;/.test(routedSaveDb));
   /* 自 v2.6.2 起：刪行邏輯統一咗入 deleteRowRuns()（以前 saveDb／saveDbPart／
      cleanStaging 各自砌一梳，cleanStaging 嗰份砌錯 —— 一梳連續行只刪到一行）。
      呢度**唔淨係** grep 原始碼，仲真係行一次 Code.gs 驗行為。 */
@@ -675,8 +682,23 @@ section('只有一個儲存方式（原始碼守門：冇自動寫、冇 poll、
   ok('main.js 登出會再由後端攞一次', /async function doLogout[\s\S]*?await syncBoot\(\)/.test(mainSrc));
   ok('main.js 冇 poll／visibility／arm／checkRemote', !/startPolling|startVisibilityWatch|\.arm\(\)|checkRemote|reconcile\(/.test(mainSrc));
   ok('beforeunload 只提醒、唔寫後端', /beforeunload/.test(mainSrc) && !/flush\(\)/.test(mainSrc));
-  ok('team 員入口：開機 loadFromBackend、交嘢 saveToBackend（唔係 flush）、冇 poll',
-    /loadFromBackend\(/.test(hubSrc) && /saveToBackend\(\{ policy: 'mine'/.test(hubSrc) && !/flush\(|startPolling|startVisibilityWatch/.test(hubSrc));
+  ok('團員入口：登入後只 loadHubView、提交只走本人 action（唔做整庫同步／poll）',
+    /loadHubView\(/.test(hubSrc)
+    && /saveHubRsvp\(/.test(hubSrc) && /saveHubQuiz\(/.test(hubSrc) && /saveHubAbsence\(/.test(hubSrc)
+    && !/loadFromBackend\(|saveToBackend\(|flush\(|startPolling|startVisibilityWatch/.test(hubSrc));
+  ok('團員安全投影有獨立 DB/base namespace，行政 scope 誤調 hub 採用會 fail closed',
+    /init\(\{ mode: 'hub', scope: 'hub'/.test(hubSrc)
+    && /export const hubDbKey/.test(storeSrc) && /state\.scope === 'hub'/.test(storeSrc)
+    && /storeScope\(\) !== 'hub'/.test(remoteSrc) && /HUB_SCOPE_REQUIRED/.test(remoteSrc));
+  ok('團員無快取開機只建安全空殼，不會呼叫 buildSeed 下載完整靜態行政資料',
+    /function buildHubShell\(/.test(storeSrc)
+    && /state\.scope === 'hub'[\s\S]{0,100}\? buildHubShell\(/.test(storeSrc)
+    && /hubShell: true/.test(storeSrc)
+    && /backendUrl: beFromQuery\(\)/.test(hubSrc));
+  ok('團員 mutation 唔先樂觀改本機；失敗保留明確可重試狀態',
+    /hubSubmitState/.test(hubSrc) && /id="hubRetrySubmit"/.test(hubSrc)
+    && /本機畫面未當作成功/.test(hubSrc)
+    && !/update\('events'|update\('quizzes'|submitAbsence\(|withdrawAbsence\(/.test(stripComments(hubSrc)));
   ok('總表同步：「測試連線」掣已清理（唔會再有淨讀嘅測試掣）', !/act === 'test-sync'/.test(tablesSrc));
   ok('總表同步：報表同步唔會夾帶整個 db、唔會清 pending', /payload\.skipDb = true/.test(tablesSrc) && !/payload\.db = db/.test(tablesSrc) && !/pending: 0, lastPushAt/.test(tablesSrc));
   ok('總表同步：冇咗「會議模式」開關', !/y-poll/.test(tablesSrc));
@@ -973,12 +995,13 @@ section('API Key 由伺服器端注入（前端唔應該知）');
   process.env.TROOP_0082_APIKEY = KEY;
   process.env.V82_PROXY_TEST = '1';
 
+  const serverAdminTicket = issueSuperSession('sheep');
   const callProxy = (body) => new Promise(resolve => {
     const res = {
       _s: 200, setHeader() {}, status(c) { this._s = c; return this; },
       json(o) { resolve({ status: this._s, json: o }); }
     };
-    proxyHandler({ method: 'POST', body, headers: {} }, res);
+    proxyHandler({ method: 'POST', body: { ...body, sessionToken: serverAdminTicket.token }, headers: {} }, res);
   });
 
   /* 前端完全唔送 apiKey —— 正路 */
@@ -1447,7 +1470,12 @@ section('v2.6.0：大資料庫分段讀取（兩邊視窗對得到料）');
   };
   process.env.TROOP_TEST9_BACKEND = GAS;
   process.env.TROOP_TEST9_APIKEY = 'test9_secret_key';
-  const callProxy = async (payload) => { const res = mockRes(); await proxyHandler({ method: 'POST', body: payload }, res); return res; };
+  const whitelistTicket = issueSuperSession('sheep');
+  const callProxy = async (payload) => {
+    const res = mockRes();
+    await proxyHandler({ method: 'POST', body: { ...payload, sessionToken: whitelistTicket.token } }, res);
+    return res;
+  };
 
   const upRes = await callProxy({ action: 'uploadPhotos', unit: 'TEST9', payload: { id: 'c1', photos: [{ name: 'a.jpg', dataUrl: 'data:image/jpeg;base64,AAA' }] } });
   ok('★ 代理放行 uploadPhotos（單據相片直上 Drive）—— 唔會再回「不支援的操作」',

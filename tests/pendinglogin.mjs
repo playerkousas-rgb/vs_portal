@@ -11,6 +11,7 @@
        合併（後端 + 我嘅唔撞改動），**唔會**用本機資料蓋走後端。
      ② A 機開咗帳戶並寫入後端 → B 機（即使自己有未儲存改動）登入嗰陣就見到佢，
        可以直接用嗰個帳戶登入，唔使「用第二個帳戶登入再同步」。
+       B 機自己未上載嘅本機帳戶只可保留為待同步資料，不可成為第二套密碼來源。
      ③ 呢個唔係「要人識得撳掣」嘅嘢：登入嗰一步已經自動重拉後端（硬閘）。
    ============================================================ */
 
@@ -18,6 +19,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { spawn } from 'node:child_process';
 import net from 'node:net';
+import { TEST_SUPER_PASSWORD } from './_authstub.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 let pass = 0, fail = 0;
@@ -81,15 +83,17 @@ const ANEW_PW = 'scoutNew2026';
 const BLOCAL_EMAIL = 'blocal@example.com';
 
 try {
-  spawnBg([path.join(ROOT, 'tests', '_fakegas.mjs'), String(GAS_PORT)]);
+  spawnBg([path.join(ROOT, 'tests', '_realgas.mjs'), String(GAS_PORT)], {
+    REALGAS_APIKEY: 'test_key_0082'
+  });
   spawnBg([path.join(ROOT, 'dev-server.mjs')], {
     TROOP_0082_BACKEND: FAKE_EXEC,
     TROOP_0082_APIKEY: 'test_key_0082',
     V82_PROXY_TEST: '1',
     PORT: String(WEB_PORT),
-    SUPER_KEY: 'super_secret_test'
+    SUPER_KEY: TEST_SUPER_PASSWORD
   });
-  ok('測試用假後端＋dev-server 已啟動', (await waitPort(GAS_PORT)) && (await waitPort(WEB_PORT)));
+  ok('真 Code.gs 後端＋dev-server 已啟動', (await waitPort(GAS_PORT)) && (await waitPort(WEB_PORT)));
 
   /* ============ 第一步：A 機開第一個帳戶並寫入後端 ============ */
   section('第一步：A 機開戶 → 寫入後端');
@@ -109,7 +113,8 @@ try {
   const B1 = await runDevice({ steps: [
     { op: 'load' },                                             // 開機：由後端載入 A 機個帳戶
     { op: 'addStaff', name: 'B機未存', email: BLOCAL_EMAIL, ymis: '2026100002', identity: 'leader' },
-    { op: 'setHubPw', id: '@last', pw: 'blocal9999' },
+    /* 對抗 fixture：模擬升級前殘留 local hash；正常 setHubPw 已經 server-first。 */
+    { op: 'injectLocalOnlyPassword', id: '@last', pw: 'blocal9999' },
     { op: 'export', file: FILE }                                // 把本機狀態連基準快照存檔
   ] });
   ok('B 機第一次開機冇爆', B1.ok === true, B1.error || '');
@@ -129,13 +134,13 @@ try {
   const a2has = stepOf(A2, 'backendHasLogin');
   ok('A 機第二個帳戶真係到到後端', a2has.found === true && a2has.withPw === true, JSON.stringify(a2has));
 
-  /* ============ 第四步（關鍵）：B 機登入 —— 自己嗰個未存帳戶要留住，同時見到 A 機新帳戶 ============ */
+  /* ============ 第四步（關鍵）：B 機登入 —— 未存資料要留住，但身份只由後端帳戶核對 ============ */
   section('第四步（關鍵）：B 機登入（登入硬閘會重拉後端）');
   const B2 = await runDevice({ steps: [
     { op: 'import', file: FILE },                               // 回帶 B 機啱啱嗰刻（有未存帳戶）
     { op: 'load' },                                             // 登入硬閘：由後端載入＋合併
     { op: 'logins' },
-    { op: 'login', login: BLOCAL_EMAIL, pw: 'blocal9999' },     // 自己未存帳戶仍應登到
+    { op: 'login', login: BLOCAL_EMAIL, pw: 'blocal9999' },     // 未上載帳戶不可繞過 server 驗證
     { op: 'login', login: ANEW_EMAIL, pw: ANEW_PW }             // ★ A 機新帳戶要即刻登到
   ] });
   ok('B 機登入流程冇爆', B2.ok === true, B2.error || '');
@@ -150,7 +155,7 @@ try {
   const b2self = stepOf(B2, 'login', 0);
   const b2new = stepOf(B2, 'login', 1);
   console.log('  · B 機用自己未存帳戶登入：' + JSON.stringify(b2self));
-  ok('B 機用自己未存帳戶仍可登入', b2self.ok === true, JSON.stringify(b2self));
+  ok('B 機自己未上載嘅帳戶不可用本機密碼繞過 server 登入', b2self.ok === false, JSON.stringify(b2self));
   console.log('  · B 機用 A 機新帳戶登入：' + JSON.stringify(b2new));
   ok('★ B 機直接用 A 機新開帳戶登入成功（本機未存資料唔應該擋住）',
     b2new.ok === true, JSON.stringify(b2new));

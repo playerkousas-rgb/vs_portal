@@ -9,7 +9,6 @@
 import { profile } from '../lib/model.js';
 import { accounts, currentRole, displayName, isSuper, ROLES } from '../lib/auth.js';
 import { load, currentUnit } from '../lib/store.js';
-import { backendOf } from '../lib/units.js';
 import { envUnitTemplate, envUnitSteps } from '../lib/onboard.js';
 import { esc, icon, copyText, toast } from '../lib/util.js';
 import { go } from '../lib/router.js';
@@ -349,19 +348,19 @@ function tablesDoc() {
   </div>
   ${noteBox('冇公開連結都可以：喺 Sheet 選取範圍 → Ctrl+C → 按「改為貼上 CSV」照樣讀得到。', 'info')}
 
-  ${H('③ 總表同步：旅團獨立專屬 Google Sheet 後端')}
-  ${P('每個旅團使用<b>獨立專屬嘅 Google Sheet</b>（深資童軍管理系統一張，進度追蹤系統另設一張，兩張完全分開獨立維護，互不干擾）。')}
+  ${H('③ Unified 總表：管理、進度及 BADGE 共用')}
+  ${noteBox('<b>施工次序：BOOK → BADGE → 5 個支部系統（現在）→ 最後才建立旅系統。</b>現階段未有中央旅系統；支部本地帳戶／session 係正常主入口，<code>ALLOW_LOCAL_LOGIN</code> 必須保持開啟。', 'info')}
+  ${P('每個旅團只使用<b>一張專屬 Google Sheet ＋ 一支 Unified Apps Script</b>；行政、身份、進度、獎章及履歷不得拆成第二個資料後端。')}
   <div class="steps">
-    <div class="step"><div>開你旅團嘅專屬 Google Sheet → <b>擴充功能 → Apps Script</b></div></div>
-    <div class="step"><div>APP 內免登入或於「總表同步 → <b>下載 Code.gs</b>」→ 貼上去（全部取代）</div></div>
-    <div class="step"><div>第一次：執行 <code>initializeSheets</code> 建分頁＋API Key。之後只更新程式：貼上 → 儲存 → 部署「新版本」，<b>唔使再 initialize</b></div></div>
-    <div class="step"><div>開團 KEY：執行 <code>issueSetupKey()</code>（72 小時；過期再執行）</div></div>
-    <div class="step"><div><b>部署 → 新增部署作業 → 網頁應用程式</b>；執行身分：我；存取權：任何人</div></div>
-    <div class="step"><div>複製 <code>/exec</code> 網址，貼返「Apps Script 網址」，填旅團編號與 API Key</div></div>
-    <div class="step"><div>儲存設定 → 改動之後撳頂部「<b>儲存到後端</b>」就寫入；唔會自動同步</div></div>
-    <div class="step"><div>專屬 Sheet 會自動建立／更新分頁：帳目、物資、團員、收支申報、通告、報名、會議、同步紀錄</div></div>
+    <div class="step"><div>開旅團專屬 Google Sheet → <b>擴充功能 → Apps Script</b></div></div>
+    <div class="step"><div>APP 內免登入或於「總表同步 → <b>下載 Unified Code.gs</b>」→ 全部取代貼上</div></div>
+    <div class="step"><div>執行 <code>initializeSheets</code> 增補全部分頁，再執行 <code>showApiKey</code> 安全保存同一 API Key</div></div>
+    <div class="step"><div><b>部署 → 新增部署作業 → 網頁應用程式</b>；執行身分：我；存取權：任何人；只用正式 <code>/exec</code></div></div>
+    <div class="step"><div>管理員喺 Vercel 只登記 <code>TROOP_&lt;ID&gt;_NAME／BACKEND／APIKEY</code> 三項並 Redeploy</div></div>
+    <div class="step"><div>登入後撳頂部「<b>儲存到後端</b>」；server 以 session 核對身份，browser 唔保存 API Key</div></div>
+    <div class="step"><div>每次更新 Unified Code.gs 後在測試副本重跑一次 <code>initializeSheets</code>；只可增補，既有資料及 Key 必須不變</div></div>
   </div>
-  ${noteBox('<b>一個後端、兩個前端。</b>每個旅團一張 Google Sheet ＋ 一支 Apps Script：深資童軍管理系統同進度前端共用同一份資料（進度追蹤／其他獎章／活動履歷等分頁由 <code>initializeSheets</code> 建立）。相片唔會直接塞入 Sheet（只記數量），如果想存相就喺 Code.gs 頂部填 <code>DRIVE_FOLDER_ID</code>，相片會自動上載去 Drive 再貼連結落 Sheet。', 'brand')}
+  ${noteBox('<b>一個 Unified 後端、多個前端。</b>進度追蹤／其他獎章／活動履歷與行政資料都在同一 Sheet。不要設定 <code>PORTAL*</code>／<code>PROGRESS*</code> 第二套 secret、backend 或 key。', 'brand')}
 
   ${H('④ 儲存與備份')}
   ${P('所有資料存喺<b>你自己嘅瀏覽器</b>（localStorage，大約 5MB）。相片最佔位，所以：')}
@@ -410,86 +409,49 @@ function birthdayDoc() {
 }
 
 function progressDoc() {
-  const p = profile();
-  const u = p.progress || {};
-  const b = u.backend || {};
-  const masked = b.apiKey ? '已設定（' + '•'.repeat(8) + '）' : '（未設定）';
-  const be = backendOf(load().unitCode) || {};
-  const shownBackend = b.backend ? maskExec(b.backend) : (be.gasUrl ? maskExec(be.gasUrl) + '（用返旅團登記嘅後端）' : '（未設定）');
+  const unit = currentUnit() || '0082';
   return `
-  ${H('設計：一個後端、兩個前端')}
-  ${P('旅團只有<b>一個後端</b> —— 一張 Google Sheet ＋ 一支 Apps Script（<code>/exec</code>）。'
-    + '<b>深資童軍管理系統</b>同<b>進度前端</b>（團員／領袖用嗰個）係<b>兩個前端</b>，讀寫同一份資料。')}
-  ${noteBox('所以深資童軍管理系統<b>唔需要連去任何其他系統</b>：唔開分頁、唔用 portal、唔會出 <code>referer_mismatch</code>。'
-    + '進度資料本身就係寫入旅團自己嘅後端。', 'brand')}
-  ${P('呢邊做三件事：')}
-  <ul style="padding-left:18px;line-height:1.9" class="sm">
-    <li><b>讀</b>：<code>GET ?action=load</code> —— 成員、進度、待批完成、其他獎章、活動履歷</li>
-    <li><b>寫</b>：<code>POST {action:'save'|'saveOtherBadge', apikey}</code> —— 直接勾／取消勾</li>
-    <li><b>批</b>：<code>POST {action:'reviewRequest'|'reviewLogRequest'}</code> —— 「審批中心」批准／拒絕團員申報；
-      批准即刻寫入「進度追蹤」／「活動履歷」</li>
-  </ul>
-  ${P('<b>API Key＝執委身份</b>：Key 對得上就讀得、勾得。Key 只會由瀏覽器傳去<b>同源</b> <code>/api/progress</code>，'
-    + '唔會出現在網址、唔會交畀第三方、亦唔會寫入 log。')}
+  ${H('設計：一個 Unified 後端、兩個前端')}
+  ${P('旅團只有<b>一個後端</b> —— 一張 Google Sheet ＋ 一支 Unified Apps Script。'
+    + '<b>深資童軍管理系統</b>與<b>進度／BADGE 前端</b>讀寫同一份資料。')}
+  ${noteBox('瀏覽器不保存後端網址或 API Key；進度頁亦不接受第二支 GAS。'
+    + 'API Key 只作 server routing／用途分隔 HMAC 根，<b>不等於執委身份</b>。身份由 opaque session 的角色及 scope 決定。', 'brand')}
 
-  ${H('審批中心（批團員嘅申報）')}
-  ${P('團員喺進度前端自己申報「我完成咗某項」之後，會入後端嘅「待批完成」分頁；'
-    + '執委／領袖喺<b>「進度記錄 → 審批中心」</b>就會見到，直接撳<b>批准</b>或<b>拒絕</b>。')}
+  ${H('三項設定（與 BADGE 完全相同）')}
+  <pre class="code">TROOP_${esc(unit)}_NAME
+TROOP_${esc(unit)}_BACKEND
+TROOP_${esc(unit)}_APIKEY</pre>
   <ul style="padding-left:18px;line-height:1.9" class="sm">
-    <li><b>批准</b>＝寫入「進度追蹤」（唔會重複開新行；已有紀錄就更新完成日期）</li>
-    <li><b>拒絕</b>＝狀態改「已拒絕」，團員可以重新申報；紀錄唔會被刪</li>
-    <li>同一版仲有<b>待批履歷</b>（團員自行申報嘅服務／活動紀錄），批准會寫入「活動履歷」</li>
-    <li>要喺有<b>勾選權限</b>嘅帳號先批得（睇得到、但批唔到）</li>
+    <li><code>NAME</code>：同一旅團顯示名稱</li>
+    <li><code>BACKEND</code>：同一 Unified GAS 正式 <code>/exec</code></li>
+    <li><code>APIKEY</code>：同一 Sheet 的 <code>API_KEY</code>；只留 server</li>
   </ul>
-  ${noteBox('團員嗰邊只需要專心自己嘅紀錄冊（申報、睇進度）；批核、勾選、通告、財務全部喺深資童軍管理系統搞掂，唔使兩個系統跳來跳去。', 'brand')}
+  ${noteBox('不要設定 <code>PROGRESSBACKEND</code>／<code>PROGRESSAPIKEY</code>，亦不要叫用戶在「進度」頁貼 Key。更新 Vercel 後要 Redeploy。', 'info')}
 
-  ${H('點設定（通常唔使填）')}
-  <div class="steps">
-    <div class="step"><div>如果旅團後端已經登記喺 <code>data/units.json</code>（<code>backend.gasUrl</code> / <code>apiKey</code>），'
-      + '「進度」頁會自動用返佢 —— 咩都唔使填</div></div>
-    <div class="step"><div>未登記就喺「<b>進度 → 設定</b>」填 <b>/exec 網址</b> ＋ <b>API Key</b>（執行 <code>showApiKey()</code> 複製）</div></div>
-    <div class="step"><div>儲存之後撳「重新讀取」→ 見到成員同進度就成功；之後喺「勾選進度」直接勾</div></div>
-  </div>
-  ${noteBox('後端要係本系統嘅 <code>Code.gs</code>（或者已經支援 <code>?action=load</code> 同 <code>action=save</code> 嘅版本）：'
-    + '「資料管理 → 總表同步」可以下載最新範本，執行一次 <code>initializeSheets</code> 會建好'
-    + '「進度追蹤／其他獎章／活動履歷」等分頁。', 'info')}
-  ${noteBox('<b>設好後端之後，想埋讀取進度追蹤？</b>去「進度 → 設定」：'
-    + '① 貼 <code>/exec</code> 網址（Apps Script → 部署 → 管理部署） ② 貼 API Key（Apps Script 執行 '
-    + '<code>showApiKey()</code>） ③ 儲存後撳「重新讀取」見到團員名單就成功。'
-    + '兩個值存在旅團自己嘅資料（跟 JSON 備份走）。', 'info')}
+  ${H('讀寫與批核')}
+  <ul style="padding-left:18px;line-height:1.9" class="sm">
+    <li><b>讀</b>：staff session 可讀全團；團員只走 <code>loadMine</code>，YMIS 由 session 固定</li>
+    <li><b>寫</b>：<code>save</code>／<code>saveOtherBadge</code> 要有效 staff role＋scope</li>
+    <li><b>批</b>：<code>reviewRequest</code>／<code>reviewLogRequest</code> 批准後寫回同一 Sheet</li>
+  </ul>
 
   ${H('考核項目定義')}
-  ${P('項目定義（第 11 版綱要）已經<b>內建</b>喺 <code>data/progress/items.json</code>，離線都用得，唔使連任何網站。'
-    + '如果旅團自己改過項目，喺「設定 → 自訂考核項目定義」填一條公開 https 網址就得。')}
+  ${P('第 11 版綱要已內建在 <code>data/progress/items.json</code>，離線可用；它是靜態目錄，不是第二個資料後端。')}
 
-  ${H('身份對應（兩邊用同一批人）')}
-  ${P('<b>團員／執委用 YMIS（10 位數字）、領袖用 Email</b>。喺「用戶」度逐個補，'
-    + '用戶頁會顯示覆蓋率同「未對上」名單；未補嘅只可以用姓名配對（會撞名、會漏）。')}
-
-  ${H('目前設定')}
-  <pre><code>${esc(JSON.stringify({
-    backend: shownBackend,
-    apiKey: masked,
-    unit: b.unit || currentUnit(),
-    catalog: b.catalogUrl || '（內建 data/progress/items.json）',
-    mode: '同一個後端（直接讀寫）'
-  }, null, 2))}</code></pre>`;
-}
-
-/** /exec 只顯示頭段，避免成條 deployment id 喺教學出現 */
-function maskExec(u) {
-  return String(u || '').replace(/\/macros\/s\/[^/]+/, '/macros/s/…');
+  ${H('身份對應')}
+  ${P('所有前端以同一 YMIS 對人；現階段由支部本地帳戶核實後簽發 session，'
+    + '再由 Unified GAS 限定本人／staff 可見及可寫範圍。中央 SSO 留待最後建立旅系統時才接通及驗收。')}`;
 }
 
 /* 管理員專用（方法 A：Git Registry）—— 普通用戶冇 Git／Vercel 權限，唔需要見到 */
 function adminGitSteps() {
   return `
-  ${H('管理員手工加（進階 · 方法 A）')}
+  ${H('管理員接入（Vercel 接線；Git 只放可選公開資料）')}
   <div class="steps">
-    <div class="step"><div>最快嘅做法係<b>方法 B</b>（Vercel 環境變數）—— 睇「教學 → <b>開新旅團（唔使改 Git）</b>」有逐步教學同可複製嘅環境變數範本</div></div>
-    <div class="step"><div>方法 A：喺 <code>data/units.json</code> 嘅 <code>units</code> 加一個編號，例如 <code>"0100": { "code": "0100", "name": "第一百旅深資童軍團", "dataPath": "data/units/0100/", "backend": { "gasUrl": "…/exec", "apiKey": "…" } }</code></div></div>
-    <div class="step"><div>建立 <code>data/units/0100/</code> 資料夾，複製 0082 嘅檔案再改內容</div></div>
-    <div class="step"><div>Commit &amp; push（如果用 GitHub Pages / Vercel，會自動部署）→ 旅團選擇器就會見到新旅團</div></div>
+    <div class="step"><div>正式接線只用 <b>Vercel 環境變數</b>：<code>TROOP_&lt;ID&gt;_NAME／BACKEND／APIKEY</code>，然後 Redeploy</div></div>
+    <div class="step"><div>如想 API 未載入前都顯示公開名稱，可選擇喺 <code>data/units.json</code> 加 <code>code／name／section</code> 等 metadata</div></div>
+    <div class="step"><div><b>唔好</b>將 <code>backend／apiKey</code> 放 Git，亦唔使建立 <code>data/units/&lt;ID&gt;/</code> 資料夾；新支部由空白資料開始</div></div>
+    <div class="step"><div>Commit &amp; push 公開 metadata 後，秘密接線仍只由 Vercel Registry 提供</div></div>
   </div>
   ${P('<span class="xs faint">詳細欄位名同每次收到申請嘅 checklist：見 repo 入面 <code>docs/ADD_NEW_UNIT.md</code> 同 <code>docs/ADMIN_ONBOARDING.md</code>。</span>')}`;
 }
@@ -504,7 +466,7 @@ function multiUnitOnboardSteps() {
     <div class="step"><div>執行 <code>initializeSheets</code>（會建好全部分頁），複製 <b>API Key</b></div></div>
     <div class="step"><div>部署做<b>網頁應用程式</b>（執行身分：我；存取權：任何人），複製 <code>/exec</code> 網址</div></div>
     <div class="step"><div>旅團喺登入前嘅旅團閘撳「<b>新旅團申請接入</b>」（或者直接將 <code>/exec</code> ＋ Key 交畀你）</div></div>
-    <div class="step"><div>你收到之後 → 「教學 → <b>開新旅團（唔使改 Git）</b>」加 5 個 <code>TROOP_&lt;編號&gt;_*</code> 環境變數 → Redeploy</div></div>
+    <div class="step"><div>你收到之後 → 「教學 → <b>開新旅團（唔使改 Git）</b>」加 3 個 <code>NAME／BACKEND／APIKEY</code> 環境變數 → Redeploy</div></div>
     <div class="step"><div>通知旅團更新 <code>Code.gs</code>（同自己嗰張 Sheet 對齊）＋ 登入試一次</div></div>
   </div>`;
 }
@@ -595,8 +557,8 @@ function newUnitDoc() {
   <ul style="padding-left:18px;line-height:1.95" class="sm">
     <li><b>通告</b>：開通告 → 喺「總表同步」撳一次同步 → 公開頁（<code>notice.html?u=&lt;編號&gt;&amp;n=&lt;通告編號&gt;</code>）
       會直接由佢自己嘅後端讀 → 可以 WhatsApp 分享 ＋ QR 收報名（唔使改 Git 都公開到）</li>
-    <li><b>進度</b>：如果已經設咗 <code>TROOP_&lt;編號&gt;_PROGRESSBACKEND</code> ＋ <code>_PROGRESSAPIKEY</code>，
-      前端「進度」頁會顯示「<b>伺服器端已設定</b>」，唔使填任何嘢就讀到成員、勾得進度、批得申報</li>
+    <li><b>進度</b>：自動沿用同一個 <code>TROOP_&lt;編號&gt;_BACKEND</code> ＋ <code>_APIKEY</code>；
+      不另設進度後端，瀏覽器亦不會要求貼 Key</li>
     <li><b>團章</b>：去「團章」寫好 → 發布 → 公開頁 <code>constitution.html?u=&lt;編號&gt;</code></li>
     <li><b>名冊</b>：去「用戶」加執委／領袖帳戶同團員（之後同步一次就會寫入佢自己嘅 Sheet）</li>
   </ul>
@@ -615,12 +577,12 @@ function newUnitDoc() {
   ${H('檢查清單（照住剔）')}
   <ul style="padding-left:18px;line-height:1.95" class="sm">
     <li>□ 收到旅團嘅 <code>/exec</code> 網址 ＋ API Key</li>
-    <li>□ Vercel 加咗 5 個 <code>TROOP_&lt;編號&gt;_*</code> 變數</li>
+    <li>□ Vercel 只加咗 3 個 <code>TROOP_&lt;編號&gt;_NAME／BACKEND／APIKEY</code>，而且與 BADGE 完全相同</li>
     <li>□ Redeploy 完成，旅團清單見到新編號</li>
     <li>□ 旅團更新咗 Code.gs ＋ 部署新版本（第一次先要 initializeSheets）</li>
     <li>□ 實測：登入 → 開一張測試通告 → 用 QR／連結報名 → Sheet「報名」分頁見到紀錄</li>
     <li>□ 實測：進度頁見到成員（或者顯示「伺服器端已設定」）</li>
-    <li>□ 通知旅團：以後自己入「進度 → 設定」可以覆蓋 <code>/exec</code> ＋ Key</li>
+    <li>□ 實測瀏覽器不能用自訂 <code>backend</code>／<code>apikey</code> 改送另一後端</li>
   </ul>`;
 }
 

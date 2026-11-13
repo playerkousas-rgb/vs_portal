@@ -28,6 +28,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { spawn } from 'node:child_process';
 import net from 'node:net';
+import { TEST_SUPER_PASSWORD } from './_authstub.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const START = Date.now();
@@ -39,7 +40,9 @@ function ok(name, cond, extra = '') {
 function section(t) { console.log('\n▌' + t); }
 
 const KEY = 'v82_e2e_real_key';
+const SUPER_PASSWORD = TEST_SUPER_PASSWORD;
 const UNIT = '0082';
+let platformSessionToken = '';
 
 const freePort = () => new Promise((resolve, reject) => {
   const srv = net.createServer();
@@ -129,7 +132,8 @@ spawnBg([path.join(ROOT, 'dev-server.mjs')], {
   PORT: String(WEB_PORT),
   V82_PROXY_TEST: '1',
   TROOP_0082_BACKEND: REAL_EXEC,
-  TROOP_0082_APIKEY: KEY
+  TROOP_0082_APIKEY: KEY,
+  SUPER_KEY: SUPER_PASSWORD
 });
 ok('真 Code.gs 後端已啟動', await waitPort(GAS_PORT));
 ok('dev-server（同源 /api/proxy）已啟動', await waitPort(WEB_PORT));
@@ -362,19 +366,30 @@ section('⑦ 逃生門：舊版留低嘅垃圾行清得走（正式資料唔會�
    ============================================================ */
 section('⑧ ★ 進度讀寫 ＋ 直接對 Sheet（/api/progress）');
 {
+  /* 敏感進度 action 而家必須有可信 session。用真 /api/auth 簽發超管 HMAC 票據，
+     唔再將「知道 Sheet API Key」當成 browser 身份。 */
+  const authRes = await fetch(`${BASE}/api/auth`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user: 'sheep', password: SUPER_PASSWORD })
+  }).then(r => r.json());
+  ok('前提：真 /api/auth 簽發短期超管 session', authRes.ok === true && !!authRes.sessionToken,
+    JSON.stringify(authRes).slice(0, 180));
+  platformSessionToken = String(authRes.sessionToken || '');
   const post = (payload) => fetch(`${BASE}/api/progress`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...payload, sessionToken: authRes.sessionToken })
   }).then(r => r.json());
 
   /* 先確保名冊有 YMIS（成員名單由 saveDb 嘅報表刷新寫入）。
      留意：呢個後端已經有資料，saveDb 行樂觀鎖 —— 要先讀返現行版本做 baseVersion。 */
   const info = await (await fetch(`${BASE}/api/proxy`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'dbInfo', unit: UNIT })
+    body: JSON.stringify({ action: 'dbInfo', unit: UNIT, sessionToken: platformSessionToken })
   })).json();
   const push = await (await fetch(`${BASE}/api/proxy`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ action: 'saveDb', unit: UNIT, baseVersion: String(info.version || ''), db: {
+    body: JSON.stringify({ action: 'saveDb', unit: UNIT, sessionToken: platformSessionToken,
+      baseVersion: String(info.version || ''), db: {
       profile: { name: '第八十二旅' },
       members: [
         { id: 'pm1', name: '進度團員甲', ymis: '8202000001', identity: 'member', status: 'active' },
@@ -384,7 +399,7 @@ section('⑧ ★ 進度讀寫 ＋ 直接對 Sheet（/api/progress）');
   })).json();
   ok('前提：真後端收到資料庫（成員名單會跟住寫）', push.ok === true, JSON.stringify(push).slice(0, 160));
 
-  /* 用進度前端一樣嘅路徑寫入兩格進度（API Key＝執委身份） */
+  /* 用管理進度前端一樣嘅路徑寫入兩格進度（server session＝可信管理身份）。 */
   const save = await post({ action: 'save', unit: UNIT, backend: REAL_EXEC, apikey: KEY,
     data: { changes: [
       { ymis: '8202000001', itemId: 'L1-ACT-01', date: '2026-09-10', note: '' },
@@ -449,7 +464,8 @@ section('⑧ ★ 進度讀寫 ＋ 直接對 Sheet（/api/progress）');
 section('⑨ ★ 搶救：後端讀唔到 → 修復 → 新裝置讀到（真 Code.gs）');
 {
   const post = (payload) => fetch(`${BASE}/api/proxy`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...payload, sessionToken: platformSessionToken })
   }).then(r => r.json());
 
   /* ① 砌出壞掉嘅後端（直接寫「資料庫」分頁，模擬舊版漏刪／寫到一半死咗） */
@@ -524,7 +540,7 @@ section('⑨ ★ 搶救：後端讀唔到 → 修復 → 新裝置讀到（真 C
     JSON.stringify({ v: info.versions, staging: info.stagingRows, stale: info.staleRows }));
 }
 
-section('多人驗收：新建帳號 → 頂部手動儲存 → 新裝置後端登入 → 第二人寫入');
+section('多人驗收：新建個人身份 → 專用 server 密碼 action → 新裝置登入 → 第二人寫入');
 {
   const A = await runDevice({ steps: [
     { op: 'load' },
@@ -537,20 +553,20 @@ section('多人驗收：新建帳號 → 頂部手動儲存 → 新裝置後端�
   const B = await runDevice({ steps: [
     { op: 'login', login: 'leader-a@example.com', pw: 'test-pw-a' },
     { op: 'load' },
-    { op: 'addStaff', name: '乙領袖', email: 'leader-b@example.com' },
+    { op: 'addStaff', name: '乙執委', email: 'leader-b@example.com', identity: 'exco' },
     { op: 'setHubPw', id: '@last', pw: 'test-pw-b' },
     { op: 'push' }
   ] });
   ok('全新裝置乙用甲的帳號經真後端登入', step(B, 'login').ok && step(B, 'login').gateOk,
     JSON.stringify(step(B, 'login')));
-  ok('乙讀到甲的資料，建立第二位使用者並儲存',
+  ok('乙讀到甲的資料，按層級建立較低權限執委並以專用 action 設密碼',
     step(B, 'load').members === 3 && step(B, 'setHubPw').ok && step(B, 'push').ok,
     JSON.stringify(B.steps).slice(0, 500));
   const C = await runDevice({ steps: [
     { op: 'login', login: 'leader-b@example.com', pw: 'test-pw-b' },
     { op: 'load' }
   ] });
-  ok('第三部全新裝置乙的獨立帳號可登入，讀到四人資料',
+  ok('第三部全新裝置以乙的獨立執委身份可登入，讀到四人資料',
     step(C, 'login').ok && step(C, 'load').members === 4,
     JSON.stringify(C.steps).slice(0, 500));
 }

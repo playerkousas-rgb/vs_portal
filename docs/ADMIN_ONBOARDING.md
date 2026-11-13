@@ -1,197 +1,104 @@
-# 管理員手冊：每個旅團申請接入時要 SET 乜
+# 管理員手冊：支部申請接入
 
-最後核實：**2026-09-16**（團長更正設計：**一個後端、兩個前端** —— 進度資料就喺旅團自己嘅後端
-（Google Sheet ＋ Apps Script）；深資童軍管理系統同進度前端讀寫同一份，所以管理員**唔需要**設 `portalOrigin` 之類）。
-欄位名全部由 code 核對過（`assets/js/lib/units.js`、`assets/js/lib/store.js`、`api/_registry.js`、`api/progress.js`）。
+> 現行契約：**一張 Sheet、一支 Unified GAS、一個 API Key、三項 Vercel 支部設定。**
+>
+> 施工次序：BOOK → BADGE → 5 個支部系統（現在）→ 最後才建立旅系統。現在沒有中央旅系統，本地支部帳戶／session 是正常登入。
 
----
+管理系統、進度及 BADGE 是多個前端，但資料與授權後端只有同一支 Unified Apps Script。API Key 只留在 server，不能當作執委身份。
 
-## 0. 旅團嗰邊做完乜先會送申請過嚟
+## 1. 申請人先完成
 
-旅團喺旅團選擇畫面撳「**新旅團申請接入**」之前，要先起好自己嘅後端：
+1. 建立一張新的 Google Sheet。
+2. 在綁定的 Apps Script 貼上 [`apps-script/UnifiedCode.gs`](../apps-script/UnifiedCode.gs)。
+3. 執行 `initializeSheets`。
+4. 執行 `showApiKey`，安全保存 API Key。
+5. 部署 Web App（執行身分：我；存取權：任何人），複製正式 `/exec`。
+6. 在 App 的「新旅團申請接入」送出旅團編號、名稱、`/exec`、API Key 與聯絡資料。
 
-1. 「資料管理 → 總表同步」下載 `Code.gs`（或者喺首頁旅團選擇畫面直接「下載 Code.gs」）
-2. 建新 Google Sheet → 擴充功能 → Apps Script → 貼上 `Code.gs`
-3. 執行 `initializeSheets`，複製 **API Key**
-4. 部署做**網頁應用程式**（執行身分：我；存取權：任何人），複製 **`/exec` 網址**
+申請會先送同源 `POST /api/proxy`（`action=submitRegistration`），再由 server 固定的管理員收件匣接收。Payload 以 `appType: "82venture"` 分辨；收件匣如有白名單要加入該值。
 
-送出嚟嘅 payload（`assets/js/lib/onboard.js`）：
+只有連線／逾時或收件匣明確回 `success:false` 才算失敗。管理員收到後仍要自行通知申請人開通結果。
 
-```jsonc
-{
-  "troopId":  "0100",
-  "troopName": "第一百旅深資童軍團",
-  "scriptUrl": "https://script.google.com/macros/s/AKfyc…/exec",   // ← 佢嘅後端
-  "apiKey":    "…",
-  "appType":   "82venture",          // 用嚟分辨係邊個系統送出嘅申請
-  "appName":   "深資童軍管理系統",        // 顯示名（同 appType 一齊，ADMIN 系統睇得到）
-  "mainSystemUrl": "https://…",      // ← 畀你核對／記錄，唔再係 portalOrigin（見下）
-  "contact":   "…",
-  "note":      "…",
-  "at":        "2026-09-15T…"
-}
+## 2. 管理員只設定三項
+
+以旅團 `0100` 為例，在正確的 Vercel environment 設定：
+
+```dotenv
+TROOP_0100_NAME=第一百旅深資童軍團
+TROOP_0100_BACKEND=https://script.google.com/macros/s/部署識別碼/exec
+TROOP_0100_APIKEY=該 Unified GAS 的 showApiKey 值
 ```
 
-**送出方式（同 VSBADGE 一樣）**：申請人**唔會**直接打收件匣，係行同源
-`POST /api/proxy` → `action: 'submitRegistration'` → 由 Vercel 伺服器端轉發去收件匣
-（`api/proxy.js` 嘅 `SCOUT_ADMIN_API`，目的地係伺服器常數，前端改唔到）。
+然後 **Redeploy**。
 
-**收件匣唔會回執** —— 申請人嘅 App 唔會知你收咗未（申請人亦唔會收到任何通知），
-所以 `/api/proxy` 嘅判斷係：**POST 過得去（伺服器有回應）就當送到**，
-唔會因為你回 HTML／空白就報失敗。只有兩種情況當失敗：
-（1）連線／逾時（回 502／504）；（2）你嘅收件匣明確回 `{success:false, error:'…'}`。
-真係失敗嗰陣，App 會顯示「送唔到去 ADMIN 系統」＋畀申請人**複製申請內容**
-（WhatsApp／電郵畀你）或者**再試一次**；伺服器路線失敗亦會自動再直接 POST 多一次。
-冇 `/api/proxy`（純靜態部署）就 fallback 直接 POST。
+| 變數 | 核對 |
+|---|---|
+| `NAME` | 公開顯示名稱正確 |
+| `BACKEND` | 只接受 Google Apps Script 正式 `/exec`；不接受 `/dev` |
+| `APIKEY` | 與同一 Unified GAS 的 `API_KEY` 完全相同 |
 
-**你要做嘅跟進**（因為冇回執，全靠你嗰邊）：
-1. 收件匣收到申請 → 轉寄畀負責團長
-2. 開好團（方法 B 或方法 A）→ **email 通知旅團**（佢哋喺 App 度等緊你嘅通知）
+這三項就是 BADGE 使用的同一旅團登記；進度會自動沿用。
 
-收件匣設定喺 `data/units.json` → **`admin.submitUrl`**（冇設定就用 `api/proxy.js` 內建預設值，
-即 VSBADGE 同一個中央收件匣，用 `appType` 分辨：`82venture` / `vsbadge`）。
-**如果你嘅 admin GAS 有按 `appType` 過濾，記得加 `'82venture'`**，否則申請會石沉大海。
+## 3. 禁止建立第二套接線
 
----
+不要設定：
 
-## 1. 深資童軍管理系統呢邊要 SET 嘅嘢
-
-### 1a. `data/units.json` → `units.<旅團編號>`
-
-```jsonc
-"0100": {
-  "code": "0100",
-  "name": "第一百旅深資童軍團",
-  "nameEn": "100th HK Group Venture Scout Unit",
-  "short": "100venture",
-  "section": "深資童軍",
-  "region": "港島地域",
-  "sponsor": "…",
-  "address": "…",
-  "dataPath": "data/units/0100/",          // ← 必須，決定去邊度讀資料
-
-  "backend": {                              // ← 佢自己嘅後端（申請入面嘅 scriptUrl / apiKey）
-    "gasUrl": "https://script.google.com/macros/s/AKfyc…/exec",
-    "apiKey": "…"
-  },
-  "notice": {
-    "submitUrl": "https://script.google.com/macros/s/AKfyc…/exec"   // 通常同 gasUrl 一樣
-  },
-  "theme": { "brand700": "#7B2233", "brand800": "#5E1826", "brand900": "#4A111C",
-             "brand600": "#93293D", "brand50": "#FBF1F3", "brand100": "#F2DCE1" }
-}
+```text
+TROOP_<ID>_PORTALSECRET
+TROOP_<ID>_PORTALSESSIONSECRET
+PORTAL_SESSION_SECRET
+TROOP_<ID>_PROGRESSBACKEND
+TROOP_<ID>_PROGRESSAPIKEY
+TROOP_<ID>_PROGRESSCATALOG
 ```
 
-**讀邊個欄位（`lib/units.js`）**：
+不要：
 
-| 欄位 | 用途 |
-| --- | --- |
-| `units.<id>.dataPath` | `dataPathOf()` —— 去邊度讀 `unit.json` / `members.json` 等 |
-| `units.<id>.backend.gasUrl` | `backendOf()` —— 總表同步、手機記帳、通告報名、物資借用全部 POST 去呢度 |
-| `units.<id>.backend.apiKey` | `backendOf()` —— 隨 payload 送去 |
-| `units.<id>.notice.submitUrl` | 公開通告頁報名（冇填就用 `backend.gasUrl`） |
-| `backend`（頂層） | **fallback**：旅團未填自己嘅 `backend` 時先用呢個（`backendOf()` 回傳 `shared: true`） |
-| `defaultUnit` | 冇帶 `?u=` 時預設揀邊個旅團 |
-| `admin.submitUrl` | 新旅團申請送去邊 |
+- 把 backend 或 API Key 放進 `data/units.json`／`unit.json`；
+- 叫使用者在進度頁貼 `/exec` 或 Key；
+- 為進度另建 Apps Script／Sheet；
+- 用 API Key、query `role`、YMIS 或姓名當使用者身份；
+- 以 browser 傳入的 backend／apikey 決定 server 轉發目標。
 
-> ⚠️ **每個旅團應該填自己嘅 `backend.gasUrl`**。頂層 `backend` 只係未有自己後端時嘅臨時 fallback／示範用。
+公開 `data/units.json` 只可放名稱、地區、贊助機構、主題等 metadata。敏感接線只在 Vercel environment。
 
-### 1b. `data/units/<旅團編號>/` 資料夾
+## 4. 接通後的 server 行為
 
-```
-unit.json           ← 旅團資料 + settings + progress（**profile 由呢度讀**）
-members.json        ← 名冊（含 ymis / email / birthday）
-constitution.json   ← 團章（中英）
-finance.json        ← 帳目 / 團費 / 申報 / 預算
-inventory.json      ← 物資 / 借用
-meetings.json       ← 會議（可選）
-```
+- `/api/units` 只回公開資料及 `backendReady`／`progressServerSide` 狀態，不回完整 `/exec` 或 API Key。
+- `/api/proxy` 與 `/api/progress` 只從 Registry 取同一 `BACKEND`／`APIKEY`。
+- browser 提交的 `backend`、`apikey`、角色、YMIS 不能覆蓋 Registry 或 session 身份。
+- 進度考核項目固定讀同源 `data/progress/items.json`，不接受 remote catalog proxy。
+- 現階段本地支部登入先簽 opaque session，再由 `authWhoAmI` 對回 staff 角色；member action 由 server 固定本人 YMIS。
+- `ALLOW_LOCAL_LOGIN` 現階段必須保持 `true`。
+- 第 4 階段才啟用中央 SSO assertion、branch exchange 及 exchange JTI；它們屆時由同一 API Key 以不同 purpose 派生，但 API Key 本身不直接簽發 app session。
 
-### 1c. `unit.json` 入面嘅進度設定（2026-09-16：一個後端、兩個前端）
+## 5. 每次收到申請的 checklist
 
-**注意：`progress` 係由 `unit.json` 讀（`db.profile`），唔係 `units.json`。**
-`units.json` 嗰份只係做記錄／種子。
-
-新做法**通常唔使填任何嘢**：深資童軍管理系統會自動用返 `data/units.json` 登記嘅 `backend.gasUrl` / `backend.apiKey`
-（即係同一個後端）；要覆蓋先喺「進度 → 設定」填，儲存喺 `profile.progress.backend`（跟 JSON 備份走，唔會出現在網址）。
-執委系統**唔會連去任何其他系統** —— 只係讀／寫後端（`?action=load` / `action=save`）。
-
-```jsonc
-"progress": {
-  "name": "進度追蹤（同一個後端）",
-  "backend": {
-    "backend": "https://script.google.com/macros/s/…/exec",  // 留空＝用 units.json 登記嘅旅團後端
-    "apiKey": "…",                                            // API Key＝執委身份
-    "catalogUrl": "",                                          // 留空＝用內建 data/progress/items.json
-    "unit": "0100"
-  }
-}
+```text
+□ 旅團編號及顯示名稱已核對
+□ /exec 是正式 Google Apps Script URL，不是 /dev
+□ API Key 與 Unified GAS showApiKey 完全相同
+□ Vercel 只新增 NAME／BACKEND／APIKEY，沒有 PORTAL*／PROGRESS*
+□ 已選對 Production／Preview／Development environment
+□ 已 Redeploy
+□ /api/units 有旅團且不洩漏 URL／Key
+□ 管理系統、進度及 BADGE 都連到同一 Sheet
+□ 進度頁沒有 browser backend／Key 輸入欄
+□ staff 可管理進度；member 只能本人；未登入 fail closed
+□ browser 偽造 backend／apikey／role／YMIS 被忽略或拒絕
+□ initializeSheets 重跑兩次仍保留 API Key、帳戶 hash、行政及進度資料
+□ ALLOW_LOCAL_LOGIN=true；支部本地 staff／member 登入已實測
+□ Email 通知旅團已開通
+□ （第 4 階段才做）中央 SSO 的短票、audience、unit、角色、時限及 replay 已在 staging 實測
 ```
 
-> **要埋讀取進度追蹤？** 喺「進度 → 設定」填兩個值就得：
-> ① `/exec` 網址（Apps Script → 部署 → 管理部署） ② API Key（Apps Script 執行 `showApiKey()`）。
-> 撳「儲存」再撳「**重新讀取**」見到團員名單＝成功；兩個值存喺旅團自己嘅資料。
-> 想收埋條 Key 唔落前端：先設 env `TROOP_<id>_PROGRESSBACKEND` / `_PROGRESSAPIKEY` / `_PROGRESSCATALOG`（可選覆蓋）。
+## 6. 身份對應
 
----
+所有現階段前端以支部同一 canonical YMIS 對人：
 
-## 2. 另一半（進度前端）
+- 支部 `Users`、PBKDF2 密碼及 server-issued session 是現階段日常身份權威；
+- `ALLOW_LOCAL_LOGIN=true`，本地入口不是後備／救援模式；
+- API Key 永遠不是用戶身份；
+- browser query 或 shadow account 不能提高角色。
 
-一個後端、兩個前端：進度資料就喺上面 `backend.gasUrl` 指向嘅同一支 Apps Script，
-執委系統同進度前端讀寫同一份。要埋讀進度嘅話：
-
-* 唔使設 `portalOrigin` / `portalRoles`（舊 portal 設計已停用，見 [`archive/PROGRESS_PORTAL_HANDOFF.md`](archive/PROGRESS_PORTAL_HANDOFF.md)）
-* 唔使另一張試算表 —— `initializeSheets` 已經建好 `進度追蹤`／`其他獎章`／`待批完成`／`活動履歷`／`待批履歷`／`成員名單`
-* 想埋讀取進度：喺「進度 → 設定」填 `/exec` ＋ API Key（教學有逐步指示；想收埋條 Key 先自己用 env 覆蓋）
-
----
-
-## 2b. 最快開團法（唔改 Git）：Vercel 環境變數
-
-旅團畀你 `/exec` ＋ API Key 之後，**只喺 Vercel** 加：
-
-```
-TROOP_<編號>_BACKEND          = 旅團嘅 /exec 網址
-TROOP_<編號>_APIKEY           = 旅團嘅 API Key
-TROOP_<編號>_NAME             = 第八十一旅深資童軍團（唔填＝「第 0081 旅」）
-TROOP_<編號>_PROGRESSBACKEND  = 進度用 /exec（同一個都得）
-TROOP_<編號>_PROGRESSAPIKEY   = 進度用 API Key
-```
-
-然後 **Redeploy**（環境變數要重新部署先生效）。旅團即刻出現喺清單，資料由空白開始；
-通告喺執委系統開 + 同步一次，公開頁會由旅團自己後端讀，唔使改 Git。
-（想預載團章／名冊／舊帳 → 用方法 A 加 `data/units/<編號>/`，見 [`ADD_NEW_UNIT.md`](ADD_NEW_UNIT.md)。）
-
----
-
-## 3. 每次收到申請嘅 checklist
-
-```
-□ 深資童軍管理系統  data/units.json      加 units.<id>（code / name / dataPath / backend.gasUrl / backend.apiKey / notice.submitUrl / theme）
-□ 深資童軍管理系統  data/units/<id>/     建資料夾（unit.json / members.json / constitution.json / finance.json / inventory.json）
-□ 深資童軍管理系統  unit.json            （可選）填 progress.backend（後端 /exec ＋ API Key 覆蓋用；唔填就用 units.json 登記嗰個）
-□ 深資童軍管理系統  後端 Code.gs    用最新範本（npm run build:gas → apps-script/Code.gs）；
-                                 執行 initializeSheets 會建「進度追蹤／其他獎章／活動履歷／成員名單」等分頁
-□ 通知旅團：想埋讀進度就去「進度 → 設定」填 /exec ＋ API Key（執行 showApiKey() 複製）
-□ Deploy 一次（同一個 /exec 服務兩個前端）
-□ 實測：深資童軍管理系統揀該旅團 → 登入 → 「進度」→ 見到團員同進度（讀後端）
-        → 「勾選進度」勾一項 → 去 Google Sheet「進度追蹤」分頁應該見到新一行
-        → 「審批中心」睇到團員申報 → 撳「批准」→ 「進度追蹤」分頁多一行（或者更新咗完成日期）
-□ 實測：深資童軍管理系統 → 「資料管理 → 總表同步」→ 應該寫入佢自己嘅 Sheet
-```
-
-呢個 checklist 喺 app 入面都會自動列出（送出申請之後嘅確認對話框，
-`onboard.js` → `adminChecklist()`），方便旅團自己跟進。
-
----
-
-## 4. 身份欄位（兩邊對人用）
-
-| 執委系統 `members.json` | 進度（同一個後端） | 邊個用 |
-| --- | --- | --- |
-| `ymis`（10 位數字） | YMIS | **團員／執委** |
-| `email` | Email | **領袖** |
-| `systemId`（自動產生 `旅團編號-用戶id`） | — | 本系統 fallback，對方認唔到 |
-
-對方登入頁寫住：「成員：YMIS 10位數字 + 密碼；領袖：Email + 密碼」。
-所以**唔好**要求領袖填 YMIS。用戶頁會顯示覆蓋率同「未對得上」名單。
+第 4 階段旅系統建立後，才加入無本地密碼的中央 SSO 授權鏡像；中央 subject、角色及 signer 要另行 staging，不能由網址參數冒充。預留契約見 [`UNIFIED_NEW_SHEET_SETUP.md`](UNIFIED_NEW_SHEET_SETUP.md)。完整開團步驟見 [`ADD_NEW_UNIT.md`](ADD_NEW_UNIT.md)。

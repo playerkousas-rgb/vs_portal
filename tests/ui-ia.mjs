@@ -229,6 +229,11 @@ section('④ 執委（exco）：無權就唔准入');
       new window.MouseEvent('click', { bubbles: true }));
     await wait(120);
   }
+  const memberAccountsSrc = fs.readFileSync(path.join(ROOT, 'assets/js/views/members-accounts.js'), 'utf8');
+  ok('「用戶與身份」內改自己密碼同樣要求目前密碼並走 server-side changeOwnPassword',
+    /id="q-old"/.test(memberAccountsSrc) && /me && !old/.test(memberAccountsSrc)
+    && /changeOwnPassword\(r\.old, r\.p1\)/.test(memberAccountsSrc)
+    && !/changePassword\(id, r\)/.test(memberAccountsSrc));
 }
 
 /* ============================================================

@@ -16,7 +16,7 @@
                    → 另一分頁加普通資料 → 撳頂部「儲存到後端」
      機 B（全新）：用嗰個 email 登入 —— 應該入到
      機 A        ：另一個分頁（同機同瀏覽器）開咗個人 —— 呢邊應該即刻見到
-   環境：假 GAS（tests/_fakegas.mjs）＋ dev-server（/api/proxy）
+   環境：真 UnifiedCode.gs VM（tests/_realgas.mjs）＋ dev-server（/api/proxy）
    用法：node tests/accountsync.mjs
    ============================================================ */
 
@@ -89,7 +89,8 @@ const YMIS = '2026000777';
 
 try {
   spawnBg([path.join(ROOT, 'tests', '_realgas.mjs'), String(GAS_PORT)], {
-    REALGAS_APIKEY: 'test_key_0082'
+    REALGAS_APIKEY: 'test_key_0082',
+    REALGAS_UNIFIED: '1'
   });
   spawnBg([path.join(ROOT, 'dev-server.mjs')], {
     TROOP_0082_BACKEND: FAKE_EXEC,
@@ -98,17 +99,19 @@ try {
     PORT: String(WEB_PORT),
     SUPER_KEY: TEST_SUPER_PASSWORD
   });
-  ok('真 Code.gs 後端＋dev-server 已啟動', (await waitPort(GAS_PORT)) && (await waitPort(WEB_PORT)));
+  ok('真 UnifiedCode.gs 後端＋dev-server 已啟動', (await waitPort(GAS_PORT)) && (await waitPort(WEB_PORT)));
 
   /* ============ 機 A：開人 → server 設密碼 → 普通資料仍由頂部掣同步 ============ */
   section('機 A（團長）：開領袖＋server 設密碼 → 普通資料再撳頂部掣');
   const A = await runDevice({ steps: [
     { op: 'wipe' },
     { op: 'load' },                                        // 真 app 開機一定先由後端載入（＝基準）
+    { op: 'login', login: 'admin@example.com', pw: 'changeme' }, // 帳戶管理必須用支部 Users 領袖身份
     { op: 'addStaff', name: '新領袖', email: EMAIL, ymis: YMIS, identity: 'leader' },
     { op: 'setHubPw', id: '@last', pw: PW },
     { op: 'wait', ms: 3000 },                              // dedicated action 完成後唔應再有背景寫入
-    { op: 'backendHasLogin', login: EMAIL },               // ← 密碼 action 後、頂部掣前
+    { op: 'backendHasLogin', login: EMAIL },               // ← 安全投影有帳戶，但絕不回傳 hash
+    { op: 'login', login: EMAIL, pw: PW },                 // ← 未撳頂部掣已可由 Unified Users 登入
     { op: 'otherTabWrite', name: '另一分頁開嘅人' },
     { op: 'syncNow' },                                     // ← 撳頂部「儲存到後端」（唯一寫入路）
     { op: 'backendHasLogin', login: EMAIL }                // ← 撳完
@@ -127,9 +130,12 @@ try {
 
   const bes = (A.steps || []).filter(x => x.op === 'backendHasLogin');
   const [be0, be1] = [bes[0] || {}, bes[1] || {}];
-  console.log('  · 密碼 action 後、頂部掣前問後端：' + JSON.stringify(be0));
-  ok('★ 未撳頂部掣，專用 action 已令後端有呢個人＋PBKDF2 密碼',
-    be0.found === true && be0.withPw === true, JSON.stringify(be0));
+  console.log('  · 開戶 action 後、頂部掣前讀安全投影：' + JSON.stringify(be0));
+  ok('★ 未撳頂部掣，安全投影已見帳戶，但絕不把 Users 密碼 hash 傳回 browser',
+    be0.found === true && be0.withPw === false, JSON.stringify(be0));
+  const immediateLogin = stepOf(A, 'login', 1);
+  ok('★ 未撳頂部掣，新領袖已可用 Unified Users 憑證登入',
+    immediateLogin.ok === true && immediateLogin.role === 'leader', JSON.stringify(immediateLogin));
 
   const otherTab = stepOf(A, 'otherTabWrite');
   console.log('  · 另一分頁寫入：' + JSON.stringify(otherTab));
@@ -141,9 +147,9 @@ try {
   console.log('  · 撳「儲存到後端」：' + JSON.stringify(sn));
   ok('★ 撳頂部「儲存到後端」成功', sn.ok === true && sn.pushed === true, JSON.stringify(sn));
   ok('★ 寫完 pending 清零', Number(sn.pending || 0) === 0, JSON.stringify(sn));
-  console.log('  · 撳完之後問後端：' + JSON.stringify(be1));
-  ok('★ 後端嗰份名冊已經有呢個人＋有密碼',
-    be1.found === true && be1.withPw === true, JSON.stringify(be1));
+  console.log('  · 撳完之後讀安全投影：' + JSON.stringify(be1));
+  ok('★ 後端名冊／帳戶仍在，而且行政資料同步不會洩漏密碼 hash',
+    be1.found === true && be1.withPw === false, JSON.stringify(be1));
 
   /* ============ 機 B（全新）：用嗰個 email 登入 ============ */
   section('機 B（全新裝置）：用啱啱開嘅 email 登入');

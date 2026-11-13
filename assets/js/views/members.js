@@ -19,7 +19,8 @@ import {
 import { toCSV, toWord, printDoc, download as dlFile, stamp } from '../lib/exporter.js';
 import { go, parse } from '../lib/router.js';
 import {
-  can, setMemberHubPassword, TEMP_PASSWORD, openMemberAccount, reviewAccountApp,
+  can, setMemberHubPassword, TEMP_PASSWORD, openMemberAccount, openMemberAccounts,
+  memberHasAccount, reviewAccountApp,
   setMemberIdentity, canClaimChief, claimChief, canChangePasswordOf,
   displayName, current,
   ROLES, PERMS, PERM_GROUPS, permValue, permIsCustom, permCycle, setPerm, resetPerms, canEditPerms,
@@ -97,8 +98,8 @@ function listView() {
       <button class="btn btn-sm" data-act="exp-bday">${icon('sparkle', 15)} 生日表</button>` : ''}
       <button class="btn btn-sm" data-fields="members" title="改名／加欄位（例：小隊、收據編號）">${icon('table', 15)} 欄位</button>
       <button class="btn btn-sm" data-go="#/members/perms" title="邊個身份做得到邊樣嘢（可改）">${icon('shield', 15)} 權限總表</button>
-      ${can('member.create') ? `<button class="btn btn-sm" data-act="bulk-open">${icon('users', 15)} 批量開戶</button>
-      <button class="btn btn-sm btn-primary" data-act="new">${icon('plus', 15)} 新增用戶</button>` : ''}`
+      ${can('admin.accounts') ? `<button class="btn btn-sm" data-act="bulk-open">${icon('users', 15)} 批量開戶</button>` : ''}
+      ${can('member.create') ? `<button class="btn btn-sm btn-primary" data-act="new">${icon('plus', 15)} 新增用戶</button>` : ''}`
   })}
   ${memberTabs('list')}
 
@@ -302,9 +303,9 @@ function detail(id) {
     sub: `${identityLabel(m)}${m.role ? ' · ' + m.role : ''}${m.eng ? ' · ' + m.eng : ''} · ${memberStatus()[m.status]?.l || ''}`,
     actions: `
       <button class="btn btn-sm" data-go="#/members">${icon('chevronL', 15)} 返回名冊</button>
-      ${identityOf(m) === 'member'
-        ? (can('member.edit') ? `<button class="btn btn-sm" data-act="open-hub" data-id="${m.id}">${icon('key', 15)} 開戶（首次密碼 ${TEMP_PASSWORD}）</button>` : '')
-        : (canChangePasswordOf('member:' + m.id) ? `<button class="btn btn-sm" data-act="set-pw" data-id="${m.id}">${icon('key', 15)} 設定密碼</button>` : '')}
+      ${!memberHasAccount(m)
+        ? (can('admin.accounts') ? `<button class="btn btn-sm" data-act="open-hub" data-id="${m.id}">${icon('key', 15)} 直接開戶（首次密碼 ${TEMP_PASSWORD}）</button>` : '')
+        : (canChangePasswordOf('member:' + m.id) ? `<button class="btn btn-sm" data-act="set-pw" data-id="${m.id}">${icon('key', 15)} 重設密碼</button>` : '')}
       ${can('member.edit') ? `<button class="btn btn-sm btn-primary" data-act="edit" data-id="${m.id}">${icon('edit', 15)} 編輯</button>` : ''}
       ${can('admin.chief') && identityOf(m) !== 'chief'
         ? `<button class="btn btn-sm" data-act="make-chief" data-id="${m.id}">${icon('sparkle', 15)} 設為團長（轉移）</button>` : ''}`
@@ -884,16 +885,21 @@ export function mount(root, params = {}) {
     }
 
     if (act === 'bulk-open') {
-      const list = members().filter(m => m.status !== 'alumni' && !m.hubPw?.hash && !m.hubPassword);
+      if (!can('admin.accounts')) { toast('只有團長／領袖可以開戶', 'err'); return; }
+      const list = members().filter(m => m.status !== 'alumni' && !memberHasAccount(m));
       if (!list.length) { toast('全部人都已經開咗戶', 'ok'); return; }
       const okGo = await confirmDlg({
         title: '批量開戶', okText: `為 ${list.length} 位開戶`,
-        message: `會為 <b>${list.length}</b> 位未開戶嘅人設首次密碼 <b>${TEMP_PASSWORD}</b>（首次登入要改）。`
+        message: `會用<b>一個後端 request</b>，直接喺同一 Unified Sheet 的 Users 為 <b>${list.length}</b> 位未開戶用戶設首次密碼 <b>${TEMP_PASSWORD}</b>（首次登入要改）。`
       });
       if (!okGo) return;
-      let n = 0;
-      for (const m of list) { const r = await openMemberAccount(m.id); if (r.ok) n++; }
-      toast(`已為 ${n} 位開戶（首次密碼 ${TEMP_PASSWORD}）`, 'ok');
+      const result = await openMemberAccounts(list.map(m => m.id));
+      if (!result.ok) {
+        toast(result.msg || '批量開戶失敗', 'err');
+      } else {
+        toast(`已開立 ${result.created} 個帳戶${result.failed ? `；${result.failed} 個未能開立` : ''}（首次密碼 ${TEMP_PASSWORD}）`,
+          result.failed ? 'warn' : 'ok');
+      }
       refresh();
       return;
     }

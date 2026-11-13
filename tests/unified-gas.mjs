@@ -284,6 +284,36 @@ ok('BOOK import becomes official only after an authenticated branch leader revie
     && node.sheets.get('進度追蹤')._rows.some(row => row[0] === '9000000001'
       && row[1] === 'L1-BOOK-IMPORT' && row[2] === '2026-02-09'),
   JSON.stringify(bookReview));
+
+/* Full frontend bulk approval is one signed action.  It may contain normal Progress
+   and activity-log rows, but validates the complete selection before the first write. */
+node.sheets.get('待批完成').appendRow([
+  'REQ-BULK-1', '9000000001', '中央團員', 'L1-BULK', '批量進度', '2026-02-10', '', 'pending', '2026-02-10', '', '', '', ''
+]);
+const bulkReviewRequest = signedRequest('bulkReviewRequests', {
+  unit: '0082', sessionToken: bookReviewerLogin.token,
+  requests: [
+    { kind: 'req', request_id: 'REQ-BULK-1' },
+    { kind: 'log', request_id: 'LOGREQ-1' }
+  ], decision: 'approved', confirmed_date: '2026-02-11'
+});
+const bulkReview = node.post(bulkReviewRequest.body, bulkReviewRequest.parameter);
+ok('one signed bulkReviewRequests action approves mixed Progress and log selections',
+  bulkReview.success === true && bulkReview.processed === 2
+    && bulkReview.progressRequests === 1 && bulkReview.logRequests === 1,
+  JSON.stringify(bulkReview));
+ok('bulk approval writes both destinations and closes both pending rows',
+  node.sheets.get('進度追蹤')._rows.some(row => row[0] === '9000000001'
+    && row[1] === 'L1-BULK' && row[2] === '2026-02-11')
+  && node.sheets.get('活動履歷')._rows.some(row => row[5] === '待批服務')
+  && node.sheets.get('待批完成')._rows.find(row => row[0] === 'REQ-BULK-1')?.[7] === 'approved'
+  && node.sheets.get('待批履歷')._rows.find(row => row[0] === 'LOGREQ-1')?.[12] === 'approved');
+const emptyBulkRequest = signedRequest('bulkReviewRequests', {
+  unit: '0082', sessionToken: bookReviewerLogin.token, requests: [], decision: 'approved'
+});
+const emptyBulk = node.post(emptyBulkRequest.body, emptyBulkRequest.parameter);
+ok('bulk approval rejects an empty selection before writing',
+  emptyBulk.success === false && emptyBulk.code === 'NO_SELECTION');
 node.context.destroyToken(bookReviewerLogin.token);
 const bookReviewerRow = node.sheets.get('Users')._rows.findIndex(row => row[0] === bookReviewerYmis);
 if (bookReviewerRow >= 0) node.sheets.get('Users').deleteRow(bookReviewerRow + 1);
@@ -329,6 +359,39 @@ ok('unified code completion resets baseline credential without exposing legacy P
 const completedForgotReplay = node.post({ action: 'authCompletePasswordReset', unit: '0082',
   email: 'admin@example.com', code: forgotCode, newPassword: 'changed98' });
 ok('unified password-reset code is single-use', completedForgotReplay.success === false);
+
+/* The full branch frontend account aliases write pinned BADGE Users directly; no
+   Portal accounts/password collection is created. */
+const accountAdmin = node.post({ action: 'authLogin', unit: '0082', username: 'admin@example.com', password: 'changed99' });
+node.sheets.get('成員名單').appendRow(['9000000010', '支部直接開戶', '2026-02-12', 'VS', '']);
+const openedAccounts = node.post({
+  action: 'authOpenAccounts', unit: '0082', sessionToken: accountAdmin.sessionToken,
+  users: [{ ymis: '9000000010', name: '支部直接開戶', role: 'member', password: '1234', branch: 'VS' }]
+});
+const openedUserRow = node.sheets.get('Users')._rows.find(row => String(row[0]) === '9000000010');
+ok('branch leader/admin can directly open an account in pinned Unified Users',
+  accountAdmin.success === true && openedAccounts.success === true && openedAccounts.created === 1
+    && openedUserRow?.[11] === 'active' && openedUserRow?.[13] === true,
+  JSON.stringify(openedAccounts));
+const openedLogin = node.post({ action: 'authLogin', unit: '0082', username: '9000000010', password: '1234' });
+ok('directly opened account immediately logs in through the normal branch authority',
+  openedLogin.success === true && openedLogin.account?.ymis === '9000000010');
+const resetOpened = node.post({ action: 'authResetPassword', unit: '0082',
+  sessionToken: accountAdmin.sessionToken, targetYmis: '9000000010', newPassword: '5678' });
+ok('full frontend password reset delegates to pinned Users handler', resetOpened.success === true, JSON.stringify(resetOpened));
+const disabledOpened = node.post({ action: 'authDeleteAccount', unit: '0082',
+  sessionToken: accountAdmin.sessionToken, targetYmis: '9000000010' });
+ok('full frontend account removal revokes login but preserves the Users/roster identity',
+  disabledOpened.success === true
+    && node.sheets.get('Users')._rows.find(row => String(row[0]) === '9000000010')?.[11] === 'inactive'
+    && node.sheets.get('成員名單')._rows.some(row => String(row[0]) === '9000000010'),
+  JSON.stringify(disabledOpened));
+const restoredOpened = node.post({ action: 'authRestoreAccount', unit: '0082',
+  sessionToken: accountAdmin.sessionToken, targetYmis: '9000000010', newPassword: '1234' });
+ok('full frontend can restore the same Unified Users account with a new temporary password',
+  restoredOpened.success === true
+    && node.sheets.get('Users')._rows.find(row => String(row[0]) === '9000000010')?.[11] === 'active',
+  JSON.stringify(restoredOpened));
 
 const forgedServerSuper = node.post({ action: 'loadTables', unit: '0082', unified_super: true, on_behalf: 'sheep' });
 ok('client cannot claim the platform-super server path without a valid branch signature',
@@ -437,7 +500,7 @@ ok('authorised leader can write administrative tables', saved.success === true &
 const loaded = node.post({ action: 'loadTables', unit: '0082', sessionToken: leaderExchange.sessionToken });
 ok('all clients read one administrative data copy', loaded.success === true && Array.isArray(loaded.db?.members));
 ok('canonical roster overlays Portal member identity fields', loaded.db.members.some(m => m.ymis === '9000000001' && m.name === '中央團員（更新）'));
-ok('legacy account payload is replaced by safe Users projection', loaded.db.accounts.every(a => !a.pw && !a.password && a.source === 'central-or-rescue'));
+ok('legacy account payload is replaced by safe pinned Users projection', loaded.db.accounts.every(a => !a.pw && !a.password && a.source === 'unified-users'));
 ok('no client-supplied shadow account survives', !loaded.db.accounts.some(a => a.username === 'shadow'));
 
 /* A compatibility rejection must be side-effect free. Historically the unified

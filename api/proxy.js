@@ -37,7 +37,7 @@ const SCOUT_ADMIN_API = process.env.SCOUT_ADMIN_API ||
   'https://script.google.com/macros/s/AKfycbxj5BDDGgjs559smkK4Z5aYImWYeXbN5af8U1ObON0z9WnsN6QJW4I1XWolhs5kQ_H-UQ/exec';
 
 const ALLOWED_ACTIONS = new Set([
-  'ping', 'status', 'test', 'authLogin', 'authWhoAmI', 'authPortalExchange', 'authChangePassword', 'authResetPassword', 'authDeleteAccount', 'authRestoreAccount', 'authCreateAccount', 'authForgotPassword', 'authResetByToken', 'authCompletePasswordReset',
+  'ping', 'status', 'test', 'authLogin', 'authWhoAmI', 'authPortalExchange', 'authChangePassword', 'authResetPassword', 'authDeleteAccount', 'authRestoreAccount', 'authCreateAccount', 'authOpenAccounts', 'authForgotPassword', 'authResetByToken', 'authCompletePasswordReset',
   /* 團員入口：全部由支部 GAS 用 opaque session 對回本人；hubLoad 只回安全投影，
      其餘三個 action 只可改本人 RSVP／答卷／請假，唔經行政整庫同步。 */
   'hubLoad', 'hubRsvp', 'hubQuiz', 'hubAbsence',
@@ -81,7 +81,7 @@ const ADMIN_DANGEROUS_ACTIONS = new Set(['repairDb', 'saveDbForce']);
 const ADMIN_ACTIONS = new Set([...ADMIN_READ_ACTIONS, ...ADMIN_WRITE_ACTIONS, ...ADMIN_DANGEROUS_ACTIONS]);
 /* 支部 session 由 GAS 自己核對；只有已由 /api/auth 驗證的 platform super
    需要轉成 HMAC＋nonce server request，API Key 本身仍不會成為身份。 */
-const ACCOUNT_ADMIN_ACTIONS = new Set(['authResetPassword', 'authDeleteAccount', 'authRestoreAccount', 'authCreateAccount']);
+const ACCOUNT_ADMIN_ACTIONS = new Set(['authResetPassword', 'authDeleteAccount', 'authRestoreAccount', 'authCreateAccount', 'authOpenAccounts']);
 const ROLE_RANK = { member: 0, exco: 20, exec_committee: 20, leader: 40, branch_leader: 40,
   chief: 60, group_leader: 60, admin: 80, super: 100, super_admin: 100 };
 const LINK_SIG_PURPOSE = 'vsbadge-troop-sig-v1';

@@ -121,6 +121,19 @@ export async function reviewLogRequest(requestId, { decision = 'approved', note 
     data: { request_id: requestId, decision, review_note: note, reviewer } });
 }
 
+/**
+ * 審批中心批量批准：browser 只發一次 request；混合進度／履歷選擇會由
+ * Unified handler 在同一次鎖內先全批驗證，再寫入同一 Sheet。
+ */
+export async function bulkReviewRequests(requests, { note = '', confirmedDate = '' } = {}) {
+  const selected = (Array.isArray(requests) ? requests : []).map(row => ({
+    kind: String(row?.kind || ''), request_id: String(row?.request_id || row?.id || '')
+  }));
+  return callApi({ ...cfgPayload(), action: 'bulkReviewRequests',
+    data: { requests: selected, decision: 'approved', review_note: note,
+      confirmed_date: confirmedDate } });
+}
+
 /** 顯示用：遮一遮 /exec 嘅部署 ID（唔使成條長 URL 擺上螢幕） */
 export function maskBackendUrl(u) {
   return String(u || '').replace(/\/macros\/s\/[^/]+/, '/macros/s/…');

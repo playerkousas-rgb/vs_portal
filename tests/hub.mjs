@@ -8,7 +8,7 @@
      ③ 登入要保持（localStorage，唔係 sessionStorage）
      ⑤ 截止咗報名嘅通告／過去嘅活動要由清單消失
      ⑥ 新裝置（無痕）開團員入口：由後端拉資料 → 登入得 → RSVP 寫得返上去
-   環境：假 GAS（tests/_fakegas.mjs）＋ dev-server（/api/proxy），
+   環境：真 UnifiedCode.gs VM（tests/_realgas.mjs）＋ dev-server（/api/proxy），
    兩個獨立「裝置」：A＝執委（種資料＋推後端）、B＝團員手機（全新）。
    用法：node tests/hub.mjs
    ============================================================ */
@@ -94,7 +94,8 @@ const runDevice = (plan) => new Promise((resolve) => {
 
 try {
   spawnBg([path.join(ROOT, 'tests', '_realgas.mjs'), String(GAS_PORT)], {
-    REALGAS_APIKEY: 'test_key_0082'
+    REALGAS_APIKEY: 'test_key_0082',
+    REALGAS_UNIFIED: '1'
   });
   spawnBg([path.join(ROOT, 'dev-server.mjs')], {
     TROOP_0082_BACKEND: FAKE_EXEC,
@@ -105,7 +106,7 @@ try {
   });
   const gasUp = await waitPort(GAS_PORT);
   const webUp = await waitPort(WEB_PORT);
-  ok('真 Code.gs 後端＋dev-server 已啟動', gasUp && webUp);
+  ok('真 UnifiedCode.gs 後端＋dev-server 已啟動', gasUp && webUp);
   const platformAuth = await fetch(`${BASE}/api/auth`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user: 'sheep', password: TEST_SUPER_PASSWORD })
@@ -120,10 +121,9 @@ try {
     { op: 'addMember', name: '陳大文', ymis: '2026000001', identity: 'member' },
     { op: 'addMember', name: '李小美', ymis: '2026000002', identity: 'member' },
     /* 王領袖（leader）—— 用嚟驗「邊個睇到」：佢要見到團員見唔到嘅公開資料。
-       ★ 成年人（團長／領袖）**唔可以**用首次密碼 1234 自出自入（security），
-         一定要由執委喺「用戶與身份」幫佢設密碼 —— 所以要用 addStaff + setHubPw。 */
-    { op: 'addStaff', name: '王領袖', ymis: '2026000004', identity: 'leader' },
-    { op: 'setHubPw', id: '@last', pw: 'leader123' },
+       成年人唔可以靠名冊＋首次密碼 1234 自出自入；下面會由支部 admin
+       明確建立 Unified Users leader role，再以專用 action 設密碼。 */
+    { op: 'addStaff', name: '王領袖', ymis: '2026000004', email: 'leader@example.com', identity: 'leader' },
     { op: 'patchSettings', patch: {
       troopLinks: { instagram: 'https://instagram.com/test82', facebook: 'https://facebook.com/test82', website: 'https://example.com' }
     } },
@@ -164,6 +164,25 @@ try {
     { op: 'push' }
   ] });
   ok('裝置 A 推後端成功', A.steps?.find(s => s.op === 'push')?.ok === true, JSON.stringify(A.steps?.find(s => s.op === 'push')));
+
+  /* Users 係唯一帳戶／role 權威。未開戶名冊不得自行升權，所以由真正 branch admin
+     明確建立 leader Users row；再一次批量建立兩個 member，最後走專用 reset action。 */
+  const branchAdmin = await proxyCall({ action: 'authLogin', unit: '0082', username: 'admin@example.com', password: 'changeme' });
+  const branchSession = String(branchAdmin.sessionToken || '');
+  const leaderOpen = await proxyCall({ action: 'authOpenAccounts', unit: '0082', sessionToken: branchSession, users: [{
+    targetYmis: '2026000004', ymis: '2026000004', name: '王領袖', email: 'leader@example.com',
+    role: 'leader', password: 'leader-temp'
+  }] });
+  const membersOpen = await proxyCall({ action: 'authOpenAccounts', unit: '0082', sessionToken: branchSession, users: [
+    { targetYmis: '2026000001', ymis: '2026000001', name: '陳大文', role: 'member', password: '1234' },
+    { targetYmis: '2026000002', ymis: '2026000002', name: '李小美', role: 'member', password: '1234' }
+  ] });
+  const leaderReset = await proxyCall({ action: 'authResetPassword', unit: '0082', sessionToken: branchSession,
+    targetYmis: '2026000004', newPassword: 'leader123' });
+  ok('支部 admin 已在同一 Unified Users 開立王領袖帳戶、批量開立團員帳戶及重設領袖密碼',
+    branchAdmin.ok === true && leaderOpen.ok === true && Number(leaderOpen.created || 0) === 1
+      && membersOpen.ok === true && Number(membersOpen.created || 0) === 2 && leaderReset.success === true,
+    JSON.stringify({ branchAdmin: branchAdmin.ok, leaderOpen, membersOpen, leaderReset }).slice(0, 400));
 
   /* ============ 裝置 B（團員手機，全新）：members.html ============ */
   section('裝置 B（全新團員手機）：團員入口');
@@ -403,7 +422,9 @@ try {
       (mine2?.data?.requests || []).some(r => r.request_id === mine?.request_id), JSON.stringify((mine2?.data?.requests || []).length));
     const staffLogin = await proxyCall({ action: 'authLogin', unit: '0082', username: '2026000004', password: 'leader123' });
     const staffSession = String(staffLogin.sessionToken || '');
-    ok('進度管理操作先取得領袖 server session', staffLogin.ok === true && !!staffSession, JSON.stringify(staffLogin).slice(0, 120));
+    ok('進度管理操作先取得領袖 server session',
+      staffLogin.ok === true && staffLogin.account?.role === 'leader' && !!staffSession,
+      JSON.stringify(staffLogin).slice(0, 160));
     const loadAfter = await progCall('load', {}, staffSession);
     ok('★ 進度照讀得到，名冊仲同步埋新增團員（saveDb 會更新「成員名單」分頁）',
       (loadAfter?.data?.members || []).length >= 3 && loadAfter?.ok === true,
@@ -426,11 +447,12 @@ try {
     for (let i = 0; i < 30; i++) {
       await wait(200);
       progTxt2 = doc.getElementById('progressBody')?.textContent || '';
-      if (/已完成 1 項/.test(progTxt2) || /已批准/.test(progTxt2)) break;
+      if (/已完成 1 項/.test(progTxt2) && /已批准/.test(progTxt2)) break;
     }
-    ok('團員再入進度頁：自己嗰項變咗「已完成」（有批核人）',
-      /已完成 1 項/.test(progTxt2) && progTxt2.includes('陳領袖'), progTxt2.slice(0, 160));
-    ok('申請紀錄顯示「已批准」（團員自己睇到進度）', /已批准/.test(progTxt2));
+    ok('團員再入進度頁：自己嗰項變咗「已完成」（批核人固定為登入領袖，唔信 client 偽造名）',
+      /已完成 1 項/.test(progTxt2) && progTxt2.includes('2026000004') && !progTxt2.includes('陳領袖'),
+      progTxt2.slice(0, 240));
+    ok('申請紀錄保留並顯示「已批准」（團員自己睇到歷史）', /已批准/.test(progTxt2));
     const otherLogin = await proxyCall({ action: 'authLogin', unit: '0082', username: '2026000002', password: '1234' });
     const mine3 = await progCall('myRequests', { ymis: '2026000001' }, String(otherLogin.sessionToken || ''));
     ok('myRequests 只回登入者自己嘅紀錄（client 偽造陳大文 YMIS 都見唔到）',

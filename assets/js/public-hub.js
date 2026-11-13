@@ -132,6 +132,11 @@ async function syncBoot() {
         if (!rc?.ok) {
           clearHubIdentity(auth);
           syncError = rc?.error || '登入狀態已失效，請重新登入';
+        } else {
+          const canonical = canonicalHubAuth(auth);
+          if (canonical?.id !== auth.id || canonical?.identity !== auth.identity || canonical?.name !== auth.name) {
+            saveHubAuth(code(), canonical);
+          }
         }
       }
       window.addEventListener('v82:sync', paintSyncBadge);
@@ -147,6 +152,25 @@ async function syncBoot() {
 }
 
 function code() { return load().unitCode; }
+
+/**
+ * Unified Users 用 YMIS 做登入 subject，但 Portal 行政資料用不可變 member id。
+ * 安全投影只會帶本人一行名冊，所以每次拉完投影後以 id／YMIS 對回該行，
+ * 絕不能假設登入 account.memberId（舊 Users adapter 可能係 YMIS）等於 Portal id。
+ */
+function projectedMember(auth) {
+  if (!auth) return null;
+  const id = String(auth.id || '');
+  const ymis = String(auth.ymis || '').trim();
+  return activeMembers().find(m => (id && String(m.id || '') === id)
+    || (ymis && String(m.ymis || '').trim() === ymis)) || null;
+}
+function canonicalHubAuth(auth) {
+  const m = projectedMember(auth);
+  if (!m) return auth;
+  return { ...auth, id: String(m.id || auth.id || ''), ymis: String(m.ymis || auth.ymis || ''),
+    name: String(m.name || auth.name || ''), identity: String(m.identity || auth.identity || 'member') };
+}
 
 /* 頂部右邊嘅同步狀態（等團員／領袖一眼睇到「資料係咪最新」） */
 function paintSyncBadge() {
@@ -173,7 +197,7 @@ function paintSyncBadge() {
 
 function paint() {
   const p = profile();
-  const auth = loadHubAuth(code());
+  const auth = canonicalHubAuth(loadHubAuth(code()));
   if (!auth) return paintGate();
   saveMe({ id: auth.id, name: auth.name });
   const hash = location.hash.replace(/^#\/?/, '') || 'home';
@@ -257,9 +281,14 @@ function paintGate() {
       if (shared?.sessionToken === res.sessionToken) setSession(null);
       return;
     }
-    saveHubAuth(code(), { id: m.id, name: m.name, ymis: m.ymis, identity: m.identity || 'member',
-      mustChangePw: !!res.mustChangePw, sessionToken: res.sessionToken, sessionExpiresAt: res.sessionExpiresAt });
-    saveMe({ id: m.id, name: m.name });
+    const projected = activeMembers().find(row => String(row.ymis || '').trim() === String(m.ymis || '').trim()) || null;
+    const memberAuth = {
+      id: projected?.id || m.id, name: projected?.name || m.name, ymis: projected?.ymis || m.ymis,
+      identity: projected?.identity || m.identity || 'member', mustChangePw: !!res.mustChangePw,
+      sessionToken: res.sessionToken, sessionExpiresAt: res.sessionExpiresAt
+    };
+    saveHubAuth(code(), memberAuth);
+    saveMe({ id: memberAuth.id, name: memberAuth.name });
     syncError = '';
     paint();
     if (res.mustChangePw) forceMemberPw(m.id);
@@ -289,7 +318,7 @@ function paintGate() {
 
 /** 呢位團員嘅身份（用嚟計「邊個睇到」）。未登入／搵唔到＝''→ 乜都唔見。 */
 function viewerIdentity(auth) {
-  const m = activeMembers().find(x => x.id === auth?.id) || null;
+  const m = projectedMember(auth);
   return m ? identityOf(m) : '';
 }
 /** 行事曆／通告／試卷：呢位團員睇唔睇到？（各自嘅編輯器設「邊個睇到」） */
@@ -495,11 +524,9 @@ function withName(url, auth) {
    回覆出席／交卷 —— 直接用登入身份（登入咗就知你係邊個）
    ============================================================ */
 function whoAmI(auth) {
-  if (auth?.id) {
-    const m = activeMembers().find(x => x.id === auth.id) || null;
-    return { id: auth.id, name: m?.name || auth.name || '', email: m?.email || '' };
-  }
-  return null;
+  const m = projectedMember(auth);
+  if (m?.id) return { id: m.id, name: m.name || auth?.name || '', email: m.email || '' };
+  return auth?.id ? { id: auth.id, name: auth.name || '', email: '' } : null;
 }
 
 function myRsvp(e, auth) {
@@ -561,8 +588,9 @@ function progressPage(auth) {
    一齊上後端，領袖／執委喺管理系統行事曆「請假」tab 覆核。
    ============================================================ */
 function absencePage(auth) {
-  const memberId = String(auth?.id || '');
-  const ymis = String(auth?.ymis || '');
+  const member = projectedMember(auth);
+  const memberId = String(member?.id || auth?.id || '');
+  const ymis = String(member?.ymis || auth?.ymis || '');
   const cn = absenceCounts();
   const mine = absencesOf(memberId, ymis).slice().sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
   return `<button class="btn btn-ghost btn-sm mb-12" type="button" data-open="#/home">${icon('chevronL', 14)} 返回</button>
@@ -782,7 +810,7 @@ function bind(auth) {
 /** 團員入口求救 —— 同管理系統走同一條 ADMIN「問題回報」（圖書館嗰張表）。 */
 async function openHubSOS(auth) {
   const { openMemberSOS } = await import('./lib/onboard.js');
-  const m = auth?.id ? activeMembers().find(x => x.id === auth.id) : null;
+  const m = projectedMember(auth);
   openMemberSOS({ troopId: code(), name: m?.name || auth?.name || '', contact: m?.email || '' });
 }
 

@@ -77,6 +77,8 @@ const MAX_DATA_BYTES = 1024 * 1024;        // 前端送上去嘅資料上限 1MB
 
 // Progress 業務 action；旅系統、登入閘門及其他整合不屬於呢個 API。
 const ACTIONS = new Set(['load', 'save', 'saveOtherBadge', 'reviewRequest', 'reviewLogRequest',
+  /* 一次 browser request、一個 Unified handler；絕不由 browser 逐列 loop 寫入。 */
+  'bulkReviewRequests',
   /* 團員入口只可走個人 bridge：由 server session 對出 YMIS，再叫後端只回／寫本人。 */
   'myProgress', 'addRequest', 'myRequests']);
 
@@ -157,6 +159,7 @@ async function signedUpstream(url, action, payload, key) {
 
 const STAFF_ROLES = new Set(['chief', 'leader', 'admin', 'exco', 'super']);
 const PERSONAL_ACTIONS = new Set(['myProgress', 'addRequest', 'myRequests']);
+const SIGNED_REVIEW_ACTIONS = new Set(['reviewRequest', 'reviewLogRequest', 'bulkReviewRequests']);
 
 /**
  * 將瀏覽器交來嘅 opaque session 對返旅團後端身份。
@@ -282,6 +285,44 @@ export default async function handler(req, res) {
         requested_date: String(data.requested_date || '').slice(0, 20),
         evidence: String(data.evidence || '').slice(0, 2000)
       };
+    } else if (action === 'bulkReviewRequests') {
+      const selected = Array.isArray(data.requests) ? data.requests : [];
+      if (!selected.length) {
+        return sendJson(res, 400, { ok: false, reason: 'no_selection', error: '請先選擇要批准的申請' });
+      }
+      if (selected.length > 100) {
+        return sendJson(res, 400, { ok: false, reason: 'too_many_requests', error: '每次最多批准 100 項' });
+      }
+      const seen = new Set();
+      const requests = [];
+      for (const row of selected) {
+        const kind = String(row?.kind || '');
+        const requestId = String(row?.request_id || row?.id || '').trim();
+        const key = `${kind}:${requestId}`;
+        if (!['req', 'log'].includes(kind) || !requestId || requestId.length > 160 || seen.has(key)) {
+          return sendJson(res, 400, { ok: false, reason: 'invalid_selection', error: '選取項目格式不正確或有重複' });
+        }
+        seen.add(key);
+        requests.push({ kind, request_id: requestId });
+      }
+      const confirmedDate = String(data.confirmed_date || '').trim();
+      if (confirmedDate && !/^\d{4}-\d{2}-\d{2}$/.test(confirmedDate)) {
+        return sendJson(res, 400, { ok: false, reason: 'invalid_date', error: '確認日期格式不正確' });
+      }
+      safeData = { requests, decision: 'approved', confirmed_date: confirmedDate,
+        review_note: String(data.review_note || '').slice(0, 500) };
+    } else if (SIGNED_REVIEW_ACTIONS.has(action)) {
+      const requestId = String(data.request_id || '').trim();
+      const decision = String(data.decision || '');
+      if (!requestId || requestId.length > 160 || !['approved', 'rejected'].includes(decision)) {
+        return sendJson(res, 400, { ok: false, reason: 'invalid_review', error: '審批資料不完整' });
+      }
+      const confirmedDate = String(data.confirmed_date || '').trim();
+      if (confirmedDate && !/^\d{4}-\d{2}-\d{2}$/.test(confirmedDate)) {
+        return sendJson(res, 400, { ok: false, reason: 'invalid_date', error: '確認日期格式不正確' });
+      }
+      safeData = { request_id: requestId, decision,
+        review_note: String(data.review_note || '').slice(0, 500), confirmed_date: confirmedDate };
     }
     /* Server-signed POST：同一 action、同一 /exec，只改用用途分隔 HMAC 驗證。
        body 同 query 各有一組簽名，兼容 GAS 302 redirect；兩粒 nonce 都由 GAS 消耗。 */
@@ -326,6 +367,21 @@ export default async function handler(req, res) {
       const signed = await signedPost();
       if (signed.tooBig) {
         return sendJson(res, 413, { ok: false, reason: 'sig_body_too_big', error: '個人進度請求太大' });
+      }
+      up = signed.resp; usedSignature = true;
+    } else if (SIGNED_REVIEW_ACTIONS.has(action)) {
+      /* Review is never authorised by API Key alone.  The HMAC protects this exact
+         request in transit, while Unified independently resolves the opaque user
+         session and checks progress:manage before touching any row. */
+      if (!signReady) {
+        return sendJson(res, 503, { ok: false, reason: 'no_sign_key', error: '伺服器未設定支部簽名 Key' });
+      }
+      const reviewerAuth = actor.super
+        ? { unified_super: true, on_behalf: 'sheep' }
+        : { sessionToken: firstStr(body.sessionToken) };
+      const signed = await signedPost(targetAction, { ...safeData, ...reviewerAuth });
+      if (signed.tooBig) {
+        return sendJson(res, 413, { ok: false, reason: 'sig_body_too_big', error: '審批請求太大' });
       }
       up = signed.resp; usedSignature = true;
     } else {

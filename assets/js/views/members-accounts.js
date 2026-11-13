@@ -21,7 +21,8 @@ import { load } from '../lib/store.js';
 import {
   ROLES, accounts, accountById, can, canChangePasswordOf, canManageRole,
   createAccountServer, changeOwnPassword, changeUsername, setAccountActive,
-  deleteAccountServer, resetAccountPasswordServer,
+  deleteAccountServer, resetAccountPasswordServer, restoreAccountServer,
+  openMemberAccount, accountForMember,
   current, currentRole, isMe, displayName, RESERVED_USERNAMES, TEMP_PASSWORD,
   setMemberIdentity, setMemberHubPassword, canClaimChief
 } from '../lib/auth.js';
@@ -55,7 +56,7 @@ const PASSWORD_RULES = [
    身份與帳號
    ============================================================ */
 export function identityTabView() {
-  const list = accounts();                     // 舊版個人帳戶（向下兼容）
+  const list = accounts().filter(a => a.source !== 'unified-users'); // 真正舊版本機帳戶先放兼容區
   const all = activeMembers();
   const cnt = k => all.filter(m => identityOf(m) === k).length;
   const c = chief();
@@ -94,8 +95,8 @@ export function identityTabView() {
     每個人都係名冊入面嘅<b>一條紀錄</b>，登入代號係佢自己嘅<b>電郵 / 自訂帳號 / YMIS</b>，
     密碼就係佢自己嗰個。要換權限＝喺「用戶名冊」改<b>身份</b>（換屆唔使開新帳戶、唔使夾密碼）。
     <br>團長：每個旅團<b>永遠只有一位</b>，最高權限，可以轉移。
-    <div class="xs mt-8 faint">⚠ 呢度<b>改密碼／改身份</b>之後，一定要撳頂部「<b>儲存到後端</b>」——
-    未寫入後端之前，對方喺第二部機（甚至第二個視窗）都<b>登唔到</b>。</div>`, 'brand')}
+    <div class="xs mt-8 faint">開戶／重設密碼／停用／復原會直接寫入同一 Unified Sheet 的 <b>Users</b>；
+    唔會先留一份只在呢部機可用嘅帳戶。</div>`, 'brand')}
   <div class="mt-16"></div>
 
   ${!c && canClaimChief() ? `<div class="note-box warn mb-16">${icon('alert', 15)}<div>
@@ -129,8 +130,11 @@ export function identityTabView() {
 function personRow(m) {
   const ident = identityOf(m);
   const accId = 'member:' + m.id;
-  const editable = canChangePasswordOf(accId);
-  const me = current()?.memberId === m.id;
+  const account = accountForMember(m);
+  const opened = !!account;
+  const active = opened && account.active !== false;
+  const editable = active && canChangePasswordOf(accId);
+  const me = current()?.memberId === m.id || (current()?.ymis && String(current().ymis) === String(m.ymis || ''));
   const login = loginIdOf(m);
   return `
   <div class="list-item">
@@ -138,11 +142,16 @@ function personRow(m) {
     <div class="li-main">
       <div class="li-t">${esc(m.name)} ${me ? '<span class="tag">你</span>' : ''}${m.role ? ` <span class="xs faint">${esc(m.role)}</span>` : ''}</div>
       <div class="li-s">登入 <b class="mono">${esc(login || '（未設定 —— 去「編輯」填電郵／YMIS）')}</b>
-        ${m.hubPw?.hash || m.hubPassword ? '' : ' · <span class="tag">未設密碼（首次 1234）</span>'}
-        ${m.hubPwUpdatedAt ? ` · ${esc(m.hubPwUpdatedAt)} 改過密碼` : ''}</div>
+        ${!opened ? ' · <span class="tag">未開戶</span>' : active
+          ? ' · <span class="tag" style="color:var(--ok)">Unified Users 已開戶</span>'
+          : ' · <span class="tag" style="background:var(--danger-bg);color:var(--danger)">已停用</span>'}</div>
     </div>
     <div class="row gap-4">
-      ${editable ? `<button class="btn btn-xs" data-mpw="${m.id}">${icon('key', 13)} 密碼</button>` : ''}
+      ${!opened && can('admin.accounts')
+        ? `<button class="btn btn-xs btn-primary" data-mopen="${m.id}">${icon('key', 13)} 直接開戶</button>` : ''}
+      ${opened && !active && can('admin.accounts')
+        ? `<button class="btn btn-xs" data-mrestore="${m.id}">${icon('refresh', 13)} 復原</button>` : ''}
+      ${editable ? `<button class="btn btn-xs" data-mpw="${m.id}">${icon('key', 13)} 重設密碼</button>` : ''}
       ${can('member.edit') ? `<button class="btn btn-xs btn-ghost" data-medit="${m.id}" title="編輯 / 改身份">${icon('edit', 13)}</button>` : ''}
       ${can('admin.chief') && ident !== 'chief' ? `<button class="btn btn-xs btn-ghost" data-mchief="${m.id}" title="設為團長（轉移）">${icon('sparkle', 13)}</button>` : ''}
     </div>
@@ -176,7 +185,26 @@ function accountRow(a) {
 export function mountAccountsTab(root, refresh) {
   root.querySelectorAll('[data-go]').forEach(el => el.addEventListener('click', () => go(el.dataset.go)));
 
-  /* 名冊個人操作（身份與帳號分頁）：密碼 / 編輯 / 設為團長 */
+  /* 名冊個人操作（身份與帳號分頁）：直接寫同一 Unified Users。 */
+  root.querySelectorAll('[data-mopen]').forEach(b => b.addEventListener('click', async () => {
+    const m = members().find(x => x.id === b.dataset.mopen);
+    if (!m) return;
+    if (!(await confirmDlg({ title: `為 ${esc(m.name)} 開戶？`, okText: '確定開戶',
+      message: `會直接寫入同一 Unified Sheet 的 <b>Users</b>；首次密碼係 <b>${TEMP_PASSWORD}</b>，登入後必須更改。` }))) return;
+    const result = await openMemberAccount(m.id);
+    toast(result.ok ? `已開戶：首次密碼 ${TEMP_PASSWORD}` : result.msg, result.ok ? 'ok' : 'err');
+    refresh();
+  }));
+  root.querySelectorAll('[data-mrestore]').forEach(b => b.addEventListener('click', async () => {
+    const m = members().find(x => x.id === b.dataset.mrestore);
+    const account = m && accountForMember(m);
+    if (!m || !account) return;
+    if (!(await confirmDlg({ title: `復原 ${esc(m.name)} 的帳戶？`, okText: '確定復原',
+      message: `會重新啟用 Unified Users 帳戶，並把首次密碼重設為 <b>${TEMP_PASSWORD}</b>。` }))) return;
+    const result = await restoreAccountServer(account, TEMP_PASSWORD);
+    toast(result.ok ? '帳戶已復原，首次登入要改密碼' : result.msg, result.ok ? 'ok' : 'err');
+    refresh();
+  }));
   root.querySelectorAll('[data-mpw]').forEach(b => b.addEventListener('click', async () => {
     const m = members().find(x => x.id === b.dataset.mpw);
     if (!m) return;
@@ -198,7 +226,7 @@ export function mountAccountsTab(root, refresh) {
     });
     if (!r) return;
     const res = await setMemberHubPassword(m.id, r);
-    toast(res.ok ? '密碼已設定 —— 記得撳頂部「儲存到後端」，否則第二部機登唔到' : res.msg, res.ok ? 'ok' : 'err');
+    toast(res.ok ? '密碼已直接重設到 Unified Users；對方首次登入要改密碼' : res.msg, res.ok ? 'ok' : 'err');
     refresh();
   }));
   root.querySelectorAll('[data-medit]').forEach(b => b.addEventListener('click', () => go('#/members/edit/' + b.dataset.medit)));
@@ -273,7 +301,10 @@ async function addAccountForm(role, refresh) {
         const memberId = el.querySelector('#q-member').value;
         if (!name) { el.querySelector('#q-err').textContent = '請填姓名'; el.querySelector('#q-err').style.display = 'block'; return false; }
         if (!memberId) { el.querySelector('#q-err').textContent = `請先在用戶頁把成員身份設為「${ROLES[role].name}」，再選擇該成員`; el.querySelector('#q-err').style.display = 'block'; return false; }
-        return { name, username, password, title: el.querySelector('#q-title').value.trim(), memberId };
+        const picked = list.find(m => String(m.id) === String(memberId));
+        return { name, username, email: picked?.email || username,
+          targetYmis: picked?.ymis || '', ymis: picked?.ymis || '',
+          password, title: el.querySelector('#q-title').value.trim(), memberId };
       } }]
   });
   if (!r) return;

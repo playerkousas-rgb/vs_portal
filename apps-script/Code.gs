@@ -3814,7 +3814,8 @@ function addProgressRequest(body) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = ss.getSheetByName('待批完成');
   if (!sheet) return { success: false, error: '搵唔到「待批完成」分頁（請先執行 initializeSheets）' };
-  var reqId = 'req_' + textOf(body.unit) + '_' + new Date().getTime() + '_' + Math.floor(Math.random() * 900 + 100);
+  var reqId = 'req_' + textOf(body.unit) + '_' + new Date().getTime() + '_'
+    + Utilities.getUuid().replace(/-/g, '');
   var reqDate = textOf(body.requested_date) || Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
   sheet.appendRow([reqId, ymis, textOf(body.name), itemId, textOf(body.item_name),
     reqDate, textOf(body.evidence), 'pending', new Date(), '', '', '', '']);

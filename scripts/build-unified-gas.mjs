@@ -92,6 +92,26 @@ portal = replaceOne(portal,
   '   批准＝寫入「進度追蹤」（同一個後端、兩個前端都即刻見到）',
   '   批准＝寫入「進度追蹤」（完整版與輕量版前端都即刻見到）',
   'legacy Progress approval comment');
+/* In Unified mode every incoming identity is rebuilt from pinned Users and checked
+ * against the complete server identity map before compatibility validation. Permit
+ * that authoritative projection to refresh an older compatibility DB role; this is
+ * not a browser-requested role edit. The vendored checkpoint stays byte-exact. */
+portal = replaceOne(portal,
+  '    var oldMap = oldMembers.rows, nextMap = nextMembers.rows;\n    var oldChiefs = [], nextChiefs = [], identityChanges = [];',
+  '    var oldMap = oldMembers.rows, nextMap = nextMembers.rows;\n    var delegatedIdentity = !!(writeAuth && writeAuth.delegated);\n    var oldChiefs = [], nextChiefs = [], identityChanges = [];',
+  'delegated identity projection marker');
+portal = replaceOne(portal,
+  '    if (chiefSetChanged && !claimingChief && !transferringChief) {',
+  '    if (!delegatedIdentity && chiefSetChanged && !claimingChief && !transferringChief) {',
+  'delegated chief projection refresh');
+portal = replaceOne(portal,
+  '      if (beforeRole !== afterRole) identityChanges.push({ id: mid, before: beforeRole, after: afterRole });',
+  '      if (!delegatedIdentity && beforeRole !== afterRole) identityChanges.push({ id: mid, before: beforeRole, after: afterRole });',
+  'delegated existing identity projection refresh');
+portal = replaceOne(portal,
+  "      if (newRole !== 'member') identityChanges.push({ id: newId, before: '', after: newRole });",
+  "      if (!delegatedIdentity && newRole !== 'member') identityChanges.push({ id: newId, before: '', after: newRole });",
+  'delegated new identity projection refresh');
 
 // Keep all baseline helpers global, but hand the four public entry points to the
 // unified router.  Internal menu callbacks that call initializeSheets() now

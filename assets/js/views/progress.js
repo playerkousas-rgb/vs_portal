@@ -22,7 +22,7 @@ import { pageHead, tabs, stat, empty, noteBox, kv, chipbar, progressBar } from '
 import {
   progressCfg, progressConfigured,
   loadRemote, loadItems, saveTicks, flattenItems, summarizeRemote, memberDetail,
-  reviewRequest, reviewLogRequest
+  reviewRequest, reviewLogRequest, bulkReviewRequests
 } from '../lib/progress.js';
 
 /* ---------- 狀態 ---------- */
@@ -38,6 +38,7 @@ let tickDate = '';        // 勾選日期
 let memberSearch = '';
 let reviewing = false;    // 審批中
 let reviewDate = '';      // 審批：確認日期（留空＝用申報日期）
+let reviewSelection = new Set(); // `${kind}:${request_id}`；只保存仍然 pending 的選擇
 
 export function title() { return '進度紀錄'; }
 export function refresh() { window.dispatchEvent(new CustomEvent('v82:refresh')); }
@@ -60,6 +61,7 @@ async function fetchAll({ silent = false } = {}) {
     return;
   }
   remote = { data: r.data || {}, at: new Date().toLocaleString('zh-HK', { hour12: false }) };
+  reconcileReviewSelection();
   const it = await loadItems();
   if (it.ok) catalog = flattenItems(it.data);
   loading = false;
@@ -339,6 +341,23 @@ async function openMemberDetail(ymis) {
 }
 
 /* ---------- 審批中心（批／拒團員申報 —— 批准＝寫入後端） ---------- */
+function reviewKey(kind, id) { return `${kind}:${String(id || '')}`; }
+function pendingReviewRows() {
+  const d = remote?.data || {};
+  return [
+    ...(d.pendingRequests || []).map(row => ({ kind: 'req', request_id: String(row.request_id || ''), row })),
+    ...(d.logRequests || []).map(row => ({ kind: 'log', request_id: String(row.request_id || ''), row }))
+  ].filter(item => item.request_id);
+}
+function reconcileReviewSelection() {
+  const valid = new Set(pendingReviewRows().map(item => reviewKey(item.kind, item.request_id)));
+  reviewSelection = new Set([...reviewSelection].filter(key => valid.has(key)));
+}
+function selectedReviewRows() {
+  const byKey = new Map(pendingReviewRows().map(item => [reviewKey(item.kind, item.request_id), item]));
+  return [...reviewSelection].map(key => byKey.get(key)).filter(Boolean);
+}
+
 function reviewView() {
   if (!progressConfigured()) return needSetup();
   if (!remote) return empty('check', '未讀取後端', '按右上「重新讀取」');
@@ -346,63 +365,96 @@ function reviewView() {
   const logReqs = remote.data.logRequests || [];
   const supported = remote.data.logRequestsSupported !== false;
   const canTick = can('progress.tick');
+  reconcileReviewSelection();
+  const allRows = pendingReviewRows();
+  const selected = selectedReviewRows();
+  const selectedReqs = selected.filter(item => item.kind === 'req').length;
+  const selectedLogs = selected.length - selectedReqs;
+  const allSelected = allRows.length > 0 && selected.length === allRows.length;
 
-  const actions = (kind, id) => canTick ? `
-    <div class="row gap-6">
-      <button class="btn btn-xs btn-primary" data-rev-kind="${kind}" data-rev-id="${esc(id)}"
-        data-rev-decision="approved" ${reviewing ? 'disabled' : ''}>批准</button>
-      <button class="btn btn-xs" data-rev-kind="${kind}" data-rev-id="${esc(id)}"
-        data-rev-decision="rejected" ${reviewing ? 'disabled' : ''}>拒絕</button>
-    </div>` : '<span class="xs faint">需要勾選權限</span>';
+  const rejectAction = (kind, id) => canTick ? `
+    <button class="btn btn-xs" data-rev-kind="${kind}" data-rev-id="${esc(id)}"
+      data-rev-decision="rejected" ${reviewing ? 'disabled' : ''}>拒絕</button>`
+    : '<span class="xs faint">需要審批權限</span>';
+  const selector = (kind, id, label) => canTick
+    ? `<input type="checkbox" data-review-select data-kind="${kind}" data-id="${esc(id)}"
+        aria-label="${esc(label)}" ${reviewSelection.has(reviewKey(kind, id)) ? 'checked' : ''}
+        ${reviewing ? 'disabled' : ''} style="width:18px;height:18px">`
+    : '<span class="faint">—</span>';
 
   if (!reqs.length && !logReqs.length) {
+    reviewSelection.clear();
     return `${noteBox('後端冇待批嘅申請 —— 團員喺進度前端申報之後，就會自動出現在呢度，唔使去其他系統。', 'ok')}
       <div class="row gap-8 mt-12"><button class="btn" data-act="reload">${icon('refresh', 15)} 重新讀取</button></div>`;
   }
 
   return `
   ${noteBox(canTick
-    ? '喺呢度<b>直接批</b>：批准＝即時寫入同一 Unified Sheet（進度追蹤／活動履歷），功能完整版支部前端同 BADGE 輕量前端都即刻見到。'
+    ? '先 <b>tick</b> 要處理嘅申請，再撳「<b>批量批准</b>」。瀏覽器只會送出<b>一次</b>審批 request；Unified 後端會先驗完整批次，再在同一次處理內寫入同一 Sheet。'
     : '你冇勾選／審批權限 —— 可以睇，但要領袖或執委先批得。',
     canTick ? 'ok' : 'warn')}
 
-  <div class="row-between wrap gap-12 mt-12 mb-12">
+  <div class="card mt-12 mb-16">
+    <div style="padding:14px 16px" class="row-between wrap gap-12">
+      <div class="row gap-12 wrap">
+        <label class="check" style="margin:0">
+          <input type="checkbox" id="rv-select-all" ${allSelected ? 'checked' : ''}
+            ${!canTick || reviewing || !allRows.length ? 'disabled' : ''}>
+          全選待批（${allRows.length}）
+        </label>
+        <span class="badge ${selected.length ? 'b-info' : 'b-grey'}" id="rv-selected-count">
+          已選 <b>${selected.length}</b> 項${selected.length ? `（進度 ${selectedReqs}、履歷 ${selectedLogs}）` : ''}
+        </span>
+        ${selected.length ? `<button class="btn btn-xs" data-act="clear-reviews" ${reviewing ? 'disabled' : ''}>清除選擇</button>` : ''}
+      </div>
+      <button class="btn btn-primary" data-act="bulk-approve"
+        ${!canTick || reviewing || !selected.length ? 'disabled' : ''}>${icon('check', 15)}
+        ${reviewing ? '批准中…' : `批量批准${selected.length ? `（${selected.length}）` : ''}`}</button>
+    </div>
+    <div style="padding:0 16px 14px" class="xs muted">
+      防手誤：未選不可送出；送出前會再列出數量確認。拒絕仍逐項確認，避免一批誤拒。
+    </div>
+  </div>
+
+  <div class="row-between wrap gap-12 mb-12">
     <div class="sm muted">待批完成 <b>${reqs.length}</b> 項 · 待批履歷 <b>${logReqs.length}</b> 條</div>
-    <div class="field" style="margin:0"><label class="label xs">確認日期（批准時用；留空＝用申報日期）</label>
+    <div class="field" style="margin:0"><label class="label xs">確認日期（批准進度時用；留空＝用申報日期）</label>
       <input class="input" id="rv-date" type="date" value="${esc(reviewDate)}" style="width:auto"></div>
   </div>
 
   <div class="card mb-16">
     <div class="card-head"><div><div class="card-title">待批完成（${reqs.length}）</div>
-      <div class="card-sub">團員自己申報嘅考核項目 —— 批准就會寫入「進度追蹤」</div></div></div>
+      <div class="card-sub">勾選後可連同履歷一次批量批准，寫入「進度追蹤」</div></div></div>
     ${reqs.length ? `<div class="scroll-x"><table class="table table-compact">
-      <thead><tr><th>團員</th><th>YMIS</th><th>項目</th><th>申報日期</th><th>證明／備註</th><th>申請時間</th><th class="right">審批</th></tr></thead>
+      <thead><tr><th class="center" style="width:54px">選取</th><th>團員</th><th>YMIS</th><th>項目</th><th>申報日期</th><th>證明／備註</th><th>申請時間</th><th class="right">其他操作</th></tr></thead>
       <tbody>${reqs.map(r => `<tr>
+        <td class="center">${selector('req', r.request_id, `選取 ${r.name || r.ymis || ''} ${r.item_name || r.item_id || ''}`)}</td>
         <td class="semibold sm">${esc(r.name || '')}</td>
         <td class="mono xs">${esc(r.ymis || '')}</td>
         <td class="sm">${esc(r.item_name || '')}<div class="xs faint mono">${esc(r.item_id || '')}</div></td>
         <td class="mono sm">${esc(r.requested_date || '')}</td>
         <td class="sm">${r.evidence ? `<a href="${esc(r.evidence)}" target="_blank" rel="noopener" class="xs">連結</a>` : '<span class="faint xs">—</span>'}</td>
         <td class="mono xs">${esc(r.created_at || '')}</td>
-        <td class="right">${actions('req', r.request_id)}</td>
+        <td class="right">${rejectAction('req', r.request_id)}</td>
       </tr>`).join('')}</tbody>
     </table></div>` : `<div style="padding:16px" class="sm faint">冇待批完成申請</div>`}
   </div>
 
   <div class="card">
     <div class="card-head"><div><div class="card-title">待批履歷（${logReqs.length}）</div>
-      <div class="card-sub">團員自行申報嘅服務／活動紀錄 —— 批准就會寫入「活動履歷」</div></div></div>
+      <div class="card-sub">勾選後可連同進度一次批量批准，寫入「活動履歷」</div></div></div>
     ${!supported ? `<div style="padding:16px" class="sm muted">後端未建「待批履歷」分頁 —— 去 Apps Script 執行一次 <code>initializeSheets</code> 就會有。</div>`
       : logReqs.length ? `<div class="scroll-x"><table class="table table-compact">
-      <thead><tr><th>種類</th><th>團員</th><th>日期</th><th>標題</th><th>角色／時數</th><th>申請時間</th><th class="right">審批</th></tr></thead>
+      <thead><tr><th class="center" style="width:54px">選取</th><th>種類</th><th>團員</th><th>日期</th><th>標題</th><th>角色／時數</th><th>申請時間</th><th class="right">其他操作</th></tr></thead>
       <tbody>${logReqs.map(r => `<tr>
+        <td class="center">${selector('log', r.request_id, `選取 ${r.name || r.ymis || ''} ${r.title || ''}`)}</td>
         <td class="sm">${esc(r.kind === 'edit' ? '修改' : '新增')}</td>
         <td class="semibold sm">${esc(r.name || '')}<div class="xs faint mono">${esc(r.ymis || '')}</div></td>
         <td class="mono sm">${esc(String(r.date || '').slice(0, 10))}</td>
         <td class="sm">${esc(r.title || '')}${r.detail ? `<div class="xs faint">${esc(String(r.detail).slice(0, 60))}</div>` : ''}</td>
         <td class="sm">${esc(r.role || '')}${r.hours ? ` · ${esc(r.hours)} 小時` : ''}</td>
         <td class="mono xs">${esc(r.created_at || '')}</td>
-        <td class="right">${actions('log', r.request_id)}</td>
+        <td class="right">${rejectAction('log', r.request_id)}</td>
       </tr>`).join('')}</tbody>
     </table></div>` : `<div style="padding:16px" class="sm faint">冇待批履歷申報</div>`}
   </div>`;
@@ -452,6 +504,18 @@ function settingsView() {
             ['進度紀錄', ticks == null ? '—' : `${ticks} 格`],
             ['上次讀取', remote ? esc(remote.at) : '—']
           ])}
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><div><div class="card-title">支部帳戶同樣喺呢張 Sheet</div>
+          <div class="card-sub">Users 係唯一帳戶權威；唔需要去另一套系統開戶</div></div></div>
+        <div style="padding:14px 16px" class="sm muted">
+          團長／領袖可以由功能完整版前端直接單戶或批量開戶、重設密碼及管理登入狀態；
+          操作會直接寫入同一 Unified Sheet 的 <b>Users</b>，首次密碼預設為 <b>1234</b>並強制更改。
+          <div class="row gap-8 mt-10 wrap">
+            <button class="btn btn-sm btn-primary" data-go="#/members">${icon('users', 15)} 直接開戶／批量開戶</button>
+            <button class="btn btn-sm" data-go="#/members/accounts">${icon('shield', 15)} 身份與帳號</button>
+          </div>
         </div>
       </div>
       <div class="card">
@@ -512,8 +576,11 @@ export function mount(root, params) {
   root.querySelectorAll('[data-go]').forEach(el => el.addEventListener('click', () => go(el.dataset.go)));
   /* 分頁掣由 main.js 統一綁（ui.js tabs() → [data-tabnav]），呢度唔使再綁 */
 
+  /* Route once through hashchange.  The old go()+immediate refresh double-render could
+     replace the clicked DOM before navigation cleanup, leaving a stale overlay above
+     the data-source page and making every control look dead. */
   root.querySelectorAll('[data-act="settings"]').forEach(b => b.addEventListener('click', () => {
-    tab = 'settings'; go('#/progress/settings'); refresh();
+    go('#/progress/settings');
   }));
   root.querySelectorAll('[data-act="reload"]').forEach(b => b.addEventListener('click', () => fetchAll()));
 
@@ -568,9 +635,67 @@ export function mount(root, params) {
     await fetchAll({ silent: true });
   });
 
-  /* 審批中心：批准 / 拒絕 */
+  /* 審批中心：先 tick，再用一個 backend request 批量批准；拒絕逐項確認。 */
   const rvDate = root.querySelector('#rv-date');
   if (rvDate) rvDate.addEventListener('change', () => { reviewDate = rvDate.value; });
+  root.querySelector('#rv-select-all')?.addEventListener('change', e => {
+    if (!can('progress.tick') || reviewing) return;
+    if (e.currentTarget.checked) {
+      pendingReviewRows().forEach(item => reviewSelection.add(reviewKey(item.kind, item.request_id)));
+    } else {
+      reviewSelection.clear();
+    }
+    refresh();
+  });
+  root.querySelectorAll('[data-review-select]').forEach(cb => cb.addEventListener('change', () => {
+    if (!can('progress.tick') || reviewing) return;
+    const key = reviewKey(cb.dataset.kind, cb.dataset.id);
+    if (cb.checked) reviewSelection.add(key); else reviewSelection.delete(key);
+    refresh();
+  }));
+  root.querySelector('[data-act="clear-reviews"]')?.addEventListener('click', () => {
+    if (reviewing) return;
+    reviewSelection.clear();
+    refresh();
+  });
+  root.querySelector('[data-act="bulk-approve"]')?.addEventListener('click', async () => {
+    if (!can('progress.tick')) { toast('你冇審批權限（要領袖或執委）', 'err'); return; }
+    if (reviewing) return;
+    reconcileReviewSelection();
+    const selected = selectedReviewRows();
+    if (!selected.length) { toast('請先 tick 至少一項待批申請', 'warn'); return; }
+    const reqCount = selected.filter(item => item.kind === 'req').length;
+    const logCount = selected.length - reqCount;
+    const preview = selected.slice(0, 8).map(item => {
+      const row = item.row || {};
+      return `<li><b>${esc(row.name || row.ymis || '')}</b> · ${esc(item.kind === 'log'
+        ? (row.title || '履歷申報') : (row.item_name || row.item_id || '進度申報'))}</li>`;
+    }).join('');
+    const yes = await modal({
+      title: `確定批量批准 ${selected.length} 項？`,
+      body: `<p class="sm">今次只會送出<b>一次</b>後端審批 request。Unified 後端會先驗齊整批，再寫入同一 Sheet。</p>
+        <div class="note-box mt-8"><div class="sm">
+          已選：<b>${selected.length}</b> 項（進度 ${reqCount}、履歷 ${logCount}）<br>
+          確認日期：<b>${esc(reviewDate || '各項申報日期')}</b>
+        </div></div>
+        <ul class="sm mt-12" style="padding-left:20px;line-height:1.7">${preview}</ul>
+        ${selected.length > 8 ? `<div class="xs faint">以及其餘 ${selected.length - 8} 項</div>` : ''}`,
+      actions: [{ label: '返回檢查', class: 'btn', value: false },
+        { label: `確定批准 ${selected.length} 項`, class: 'btn-primary', value: true }]
+    });
+    if (!yes) return;
+    reviewing = true; refresh();
+    const r = await bulkReviewRequests(selected.map(item => ({
+      kind: item.kind, request_id: item.request_id
+    })), { confirmedDate: reviewDate });
+    reviewing = false;
+    if (!r.ok) { toast(r.error || '批量審批失敗；選擇已保留，請核對後重試', 'err'); refresh(); return; }
+    const processed = Number(r.data?.processed ?? selected.length);
+    reviewSelection.clear();
+    toast(r.data?.message || `已批量批准 ${processed} 項 ✓`, 'ok');
+    await fetchAll({ silent: true });
+  });
+
   root.querySelectorAll('[data-rev-id]').forEach(b => b.addEventListener('click', async () => {
     if (!can('progress.tick')) { toast('你冇審批權限（要領袖或執委）', 'err'); return; }
     if (reviewing) return;

@@ -2270,6 +2270,8 @@ section('進度紀錄（讀 ＋ 勾 ＋ 寫，同一個後端）');
     if (body?.action === 'save') out = { ok: true, data: { processed: (body.data?.changes || []).length } };
     if (body?.action === 'reviewRequest') out = { ok: true, data: { success: true, message: body.data?.decision === 'approved' ? '已批准並寫入進度' : '已拒絕' } };
     if (body?.action === 'reviewLogRequest') out = { ok: true, data: { success: true, message: '已批准並寫入活動履歷', record_id: 'LOG_TEST' } };
+    if (body?.action === 'bulkReviewRequests') out = { ok: true, data: { success: true,
+      processed: body.data?.requests?.length || 0, message: `已批量批准 ${body.data?.requests?.length || 0} 項` } };
     return { ok: true, status: 200, text: async () => JSON.stringify(out), json: async () => out };
   };
 
@@ -2305,6 +2307,29 @@ section('進度紀錄（讀 ＋ 勾 ＋ 寫，同一個後端）');
         && !sv.querySelector('[data-act^="door-"]'));
     ok('Progress client 不再匯出入口狀態或開關 helper',
       typeof progressLib.getLinkState === 'undefined' && typeof progressLib.setLocalLogin === 'undefined');
+    ok('資料來源頁講明支部可直接用同一 Unified Users 開戶，並有可操作入口',
+      /Users/.test(sv.textContent) && /直接開戶/.test(sv.textContent)
+        && !!sv.querySelector('[data-go="#/members"]')
+        && !!sv.querySelector('[data-go="#/members/accounts"]'));
+
+    const settingsLoadsBefore = calls.filter(c => c.body?.action === 'load').length;
+    doc.getElementById('view').querySelector('[data-act="reload"]')?.click();
+    await new Promise(r => setTimeout(r, 220));
+    ok('資料來源頁「重新讀取」真係可按（唔係成頁被遮罩鎖死）',
+      calls.filter(c => c.body?.action === 'load').length > settingsLoadsBefore);
+    doc.getElementById('view').querySelector('[data-go="#/progress/overview"]')?.click();
+    await new Promise(r => setTimeout(r, 120));
+    const staleOverlay = doc.createElement('div');
+    staleOverlay.className = 'overlay';
+    doc.body.appendChild(staleOverlay);
+    doc.getElementById('view').querySelector('[data-act="settings"]')?.click();
+    await new Promise(r => setTimeout(r, 150));
+    ok('由進度頁開資料來源會清走舊遮罩，頁面控制項保持可按',
+      window.location.hash === '#/progress/settings' && !doc.body.contains(staleOverlay)
+        && !!doc.getElementById('view').querySelector('[data-act="reload"]'));
+    doc.getElementById('view').querySelector('[data-go="#/members/accounts"]')?.click();
+    await new Promise(r => setTimeout(r, 120));
+    ok('資料來源頁可直接打開支部「身份與帳號」', window.location.hash === '#/members/accounts');
 
     window.location.hash = '#/progress';
     window.dispatchEvent(new window.HashChangeEvent('hashchange'));
@@ -2378,30 +2403,46 @@ section('進度紀錄（讀 ＋ 勾 ＋ 寫，同一個後端）');
       /待批完成/.test(rv.textContent) && /李小明/.test(rv.textContent) && /服務一次/.test(rv.textContent));
     ok('審批中心列出待批履歷（服務紀錄）',
       /待批履歷/.test(rv.textContent) && /公益賣旗/.test(rv.textContent));
-    ok('審批中心有批准／拒絕掣', !!rv.querySelector('[data-rev-id][data-rev-decision="approved"]')
-      && !!rv.querySelector('[data-rev-id][data-rev-decision="rejected"]'));
+    ok('審批中心每列有 tick、全選、批量批准及逐項拒絕',
+      rv.querySelectorAll('[data-review-select]').length === 2
+        && !!rv.querySelector('#rv-select-all')
+        && !!rv.querySelector('[data-act="bulk-approve"]')
+        && !!rv.querySelector('[data-rev-id][data-rev-decision="rejected"]')
+        && !rv.querySelector('[data-rev-id][data-rev-decision="approved"]'));
+    ok('未選任何項目時批量批准 disabled（防呆）', rv.querySelector('[data-act="bulk-approve"]')?.disabled === true);
     ok('總覽／分頁標籤顯示待批數（1＋1）', /審批中心（2）/.test(doc.getElementById('view').textContent)
       || /審批中心（2）/.test(doc.body.textContent));
 
-    const apprBtn = doc.getElementById('view').querySelector('[data-rev-kind="req"][data-rev-decision="approved"]');
-    apprBtn.click();
+    const selectAll = doc.getElementById('view').querySelector('#rv-select-all');
+    selectAll.checked = true;
+    selectAll.dispatchEvent(new window.Event('change', { bubbles: true }));
+    await new Promise(r => setTimeout(r, 100));
+    const bulkBtn = doc.getElementById('view').querySelector('[data-act="bulk-approve"]');
+    ok('全選後顯示已選 2 項，批量批准先亮起',
+      !bulkBtn.disabled && /已選\s*2\s*項/.test(doc.getElementById('view').textContent));
+    bulkBtn.click();
     await new Promise(r => setTimeout(r, 200));
     const dlg = () => doc.querySelector('.modal, [role="dialog"]');
-    ok('批准之前一定要撳「確定」（防呆：唔會一撳就寫入）',
-      !calls.some(c => c.body?.action === 'reviewRequest')
-      && [...doc.querySelectorAll('.modal button, [role="dialog"] button')].some(b => /確定批准/.test(b.textContent || '')));
-    ok('確認框列出團員同項目（畀你核對）',
-      /李小明/.test(dlg()?.textContent || '') && /服務一次/.test(dlg()?.textContent || ''));
+    ok('批量批准送出前一定要再確認，未確認不會寫後端',
+      !calls.some(c => c.body?.action === 'bulkReviewRequests')
+      && [...doc.querySelectorAll('.modal button, [role="dialog"] button')]
+        .some(b => /確定批准 2 項/.test(b.textContent || '')));
+    ok('批量確認框列出數量、進度／履歷拆分及所選內容',
+      /2 項/.test(dlg()?.textContent || '') && /進度 1、履歷 1/.test(dlg()?.textContent || '')
+        && /李小明/.test(dlg()?.textContent || '') && /公益賣旗/.test(dlg()?.textContent || ''));
     [...doc.querySelectorAll('.modal button, [role="dialog"] button')]
-      .find(b => /確定批准/.test(b.textContent || ''))?.click();
-    await new Promise(r => setTimeout(r, 300));
-    const revCall = calls.filter(c => c.body?.action === 'reviewRequest').pop();
-    ok('批准會 POST /api/progress action=reviewRequest（帶 request_id／decision）',
-      revCall?.body?.data?.request_id === 'RQ_1' && revCall?.body?.data?.decision === 'approved',
-      JSON.stringify(revCall?.body?.data || {}));
-    ok('審批 browser payload 只帶 session，不會取得或傳送 API Key',
-      revCall?.body?.apikey === undefined && revCall?.body?.backend === undefined
-        && !!revCall?.body?.sessionToken);
+      .find(b => /確定批准 2 項/.test(b.textContent || ''))?.click();
+    await new Promise(r => setTimeout(r, 350));
+    const bulkCalls = calls.filter(c => c.body?.action === 'bulkReviewRequests');
+    const bulkCall = bulkCalls.at(-1);
+    ok('兩項批准只 POST 一次 bulkReviewRequests，browser 不會逐列寫',
+      bulkCalls.length === 1 && bulkCall?.body?.data?.requests?.length === 2
+        && bulkCall.body.data.requests.some(x => x.kind === 'req' && x.request_id === 'RQ_1')
+        && bulkCall.body.data.requests.some(x => x.kind === 'log' && x.request_id === 'LR_1'),
+      JSON.stringify(bulkCall?.body?.data || {}));
+    ok('批量審批 browser payload 只帶 session，不會取得或傳送 API Key',
+      bulkCall?.body?.apikey === undefined && bulkCall?.body?.backend === undefined
+        && !!bulkCall?.body?.sessionToken);
 
     const rejBtn = doc.getElementById('view').querySelector('[data-rev-kind="log"][data-rev-decision="rejected"]');
     rejBtn.click();

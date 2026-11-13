@@ -374,9 +374,76 @@ export async function loginMember(ymis, password) {
 
 /* 團長查詢交畀 model.js（單一來源）：chief() / hasChief() */
 
-/** 後台開戶（單個／批量）：設首次密碼 1234，要改 */
+/** 同一 Unified Users 投影入面，搵返名冊成員嘅登入帳戶。 */
+export function accountForMember(memberOrId) {
+  const m = typeof memberOrId === 'object' ? memberOrId : find('members', memberOrId);
+  if (!m) return null;
+  const ymis = String(m.ymis || '').trim().toLowerCase();
+  const email = String(m.email || '').trim().toLowerCase();
+  const found = collection('accounts').find(a => {
+    if (!a || a.source !== 'unified-users') return false;
+    return String(a.memberId || '') === String(m.id || '')
+      || (!!ymis && String(a.ymis || '').trim().toLowerCase() === ymis)
+      || (!!email && String(a.email || '').trim().toLowerCase() === email);
+  });
+  if (found) return found;
+  return m.hasAccount ? { id: `unified:${m.ymis || m.id}`, memberId: m.id,
+    ymis: m.ymis || '', email: m.email || '', active: m.accountStatus !== 'inactive',
+    status: m.accountStatus || 'active', source: 'unified-users' } : null;
+}
+export function memberHasAccount(memberOrId) { return !!accountForMember(memberOrId); }
+
+/**
+ * 後台單戶／批量開戶：browser 一次送晒，Unified handler 在同一 Users Sheet
+ * 批量處理。呢個唔係逐人 fetch loop，亦唔會建立第二套 Portal identity。
+ */
+export async function openMemberAccounts(memberIds, { password = TEMP_PASSWORD } = {}) {
+  const ids = [...new Set((Array.isArray(memberIds) ? memberIds : []).map(String).filter(Boolean))];
+  const list = ids.map(id => find('members', id)).filter(Boolean);
+  if (!list.length) return { ok: false, msg: '請先選擇要開戶嘅用戶' };
+  const unopened = list.filter(m => !memberHasAccount(m));
+  if (!unopened.length) return { ok: false, msg: '所選用戶已經開戶' };
+  const s = getSession();
+  const expiresAt = Number(s?.sessionExpiresAt || 0);
+  if (s?.sessionToken && Number.isFinite(expiresAt) && expiresAt > Date.now() && !s.setupKey) {
+    try {
+      const remote = await import('./remote.js');
+      if (remote.remoteConfigured?.() && remote.hasPending?.()) {
+        const pushed = await remote.saveToBackend({ policy: 'ask', silent: true });
+        if (!pushed?.ok) return { ok: false, msg: pushed?.error || '未能先把新用戶儲存到後端' };
+      }
+      const users = unopened.map(m => ({
+        targetYmis: String(m.ymis || ''), ymis: String(m.ymis || ''),
+        name: String(m.name || ''), email: String(m.email || ''), branch: String(m.branch || ''),
+        role: String(m.identity || 'member'), password: String(password || TEMP_PASSWORD)
+      }));
+      const called = await callBranchBackend({ action: 'authOpenAccounts', unit: currentUnit(),
+        users, ...backendAuthPayload(s) });
+      const data = called.data || {};
+      if (!called.ok || data.success === false) {
+        return { ok: false, msg: data.error || called.error || '開戶失敗',
+          created: Number(data.created || 0), failed: Number(data.failed || users.length), results: data.results || [] };
+      }
+      return { ok: true, created: Number(data.created || users.length), failed: Number(data.failed || 0),
+        results: data.results || [], refreshed: await refreshAfterAccountMutation() };
+    } catch (err) {
+      return { ok: false, msg: String(err?.message || err || '開戶失敗') };
+    }
+  }
+  /* 開團／舊本機 fixture 保留兼容；正式支部一律走上面的 Unified Users。 */
+  let created = 0;
+  for (const m of unopened) {
+    const result = await setMemberHubPassword(m.id, password, { mustChange: true });
+    if (result.ok) created++;
+  }
+  return { ok: created > 0, created, failed: unopened.length - created,
+    msg: created ? '' : '開戶失敗' };
+}
+
+/** 後台開一個帳戶（批量版本見 openMemberAccounts）。 */
 export async function openMemberAccount(memberId) {
-  return setMemberHubPassword(memberId, TEMP_PASSWORD, { mustChange: true });
+  const result = await openMemberAccounts([memberId], { password: TEMP_PASSWORD });
+  return result.ok ? result : { ...result, msg: result.msg || result.results?.[0]?.error || '開戶失敗' };
 }
 
 export function applyAccount({ ymis, name, email = '', note = '' }) {
@@ -488,6 +555,12 @@ export async function setMemberHubPassword(memberId, newPassword, { mustChange =
   /* 正式後端模式不可先在 browser 寫 hash 再靠整庫同步。先把新名冊 row 儲到
      server（如有），再由專用 action 固定操作者／目標並寫 PBKDF2。 */
   if (session?.sessionToken && Number.isFinite(expiresAt) && expiresAt > Date.now() && !session.setupKey) {
+    /* Users 未有帳戶時，「設定密碼」就係直接開戶；由同一批量 endpoint
+       建立 pinned BADGE Users row，唔會先在 browser 造一份 hash。 */
+    if (!memberHasAccount(m)) {
+      const opened = await openMemberAccounts([m.id], { password: String(newPassword) });
+      return opened.ok ? { ok: true, refreshed: opened.refreshed, created: true } : opened;
+    }
     try {
       const remote = await import('./remote.js');
       if (remote.remoteConfigured?.() && remote.hasPending?.()) {

@@ -191,6 +191,15 @@ try {
       });
       out.steps.push({ op: 'addStaff', id: rec.id, pending: pendingN(), pendingAccounts: remote.pendingAccounts?.() ?? 0 });
     }
+    /* 「用戶與身份」一次為多位名冊成員開 Unified Users 帳戶。 */
+    if (step.op === 'openAccounts') {
+      const wanted = new Set((step.ymis || []).map(String));
+      const ids = store.load().members.filter(m => wanted.has(String(m.ymis || ''))).map(m => m.id);
+      const r = await auth.openMemberAccounts(ids, { password: String(step.pw || '1234') });
+      out.steps.push({ op: 'openAccounts', ok: !!r.ok, created: Number(r.created || 0),
+        failed: Number(r.failed || 0), msg: r.msg || '', pending: pendingN(),
+        pendingAccounts: remote.pendingAccounts?.() ?? 0, state: remote.syncState().state });
+    }
     /* 「用戶與身份」幫佢設登入密碼（＝名冊 hubPw）。id 可以用 '@last' ＝ 頭先開嗰個 */
     if (step.op === 'setHubPw') {
       const ms = store.load().members;

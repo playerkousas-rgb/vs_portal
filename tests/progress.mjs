@@ -180,6 +180,25 @@ ok('browser 亦不可把同一 GAS 改成 /dev',
   ok('load 用 GET 打 ?action=load&apikey=…', c.method === 'GET' && c.target.includes('action=load') && c.target.includes('apikey=' + API_KEY), c.target.slice(0, 80));
   ok('回傳 members / progress 原樣（前端要嚟畫進度）',
     r.body.data?.members?.[0]?.name === '陳大文' && !!r.body.data?.progress?.['1234567890']?.['L1-ACT-01']);
+
+  /* Response normalization must preserve a successful, header-only Progress tab. */
+  upstreamJson = {
+    success: true,
+    members: [{ ymis: MEMBER_YMIS, name: MEMBER_NAME }],
+    progress: {}, flatProgress: {}, pendingRequests: [], otherBadges: {}, logs: [], logRequests: []
+  };
+  const empty = await call({ action: 'load', unit: '0082' });
+  ok('同一後端有正常成員但進度分頁為空，proxy 仍回 ok:true',
+    empty.statusCode === 200 && empty.body?.ok === true
+      && empty.body?.data?.members?.[0]?.ymis === MEMBER_YMIS
+      && Object.keys(empty.body?.data?.progress || {}).length === 0,
+    JSON.stringify(empty.body));
+  upstreamJson = {
+    success: true,
+    members: [{ ymis: MEMBER_YMIS, name: MEMBER_NAME }],
+    progress: { [MEMBER_YMIS]: { 'L1-ACT-01': { date: '2026-09-01', confirmer: '團長' } } },
+    pendingRequests: [], otherBadges: {}, logs: [], logRequests: []
+  };
 }
 
 /* ---------- 3. save（勾進度） ---------- */

@@ -93,7 +93,8 @@ TROOP_0123_PROGRESSCATALOG
 - BADGE 經同一 Unified GAS 讀寫；
 - 兩邊用同一 canonical YMIS 對人；
 - 考核項目固定讀 app 內建 `data/progress/items.json`，不是第二資料後端；
-- 「進度 → 接駁狀態」是唯讀頁，沒有 `/exec`、API Key 或 catalog URL 輸入欄；
+- 「進度 → 資料來源」只交代同一 Unified Sheet 及實際讀取結果，沒有 `/exec`、API Key、catalog URL 或前端互相接駁控制；
+- `進度追蹤` 分頁為空是正常成功結果，顯示 0 項而不是「連線失敗」；
 - 審批 `reviewRequest`／`reviewLogRequest` 寫回同一張 Sheet。
 
 ## 6. 首次驗收

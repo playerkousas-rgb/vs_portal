@@ -1881,8 +1881,9 @@ console.log('\n▌跨前端身份 key（同一 Unified Sheet，以 canonical YMI
   await new Promise(r => setTimeout(r, 80));
   const pv = doc.getElementById('view').textContent;
   ok('進度頁講明管理、進度及 BADGE 共用同一 Unified GAS／Sheet',
-    /管理系統/.test(pv) && /BADGE/.test(pv) && /同一 Unified GAS／Sheet/.test(pv));
-  ok('進度頁有唯讀「接駁狀態」入口', !!doc.querySelector('[data-act="settings"]'));
+    /管理、進度及 BADGE 共用一支 GAS/.test(pv) && /同一 Unified Sheet/.test(pv));
+  ok('進度頁有唯讀「資料來源」入口',
+    !!doc.querySelector('[data-act="settings"]') && /資料來源/.test(pv));
   ok('進度頁只列 server Registry 三項，不叫 browser 執行 showApiKey 貼 Key',
     /TROOP_0082_NAME/.test(pv) && /TROOP_0082_BACKEND/.test(pv) && /TROOP_0082_APIKEY/.test(pv)
       && !/initializeSheets/.test(pv) && !/showApiKey/.test(pv));
@@ -2198,7 +2199,7 @@ section('欄位設定（每頁自己改）');
 section('進度紀錄（讀 ＋ 勾 ＋ 寫，同一個後端）');
 {
   const vp = await import('../assets/js/views/progress.js');
-  const { progressCfg } = await import('../assets/js/lib/progress.js');
+  const { progressCfg, getLinkState } = await import('../assets/js/lib/progress.js');
   const units = await import('../assets/js/lib/units.js');
   const realFetch = globalThis.fetch;
   const calls = [];
@@ -2222,6 +2223,7 @@ section('進度紀錄（讀 ＋ 勾 ＋ 寫，同一個後端）');
   const CATALOG = { badges: [{ id: 'L1', name: '會員章', icon: '🥇', segments: [{ code: 'L1-ACT', name: '活動', items: [
     { id: 'L1-ACT-01', name: '參加六次團集會' }, { id: 'L1-ACT-02', name: '服務一次' }
   ] }] }] };
+  let loadFixture = VS;
   globalThis.fetch = async (url, init = {}) => {
     const body = init.body ? JSON.parse(init.body) : null;
     calls.push({ url: String(url), body });
@@ -2243,7 +2245,8 @@ section('進度紀錄（讀 ＋ 勾 ＋ 寫，同一個後端）');
         text: async () => text, json: async () => JSON.parse(text) };
     }
     let out = { ok: false, error: 'unknown_mock' };
-    if (body?.action === 'load') out = { ok: true, serverSideKey: false, data: VS };
+    if (body?.action === 'load') out = { ok: true, serverSideKey: true, data: loadFixture };
+    if (body?.action === 'getLinkState') out = { ok: false, reason: 'state_probe_failed', error: '入口狀態測試失敗' };
     if (body?.action === 'save') out = { ok: true, data: { processed: (body.data?.changes || []).length } };
     if (body?.action === 'reviewRequest') out = { ok: true, data: { success: true, message: body.data?.decision === 'approved' ? '已批准並寫入進度' : '已拒絕' } };
     if (body?.action === 'reviewLogRequest') out = { ok: true, data: { success: true, message: '已批准並寫入活動履歷', record_id: 'LOG_TEST' } };
@@ -2270,15 +2273,22 @@ section('進度紀錄（讀 ＋ 勾 ＋ 寫，同一個後端）');
     window.dispatchEvent(new window.HashChangeEvent('hashchange'));
     await new Promise(r => setTimeout(r, 150));
     const sv = doc.getElementById('view');
-    ok('接駁狀態頁講明三項與 BADGE 相同及 API Key 不是身份',
+    ok('資料來源頁講明三項與 BADGE 相同及 API Key 不是身份',
       /BADGE/.test(sv.textContent) && /NAME/.test(sv.textContent)
         && /BACKEND/.test(sv.textContent) && /APIKEY/.test(sv.textContent)
         && /不是用戶身份|唔係用戶身份/.test(sv.textContent));
     ok('接通後仍無 browser 後端／Key／另存設定欄',
       !sv.querySelector('#p-backend') && !sv.querySelector('#p-key') && !sv.querySelector('[data-act="save-cfg"]'));
-    ok('未有旅系統時本地入口係正常主入口，而且不提供關閉按鈕',
-      /未有旅系統/.test(sv.textContent) && /正常主入口/.test(sv.textContent)
-        && !sv.querySelector('[data-act="door-close"]'));
+    ok('資料來源頁只按 Progress action 顯示結果，不再呈現入口門況或控制',
+      /同一支 GAS 按 action 讀同一張 Sheet 嘅不同分頁/.test(sv.textContent)
+        && !/本地入口|入口狀態/.test(sv.textContent)
+        && !sv.querySelector('[data-act^="door-"]'));
+
+    /* 獨立入口狀態 action 可以失敗；呢個結果唔可以覆蓋 Progress load。 */
+    const stateFailure = await getLinkState();
+    ok('入口狀態查詢失敗係獨立結果',
+      stateFailure.ok === false && stateFailure.reason === 'state_probe_failed');
+    const stateProbeCount = calls.filter(c => c.body?.action === 'getLinkState').length;
 
     window.location.hash = '#/progress';
     window.dispatchEvent(new window.HashChangeEvent('hashchange'));
@@ -2288,6 +2298,9 @@ section('進度紀錄（讀 ＋ 勾 ＋ 寫，同一個後端）');
       !!loadCall && /api\/progress$/.test(loadCall.url)
         && loadCall.body.unit === '0082' && !loadCall.body.backend && !loadCall.body.apikey,
       JSON.stringify(loadCall?.body || {}));
+    ok('入口狀態查詢失敗不影響 Progress action 成功',
+      calls.some(c => c.body?.action === 'load')
+        && calls.filter(c => c.body?.action === 'getLinkState').length === stateProbeCount);
 
     const view = () => doc.getElementById('view');
     window.location.hash = '#/progress';
@@ -2393,12 +2406,34 @@ section('進度紀錄（讀 ＋ 勾 ＋ 寫，同一個後端）');
       !catCall && calls.some(c => /data\/progress\/items\.json/.test(c.url)),
       JSON.stringify(calls.map(c => c.body?.action || c.url)));
 
-    /* 測試連線（唔再需要 —— 儲存設定後撳「重新讀取」就係實測） */
+    /* 同一 Sheet 有正常成員、但「進度追蹤」分頁只有表頭：load 仍然成功並顯示 0。 */
+    loadFixture = {
+      members: VS.members, progress: {}, flatProgress: {}, pendingRequests: [], otherBadges: {},
+      logs: [], logRequests: [], logsSupported: true, logRequestsSupported: true
+    };
+    window.location.hash = '#/progress';
+    window.dispatchEvent(new window.HashChangeEvent('hashchange'));
+    await new Promise(r => setTimeout(r, 120));
+    view().querySelector('[data-act="reload"]')?.click();
+    await new Promise(r => setTimeout(r, 220));
+    ok('空進度分頁仍顯示已成功讀到正常成員及 0 格進度',
+      /已成功讀到同一 Unified Sheet 嘅 2 位成員/.test(view().textContent)
+        && /目前有 0 格進度紀錄/.test(view().textContent)
+        && /連線正常/.test(view().textContent));
+    ok('空進度資料不會顯示連線失敗',
+      !/讀唔到後端|連線失敗/.test(view().textContent));
+    ok('入口狀態失敗後再讀空進度，UI 仍沒有自動查入口狀態',
+      calls.filter(c => c.body?.action === 'getLinkState').length === stateProbeCount);
+
+    /* 測試連線（唔再需要 —— 「重新讀取同一 Sheet」就係實際 Progress action） */
     window.location.hash = '#/progress/settings';
     window.dispatchEvent(new window.HashChangeEvent('hashchange'));
     await new Promise(r => setTimeout(r, 120));
     ok('進度設定頁已經冇「測試連線」掣（清理診斷嘢）',
       !doc.getElementById('view').querySelector('[data-act="test"]'));
+    ok('資料來源頁以實際空 load 顯示成功及 0 格',
+      /讀取結果\s*Progress action 成功/.test(doc.getElementById('view').textContent)
+        && /進度紀錄\s*0 格/.test(doc.getElementById('view').textContent));
 
     ok('進度頁冇咗外連模式（唔再開任何其他系統）',
       !/外連模式/.test(doc.getElementById('view').textContent));

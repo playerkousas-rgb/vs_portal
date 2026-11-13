@@ -61,7 +61,7 @@ TROOP_0081_PROGRESSAPIKEY
 TROOP_0081_PROGRESSCATALOG
 ```
 
-也不要叫使用者在「進度 → 接駁狀態」輸入後端或 API Key；該頁是唯讀狀態頁。
+也不要叫使用者在「進度 → 資料來源」輸入後端或 API Key；該頁只顯示同一 Unified Sheet 及實際 Progress action 讀取結果。空的「進度追蹤」分頁會正常顯示 0 項。
 
 ## 公開旅團名單（可選 Git metadata）
 

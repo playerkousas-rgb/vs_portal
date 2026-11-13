@@ -226,6 +226,42 @@ ok('initializer preserves existing progress row', node.sheets.get('進度追蹤'
 ok('initializer records isolated unified version', node.props.get('UNIFIED_GS_INITIALIZED_VERSION') === 'v9.6-u1-test');
 ok('initializer adds administrative tabs without replacing progress baseline', node.sheets.has('資料表') && node.sheets.has('Users') && node.sheets.has('活動履歷'));
 
+/* One action dispatcher reads the different Progress tabs from this same active Sheet. */
+node.sheets.get('其他獎章').appendRow(['9000000001', 'OB-1', '急救章', '2026-02-01', 'CERT-1', '', '2026-02-01']);
+node.sheets.get('待批完成').appendRow(['REQ-1', '9000000002', '中央領袖', 'L1-PENDING', '待批項目', '2026-02-02', '', 'pending', '2026-02-03']);
+node.sheets.get('活動履歷').appendRow(['LOG-1', 'service', '9000000001', '中央團員', '2026-02-04', '社區服務', '組員', '2', '', '', 'leader', '2026-02-05', '2026-02-05']);
+node.sheets.get('待批履歷').appendRow(['LOGREQ-1', 'new', '', 'service', '9000000002', '中央領袖', '2026-02-06', '待批服務', '組員', '1', '', '', 'pending', '2026-02-07', '', '', '']);
+const unifiedLoadRequest = signedRequest('load', { unit: '0082' });
+const unifiedLoad = node.post(unifiedLoadRequest.body, unifiedLoadRequest.parameter);
+ok('one Unified load action returns normal members and progress from the same active Sheet',
+  unifiedLoad.success === true
+    && unifiedLoad.members.some(member => member.ymis === '9000000001')
+    && unifiedLoad.progress['9000000001']?.['L1-KEEP']?.note === 'must survive',
+  JSON.stringify(unifiedLoad));
+ok('the same Unified load action reads each Progress tab instead of treating tabs as separate backends',
+  unifiedLoad.otherBadges['9000000001']?.['OB-1']?.name === '急救章'
+    && unifiedLoad.pendingRequests.some(request => request.request_id === 'REQ-1')
+    && unifiedLoad.logs.some(log => log.record_id === 'LOG-1')
+    && unifiedLoad.logRequests.some(request => request.request_id === 'LOGREQ-1'),
+  JSON.stringify(unifiedLoad));
+
+/* A header-only progress tab is a successful zero-record state. A failed, independent
+   entry-state probe cannot change the later Progress action result. */
+const emptyProgressNode = makeNode();
+const emptyInitialized = emptyProgressNode.context.initializeSheets();
+emptyProgressNode.sheets.get('成員名單').appendRow(['9000000099', '空進度團員', '2026-01-01', 'VS', 'empty@example.test']);
+const failedEntryProbe = emptyProgressNode.post({ action: 'getLinkState', sig: 'invalid' });
+const emptyLoadRequest = signedRequest('load', { unit: '0082' });
+const emptyLoad = emptyProgressNode.post(emptyLoadRequest.body, emptyLoadRequest.parameter);
+ok('header-only progress tab returns success, a normal member, and zero progress records',
+  emptyInitialized.success === true && emptyLoad.success === true
+    && emptyLoad.members.some(member => member.ymis === '9000000099')
+    && Object.keys(emptyLoad.progress || {}).length === 0,
+  JSON.stringify(emptyLoad));
+ok('failed entry-state query does not affect a successful Progress load action',
+  failedEntryProbe.success === false && emptyLoad.success === true,
+  `${JSON.stringify(failedEntryProbe)} / ${JSON.stringify(emptyLoad)}`);
+
 const forgot = node.post({ action: 'authForgotPassword', unit: '0082', email: 'admin@example.com' });
 const forgotMailBody = String(node.mail[0]?.[0]?.body || '');
 const forgotCode = (/重設碼：(\d{8})/.exec(forgotMailBody) || [])[1] || '';

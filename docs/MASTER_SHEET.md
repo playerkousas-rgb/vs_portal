@@ -59,12 +59,13 @@ API Key 只由 server Registry 注入，不能取代 session。browser 自報 ro
 
 ## 5. 進度
 
-- 管理系統經同源 `/api/progress` 呼叫同一 Unified GAS。
-- BADGE 亦讀寫同一 Sheet。
+- 管理系統經同源 `/api/progress` 呼叫同一 Unified GAS；BADGE 亦用同一 `/exec` 與 API Key 讀寫同一 Sheet。
+- action dispatcher 直接選取 `進度追蹤`、`成員名單` 等分頁；分頁不是另一個後端或另一段接駁。
 - staff 可管理全團；member action 由 session 固定本人 YMIS。
 - 審批 `reviewRequest`／`reviewLogRequest` 寫回同一張 Sheet。
 - 考核項目固定讀同源 `data/progress/items.json`；不是第二資料後端。
-- 「進度 → 接駁狀態」沒有 backend、API Key 或 remote catalog 輸入欄。
+- 「進度 → 資料來源」沒有 backend、API Key、remote catalog 或入口門況控制。
+- `進度追蹤` 沒有資料時正常回成功空集合，介面顯示 0 項，不得顯示「連線失敗」。
 
 ## 6. 手機申報與通告
 

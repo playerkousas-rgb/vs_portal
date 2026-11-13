@@ -23,6 +23,18 @@
        └─ 輕量進度前端（vsbadge）
 ```
 
+#### 已採用的成員／區系統參考模式
+
+本架構按 `member-portal@e7aafdce` 與 `scout-district-portal@6997ae7c` 的主 Sheet 模式校正：
+
+- 兩個前端共用同一張主 Google Sheet、同一份 `Code.gs`、同一個 `/exec` 及同一 API Key；
+- 前端不互相接駁，只各自以 action allowlist 經 server proxy 呼叫同一 GAS；
+- GAS 按 action 直接讀寫同一張 Sheet 的不同分頁；
+- 分頁存在但沒有資料時回成功空集合／0 項，不得當成連線失敗；
+- 登入閘門、未來上游或另一前端的狀態，不得成為讀取本 Sheet 進度分頁的前置檢查。
+
+因此第 3 階段進度頁只顯示「同一 Sheet 資料來源」及實際讀取結果，不執行 `getLinkState`，也不顯示前端之間的「接駁」控制。`getLinkState`／`setLocalLogin` 只保留為底層第 4 階段契約與伺服器防誤關測試。
+
 ### 1.2 第 4 階段目標（旅系統建立後才啟用）
 
 ```text

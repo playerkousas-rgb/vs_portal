@@ -77,16 +77,15 @@
 > 舊種子 `acc_leader`／`acc_exco` 自動清走；權限變更＝改名冊身份（執委冇呢個權）。
 > ⑥ **團長**（每團一位，最高權限）：**第一個開戶嗰位就係團長**（入到去即刻認領），
 > **只可以轉移**、唔可以自己改低自己身份；轉移後舊團長自動變返領袖（有審計紀錄）。
-> ⑦ 進度對接：管理系統、進度同 BADGE 使用**同一 Unified GAS／Sheet**；Vercel 只設
+> ⑦ 進度資料來源：管理系統、進度同 BADGE 使用**同一 Unified GAS／Sheet**；Vercel 只設
 > `TROOP_<ID>_NAME/BACKEND/APIKEY`。唔設任何 Portal／Progress 額外 secret、backend 或 key。
-> ⑧ **「人係讀到、但個個都冇進度」**：~~進度 → 設定「後端資料檢查」（`diag`）~~
-> **【已於 v2.8.6 移除】** —— 該 UI 喺 2026-09-26 拆掣時已經拆走，v2.8.6 連後端
-> `diag` action ＋ `diagnoseBackendTabs()` 一併清走，唔再係可用功能。
-> 而家嘅做法：**直接開張 Google Sheet 對數**（「進度追蹤」有幾行／幾個 YMIS、
-> 同「成員名單」對唔對得上），或者睇 `status` 回嘅 `spreadsheet` 確認係邊張 Sheet；
-> 唔見分頁 → 行 `initializeSheets()`；資料喺另一張 Sheet → 改用嗰支 `/exec`；YMIS 唔一致 → 對 YMIS。
-> 「總覽」見到「有成員、零進度」亦會自動彈橫額。進度接線只由 server Registry 管理；
-> browser 唔會保存或提交 `/exec`／API Key。
+> 各功能只係用不同 action 讀寫同一 Sheet 的指定分頁，前端之間唔需要互相「接駁」。
+> ⑧ **「人係讀到、但個個都冇進度」**：如果「進度追蹤」分頁存在但沒有紀錄，呢個係正常成功結果；
+> 介面會顯示已成功讀取、0 格進度，唔會將空分頁或入口狀態當成連線失敗。
+> ~~進度 → 設定「後端資料檢查」（`diag`）~~ **【已於 v2.8.6 移除】**；`diag` action 同
+> `diagnoseBackendTabs()` 都已拆走。要核對舊資料可直接開唯一正本 Sheet 對數（「進度追蹤」行數及 YMIS）；
+> 唔見分頁先行 `initializeSheets()`。如果歷史資料仍在另一張 Sheet，應先完成一次性合併及選定唯一正本，
+> 唔係為 Progress 再建立第二個 backend。browser 唔會保存或提交 `/exec`／API Key。
 > ⑨ **「資料綁死喺我部機，其他人登入睇唔見」**：~~登入閘／「儲存狀態」卡嘅**搶救三寶**~~
 > **【UI 已於 2026-09-26 拆走；前端函數已於 v2.8.6 清走】** ——
 > 團長定案：「我地已經完成曬就唔洗再做呢D，用戶之後用其實佢都唔識整」。
@@ -442,16 +441,17 @@ node dev-server.mjs             # 推薦（靜態＋/api，同 Vercel 行為一�
 Word／PDF／Markdown／單一 HTML／JSON 匯出、QR Code、
 **公開閱讀頁 `constitution.html`**（免登入、可獨立上載或貼連結）。
 
-### 進度紀錄（一個後端、兩個前端）
-旅團只有**一個後端**：一張 Google Sheet ＋ 一支 Apps Script（`/exec`）。
-**深資童軍管理系統**同**進度前端**（團員／領袖用嗰個）係**兩個前端**，讀寫同一份資料 ——
-所以執委系統**唔需要連去任何其他系統**：唔開分頁、唔用 portal，亦唔會出 `referer_mismatch`。
+### 進度紀錄（同一 Sheet、同一 GAS、多個前端）
+旅團只有**一個後端**：一張 Google Sheet ＋ 一支 Unified Apps Script（`/exec`）＋一個 API Key。
+管理系統、Progress 同 BADGE 只係不同前端；各自經 server proxy 的 allowlist action，讀寫同一 Sheet 的指定分頁，
+唔會為「進度追蹤」另建接駁、backend、Key 或身份來源。
 
-* **讀**：staff 以 server-issued session 經同源 `/api/progress` 讀行政進度；團員只走 `loadMine`，YMIS 由 session 固定
+* **讀**：staff 以 server-issued session 經同源 `/api/progress` 的 `load` action 讀同一 Sheet；團員只走 `loadMine`，YMIS 由 session 固定
 * **寫**：`save`／`saveOtherBadge` 要有效 staff session 與 action scope；支部 API Key 由 server 注入，只作路由
 * **批**：`reviewRequest`／`reviewLogRequest` 要有效 staff session → **審批中心**批准／拒絕團員申報；
   批准即刻寫入「進度追蹤」／「活動履歷」，拒絕只改狀態、唔會刪紀錄
-* **設定**：正式接線只由 server Registry 的 `TROOP_<ID>_BACKEND/APIKEY` 管理；「進度 → 接駁狀態」係唯讀頁，冇 `/exec`／Key 輸入欄。API Key **不代表執委身份**
+* **資料來源**：server Registry 只登記 `TROOP_<ID>_NAME/BACKEND/APIKEY`；「進度 → 資料來源」按實際 Progress action 顯示成功／失敗，冇 `/exec`／Key 輸入欄，亦唔查本地入口門況。API Key **不代表執委身份**
+* **空資料**：「進度追蹤」分頁存在但只有表頭時，`load` 仍回成功，介面顯示正常成員及 **0 項進度**
 * **考核項目**：第 11 版綱要固定內建喺 `data/progress/items.json`（離線可用），唔接受 browser remote catalog override
 * **後端範本**：`UnifiedCode.gs` 同時支援行政、進度同 BADGE；`initializeSheets` 會增補 `進度追蹤`／`其他獎章`／`待批完成`／`活動履歷`／`待批履歷`／`成員名單` 等分頁
 * **安全**：`/api/progress` 只使用 Registry 的 GAS `/exec`；browser 傳入 backend／apikey 會被忽略。payload ≤ 1 MB、上游有逾時，log 只記 metadata；所有 action 先驗 server-issued session，member YMIS 由 session 固定

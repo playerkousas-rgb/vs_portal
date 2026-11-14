@@ -338,7 +338,7 @@ try {
 /* ============================================================
    ⑦ 扮自證失敗 → 唔可以假成功，pending 要留返
    （呢個就係團長嗰單「寫入回傳成功但核對對唔上」——
-   v2.8.1 起後端唔收貨就直接話失敗，等用家再撳儲存）
+   request 已送出，可能局部寫入，所以結果係 unknown；不可叫用家即刻再撳。）
    ============================================================ */
 section('⑦ 扮自證失敗 → 唔可以假成功，pending 要留返');
 const bad = await bootStack({ extraEnv: { FAKEGAS_UNCONFIRMED: '1' } });
@@ -352,9 +352,12 @@ try {
   ] });
   const pushN = stepOf(N, 'push');
   ok('★ 自證失敗 → 儲存話失敗（唔係假成功）', pushN?.ok === false, JSON.stringify(pushN).slice(0, 300));
-  ok('★ 失敗原因係 not_confirmed（分得出係邊種死因）', pushN?.reason === 'not_confirmed', JSON.stringify({ r: pushN?.reason }));
+  ok('★ 已送出但自證失敗 → reason=unknown（不可當成可安全重試）',
+    pushN?.reason === 'unknown', JSON.stringify({ r: pushN?.reason }));
   ok('★ pending 留返（唔會以為存好咗丟咗啲改動）', Number(pushN?.pending || 0) >= 1, String(pushN?.pending));
-  ok('★ 指引用家修後端（唔係齋「稍後再試」）', (pushN?.hint || '').includes('重貼 Code.gs'), (pushN?.hint || '').slice(0, 200));
+  ok('★ 指引用家查狀態／readback，並警告未查清前唔好再儲存',
+    /查操作狀態|重新讀取核對/.test(pushN?.hint || '') && /唔好再撳儲存/.test(pushN?.hint || ''),
+    (pushN?.hint || '').slice(0, 240));
 } finally {
   bad.stop();
 }
@@ -382,7 +385,7 @@ section('⑧ 靜態守門（唔會重演「action 漏咗喺白名單」嗰單事
   const storeSrc = fs.readFileSync(path.join(ROOT, 'assets', 'js', 'lib', 'store.js'), 'utf8');
   ok('★ 基準快照同後端回傳用同一套補底（COLLECTION_KEYS）',
     /export const COLLECTION_KEYS =/.test(storeSrc)
-    && /return fillCollections\(_clone\(out\)\);/.test(storeSrc)
+    && /const normalized = fillCollections\(_clone\(out\)\);/.test(storeSrc)
     && /const db = fillCollections\(_clone\(remoteDb \|\| \{\}\)\);/.test(storeSrc));
   ok('★ 第一次寫入一定寫齊所有表（唔會寫一份缺晒嘅 db 上後端）',
     /firstSimpleWrite/.test(remoteSrc) && /info\.mode/.test(remoteSrc));

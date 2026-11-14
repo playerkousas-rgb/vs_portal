@@ -11,6 +11,40 @@ export function esc(s) {
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
   }[c]));
 }
+/** URL for an HTML link. Reject executable/data schemes; callers still HTML-escape it. */
+export function safeHref(value, { allowRelative = true, allowContact = true } = {}) {
+  const raw = String(value || '').trim();
+  if (!raw || /[\u0000-\u001f\u007f\\]/.test(raw)) return '#';
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      const parsed = new URL(raw);
+      return /^(https?:)$/.test(parsed.protocol) && !!parsed.hostname ? raw : '#';
+    } catch { return '#'; }
+  }
+  if (/^\/\//.test(raw)) {
+    try {
+      const parsed = new URL('https:' + raw);
+      return parsed.hostname ? parsed.href : '#';
+    } catch { return '#'; }
+  }
+  if (allowContact && /^(mailto:|tel:)/i.test(raw)) return raw;
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:/.test(raw)) return '#';
+  if (allowRelative && !/^\s*\/{2}/.test(raw)) return raw;
+  return '#';
+}
+/** Safe image source: no SVG/data HTML and no executable schemes. */
+export function safeImageSrc(value) {
+  const raw = String(value || '').trim();
+  if (!raw || raw.length > 12 * 1024 * 1024 || /[\u0000-\u001f\u007f"'<>]/.test(raw)) return '';
+  if (/^data:image\/(?:png|jpe?g|gif|webp);base64,[A-Za-z0-9+/=]+$/i.test(raw)) return raw;
+  if (/^(?:https?:|blob:)/i.test(raw)) return raw;
+  return '';
+}
+/** Filename supplied to the browser download attribute (never a filesystem path). */
+export function safeFilename(value, fallback = 'download') {
+  const clean = String(value || fallback).replace(/[\\/:*?"<>|\u0000-\u001f\u007f]+/g, '_').trim();
+  return (clean || fallback).slice(0, 180);
+}
 export function uid(prefix = 'id') {
   return prefix + '_' + Math.random().toString(36).slice(2, 9);
 }
@@ -87,7 +121,7 @@ export function colorFrom(str = '') {
   return PALETTE[h % PALETTE.length];
 }
 export function avatar(name, size = '') {
-  return `<span class="avatar ${size}" style="background:${colorFrom(name)}">${esc(initials(name))}</span>`;
+  return `<span class="avatar ${esc(size)}" style="background:${colorFrom(name)}">${esc(initials(name))}</span>`;
 }
 
 /* ---------- files ---------- */
@@ -95,7 +129,7 @@ export function download(filename, content, type = 'application/json') {
   const blob = content instanceof Blob ? content : new Blob([content], { type });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = url; a.download = filename;
+  a.href = url; a.download = safeFilename(filename);
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1500);
 }
@@ -182,7 +216,8 @@ const P = {
 };
 export function icon(name, size = 18, cls = '') {
   const d = P[name] || P.grid;
-  return `<svg class="${cls}" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none"
+  const px = Math.max(1, Math.min(512, Math.round(Number(size) || 18)));
+  return `<svg class="${esc(cls)}" width="${esc(px)}" height="${esc(px)}" viewBox="0 0 24 24" fill="none"
     stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${d}</svg>`;
 }
 
@@ -248,7 +283,15 @@ export function closeAllModals(value = null) {
   /* 舊版／熱更新遺下、已不在 stack 的 overlay 亦一併清走。lightbox 自己管理，唔郁。 */
   document.querySelectorAll('.overlay:not(.lightbox)').forEach(el => el.remove());
 }
-export function modal({ title, sub = '', body = '', actions = [], wide = false, onMount = null }) {
+export function modal(options = {}) {
+  if (Object.prototype.hasOwnProperty.call(options, 'body')) {
+    throw new TypeError('modal body is ambiguous; use bodyText or trustedBodyHtml');
+  }
+  const { title, sub = '', bodyText = '', trustedBodyHtml, actions = [], wide = false, onMount = null } = options;
+  if (trustedBodyHtml !== undefined && typeof trustedBodyHtml !== 'string') {
+    throw new TypeError('trustedBodyHtml must be an application-authored HTML string');
+  }
+  const renderedBody = trustedBodyHtml === undefined ? esc(bodyText) : trustedBodyHtml;
   return new Promise(resolve => {
     const el = document.createElement('div');
     el.className = 'overlay';
@@ -257,13 +300,13 @@ export function modal({ title, sub = '', body = '', actions = [], wide = false, 
         <div class="modal-head">
           <div>
             <div class="modal-title">${esc(title)}</div>
-            ${sub ? `<div class="modal-sub">${sub}</div>` : ''}
+            ${sub ? `<div class="modal-sub">${esc(sub)}</div>` : ''}
           </div>
           <button class="btn btn-ghost btn-icon btn-sm" data-close-x aria-label="關閉">${icon('x', 18)}</button>
         </div>
-        <div class="modal-body">${body}</div>
+        <div class="modal-body">${renderedBody}</div>
         ${actions.length ? `<div class="modal-foot">${actions.map((a, i) =>
-          `<button class="btn ${a.class || ''}" data-act="${i}" ${a.disabled ? 'disabled' : ''}>${a.label}</button>`).join('')}</div>` : ''}
+          `<button class="btn ${esc(a.class || '')}" data-act="${esc(i)}" ${a.disabled ? 'disabled' : ''}>${esc(a.label)}</button>`).join('')}</div>` : ''}
       </div>`;
     document.body.appendChild(el);
     const rec = { el, resolve, closed: false, busy: false };
@@ -277,7 +320,10 @@ export function modal({ title, sub = '', body = '', actions = [], wide = false, 
       const btn = e.target.closest('[data-act]');
       if (!btn || rec.closed || rec.busy) return;
       const a = actions[Number(btn.dataset.act)];
-      if (!a || a.disabled) return;
+      /* `disabled` on an action is only the initial DOM state. Confirmation dialogs
+         deliberately enable the button after typed input/checkbox validation, so the
+         live button state—not the immutable action descriptor—must gate the click. */
+      if (!a || btn.disabled) return;
       let out;
       try {
         out = a.onClick ? a.onClick(el) : undefined;
@@ -313,9 +359,13 @@ export function modal({ title, sub = '', body = '', actions = [], wide = false, 
     if (first && window.innerWidth > 560) setTimeout(() => { if (!rec.closed) first.focus(); }, 60);
   });
 }
-export function confirmDlg({ title = '確認', message = '', okText = '確認', cancelText = '取消', danger = false }) {
+export function confirmDlg({ title = '確認', message = '', trustedMessageHtml, okText = '確認', cancelText = '取消', danger = false }) {
+  if (trustedMessageHtml !== undefined && typeof trustedMessageHtml !== 'string') {
+    throw new TypeError('trustedMessageHtml must be an application-authored HTML string');
+  }
+  const renderedMessage = trustedMessageHtml === undefined ? esc(message) : trustedMessageHtml;
   return modal({
-    title, body: `<p style="font-size:14.5px;line-height:1.7">${message}</p>`,
+    title, trustedBodyHtml: `<p style="font-size:14.5px;line-height:1.7">${renderedMessage}</p>`,
     actions: [
       { label: cancelText, class: 'btn', value: false },
       { label: okText, class: danger ? 'btn-accent' : 'btn-primary', value: true }
@@ -330,7 +380,24 @@ export function qrSvg(text, cell = 5, margin = 2) {
     const qr = window.qrcode(0, 'M');
     qr.addData(String(text));
     qr.make();
-    return qr.createSvgTag(cell, margin);
+
+    /* QR markup is embedded at explicit trusted-HTML boundaries. Build the SVG
+       ourselves from validated numbers rather than trusting a vendor string (or
+       ever reflecting the encoded payload into SVG elements/attributes). */
+    const cellSize = Math.max(1, Math.min(32, Math.round(Number(cell) || 5)));
+    const quiet = Math.max(0, Math.min(64, Math.round(Number(margin) || 0)));
+    const count = Number(qr.getModuleCount());
+    if (!Number.isInteger(count) || count < 1 || count > 177) throw new Error('Invalid QR module count');
+    const size = count * cellSize + quiet * 2;
+    let path = '';
+    for (let row = 0; row < count; row++) {
+      for (let col = 0; col < count; col++) {
+        if (qr.isDark(row, col)) {
+          path += `M${col * cellSize + quiet},${row * cellSize + quiet}h${cellSize}v${cellSize}h-${cellSize}z`;
+        }
+      }
+    }
+    return `<svg version="1.1" xmlns="http://www.w3.org/2000/svg" width="${size}px" height="${size}px" viewBox="0 0 ${size} ${size}" preserveAspectRatio="xMinYMin meet" role="img" aria-label="QR Code"><rect width="100%" height="100%" fill="white"/><path d="${path}" fill="black"/></svg>`;
   } catch (e) {
     console.error(e);
     return '<div class="faint sm">QR 產生失敗（內容可能過長）</div>';
@@ -356,9 +423,10 @@ export function qrDataUrl(text, cell = 8, margin = 3) {
 
 /** 用 <img> 顯示 QR（拿唔到 data URL 就退回 SVG） */
 export function qrImg(text, px = 190, cell = 8, margin = 3) {
-  const d = qrDataUrl(text, cell, margin);
+  const d = safeImageSrc(qrDataUrl(text, cell, margin));
   if (!d) return qrSvg(text, 5, 2);
-  return `<img src="${d}" width="${px}" height="${px}" alt="QR Code" style="display:block;margin:0 auto;max-width:100%">`;
+  const size = Math.max(1, Math.min(2048, Math.round(Number(px) || 190)));
+  return `<img src="${esc(d)}" width="${esc(size)}" height="${esc(size)}" alt="QR Code" style="display:block;margin:0 auto;max-width:100%">`;
 }
 
 /* ---------- misc ---------- */
@@ -380,7 +448,7 @@ export function num(v) { return Number(String(v ?? '').replace(/[^0-9.\-]/g, '')
 
 /* ---------- 小元件 ---------- */
 export function badge(label, cls = 'b-grey', dot = false) {
-  return `<span class="badge ${cls}">${dot ? '<span class="dot"></span>' : ''}${esc(label)}</span>`;
+  return `<span class="badge ${esc(cls)}">${dot ? '<span class="dot"></span>' : ''}${esc(label)}</span>`;
 }
 export function nf(n, digits = 0) {
   return (Number(n) || 0).toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits });
@@ -404,7 +472,7 @@ export function downloadSvgEl(el, filename = 'qrcode.svg') {
 
 /* ---------- 相片檢視（lightbox） ---------- */
 export function photoViewer(photos, index = 0) {
-  const list = (photos || []).filter(p => p?.dataUrl);
+  const list = (photos || []).map(p => ({ ...p, dataUrl: safeImageSrc(p?.dataUrl) })).filter(p => p.dataUrl);
   if (!list.length) return;
   let i = Math.max(0, Math.min(index, list.length - 1));
   const el = document.createElement('div');
@@ -422,7 +490,7 @@ export function photoViewer(photos, index = 0) {
         </div>
         <div class="lb-body">
           ${list.length > 1 ? `<button class="lb-nav" data-act="prev">${icon('chevronL', 22)}</button>` : ''}
-          <img src="${p.dataUrl}" alt="${esc(p.name || '')}">
+          <img src="${esc(p.dataUrl)}" alt="${esc(p.name || '')}">
           ${list.length > 1 ? `<button class="lb-nav right" data-act="next">${icon('chevronR', 22)}</button>` : ''}
         </div>
       </div>`;
@@ -440,7 +508,8 @@ export function photoViewer(photos, index = 0) {
     if (a === 'dl') {
       const p = list[i];
       const link = document.createElement('a');
-      link.href = p.dataUrl; link.download = p.name || 'photo.jpg';
+      link.href = p.dataUrl;
+      link.download = safeFilename(p.name || 'photo.jpg', 'photo.jpg');
       document.body.appendChild(link); link.click(); link.remove();
     }
   });

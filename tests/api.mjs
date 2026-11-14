@@ -8,6 +8,9 @@ import { getRegistry, getTrustedUnit, getProgressRegistryEntry, listPublicUnits,
 import unitsHandler from '../api/units.js';
 import proxyHandler from '../api/proxy.js';
 import portalHandler from '../api/portal.js';
+import shareHandler from '../api/share.js';
+import modulesHandler from '../api/modules.js';
+import { ACTIVE_BRANCH_SCHEMA_ID, SIDEBAR_MODULES } from '../assets/js/lib/branch-config.js';
 import { issueSuperSession, verifySuperSession } from '../api/_super-session.js';
 
 let pass = 0, fail = 0;
@@ -45,6 +48,63 @@ ok('getTrustedUnit 取得可信後端', !!trusted && !!trusted.gasUrl);
 ok('getTrustedUnit 帶埋伺服器端 API Key', trusted?.apiKey === 'test9_secret_key');
 ok('非白名單旅團回傳 null', getTrustedUnit('9999') === null);
 ok('0082 冇登記就攞唔到後端（唔會再借用舊旅團）', getTrustedUnit('0082') === null);
+
+/* /api/modules is discovery metadata only. It must derive identities/modules from
+   this branch schema rather than maintaining a platform-global exco/admin list. */
+{
+  const response = () => ({ statusCode: 0, body: null, setHeader() { return this; },
+    status(value) { this.statusCode = value; return this; }, json(value) { this.body = value; return this; } });
+  const discovered = response();
+  modulesHandler({ method: 'GET', query: { u: 'TEST9', role: 'exco' } }, discovered);
+  ok('模組 discovery 標明 branch schema，而且只回非權威預設 metadata',
+    discovered.statusCode === 200 && discovered.body?.branchSchema === ACTIVE_BRANCH_SCHEMA_ID
+      && discovered.body?.authoritative === false && discovered.body?.modules?.length === SIDEBAR_MODULES.length,
+    JSON.stringify(discovered.body));
+  ok('模組 discovery 由 branch schema 產生 grant，冇 universal roles 清單',
+    discovered.body?.modules?.every(module => module.branchSchema === ACTIVE_BRANCH_SCHEMA_ID
+      && module.grant && !Object.prototype.hasOwnProperty.call(module, 'roles')),
+    JSON.stringify(discovered.body?.modules));
+  const foreignRole = response();
+  modulesHandler({ method: 'GET', query: { u: 'TEST9', role: 'generic-platform-admin' } }, foreignRole);
+  ok('其他平台角色名不會自動變成本支部身份',
+    foreignRole.body?.modules?.every(module => module.allowed === false
+      && module.grant?.show === false && module.grant?.read === false && module.grant?.edit === false));
+}
+
+const savedTroopsJsonForPollution = process.env.TROOPS_JSON;
+process.env.TROOPS_JSON = `{"__proto__":{"backend":"${TEST_GAS}"},"SAFE1":{"backend":"${TEST_GAS}","apiKey":"safe-key"}}`;
+const pollutionSafeRegistry = getRegistry();
+ok('Registry 拒絕 prototype 特殊 key，合併 JSON env 唔會污染 object prototype',
+  Object.getPrototypeOf(pollutionSafeRegistry) === null && pollutionSafeRegistry.__proto__ === undefined
+    && !!pollutionSafeRegistry.SAFE1);
+if (savedTroopsJsonForPollution === undefined) delete process.env.TROOPS_JSON;
+else process.env.TROOPS_JSON = savedTroopsJsonForPollution;
+
+// 已登入入口網址不可由 Host header 注入，否則「QR safe」會變成釣魚連結。
+{
+  const savedOrigin = process.env.PUBLIC_APP_ORIGIN;
+  const savedVercel = process.env.VERCEL_URL;
+  const savedProd = process.env.VERCEL_PROJECT_PRODUCTION_URL;
+  delete process.env.PUBLIC_APP_ORIGIN; delete process.env.VERCEL_URL; delete process.env.VERCEL_PROJECT_PRODUCTION_URL;
+  const response = () => ({ statusCode: 0, body: null, setHeader() { return this; }, status(v) { this.statusCode = v; return this; }, json(v) { this.body = v; return this; } });
+  const injected = response();
+  shareHandler({ method: 'GET', query: { u: 'TEST9', kind: 'constitution', id: 'main' },
+    headers: { host: 'evil.example', 'x-forwarded-proto': 'https' } }, injected);
+  ok('入口分享 API fail closed，唔會信任任意 production Host header',
+    injected.statusCode === 503 && injected.body?.reason === 'public_origin_not_configured', JSON.stringify(injected.body));
+  process.env.VERCEL_URL = 'trusted-project.vercel.app';
+  const trustedShare = response();
+  shareHandler({ method: 'GET', query: { u: 'TEST9', kind: 'constitution', id: 'main' },
+    headers: { host: 'evil.example', 'x-forwarded-proto': 'https' } }, trustedShare);
+  ok('分享網址只採用可信 server origin，而且只產生 authenticated members.html 路由',
+    trustedShare.statusCode === 200 && trustedShare.body?.qrSafe === true
+      && trustedShare.body?.authenticated === true
+      && String(trustedShare.body?.url || '') === 'https://trusted-project.vercel.app/members.html?u=TEST9#/constitution',
+    JSON.stringify(trustedShare.body));
+  if (savedOrigin === undefined) delete process.env.PUBLIC_APP_ORIGIN; else process.env.PUBLIC_APP_ORIGIN = savedOrigin;
+  if (savedVercel === undefined) delete process.env.VERCEL_URL; else process.env.VERCEL_URL = savedVercel;
+  if (savedProd === undefined) delete process.env.VERCEL_PROJECT_PRODUCTION_URL; else process.env.VERCEL_PROJECT_PRODUCTION_URL = savedProd;
+}
 
 // 隔離 auth fixture：網址 query 不可偽造身份；只接受測試 issuer 簽署的短期 assertion。
 // 呢組回歸不代表未來旅系統登入契約。
@@ -94,6 +154,25 @@ ok('0082 冇登記就攞唔到後端（唔會再借用舊旅團）', getTrustedU
       && exchangePayload.src === 'central-travel-system' && exchangePayload.jti === expectedExchangeJti
       && exchangeSig === expectedExchangeSig && Array.isArray(exchangePayload.scope));
 
+  const legacyAliasPayload = { ...payload, role: 'admin', sub: 'legacy-admin', jti: crypto.randomUUID() };
+  const legacyAliasBody = Buffer.from(JSON.stringify(legacyAliasPayload)).toString('base64url');
+  const legacyAliasSig = purposeSig(process.env.TROOP_TEST9_APIKEY, 'vs-portal-central-assertion-v1', legacyAliasBody);
+  const legacyAlias = response();
+  await portalHandler({ method: 'POST', body: { assertion: `${legacyAliasBody}.${legacyAliasSig}` },
+    headers: { host: 'vs.example.test', 'x-forwarded-proto': 'https' } }, legacyAlias);
+  ok('Portal assertion 將 legacy admin 拼法收窄成本支部 chief，而唔係接受 universal admin 身份',
+    legacyAlias.statusCode === 200 && legacyAlias.body?.role === 'chief', JSON.stringify(legacyAlias.body));
+
+  const foreignRolePayload = { ...payload, role: 'generic-platform-admin', sub: 'foreign-role', jti: crypto.randomUUID() };
+  const foreignRoleBody = Buffer.from(JSON.stringify(foreignRolePayload)).toString('base64url');
+  const foreignRoleSig = purposeSig(process.env.TROOP_TEST9_APIKEY, 'vs-portal-central-assertion-v1', foreignRoleBody);
+  const foreignRoleAssertion = response();
+  await portalHandler({ method: 'POST', body: { assertion: `${foreignRoleBody}.${foreignRoleSig}` },
+    headers: { host: 'vs.example.test', 'x-forwarded-proto': 'https' } }, foreignRoleAssertion);
+  ok('Portal assertion 拒絕不屬於本支部 schema 的平台角色名',
+    foreignRoleAssertion.statusCode === 403 && foreignRoleAssertion.body?.reason === 'role_not_allowed',
+    JSON.stringify(foreignRoleAssertion.body));
+
   const test8Payload = {
     ...payload, u: 'TEST8', aud: 'vs-portal:branch:TEST8',
     sub: 'YMIS-8001', name: '另一支部領袖', jti: crypto.randomUUID()
@@ -130,6 +209,8 @@ ok('0082 冇登記就攞唔到後端（唔會再借用舊旅團）', getTrustedU
   const originalFetch = globalThis.fetch;
   const calls = [];
   const callUrls = [];
+  let proxyWriteReply = { success: true };
+  let proxyWriteStatus = 200;
   globalThis.fetch = async (url, init) => {
     const sent = JSON.parse(init.body);
     calls.push(sent);
@@ -138,13 +219,34 @@ ok('0082 冇登記就攞唔到後端（唔會再借用舊旅團）', getTrustedU
       return { status: 200, text: async () => JSON.stringify({ ok: true, success: true,
         account: { id: 'YMIS-9001', ymis: 'YMIS-9001', role: 'leader' } }) };
     }
-    return { status: 200, text: async () => JSON.stringify({ success: true }) };
+    return { status: proxyWriteStatus, text: async () => JSON.stringify(proxyWriteReply) };
   };
   try {
     const makeResponse = () => ({ statusCode: 0, setHeader() { return this; }, status(v) { this.statusCode = v; return this; }, json(v) { this.body = v; return this; } });
+    const tooLarge = makeResponse();
+    const beforeTooLarge = calls.length;
+    await proxyHandler({ method: 'POST', headers: {}, body: {
+      action: 'saveTables', unit: 'TEST9', sessionToken: 'opaque-user-session', padding: 'x'.repeat(4 * 1024 * 1024)
+    } }, tooLarge);
+    ok('Proxy 對平台已 parse 成 object 嘅超限 body 仍然先擋住，唔會繞過 4MB 上限',
+      tooLarge.statusCode === 413 && tooLarge.body?.outcome === 'not_sent'
+        && tooLarge.body?.mayHaveApplied === false && calls.length === beforeTooLarge,
+      JSON.stringify(tooLarge.body));
+
     const anonymous = makeResponse();
     await proxyHandler({ method: 'POST', body: { action: 'saveTables', unit: 'TEST9', apiKey: 'outdated', tables: { members: [] } } }, anonymous);
     ok('行政資料不可用 API Key 代替登入', anonymous.statusCode === 401 && anonymous.body?.code === 'session_required');
+
+    const receiptId = 'saveTables:test:receipt123456';
+    const receipt = makeResponse();
+    const beforeReceipt = calls.length;
+    await proxyHandler({ method: 'POST', body: { action: 'operationStatus', unit: 'TEST9', operationId: receiptId } }, receipt);
+    const receiptCall = calls.at(-1);
+    ok('operationStatus 以不可猜 operation ID 作只讀 receipt，公開／團員端可查而不重送',
+      receipt.statusCode === 200 && calls.length === beforeReceipt + 1
+        && receiptCall?.action === 'operationStatus' && receiptCall?.operationId === receiptId
+        && receiptCall?.apiKey === 'test9_secret_key' && receiptCall?.sessionToken === undefined,
+      JSON.stringify(receipt.body));
 
     const response = makeResponse();
     await proxyHandler({ method: 'POST', body: { action: 'saveTables', unit: 'TEST9', apiKey: 'outdated', apikey: 'outdated',
@@ -193,6 +295,32 @@ ok('0082 冇登記就攞唔到後端（唔會再借用舊旅團）', getTrustedU
       accountResponse.body?.success === true && accountForwarded?.sessionToken === undefined
         && accountForwarded?.unified_super === true && accountForwarded?.action === 'authDeleteAccount'
         && accountInnerOk && accountOuterOk);
+
+    proxyWriteReply = {};
+    const emptyReceipt = makeResponse();
+    await proxyHandler({ method: 'POST', body: { action: 'saveTables', unit: 'TEST9',
+      sessionToken: 'opaque-user-session', tables: { members: [] } } }, emptyReceipt);
+    ok('寫入回 2xx 空 JSON 都唔會猜測成功：缺明確 receipt → unknown',
+      emptyReceipt.statusCode === 502 && emptyReceipt.body?.outcome === 'unknown'
+        && emptyReceipt.body?.reason === 'receipt_missing', JSON.stringify(emptyReceipt.body));
+
+    proxyWriteReply = { success: true };
+    proxyWriteStatus = 500;
+    const transportContradiction = makeResponse();
+    await proxyHandler({ method: 'POST', body: { action: 'saveTables', unit: 'TEST9',
+      sessionToken: 'opaque-user-session', tables: { members: [] } } }, transportContradiction);
+    ok('HTTP 500 + success:true 但冇 durable outcome 仍係 unknown',
+      transportContradiction.statusCode === 502 && transportContradiction.body?.outcome === 'unknown',
+      JSON.stringify(transportContradiction.body));
+
+    proxyWriteReply = { success: true, outcome: 'applied' };
+    const durableApplied = makeResponse();
+    await proxyHandler({ method: 'POST', body: { action: 'saveTables', unit: 'TEST9',
+      sessionToken: 'opaque-user-session', tables: { members: [] } } }, durableApplied);
+    ok('HTTP envelope 悲觀但 durable outcome=applied 可確認成功',
+      durableApplied.statusCode === 200 && durableApplied.body?.outcome === 'applied', JSON.stringify(durableApplied.body));
+    proxyWriteReply = { success: true };
+    proxyWriteStatus = 200;
     delete process.env.SUPER_KEY;
   } finally {
     delete process.env.SUPER_KEY;
@@ -271,12 +399,13 @@ ok('unitsHandler 回傳 units 物件', !!resJson?.units?.TEST9);
   const calls = [];
   let upstreamJson = { success: true, message: '申請已提交' };
   let upstreamRaw = null;
+  let upstreamStatus = 200;
   const realFetch = globalThis.fetch;
   globalThis.fetch = async (target, init = {}) => {
     calls.push({ target: String(target), init });
     const text = upstreamRaw !== null ? upstreamRaw : JSON.stringify(upstreamJson);
     return {
-      ok: true, status: 200,
+      ok: upstreamStatus >= 200 && upstreamStatus < 300, status: upstreamStatus,
       text: async () => text,
       json: async () => JSON.parse(text)
     };
@@ -305,30 +434,48 @@ ok('unitsHandler 回傳 units 物件', !!resJson?.units?.TEST9);
     sent.troopId === '0100' && sent.troopName === '第一百旅深資童軍團'
     && /\/exec$/.test(sent.scriptUrl) && sent.apiKey === 'K1' && sent.contact === 'a@b.hk'
     && sent.mainSystemUrl === 'https://ecportal.vercel.app' && /^\d{4}-\d{2}-\d{2}T/.test(sent.at || ''));
-  ok('收件匣回 JSON → proxy 當送到（success:true，唔聲稱有回執）',
-    good.statusCode === 200 && good.body?.success === true && good.body?.receipt === false);
+  ok('收件匣明確回 JSON success → proxy 先確認 applied',
+    good.statusCode === 200 && good.body?.success === true && good.body?.receipt === true
+      && good.body?.delivered === 'confirmed' && good.body?.outcome === 'applied' && good.body?.mayHaveApplied === true
+      && !!good.body?.operationId && sent.operationId === good.body.operationId
+      && sent.operation_id === good.body.operationId, JSON.stringify(good.body));
   const beforeIncomplete = calls.length;
   const incomplete = await post({ action: 'submitRegistration', troopId: '0100', troopName: 'X',
     scriptUrl: 'https://script.google.com/macros/s/AKfycbTESTTESTTESTTESTTESTTESTTESTTEST/exec' });
-  ok('server 亦拒絕缺 API Key 的不完整申請，不會轉發去收件匣',
+  ok('server 拒絕不完整申請並明確標 not_applied，不會轉發去收件匣',
     incomplete.statusCode === 400 && incomplete.body?.reason === 'registration_invalid'
-      && calls.length === beforeIncomplete, JSON.stringify(incomplete.body));
-  /* 收件匣唔會回執：回 HTML／空白都要當送到（ADMIN 系統收到就 OK） */
+      && incomplete.body?.outcome === 'not_applied' && incomplete.body?.mayHaveApplied === false
+      && !!incomplete.body?.operationId && calls.length === beforeIncomplete, JSON.stringify(incomplete.body));
+  /* Transport 2xx is not a durable receipt: HTML/blank stays unknown and is never retried. */
   const htmlPage = await (upstreamRaw = '<html>已收到</html>', post({ action: 'submitRegistration', troopId: '0100', troopName: 'X', apiKey: 'K1',
     scriptUrl: 'https://script.google.com/macros/s/AKfycbTESTTESTTESTTESTTESTTESTTESTTEST/exec' }));
-  ok('收件匣唔回 JSON（HTML／空白）→ 照當送到（唔會誤報失敗）',
-    htmlPage.statusCode === 200 && htmlPage.body?.success === true, JSON.stringify(htmlPage.body));
+  ok('收件匣只回 HTML → unknown，唔會由 HTTP 200 猜測已寫入',
+    htmlPage.statusCode === 502 && htmlPage.body?.success === false
+      && htmlPage.body?.outcome === 'unknown' && htmlPage.body?.reason === 'receipt_missing', JSON.stringify(htmlPage.body));
   const blank = await (upstreamRaw = ' ', post({ action: 'submitRegistration', troopId: '0100', troopName: 'X', apiKey: 'K1',
     scriptUrl: 'https://script.google.com/macros/s/AKfycbTESTTESTTESTTESTTESTTESTTESTTEST/exec' }));
-  ok('收件匣回空白 → 同樣當送到', blank.statusCode === 200 && blank.body?.success === true);
+  ok('收件匣回空白 → 同樣只標 unknown',
+    blank.statusCode === 502 && blank.body?.outcome === 'unknown' && blank.body?.mayHaveApplied === true);
   /* 但收件匣真係話收唔到，就照當失敗 */
   upstreamRaw = null;
   const refused = await (upstreamJson = { success: false, error: '唔收呢類申請' },
     post({ action: 'submitRegistration', troopId: '0100', troopName: 'X', apiKey: 'K1',
       scriptUrl: 'https://script.google.com/macros/s/AKfycbTESTTESTTESTTESTTESTTESTTESTTEST/exec' }));
-  ok('收件匣明確回 success:false → 當失敗（唔會呃申請人）',
-    refused.statusCode === 502 && /唔收呢類申請/.test(refused.body?.error || ''), JSON.stringify(refused.body));
+  ok('收件匣明確回 success:false → 明確 not_applied（可以安全重試）',
+    refused.statusCode === 502 && refused.body?.outcome === 'not_applied'
+      && refused.body?.mayHaveApplied === false && !!refused.body?.operationId
+      && /唔收呢類申請/.test(refused.body?.error || ''), JSON.stringify(refused.body));
   upstreamJson = { success: true, message: '申請已提交' };
+  upstreamRaw = '<html>server error</html>';
+  upstreamStatus = 500;
+  const ambiguousHttp = await post({ action: 'submitRegistration', troopId: '0100', troopName: 'X', apiKey: 'K1',
+    scriptUrl: 'https://script.google.com/macros/s/AKfycbTESTTESTTESTTESTTESTTESTTESTTEST/exec' });
+  ok('收件匣 HTTP 500 冇明確決定 → unknown，唔會誤報 applied',
+    ambiguousHttp.statusCode === 502 && ambiguousHttp.body?.outcome === 'unknown'
+      && ambiguousHttp.body?.mayHaveApplied === true && !!ambiguousHttp.body?.operationId,
+    JSON.stringify(ambiguousHttp.body));
+  upstreamRaw = null;
+  upstreamStatus = 200;
 
   /* ★ 2026-09-25 團長：「加個求救制，有咩大問題 SEND 去問 ADMIN，當回報問題處理」—— 同 submitRegistration 一條路 */
   const issue = await post({
@@ -344,14 +491,25 @@ ok('unitsHandler 回傳 units 物件', !!resJson?.units?.TEST9);
     && issuePayload.desc === '成頁啲掣好亂，唔知邊個打邊個' && issuePayload.severity === '高'
     && issuePayload.troopId === '0082' && issuePayload.name === '團長'
     && issuePayload.contact === 'leader@example.hk', JSON.stringify(issuePayload));
-  ok('求救收件匣回 JSON → proxy 當送到（success:true）', issue.statusCode === 200 && issue.body?.success === true, JSON.stringify(issue.body));
+  ok('求救收件匣回 JSON → proxy 明確 applied，操作編號原樣轉發',
+    issue.statusCode === 200 && issue.body?.success === true && issue.body?.outcome === 'applied'
+      && issue.body?.mayHaveApplied === true && !!issue.body?.operationId
+      && issuePayload.operationId === issue.body.operationId && issuePayload.operation_id === issue.body.operationId,
+    JSON.stringify(issue.body));
 
   /* 連線唔通 → 失敗 */
   const realFetch2 = globalThis.fetch;
   globalThis.fetch = async () => { const e = new Error('boom'); e.name = 'TimeoutError'; throw e; };
   const down = await post({ action: 'submitRegistration', troopId: '0100', troopName: 'X', apiKey: 'K1',
     scriptUrl: 'https://script.google.com/macros/s/AKfycbTESTTESTTESTTESTTESTTESTTESTTEST/exec' });
-  ok('連線／逾時 → 回 504（呢個先算送唔到）', down.statusCode === 504, JSON.stringify(down.body));
+  ok('連線／逾時 → 回 504 + unknown，保留操作編號且不可盲目重送',
+    down.statusCode === 504 && down.body?.outcome === 'unknown'
+      && down.body?.mayHaveApplied === true && !!down.body?.operationId, JSON.stringify(down.body));
+  const rateBlocked = await post({ action: 'submitRegistration', troopId: '0100', troopName: 'X', apiKey: 'K1',
+    scriptUrl: 'https://script.google.com/macros/s/AKfycbTESTTESTTESTTESTTESTTESTTESTTEST/exec' });
+  ok('公開收件匣短時間過量提交會喺轉發前 429 + not_sent',
+    rateBlocked.statusCode === 429 && rateBlocked.body?.outcome === 'not_sent'
+      && rateBlocked.body?.mayHaveApplied === false, JSON.stringify(rateBlocked.body));
   globalThis.fetch = realFetch2;
   ok('proxy 只接受 POST', (await (async () => {
     const r = proxyRes(); await proxyHandler({ method: 'GET' }, r); return r;
@@ -460,8 +618,15 @@ console.log('\n▌超管核對（api/auth.js：SUPER_KEY、fail closed）');
   ok('關閉嗰陣嘅提示教管理員點做（講明 SUPER_KEY）',
     /SUPER_KEY/.test(String(off.body?.hint || '')));
 
+  process.env.SUPER_KEY = 'too-short';
+  const weak = await call({ user: 'sheep', password: 'too-short' });
+  ok('★ 太短 SUPER_KEY fail closed，唔會簽發可離線冒認嘅弱 HMAC session',
+    weak.statusCode === 503 && weak.body?.disabled === true && /16/.test(weak.body?.hint || ''), JSON.stringify(weak.body));
+
   /* ---- 正常核對：一個環境變數，填明文密碼 ---- */
   process.env.SUPER_KEY = PW;
+  const oversizedAuth = await call({ user: 'sheep', password: PW, padding: 'x'.repeat(17 * 1024) });
+  ok('超管登入 body 超出 16KB 會先拒絕', oversizedAuth.statusCode === 413, JSON.stringify(oversizedAuth.body));
   const good = await call({ user: 'sheep', password: PW });
   ok('★ SUPER_KEY = 密碼，密碼啱 → 200', good.statusCode === 200 && good.body?.ok === true,
     JSON.stringify(good.body));

@@ -26,10 +26,9 @@
 //  保護唔到：**「超管」呢個身份本身**。個 App 係靜態網站，
 //  isSuper() 只係讀 localStorage —— 識開 DevTools 嘅人可以人手寫
 //  {"role":"super"} 落去，照樣見到超管先至見到嘅畫面。
-//  而家超管淨係 gate UI（開新旅團教學同掣、權限總表），冇一個真正嘅
-//  伺服器端特權操作，所以暫時冇實質損失。  /* MOCK tab 已隨示範模式拆走（2026-09-24） */
-//  將來超管如果要做真正敏感嘅嘢（改 registry、清後端、讀人哋旅團），
-//  嗰個操作本身一定要放喺伺服器端，並且自己再核對一次 SUPER_KEY。
+//  本機 role 只可以 gate UI，絕不授權真正敏感操作。現有支部行政 API
+//  會逐次核對呢個 endpoint 簽發嘅短期 HMAC session；手改 localStorage
+//  不會產生有效票據，亦不可讀寫／修復其他旅團後端。
 // ============================================================
 
 import crypto from 'node:crypto';
@@ -56,6 +55,7 @@ const hits = new Map();
 const failures = new Map();
 const ACCOUNT_FAIL_LIMIT = 5;
 const ACCOUNT_LOCK_MS = 15 * 60 * 1000;
+const MAX_AUTH_BODY_BYTES = 16 * 1024;
 
 function rateLimited(key, max = 8, windowMs = 5 * 60 * 1000) {
   const now = Date.now();
@@ -80,8 +80,16 @@ function accountLockState(user) {
 function registerFailure(user) {
   const state = accountLockState(user);
   state.failed += 1;
+  state.updatedAt = Date.now();
   if (state.failed >= ACCOUNT_FAIL_LIMIT) state.lockedUntil = Date.now() + ACCOUNT_LOCK_MS;
   failures.set(user, state);
+  if (failures.size > 5000) {
+    const now = Date.now();
+    for (const [key, value] of failures) {
+      if ((value.lockedUntil && value.lockedUntil <= now) || now - Number(value.updatedAt || 0) > ACCOUNT_LOCK_MS) failures.delete(key);
+    }
+    while (failures.size > 5000) failures.delete(failures.keys().next().value);
+  }
   return state;
 }
 
@@ -93,11 +101,10 @@ function send(res, status, obj) {
   res.status(status).json(obj);
 }
 
-/** 常數時間比對（唔好用 === ：長度同首幾個字元會洩漏資訊） */
+/** 固定長度摘要再常數時間比對，避免直接由長度分支洩漏密碼長度。 */
 function safeEqual(a, b) {
-  const ba = Buffer.from(String(a), 'utf8');
-  const bb = Buffer.from(String(b), 'utf8');
-  if (ba.length !== bb.length) return false;
+  const ba = crypto.createHash('sha256').update(String(a), 'utf8').digest();
+  const bb = crypto.createHash('sha256').update(String(b), 'utf8').digest();
   return crypto.timingSafeEqual(ba, bb);
 }
 
@@ -118,15 +125,29 @@ export default async function handler(req, res) {
       hint: '喺 Vercel → Settings → Environment Variables 加 SUPER_KEY = 你嘅密碼，再 Redeploy。'
     });
   }
+  if (key.length < 16) {
+    return send(res, 503, {
+      ok: false, disabled: true,
+      error: '超級管理員登入已停用：SUPER_KEY 太短',
+      hint: '請改用最少 16 個字元嘅獨立高強度密碼，再 Redeploy。'
+    });
+  }
 
   let body = req.body;
+  const declared = Number(req.headers?.['content-length'] || 0);
+  let bodyBytes = 0;
+  try { bodyBytes = Buffer.byteLength(typeof body === 'string' ? body : JSON.stringify(body || {}), 'utf8'); }
+  catch { body = null; }
+  if ((Number.isFinite(declared) && declared > MAX_AUTH_BODY_BYTES) || bodyBytes > MAX_AUTH_BODY_BYTES) {
+    return send(res, 413, { ok: false, error: '登入請求太大' });
+  }
   if (typeof body === 'string') { try { body = JSON.parse(body); } catch { body = null; } }
-  if (!body || typeof body !== 'object') return send(res, 400, { ok: false, error: '請求格式錯誤' });
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return send(res, 400, { ok: false, error: '請求格式錯誤' });
 
   const requestIp = String(req.headers?.['x-forwarded-for'] || req.headers?.['x-real-ip'] || 'unknown')
     .split(',')[0].trim().slice(0, 80);
   const rateKey = `super:${requestIp}:${String(body.user || '').trim().toLowerCase().slice(0, 120)}`;
-  if (rateLimited(rateKey)) {
+  if (rateLimited(`super-ip:${requestIp}`, 40) || rateLimited(rateKey)) {
     return send(res, 429, { ok: false, error: '試太多次，請 5 分鐘後再試' });
   }
 

@@ -3,10 +3,14 @@ import { collection, find, add, update, remove } from '../lib/store.js';
 import { memberName } from '../lib/model.js';
 import { esc, icon, uid, todayISO, toast, confirmDlg } from '../lib/util.js';
 import { go } from '../lib/router.js';
-import { can } from '../lib/auth.js';
-import { pageHead, tabs, empty, noteBox, visSelect } from './ui.js';
+import { can, currentRole } from '../lib/auth.js';
+import { pageHead, tabs, empty, noteBoxHtml, visSelect } from './ui.js';
+import { contentVis, visibleContent } from '../lib/content-visibility.js';
 
 let tab = 'list';
+function visibleQuizzes() { return collection('quizzes').filter(quiz => visibleContent(quiz, 'quiz', currentRole())); }
+function visibleQuiz(id) { const quiz = find('quizzes', id); return quiz && visibleContent(quiz, 'quiz', currentRole()) ? quiz : null; }
+
 
 export function title() { return '試卷'; }
 export function refresh() { window.dispatchEvent(new CustomEvent('v82:refresh')); }
@@ -168,7 +172,7 @@ export function parseQuizImport(text) {
 export function render(params) {
   if (['list', 'import'].includes(params.id)) tab = params.id;
   else if (params.id === 'new') return editor(null);
-  else if (params.id && params.action === 'edit') return editor(find('quizzes', params.id));
+  else if (params.id && params.action === 'edit') { const quiz = visibleQuiz(params.id); return quiz ? editor(quiz) : empty('shield', '你無權閱讀呢份試卷'); }
   else if (params.id) return detail(params.id);
   return `
   ${pageHead({
@@ -176,16 +180,16 @@ export function render(params) {
     sub: '新設試卷或匯入 Google 表單題目。團員喺「團員入口」填，唔使執委帳號。',
     actions: can('quiz.edit') ? `<button class="btn btn-sm btn-primary" data-go="#/quizzes/new">${icon('plus', 15)} 新設試卷</button>` : ''
   })}
-  ${tabs([['list', '試卷', collection('quizzes').length], ['import', '匯入']], tab)}
+  ${tabs([['list', '試卷', visibleQuizzes().length], ['import', '匯入']], tab)}
   ${tab === 'import' ? importView() : listView()}`;
 }
 
 function listView() {
-  const rows = collection('quizzes').slice().sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+  const rows = visibleQuizzes().slice().sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
   if (!rows.length) return empty('note', '未有試卷', '新設，或者由 Google Form 匯入題目');
   return `<div class="card"><div class="scroll-x"><table class="table">
     <thead><tr><th>試卷</th><th>題數</th><th>已交</th><th>狀態</th></tr></thead>
-    <tbody>${rows.map(q => `<tr data-open="${q.id}" style="cursor:pointer">
+    <tbody>${rows.map(q => `<tr data-open="${esc(q.id)}" style="cursor:pointer">
       <td><div class="semibold sm">${esc(q.title)}</div><div class="xs faint">${esc(q.note || '')}</div></td>
       <td>${(q.questions || []).length}</td>
       <td>${Object.keys(q.responses || {}).length}</td>
@@ -197,7 +201,7 @@ const TYPE_LABEL = { short: '短答', para: '段落', single: '單選', multi: '
 
 function importView() {
   return `<div class="card card-pad" style="max-width:760px">
-    ${noteBox('<b>最方便：</b>喺 Google 表單右上 ⋮ →「列印」→ 另存 PDF，跟住喺下面<b>上載個 PDF</b>，'
+    ${noteBoxHtml('<b>最方便：</b>喺 Google 表單右上 ⋮ →「列印」→ 另存 PDF，跟住喺下面<b>上載個 PDF</b>，'
       + '系統會自動抽出題目同選項（認唔出單選／多選會當「單選」，匯入後喺編輯器逐題改就得）。'
       + '亦可以貼 CSV／文字。', 'brand')}
     <div class="row gap-8 wrap mt-12">
@@ -213,21 +217,28 @@ function importView() {
   </div>`;
 }
 
+/** Pure preview renderer: every imported title/question/option remains text. */
+export function quizImportPreviewHtml(parsed = {}) {
+  if (parsed.error) {
+    return `<div class="hint" style="color:var(--warn)">${icon('alert', 14)} ${esc(parsed.error)}</div>`;
+  }
+  const questions = Array.isArray(parsed.questions) ? parsed.questions : [];
+  return `
+    <div class="note-box ok">${icon('check', 15)}<div>讀到 <b>${questions.length}</b> 題${parsed.title ? ` · 標題：<b>${esc(parsed.title)}</b>` : ''}。撳「匯入成新試卷」就開得一張，入到去仲可以逐題改。</div></div>
+    <ol class="sm mt-8" style="padding-left:20px;line-height:1.9">
+      ${questions.map(q => {
+        const options = Array.isArray(q?.options) ? q.options : [];
+        return `<li>${esc(q?.prompt || '')}
+          <span class="faint xs">（${esc(TYPE_LABEL[q?.type] || q?.type || '')}${options.length ? ` · ${options.length} 個選項：${options.map(esc).join('／')}` : ''}）</span></li>`;
+      }).join('')}
+    </ol>`;
+}
+
 /** 匯入預覽：即時話畀你知會匯出幾多題、乜類型 */
 function refreshImportPreview(root) {
   const box = root.querySelector('#qz-preview');
   if (!box) return;
-  const parsed = parseQuizImport(root.querySelector('#qz-import')?.value || '');
-  if (parsed.error) {
-    box.innerHTML = `<div class="hint" style="color:var(--warn)">${icon('alert', 14)} ${esc(parsed.error)}</div>`;
-    return;
-  }
-  box.innerHTML = `
-    <div class="note-box ok">${icon('check', 15)}<div>讀到 <b>${parsed.questions.length}</b> 題${parsed.title ? ` · 標題：<b>${esc(parsed.title)}</b>` : ''}。撳「匯入成新試卷」就開得一張，入到去仲可以逐題改。</div></div>
-    <ol class="sm mt-8" style="padding-left:20px;line-height:1.9">
-      ${parsed.questions.map(q => `<li>${esc(q.prompt)}
-        <span class="faint xs">（${TYPE_LABEL[q.type] || q.type}${q.options.length ? ` · ${q.options.length} 個選項：${q.options.join('／')}` : ''}）</span></li>`).join('')}
-    </ol>`;
+  box.innerHTML = quizImportPreviewHtml(parseQuizImport(root.querySelector('#qz-import')?.value || ''));
 }
 
 function editor(q) {
@@ -245,7 +256,7 @@ function editor(q) {
           <option value="closed" ${d.status === 'closed' ? 'selected' : ''}>關閉</option></select></div>
       <div class="field"><label class="label">邊個睇到</label>
         ${visSelect('quiz', contentVis(d, 'quiz'), 'id="qz-vis"')}
-        <div class="hint mt-4">設「對外公開」＝ 免登入都睇到。去側邊欄<b>公開資料</b>可以一眼睇晒而家公開緊啲乜。</div></div>
+        <div class="hint mt-4">只限已登入身份；匿名／免登入發佈已刪除。</div></div>
     </div>
     <div class="mt-16 semibold sm">題目</div>
     <div id="qz-qs">${qs.map((item, i) => qRow(item, i)).join('')}</div>
@@ -265,7 +276,7 @@ function qRow(item, i) {
     <div class="grid g-2 mt-8" style="gap:8px">
       <select class="select" data-f="type">
         ${[['short', '短答'], ['para', '段落'], ['single', '單選'], ['multi', '多選']].map(([k, l]) =>
-          `<option value="${k}" ${item.type === k ? 'selected' : ''}>${l}</option>`).join('')}
+          `<option value="${esc(k)}" ${item.type === k ? 'selected' : ''}>${l}</option>`).join('')}
       </select>
       <label class="check"><input type="checkbox" data-f="req" ${item.required ? 'checked' : ''}> 必填</label>
     </div>
@@ -274,7 +285,7 @@ function qRow(item, i) {
 }
 
 function detail(id) {
-  const q = find('quizzes', id);
+  const q = visibleQuiz(id);
   if (!q) return empty('alert', '搵唔到試卷');
   const resp = Object.entries(q.responses || {});
   return `

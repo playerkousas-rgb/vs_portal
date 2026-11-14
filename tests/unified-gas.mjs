@@ -284,6 +284,36 @@ ok('BOOK import becomes official only after an authenticated branch leader revie
     && node.sheets.get('進度追蹤')._rows.some(row => row[0] === '9000000001'
       && row[1] === 'L1-BOOK-IMPORT' && row[2] === '2026-02-09'),
   JSON.stringify(bookReview));
+
+/* Full frontend bulk approval is one signed action.  It may contain normal Progress
+   and activity-log rows, but validates the complete selection before the first write. */
+node.sheets.get('待批完成').appendRow([
+  'REQ-BULK-1', '9000000001', '中央團員', 'L1-BULK', '批量進度', '2026-02-10', '', 'pending', '2026-02-10', '', '', '', ''
+]);
+const bulkReviewRequest = signedRequest('bulkReviewRequests', {
+  unit: '0082', sessionToken: bookReviewerLogin.token,
+  requests: [
+    { kind: 'req', request_id: 'REQ-BULK-1' },
+    { kind: 'log', request_id: 'LOGREQ-1' }
+  ], decision: 'approved', confirmed_date: '2026-02-11'
+});
+const bulkReview = node.post(bulkReviewRequest.body, bulkReviewRequest.parameter);
+ok('one signed bulkReviewRequests action approves mixed Progress and log selections',
+  bulkReview.success === true && bulkReview.processed === 2
+    && bulkReview.progressRequests === 1 && bulkReview.logRequests === 1,
+  JSON.stringify(bulkReview));
+ok('bulk approval writes both destinations and closes both pending rows',
+  node.sheets.get('進度追蹤')._rows.some(row => row[0] === '9000000001'
+    && row[1] === 'L1-BULK' && row[2] === '2026-02-11')
+  && node.sheets.get('活動履歷')._rows.some(row => row[5] === '待批服務')
+  && node.sheets.get('待批完成')._rows.find(row => row[0] === 'REQ-BULK-1')?.[7] === 'approved'
+  && node.sheets.get('待批履歷')._rows.find(row => row[0] === 'LOGREQ-1')?.[12] === 'approved');
+const emptyBulkRequest = signedRequest('bulkReviewRequests', {
+  unit: '0082', sessionToken: bookReviewerLogin.token, requests: [], decision: 'approved'
+});
+const emptyBulk = node.post(emptyBulkRequest.body, emptyBulkRequest.parameter);
+ok('bulk approval rejects an empty selection before writing',
+  emptyBulk.success === false && emptyBulk.code === 'NO_SELECTION');
 node.context.destroyToken(bookReviewerLogin.token);
 const bookReviewerRow = node.sheets.get('Users')._rows.findIndex(row => row[0] === bookReviewerYmis);
 if (bookReviewerRow >= 0) node.sheets.get('Users').deleteRow(bookReviewerRow + 1);
@@ -329,6 +359,44 @@ ok('unified code completion resets baseline credential without exposing legacy P
 const completedForgotReplay = node.post({ action: 'authCompletePasswordReset', unit: '0082',
   email: 'admin@example.com', code: forgotCode, newPassword: 'changed98' });
 ok('unified password-reset code is single-use', completedForgotReplay.success === false);
+
+/* The full branch frontend account aliases write pinned BADGE Users directly; no
+   Portal accounts/password collection is created. */
+const accountAdmin = node.post({ action: 'authLogin', unit: '0082', username: 'admin@example.com', password: 'changed99' });
+node.sheets.get('成員名單').appendRow(['9000000010', '支部直接開戶', '2026-02-12', 'VS', '']);
+const openedAccounts = node.post({
+  action: 'authOpenAccounts', unit: '0082', sessionToken: accountAdmin.sessionToken,
+  users: [{ ymis: '9000000010', name: '支部直接開戶', role: 'member', password: '1234', branch: 'VS' }]
+});
+const openedUserRow = node.sheets.get('Users')._rows.find(row => String(row[0]) === '9000000010');
+ok('branch leader/admin can directly open an account in pinned Unified Users',
+  accountAdmin.success === true && openedAccounts.success === true && openedAccounts.created === 1
+    && openedUserRow?.[11] === 'active' && openedUserRow?.[13] === true,
+  JSON.stringify(openedAccounts));
+const openedLogin = node.post({ action: 'authLogin', unit: '0082', username: '9000000010', password: '1234' });
+ok('directly opened account immediately logs in through the normal branch authority',
+  openedLogin.success === true && openedLogin.account?.ymis === '9000000010');
+openedUserRow[3] = 'generic-platform-admin';
+const foreignRoleLogin = node.post({ action: 'authLogin', unit: '0082', username: '9000000010', password: '1234' });
+ok('unknown backend role fails closed instead of silently becoming member',
+  foreignRoleLogin.success === false && foreignRoleLogin.code === 'ROLE_NOT_ALLOWED', JSON.stringify(foreignRoleLogin));
+openedUserRow[3] = 'member';
+const resetOpened = node.post({ action: 'authResetPassword', unit: '0082',
+  sessionToken: accountAdmin.sessionToken, targetYmis: '9000000010', newPassword: '5678' });
+ok('full frontend password reset delegates to pinned Users handler', resetOpened.success === true, JSON.stringify(resetOpened));
+const disabledOpened = node.post({ action: 'authDeleteAccount', unit: '0082',
+  sessionToken: accountAdmin.sessionToken, targetYmis: '9000000010' });
+ok('full frontend account removal revokes login but preserves the Users/roster identity',
+  disabledOpened.success === true
+    && node.sheets.get('Users')._rows.find(row => String(row[0]) === '9000000010')?.[11] === 'inactive'
+    && node.sheets.get('成員名單')._rows.some(row => String(row[0]) === '9000000010'),
+  JSON.stringify(disabledOpened));
+const restoredOpened = node.post({ action: 'authRestoreAccount', unit: '0082',
+  sessionToken: accountAdmin.sessionToken, targetYmis: '9000000010', newPassword: '1234' });
+ok('full frontend can restore the same Unified Users account with a new temporary password',
+  restoredOpened.success === true
+    && node.sheets.get('Users')._rows.find(row => String(row[0]) === '9000000010')?.[11] === 'active',
+  JSON.stringify(restoredOpened));
 
 const forgedServerSuper = node.post({ action: 'loadTables', unit: '0082', unified_super: true, on_behalf: 'sheep' });
 ok('client cannot claim the platform-super server path without a valid branch signature',
@@ -437,7 +505,7 @@ ok('authorised leader can write administrative tables', saved.success === true &
 const loaded = node.post({ action: 'loadTables', unit: '0082', sessionToken: leaderExchange.sessionToken });
 ok('all clients read one administrative data copy', loaded.success === true && Array.isArray(loaded.db?.members));
 ok('canonical roster overlays Portal member identity fields', loaded.db.members.some(m => m.ymis === '9000000001' && m.name === '中央團員（更新）'));
-ok('legacy account payload is replaced by safe Users projection', loaded.db.accounts.every(a => !a.pw && !a.password && a.source === 'central-or-rescue'));
+ok('legacy account payload is replaced by safe pinned Users projection', loaded.db.accounts.every(a => !a.pw && !a.password && a.source === 'unified-users'));
 ok('no client-supplied shadow account survives', !loaded.db.accounts.some(a => a.username === 'shadow'));
 
 /* A compatibility rejection must be side-effect free. Historically the unified
@@ -455,13 +523,64 @@ ok('stale compatibility save is rejected before any roster or Users mirror side 
   rejectedRosterSave.success === false && rosterAfterReject?.[1] === rosterNameBeforeReject
     && JSON.stringify(userAfterReject) === JSON.stringify(userBeforeReject), JSON.stringify(rejectedRosterSave));
 
-const stagedIdentityDb = JSON.parse(JSON.stringify(loaded.db));
+/* Unified account aliases bypass Portal's ordinary save dispatcher, but must still
+   obey this branch DB's admin.accounts ACL after the compatibility DB exists. */
+const aclReadRequest = signedRequest('loadTables', {
+  unit: '0082', apiKey: 'existing-api-key-do-not-change', unified_super: true, on_behalf: 'sheep'
+});
+const aclFull = node.post(aclReadRequest.body, aclReadRequest.parameter);
+const aclDeniedDb = JSON.parse(JSON.stringify(aclFull.db));
+aclDeniedDb.permOverrides = aclDeniedDb.permOverrides || {};
+aclDeniedDb.permOverrides['admin.accounts'] = {
+  ...(aclDeniedDb.permOverrides['admin.accounts'] || {}),
+  member: 0, exco: 0, leader: 0, chief: 0
+};
+aclDeniedDb.permOverrides['member.create'] = {
+  ...(aclDeniedDb.permOverrides['member.create'] || {}), member: 0, exco: 0
+};
+const aclSaveRequest = signedRequest('saveDb', {
+  unit: '0082', apiKey: 'existing-api-key-do-not-change', unified_super: true, on_behalf: 'sheep',
+  db: aclDeniedDb, baseVersion: aclFull.version, refreshReports: false
+});
+const aclSaved = node.post(aclSaveRequest.body, aclSaveRequest.parameter);
+const unifiedAclDenied = [
+  node.post({ action: 'authResetPassword', unit: '0082', sessionToken: accountAdmin.sessionToken,
+    targetYmis: '9000000010', newPassword: '9999' }),
+  node.post({ action: 'authDeleteAccount', unit: '0082', sessionToken: accountAdmin.sessionToken,
+    targetYmis: '9000000010' }),
+  node.post({ action: 'authRestoreAccount', unit: '0082', sessionToken: accountAdmin.sessionToken,
+    targetYmis: '9000000010' }),
+  node.post({ action: 'authCreateAccount', unit: '0082', sessionToken: accountAdmin.sessionToken,
+    targetYmis: '9000000001', role: 'member', password: '1234' })
+];
+ok('Unified reset/delete/restore/create aliases obey branch admin.accounts ACL',
+  aclSaved.success === true
+    && unifiedAclDenied.every(result => result.success === false && result.code === 'ACTION_SCOPE_DENIED'),
+  JSON.stringify({ aclSaved, unifiedAclDenied }));
+const loadedAfterAcl = node.post({ action: 'loadTables', unit: '0082', sessionToken: leaderExchange.sessionToken });
+
+/* Confidential identities omitted by a projection are restored before validation;
+   that restoration must never be confused with a genuinely client-invented row. */
+const excoProjectedAfterAcl = node.post({ action: 'loadTables', unit: '0082', sessionToken: promoted.sessionToken });
+const inventedUnifiedMembers = JSON.parse(JSON.stringify(excoProjectedAfterAcl.db.members));
+inventedUnifiedMembers.push({ id: 'forged-unified-member', ymis: '9999999998',
+  name: '偽造 Unified 成員', identity: 'member' });
+const deniedUnifiedProjectedCreate = node.post({ action: 'saveTables', unit: '0082',
+  sessionToken: promoted.sessionToken, baseVersion: excoProjectedAfterAcl.version, refreshReports: false,
+  tables: { members: inventedUnifiedMembers } });
+ok('unified projected rows cannot bypass a denied member.create permission',
+  excoProjectedAfterAcl.success === true && deniedUnifiedProjectedCreate.success === false
+    && deniedUnifiedProjectedCreate.code === 'ACTION_SCOPE_DENIED', JSON.stringify(deniedUnifiedProjectedCreate));
+ok('generated Unified compatibility checkpoint contains no missing-projection create bypass',
+  !SOURCE.includes('__allowMissingProjectedRows'));
+
+const stagedIdentityDb = JSON.parse(JSON.stringify(loadedAfterAcl.db));
 stagedIdentityDb.members.find(m => m.ymis === '9000000001').identity = 'chief';
 const stagedIdentitySaveId = '0082-stg-unified-identity-guard';
 const stagedIdentityPart = node.post({ action: 'saveDbPart', unit: '0082', sessionToken: promoted.sessionToken,
-  saveId: stagedIdentitySaveId, partIdx: 0, parts: 1, data: stagedIdentityDb, baseVersion: loaded.version });
+  saveId: stagedIdentitySaveId, partIdx: 0, parts: 1, data: stagedIdentityDb, baseVersion: loadedAfterAcl.version });
 const stagedIdentityCommit = node.post({ action: 'saveDbCommit', unit: '0082', sessionToken: promoted.sessionToken,
-  saveId: stagedIdentitySaveId, parts: 1, baseVersion: loaded.version, refreshReports: false });
+  saveId: stagedIdentitySaveId, parts: 1, baseVersion: loadedAfterAcl.version, refreshReports: false });
 ok('unified delegated exco cannot use staged saveDbCommit to bypass identity field authorization',
   stagedIdentityPart.success === true && stagedIdentityCommit.success === false
     && stagedIdentityCommit.code === 'PROTECTED_AUTH_FIELD', JSON.stringify(stagedIdentityCommit));
@@ -469,7 +588,7 @@ ok('unified delegated exco cannot use staged saveDbCommit to bypass identity fie
 /* 團員入口唔再用行政 loadDb/saveDb：有效 session 只收本人安全投影，
 
    RSVP／答卷／請假亦由 GS 固定 memberId，client 偽造身份冇作用。 */
-const hubDb = JSON.parse(JSON.stringify(loaded.db));
+const hubDb = JSON.parse(JSON.stringify(loadedAfterAcl.db));
 hubDb.schema = 2;
 hubDb.settings = { troopLinks: { facebook: 'https://facebook.example/member' }, publicLinks: {} };
 hubDb.publicProfile = {
@@ -499,7 +618,7 @@ hubDb.absences = [
   { id: 'absence-other', memberId: 'm2', ymis: '9000000002', date: '2099-11-01', status: 'approved', reason: '他人私隱' }
 ];
 const hubSeed = node.post({ action: 'saveDb', unit: '0082', sessionToken: leaderExchange.sessionToken,
-  db: hubDb, baseVersion: loaded.version, refreshReports: false });
+  db: hubDb, baseVersion: loadedAfterAcl.version, refreshReports: false });
 ok('leader seeds member-hub administrative source through the normal authorised route', hubSeed.success === true, JSON.stringify(hubSeed));
 const anonymousHub = node.post({ action: 'hubLoad', unit: '0082' });
 ok('member hub rejects a client without an opaque branch session', anonymousHub.code === 'SESSION_REQUIRED');
@@ -522,6 +641,12 @@ const memberRsvp = node.post({ action: 'hubRsvp', unit: '0082', sessionToken: me
 ok('member RSVP ignores forged memberId/role and writes only the session actor', memberRsvp.success === true
   && memberRsvp.db.events[0].rsvp.m1?.status === 'late' && !memberRsvp.db.events[0].rsvp.m2,
   JSON.stringify(memberRsvp));
+const publicReceipt = node.post({ action: 'operationStatus', unit: '0082', operationId: memberRsvp.operationId });
+ok('unpredictable operation ID is a read-only capability receipt (no session, metadata only)',
+  publicReceipt.ok === true && publicReceipt.found === true && publicReceipt.outcome === 'applied'
+    && publicReceipt.operation?.id === memberRsvp.operationId
+    && !Object.prototype.hasOwnProperty.call(publicReceipt.operation || {}, 'resultJson'),
+  JSON.stringify(publicReceipt));
 const hiddenRsvp = node.post({ action: 'hubRsvp', unit: '0082', sessionToken: memberExchange.sessionToken,
   eventId: 'event-leader', status: 'present' });
 ok('member cannot write a leader-only event by guessing its id', hiddenRsvp.success === false);

@@ -13,7 +13,7 @@ import {
 } from '../lib/util.js';
 import { go, setQuery } from '../lib/router.js';
 import { can, current } from '../lib/auth.js';
-import { noteBox } from './ui.js';
+import { noteBoxHtml } from './ui.js';
 
 let viewMode = 'list';
 let filterStatus = 'all';
@@ -60,9 +60,9 @@ export function render(params) {
     </div>
     <div class="row gap-8 wrap no-print">
       <div class="seg" role="tablist">
-        <button role="tab" aria-selected="${viewMode === 'list'}" data-mode="list">清單</button>
-        <button role="tab" aria-selected="${viewMode === 'cal'}" data-mode="cal">行事曆</button>
-        <button role="tab" aria-selected="${viewMode === 'board'}" data-mode="board">看板</button>
+        <button role="tab" aria-selected="${esc(viewMode === 'list')}" data-mode="list">清單</button>
+        <button role="tab" aria-selected="${esc(viewMode === 'cal')}" data-mode="cal">行事曆</button>
+        <button role="tab" aria-selected="${esc(viewMode === 'board')}" data-mode="board">看板</button>
       </div>
       <button class="btn" data-fields="meetings">${icon('table', 15)} 欄位</button>
       ${can('meeting.create') ? `<button class="btn btn-primary" data-act="new">${icon('plus', 16)} 新增會議</button>` : ''}
@@ -72,7 +72,7 @@ export function render(params) {
   <div class="row-between mb-16 wrap gap-12 no-print">
     <div class="chipbar">
       ${[['all', '全部'], ['pending', '待處理'], ['confirmed', '已確定'], ['done', '已完成'], ['draft', '草稿']]
-        .map(([k, l]) => `<button class="chip" aria-pressed="${filterStatus === k}" data-filter="${k}">${l} <span class="faint">${counts[k] || 0}</span></button>`).join('')}
+        .map(([k, l]) => `<button class="chip" aria-pressed="${esc(filterStatus === k)}" data-filter="${esc(k)}">${l} <span class="faint">${counts[k] || 0}</span></button>`).join('')}
     </div>
     <div style="position:relative;min-width:190px">
       <input class="input" id="mtSearch" placeholder="搜尋會議…" value="${esc(keyword)}" style="padding-left:32px">
@@ -106,7 +106,7 @@ function listView(list) {
         <th>主席</th><th class="center">議程</th><th class="center">決議</th><th>狀態</th><th></th>
       </tr></thead>
       <tbody>${list.map(m => `
-        <tr style="cursor:pointer" data-open="${m.id}">
+        <tr style="cursor:pointer" data-open="${esc(m.id)}">
           <td><div class="semibold">${esc(m.title)}</div>
               <div class="xs faint">${esc(relDay(m.date))}</div></td>
           <td><span class="badge b-grey">${esc(MEETING_TYPES[m.type] || '其他')}</span></td>
@@ -118,7 +118,7 @@ function listView(list) {
           <td class="center mono">${(m.decisions || []).length}</td>
           <td>${statusBadge(m.status)}</td>
           <td class="right nowrap">
-            <button class="btn btn-xs btn-ghost" data-open="${m.id}">${icon('chevronR', 15)}</button>
+            <button class="btn btn-xs btn-ghost" data-open="${esc(m.id)}">${icon('chevronR', 15)}</button>
           </td>
         </tr>`).join('')}
       </tbody>
@@ -135,7 +135,7 @@ function board(list) {
     return `<div class="kcol">
       <div class="kcol-head"><span>${label}</span><span class="badge b-grey">${items.length}</span></div>
       ${items.map(m => `
-        <div class="kcard" data-open="${m.id}">
+        <div class="kcard" data-open="${esc(m.id)}">
           <div class="semibold sm" style="line-height:1.4">${esc(m.title)}</div>
           <div class="xs faint mt-4">${esc(m.date)} ${esc(m.time)} · ${esc(m.venue || '地點待定')}</div>
           <div class="row gap-6 mt-8 wrap">
@@ -190,9 +190,9 @@ function calView(all) {
         if (!d) return '<div class="cal-cell empty"></div>';
         const iso = `${calCursor}-${String(d).padStart(2, '0')}`;
         const items = byDay[d] || [];
-        return `<div class="cal-cell" data-calday="${iso}">
+        return `<div class="cal-cell" data-calday="${esc(iso)}">
           <div class="cal-n">${d}</div>
-          ${items.map(m => `<button class="cal-ev" data-open="${m.id}">${esc((m.title || '').slice(0, 16))}</button>`).join('')}
+          ${items.map(m => `<button class="cal-ev" data-open="${esc(m.id)}">${esc((m.title || '').slice(0, 16))}</button>`).join('')}
         </div>`;
       }).join('')}
     </div>
@@ -247,7 +247,7 @@ function detail(id, query) {
     <div class="row gap-8 wrap no-print">
       <select class="select" id="mtStatus" style="width:auto">
         ${Object.entries(MEETING_STATUS).map(([k, v]) =>
-          `<option value="${k}" ${m.status === k ? 'selected' : ''}>${v.label}</option>`).join('')}
+          `<option value="${esc(k)}" ${m.status === k ? 'selected' : ''}>${v.label}</option>`).join('')}
       </select>
       <button class="btn" data-act="print">${icon('print', 16)} 列印</button>
       ${can('meeting.edit', m) ? `<button class="btn" data-act="edit">${icon('edit', 16)} 編輯</button>` : ''}
@@ -258,7 +258,7 @@ function detail(id, query) {
   <div class="seg mb-16 no-print" role="tablist">
     ${[['agenda', '議程'], ['attend', `出席 ${presentN}/${roster.length}`], ['minutes', '會議記錄'],
        ['decisions', `決議 / 行動 ${(m.decisions || []).length}`], ['files', `附件 ${(m.attachments || []).length}`]]
-      .map(([k, l]) => `<button role="tab" aria-selected="${tab === k}" data-tab="${k}">${l}</button>`).join('')}
+      .map(([k, l]) => `<button role="tab" aria-selected="${esc(tab === k)}" data-tab="${esc(k)}">${l}</button>`).join('')}
   </div>
 
   <div id="mtPane">${pane(m, tab)}</div>`;
@@ -289,8 +289,8 @@ function agendaPane(m) {
           <td>${esc(a.text)}</td>
           <td class="right mono muted">${a.minutes || 0} 分</td>
           ${can('meeting.edit', m) ? `<td class="right nowrap">
-            <button class="btn btn-xs btn-ghost" data-act="edit-agenda" data-id="${a.id}">${icon('edit', 14)}</button>
-            <button class="btn btn-xs btn-ghost" data-act="del-agenda" data-id="${a.id}">${icon('trash', 14)}</button>
+            <button class="btn btn-xs btn-ghost" data-act="edit-agenda" data-id="${esc(a.id)}">${icon('edit', 14)}</button>
+            <button class="btn btn-xs btn-ghost" data-act="del-agenda" data-id="${esc(a.id)}">${icon('trash', 14)}</button>
           </td>` : ''}
         </tr>`).join('')}</tbody>
     </table></div>` : `<div class="empty">${icon('note', 32)}<div class="empty-title">仲未有任何議程</div></div>`}
@@ -319,7 +319,7 @@ function attendInner(m) {
         <button class="btn btn-xs btn-primary" data-attact="commit" ${dirty ? '' : 'disabled'}>${icon('check', 13)} 確定出席${dirty ? `（${nChanges}）` : ''}</button>` : ''}
       </div>
     </div>
-    ${editable ? noteBox(dirty
+    ${editable ? noteBoxHtml(dirty
       ? `有 ${nChanges} 個改動<b>仲未儲存</b> —— 撳右上「確定出席」先會一次過寫入後端。`
       : '撳掣點名<b>唔會即刻寫入後端</b>；點晒名先撳右上「確定出席」，一次過儲存。再撳同一格可以還原。', dirty ? 'warn' : 'brand') : ''}
     <div class="table-scroll scroll-x"><table class="table">
@@ -333,9 +333,9 @@ function attendInner(m) {
           <td class="xs muted">${esc(mb.role)}</td>
           ${['present', 'late', 'apology', 'absent'].map(k => `
             <td class="center"><button class="btn btn-xs ${v === k ? (k === 'present' ? 'btn-soft' : 'btn') : 'btn-ghost'}"
-              data-att="${mb.id}" data-val="${k}" ${editable ? '' : 'disabled'}>
+              data-att="${esc(mb.id)}" data-val="${esc(k)}" ${editable ? '' : 'disabled'}>
               ${v === k ? icon('check', 14) : ''}${ATTEND[k].label}</button></td>`).join('')}
-          <td class="center"><button class="btn btn-xs btn-ghost" data-att="${mb.id}" data-val="" ${editable ? '' : 'disabled'}>${icon('x', 14)}</button></td>
+          <td class="center"><button class="btn btn-xs btn-ghost" data-att="${esc(mb.id)}" data-val="" ${editable ? '' : 'disabled'}>${icon('x', 14)}</button></td>
         </tr>`;
       }).join('')}
       </tbody>
@@ -429,15 +429,15 @@ function decisionPane(m) {
       <thead><tr><th style="width:40px"></th><th>事項</th><th>負責人</th><th>到期</th>${editable ? '<th style="width:70px"></th>' : ''}</tr></thead>
       <tbody>${(m.decisions || []).map(d => `
         <tr>
-          <td><button class="btn btn-xs btn-ghost" data-act="toggle-decision" data-id="${d.id}">
+          <td><button class="btn btn-xs btn-ghost" data-act="toggle-decision" data-id="${esc(d.id)}">
             ${d.done ? `<span style="color:var(--ok);display:flex">${icon('check', 16)}</span>` : `<span style="color:#CBD8D0;display:flex">${icon('check', 16)}</span>`}
           </button></td>
-          <td><div style="${d.done ? 'text-decoration:line-through;color:var(--faint)' : ''}">${esc(d.text)}</div></td>
+          <td><div style="${esc(d.done ? 'text-decoration:line-through;color:var(--faint)' : '')}">${esc(d.text)}</div></td>
           <td>${d.owner ? `<div class="row gap-6">${avatar(memberName(d.owner), 'avatar-sm')}<span class="sm">${esc(memberName(d.owner))}</span></div>` : '<span class="faint">—</span>'}</td>
           <td class="mono sm">${esc(d.due || '—')}</td>
           ${editable ? `<td class="right nowrap">
-            <button class="btn btn-xs btn-ghost" data-act="edit-decision" data-id="${d.id}">${icon('edit', 14)}</button>
-            <button class="btn btn-xs btn-ghost" data-act="del-decision" data-id="${d.id}">${icon('trash', 14)}</button></td>` : ''}
+            <button class="btn btn-xs btn-ghost" data-act="edit-decision" data-id="${esc(d.id)}">${icon('edit', 14)}</button>
+            <button class="btn btn-xs btn-ghost" data-act="del-decision" data-id="${esc(d.id)}">${icon('trash', 14)}</button></td>` : ''}
         </tr>`).join('')}</tbody>
     </table></div>` : `<div class="empty">${icon('target', 32)}<div class="empty-title">仲未有決議事項</div></div>`}
   </div>`;
@@ -454,7 +454,7 @@ function filesPane(m) {
       <div class="list-item">
         <div class="stat-ic" style="width:32px;height:32px;border-radius:8px">${icon('note', 16)}</div>
         <div class="li-main"><div class="li-t">${esc(f.name)}</div><div class="li-s">${esc(f.size || '—')}</div></div>
-        ${can('meeting.edit', m) ? `<button class="btn btn-xs btn-ghost" data-act="del-file" data-idx="${i}">${icon('trash', 14)}</button>` : ''}
+        ${can('meeting.edit', m) ? `<button class="btn btn-xs btn-ghost" data-act="del-file" data-idx="${esc(i)}">${icon('trash', 14)}</button>` : ''}
       </div>`).join('')}</div>` : `<div class="empty">${icon('upload', 32)}<div class="empty-title">仲未有附件</div></div>`}
   </div>`;
 }
@@ -484,13 +484,13 @@ function editor(m) {
       <div class="field">
         <label class="label">類型</label>
         <select class="select" id="f-type">
-          ${Object.entries(MEETING_TYPES).map(([k, v]) => `<option value="${k}" ${d.type === k ? 'selected' : ''}>${v}</option>`).join('')}
+          ${Object.entries(MEETING_TYPES).map(([k, v]) => `<option value="${esc(k)}" ${d.type === k ? 'selected' : ''}>${v}</option>`).join('')}
         </select>
       </div>
       <div class="field">
         <label class="label">狀態</label>
         <select class="select" id="f-status">
-          ${Object.entries(MEETING_STATUS).map(([k, v]) => `<option value="${k}" ${d.status === k ? 'selected' : ''}>${v.label}</option>`).join('')}
+          ${Object.entries(MEETING_STATUS).map(([k, v]) => `<option value="${esc(k)}" ${d.status === k ? 'selected' : ''}>${v.label}</option>`).join('')}
         </select>
       </div>
       <div class="field"><label class="label">日期 <span class="req">*</span></label>
@@ -501,11 +501,11 @@ function editor(m) {
         <input class="input" id="f-venue" value="${esc(d.venue)}" placeholder="例如：旅部活動室 / 線上"></div>
       <div class="field"><label class="label">主席</label>
         <select class="select" id="f-chair"><option value="">—</option>
-          ${roster.map(x => `<option value="${x.id}" ${d.chair === x.id ? 'selected' : ''}>${esc(x.name)}（${esc(x.role)}）</option>`).join('')}
+          ${roster.map(x => `<option value="${esc(x.id)}" ${d.chair === x.id ? 'selected' : ''}>${esc(x.name)}（${esc(x.role)}）</option>`).join('')}
         </select></div>
       <div class="field"><label class="label">秘書</label>
         <select class="select" id="f-secretary"><option value="">—</option>
-          ${roster.map(x => `<option value="${x.id}" ${d.secretary === x.id ? 'selected' : ''}>${esc(x.name)}（${esc(x.role)}）</option>`).join('')}
+          ${roster.map(x => `<option value="${esc(x.id)}" ${d.secretary === x.id ? 'selected' : ''}>${esc(x.name)}（${esc(x.role)}）</option>`).join('')}
         </select></div>
     </div>
     <div class="row gap-8 mt-24" style="justify-content:flex-end">
@@ -576,7 +576,7 @@ export function mount(root, params) {
       if (act === 'add-agenda') {
         const r = await modal({
           title: '加入議程項目',
-          body: `<div class="field"><label class="label">議程內容</label>
+          trustedBodyHtml: `<div class="field"><label class="label">議程內容</label>
               <textarea class="textarea" id="q-text" placeholder="例如：司庫報告"></textarea></div>
             <div class="field mt-12"><label class="label">預計時間（分鐘）</label>
               <input class="input" id="q-min" type="number" value="10"></div>`,
@@ -597,10 +597,10 @@ export function mount(root, params) {
         if (!a) return;
         const r = await modal({
           title: '編輯議程',
-          body: `<div class="field"><label class="label">議程內容</label>
+          trustedBodyHtml: `<div class="field"><label class="label">議程內容</label>
               <textarea class="textarea" id="q-text">${esc(a.text)}</textarea></div>
             <div class="field mt-12"><label class="label">預計時間（分鐘）</label>
-              <input class="input" id="q-min" type="number" value="${a.minutes || 0}"></div>`,
+              <input class="input" id="q-min" type="number" value="${esc(a.minutes || 0)}"></div>`,
           actions: [{ label: '取消', class: 'btn', value: null },
                     { label: '儲存', class: 'btn-primary', onClick: el => ({
                         text: el.querySelector('#q-text').value.trim(),
@@ -623,7 +623,7 @@ export function mount(root, params) {
       if (act === 'edit-minutes') {
         const r = await modal({
           title: '會議記錄', wide: true,
-          body: `<div class="field"><label class="label">內容</label>
+          trustedBodyHtml: `<div class="field"><label class="label">內容</label>
             <textarea class="textarea" id="q-min" style="min-height:280px">${esc(m.minutes || '')}</textarea>
             <div class="hint">建議格式：每段一個議題，開首寫明討論要點及結論。</div></div>`,
           actions: [{ label: '取消', class: 'btn', value: null },
@@ -650,15 +650,15 @@ export function mount(root, params) {
         const roster = members().filter(x => x.status !== 'alumni');
         const r = await modal({
           title: d ? '編輯決議 / 行動' : '新增決議 / 行動',
-          body: `<div class="field"><label class="label">事項 <span class="req">*</span></label>
+          trustedBodyHtml: `<div class="field"><label class="label">事項 <span class="req">*</span></label>
               <textarea class="textarea" id="q-text" placeholder="例如：於 10 月 10 日前完成遠足路線勘察">${d ? esc(d.text) : ''}</textarea></div>
             <div class="grid g-2 mt-12">
               <div class="field"><label class="label">負責人</label>
                 <select class="select" id="q-owner"><option value="">—</option>
-                  ${roster.map(x => `<option value="${x.id}" ${d?.owner === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}
+                  ${roster.map(x => `<option value="${esc(x.id)}" ${d?.owner === x.id ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}
                 </select></div>
               <div class="field"><label class="label">到期日</label>
-                <input class="input" type="date" id="q-due" value="${d?.due || ''}"></div>
+                <input class="input" type="date" id="q-due" value="${esc(d?.due || '')}"></div>
             </div>`,
           actions: [{ label: '取消', class: 'btn', value: null },
             { label: '儲存', class: 'btn-primary', onClick: el => ({
@@ -690,7 +690,7 @@ export function mount(root, params) {
       if (act === 'add-file') {
         const r = await modal({
           title: '新增附件',
-          body: `<div class="field"><label class="label">檔案名稱</label>
+          trustedBodyHtml: `<div class="field"><label class="label">檔案名稱</label>
               <input class="input" id="q-name" placeholder="例如：議程.pdf"></div>
             <div class="field mt-12"><label class="label">大小（可留空）</label>
               <input class="input" id="q-size" placeholder="例如：412 KB"></div>
@@ -718,7 +718,7 @@ export function mount(root, params) {
       if (act === 'del') {
         if (await confirmDlg({
           title: '刪除會議', danger: true, okText: '確定刪除',
-          message: `確定刪除「<b>${esc(m.title)}</b>」？<br><span class="muted">會議記錄、議程及出席資料會一併刪除，此動作不能復原。</span>`
+          trustedMessageHtml: `確定刪除「<b>${esc(m.title)}</b>」？<br><span class="muted">會議記錄、議程及出席資料會一併刪除，此動作不能復原。</span>`
         })) {
           remove('meetings', m.id);
           toast('會議已刪除', 'ok'); go('#/meetings');

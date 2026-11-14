@@ -2823,23 +2823,25 @@ function showApiKey() {
   return apiKey;
 }
 
-/* ★ v2.8.4 旅系統接駁：Sheet 選單（後備閂／開門）
-   呢個掣係**本機**嘅直接入口（post /exec 唔再收 apikey／本地登入，只收上游 sig）。 */
+/* 支部本地帳戶／session 係正常登入來源；Sheet 選單只提供支部安全操作。 */
 function onOpen() {
   try {
     var ui = SpreadsheetApp.getUi();
-    ui.createMenu('🔗 旅系統')
-      .addItem('閂（只收上游 sig）', 'menuLocalLoginOff')
-      .addItem('🔓 開啟（容許本地登入）', 'menuLocalLoginOn')
+    ui.createMenu('🔗 支部系統')
+      .addItem('ℹ️ 支部本地登入必須保持開啟', 'menuLocalLoginOff')
+      .addItem('🔓 開啟／復原本地登入', 'menuLocalLoginOn')
       .addToUi();
   } catch (e) { /* headless（執行緊 script）冇 UI，靜靜略過 */ }
 }
 function menuLocalLoginOff() {
-  var ui = SpreadsheetApp.getUi();
-  var r = ui.alert('閂「直接入口」？', '閂咗之後，本地 apikey／帳戶登入都入唔到，只收上游（旅／團）簽名請求。\n\n本系統（呢支 /exec）只會由上游經簽名讀寫。確定？', ui.ButtonSet.OK_CANCEL);
-  if (r !== ui.Button.OK) return;
-  PropertiesService.getScriptProperties().setProperty(LINK_FLAG, 'false');
-  ui.alert('已閂', 'ALLOW_LOCAL_LOGIN=false：只收上游 sig。\n要重開就撳「🔓 開啟（容許本地登入）」或者等上游 setLocalLogin(allow=true)。', ui.ButtonSet.OK);
+  var ui = null;
+  try { ui = SpreadsheetApp.getUi(); } catch (e) { /* headless */ }
+  var message = '支部本地帳戶／session 係正常登入來源，必須保持開啟。';
+  PropertiesService.getScriptProperties().setProperty(LINK_FLAG, 'true');
+  if (ui) ui.alert('不可關閉支部本地入口', message, ui.ButtonSet.OK);
+  try { Logger.log(message); } catch (e2) { /* ignore */ }
+  return { success: false, code: 'BRANCH_LOCAL_LOGIN_REQUIRED', error: message,
+    allow_local_login: localLoginAllowed() };
 }
 function menuLocalLoginOn() {
   var ui = SpreadsheetApp.getUi();
@@ -2854,18 +2856,17 @@ function sha256HexGs(s) {
 }
 
 /* ============================================================
-   旅系統：上下游接駁（旅 > 團 > 支部）
+   Legacy server-signature compatibility（非 Progress／旅系統 reader 契約）
    ------------------------------------------------------------
-   同 VSBADGE 一套協定（相同 LINK_SIG_PURPOSE／sig 公式），等「旅系統」出現嗰陣：
-     · 上游（旅）喺佢自己 Script Properties 登記我呢支 /exec（BACKEND）＋我條 SHEET KEY（APIKEY）；
-     · 之後上游可以經 **簽名（sig）** 讀寫我呢支後端；
-     · 我呢度 Script Properties 有旗仔 ALLOW_LOCAL_LOGIN —— 未設定＝開啟（現有旅團零影響）；
-       設成 false＝閂口，我之後只接受帶有效 sig 嘅上游請求，本地 apikey／登入一概拒。
-   開關掣搞喺呢支 GAS（Sheet「🔗 旅系統」選單）＋ 上游 setLocalLogin 兩條路。
-   登記資料、sig、nonce 只存 Script Properties / Cache，一律唔寫入工作表。
+   保留同 VSBADGE 相同的 LINK_SIG_PURPOSE／sig 公式，讓既有 server proxy 可向
+   本支部同一 /exec 重送業務 action。正式支部登入仍由本地帳戶／session 提供，
+   initializeSheets() 及 Sheet 選單會維持 ALLOW_LOCAL_LOGIN=true。
+   未來旅系統只由旅系統端單向讀支部最小投影；不可把下面的 legacy action
+   allowlist、入口旗標或 auth fixture 當作旅系統施工契約。
+   sig、nonce 只存 Script Properties / Cache，一律唔寫入工作表。
    ============================================================ */
 var LINK_FLAG = 'ALLOW_LOCAL_LOGIN';
-var LINK_SIG_PURPOSE = 'vsbadge-troop-sig-v1';     // 同 VSBADGE 一樣（有齊兩邊就互相認得）
+var LINK_SIG_PURPOSE = 'vsbadge-troop-sig-v1';     // 與既有 VSBADGE transport 兼容
 var LINK_SIG_WINDOW_MS = 5 * 60 * 1000;
 var LINK_SIG_NONCE_TTL = 600;
 /* Admin saveTables payload can legitimately approach the 4 MiB proxy ceiling. HMAC hashes
@@ -2874,8 +2875,8 @@ var LINK_MAX_SIGNED_BYTES = 4 * 1024 * 1024;
 var LINK_SIG_HEX_RE = /^[0-9a-f]{64}$/i;
 var LINK_NONCE_RE = /^[0-9A-Za-z_-]{8,64}$/;
 var LINK_RESERVED_BODY_KEYS = ['sig', 'sig_ts', 'sig_nonce'];
-/* 上游可以經簽名喺我做嘅 action。authWhoAmI 仍然必須另帶有效短期 sessionToken；
-   簽名只讓閂咗直接入口時到達核對邏輯，唔會代替登入。 */
+/* Legacy server proxy 可經簽名執行以下 action。authWhoAmI 仍然必須另帶有效
+   支部 sessionToken；transport signature 永遠唔會代替用戶登入。 */
 var LINK_SIG_READ_ACTIONS = ['load', 'loadMine', 'myRequests', 'getLinkState', 'getLoginMode', 'dbInfo', 'loadDb', 'loadDbPart', 'loadTables', 'loadTablesPart', 'syncCheck', 'authWhoAmI'];
 var LINK_SIG_WRITE_ACTIONS = ['save', 'saveOtherBadge', 'reviewRequest', 'reviewLogRequest', 'addRequest', 'saveDb', 'saveDbPart', 'saveDbCommit', 'saveTables', 'sync', 'uploadPhotos', 'repairDb', 'saveDbForce', 'setLocalLogin', 'authResetPassword', 'authDeleteAccount', 'authRestoreAccount', 'authCreateAccount'];
 
@@ -2894,7 +2895,7 @@ function linkCanonicalGs(action, ts, nonce, digest) {
   return [String(action || ''), String(ts || ''), String(nonce || ''), String(digest || '')].join('\n');
 }
 
-/* ---- 直接入口掣（寫喺我支 GAS 自己個 Script Properties）---- */
+/* ---- Legacy 入口旗標（正式初始化固定復原為 true）---- */
 function localLoginAllowed() {
   var v = String(PropertiesService.getScriptProperties().getProperty(LINK_FLAG) || '').trim().toLowerCase();
   if (!v) return true;   // 未設定＝開啟（fail-open，同 VSBADGE 現有旅團零影響）
@@ -2903,7 +2904,7 @@ function localLoginAllowed() {
 function linkClosedResponse(action) {
   return {
     success: false, ok: false, local_login: false, upstream_only: true,
-    error: '此後端的直接入口已閂（' + LINK_FLAG + '=false），只接受上游簽名（sig）請求；請由上游（旅／團）入口登入。' + (action ? '（已拒絕：' + action + '）' : '')
+    error: '支部本地登入旗標異常（' + LINK_FLAG + '=false）；請重新執行 initializeSheets() 復原正常支部入口。' + (action ? '（已拒絕：' + action + '）' : '')
   };
 }
 function getLinkState() {
@@ -2989,11 +2990,11 @@ function verifyLinkSig(e, body, rawBody) {
   }
 }
 
-/* ---- 上游簽名請求路由（閂咗口都入到；行 body.action 白名單）---- */
+/* ---- Legacy server-signature transport（只行 body.action 白名單）---- */
 function handleSignedRequest(e, body, rawBody) {
   var a = String((body && body.action) || '');
   if (LINK_SIG_READ_ACTIONS.indexOf(a) < 0 && LINK_SIG_WRITE_ACTIONS.indexOf(a) < 0) {
-    return json({ success: false, ok: false, error: '上游簽名請求不接受此操作：' + a });
+    return json({ success: false, ok: false, error: 'server-signature transport 不接受此操作：' + a });
   }
   /* 簽名已由共享 nonce＋HMAC 驗證；用只在 server 內加入的 marker 交給 dispatcher。
      API Key 仍只作路由，絕不因為「有 key」就自動變成用戶身份。 */
@@ -3105,7 +3106,7 @@ function verifySetupKey(key) {
    點解要補欄：舊寫法只在 getLastRow() === 0 先寫 header，
    即係一張已有資料嘅舊 Sheet **永遠加唔到新欄位** —— 升級後新欄靜靜缺失。
    而家逐欄比對 header 名，只把缺少嘅補喺最右邊（唔郁現有欄位位置，
-   因為進度前端係按欄位位置讀共用分頁，重排會即刻讀錯）。
+   因為 Progress／BADGE action 係按欄位位置讀共用分頁，重排會即刻讀錯）。
    守護測試：tests/init-preserve.mjs（前後逐表快照對比）。
    ============================================================ */
 var INITIALIZED_VERSION_PROP = 'INITIALIZED_VERSION';
@@ -3193,7 +3194,7 @@ function initializeSheets() {
     { name: '會議', headers: ['旅團', 'id', '日期', '標題', '地點', '狀態', '備註', '同步時間'] },
     { name: '同步紀錄', headers: ['時間', '旅團', '旅團名稱', '統計內容'] },
     { name: '審計紀錄', headers: ['時間', '旅團', 'action', '結果', '途徑', '操作者'] },
-    /* ↓↓↓ 完整 Unified 後端的共用分頁（vs_portal 完整版＋vsbadge 輕量版前端）：欄位順序唔可以改 ↓↓↓ */
+    /* ↓↓↓ 行政、Progress 與 BADGE 共用嘅分頁（一個 Unified 後端、多個 client）：欄位順序唔可以改 ↓↓↓ */
     { name: '進度追蹤', headers: ['YMIS', '項目 ID', '完成日期', '更新時間', '確認者', '備註'] },
     { name: '其他獎章', headers: ['YMIS', '獎章 ID', '獎章名稱', '完成日期', '證書編號', '備註', '更新時間'] },
     { name: '待批完成', headers: ['request_id', 'ymis', 'name', 'item_id', 'item_name', 'requested_date', 'evidence', 'status', 'created_at', 'reviewed_by', 'reviewed_at', 'review_note', 'confirmed_date'] },
@@ -3215,7 +3216,9 @@ function initializeSheets() {
   /* 成功完成後寫初始化標記（學 VSBADGE VS_GS_INITIALIZED_VERSION）：
      咁先分得清「淨係貼咗新 Code.gs」同「真係行咗初始化」。 */
   try {
-    PropertiesService.getScriptProperties().setProperty(INITIALIZED_VERSION_PROP, BACKEND_VERSION);
+    var initProps = PropertiesService.getScriptProperties();
+    initProps.setProperty(LINK_FLAG, 'true');
+    initProps.setProperty(INITIALIZED_VERSION_PROP, BACKEND_VERSION);
   } catch (e) { /* ScriptProperties 配額／權限問題唔應該令初始化本身失敗 */ }
 
   var created = report.filter(function(r) { return r.created; }).map(function(r) { return r.tab; });
@@ -3273,24 +3276,20 @@ function hubClone_(value) {
   try { return JSON.parse(JSON.stringify(value)); } catch (e) { return null; }
 }
 function hubRoleRank_(role) {
-  var r = textOf(role).toLowerCase();
-  if (r === 'super' || r === 'super_admin' || r === 'chief' || r === 'group_leader' || r === 'admin') return 5;
-  if (r === 'leader' || r === 'branch_leader') return 4;
-  if (r === 'exco' || r === 'exec_committee') return 3;
-  if (r === 'member') return 2;
-  return 0;
+  var level = branchRoleLevel_(role);
+  return level ? level + 1 : 0;
 }
 function hubVisRank_(vis, fallback) {
-  var v = textOf(vis || fallback || 'member').toLowerCase();
-  if (v === 'other') return 1;
-  if (v === 'member') return 2;
-  if (v === 'exco') return 3;
-  if (v === 'leader') return 4;
-  if (v === 'chief') return 5;
-  return hubVisRank_(fallback || 'member', 'member');
+  var value = textOf(vis || fallback || 'member').toLowerCase();
+  /* 'other' 只係舊資料 adapter；匿名層已退役並安全收窄到 member。 */
+  if (value === 'other') value = 'member';
+  var level = branchRoleLevel_(value);
+  if (level) return level + 1;
+  var fallbackLevel = branchRoleLevel_(fallback || 'member') || branchRoleLevel_('member');
+  return fallbackLevel + 1;
 }
 function hubVisible_(record, kind, role) {
-  var fallback = kind === 'notice' ? 'other' : 'member';
+  var fallback = 'member';
   if (kind === 'event' && record && record.visibility === 'exco') fallback = 'exco';
   return hubVisRank_(record && record.vis, fallback) <= hubRoleRank_(role);
 }
@@ -3345,14 +3344,30 @@ function hubSafeQuiz_(row, memberId) {
     at: textOf(mine && mine.at), answers: hubSafeAnswers_(mine && mine.answers, questions) };
   return out;
 }
-function hubSafeNotice_(row) {
+function hubSafeNotice_(row, memberId, ymis) {
   row = row || {};
   var title = row.title && typeof row.title === 'object'
     ? { zh: textOf(row.title.zh), en: textOf(row.title.en) }
     : { zh: textOf(row.title), en: '' };
-  return { id: textOf(row.id), title: title, status: textOf(row.status), vis: textOf(row.vis),
-    type: textOf(row.type), eventDate: textOf(row.eventDate), deadline: textOf(row.deadline),
-    needSignup: !!row.needSignup, publishAt: textOf(row.publishAt) };
+  var body = row.body && typeof row.body === 'object'
+    ? { zh: textOf(row.body.zh), en: textOf(row.body.en) }
+    : { zh: textOf(row.body), en: '' };
+  var fields = (Array.isArray(row.fields) ? row.fields : []).map(function (field) {
+    return { key: textOf(field && field.key), label: textOf(field && field.label), type: textOf(field && field.type || 'text'),
+      required: !!(field && field.required), options: (Array.isArray(field && field.options) ? field.options : []).map(textOf) };
+  });
+  var mySignup = null;
+  (Array.isArray(row.signups) ? row.signups : []).some(function (signup) {
+    if (signup && ((memberId && textOf(signup.memberId) === textOf(memberId))
+        || (ymis && textOf(signup.ymis) === textOf(ymis)))) { mySignup = signup; return true; }
+    return false;
+  });
+  return { id: textOf(row.id), title: title, body: body, status: textOf(row.status), vis: textOf(row.vis),
+    type: textOf(row.type), eventDate: textOf(row.eventDate), deadline: textOf(row.deadline), venue: textOf(row.venue),
+    assemblyTime: textOf(row.assemblyTime), dismissTime: textOf(row.dismissTime), assemblyPlace: textOf(row.assemblyPlace),
+    dismissPlace: textOf(row.dismissPlace), fee: textOf(row.fee), uniform: textOf(row.uniform), bring: textOf(row.bring),
+    contact: textOf(row.contact), needSignup: !!row.needSignup, fields: fields, publishAt: textOf(row.publishAt),
+    mySignup: mySignup ? { id: textOf(mySignup.id), at: textOf(mySignup.at), answers: hubClone_(mySignup.answers || {}) } : null };
 }
 function hubSafeAbsence_(row) {
   row = row || {};
@@ -3412,7 +3427,7 @@ function hubFindActor_(db, session) {
 /* 行政 actor 同 hub actor 有一個刻意差異：歷史個人 accounts 可能尚未綁 memberId，
    但仍要容許其有效 session 管理／搬遷資料。優先用 hubFindActor_ 取得名冊最新身份；
    只有本地 account session 且確實對到 active account id 時，才 fallback 到 account role。
-   中央 SSO 永遠必須對到支部名冊，不設此 fallback。 */
+   隔離 auth fixture 身份永遠必須對到支部名冊，不設此 fallback。 */
 function adminFindActor_(db, session) {
   var linked = hubFindActor_(db, session);
   if (linked.ok || !session || session.portal || session.kind !== 'account') return linked;
@@ -3424,6 +3439,576 @@ function adminFindActor_(db, session) {
   if (!account) return linked;
   return { ok: true, member: null, account: account, record: account, kind: 'account',
     role: textOf(account.role || 'member').toLowerCase(), legacyUnbound: true };
+}
+
+/* ============================================================
+   支部 schema／伺服器權限
+   ------------------------------------------------------------
+   瀏覽器開關只係介面。所有行政讀寫都會在這裏重新由 opaque session 對回
+   server DB 的身份，再套 module show/read/edit、細項權限、內容可見層級。
+   ============================================================ */
+var BRANCH_SCHEMA_ID_ = "venture-scout";
+var BRANCH_SCHEMA_VERSION_ = 1;
+var BRANCH_ROLE_LEVELS_ = {"member":1,"exco":2,"leader":3,"chief":4,"super":5};
+var BRANCH_ROLE_ORDER_ = ["member","exco","leader","chief","super"];
+var BRANCH_VISIBLE_ROLES_ = ["member","exco","leader","chief"];
+var BRANCH_ACCOUNT_ROLES_ = ["member","exco","leader"];
+var BRANCH_ROLE_ALIASES_ = {"exec_committee":"exco","branch_leader":"leader","group_leader":"chief","admin":"chief","super_admin":"super"};
+var BRANCH_MODULE_DEFAULTS_ = {"dashboard":[2,2,99],"calendar":[2,2,2],"quizzes":[2,2,2],"meetings":[2,2,2],"finance":[2,2,2],"members":[2,2,2],"inventory":[2,2,2],"progress":[2,2,2],"notices":[2,2,2],"links":[2,2,3],"constitution":[2,2,3],"tables":[3,3,3],"admin":[3,3,3]};
+var BRANCH_MODULE_KEYS_ = {
+  calendar: ['events', 'absences'], quizzes: ['quizzes'], meetings: ['meetings'],
+  finance: ['transactions', 'claims', 'fees', 'budgets', 'reference', 'categories', 'methods'],
+  members: ['members', 'accounts', 'accountApps', 'deletedAccounts', 'accessControl', 'permOverrides'],
+  inventory: ['invItems', 'invLoans', 'invAudits', 'invNextCode'], notices: ['notices'],
+  constitution: ['constitution'], tables: ['tableSchema', 'tableSources'],
+  admin: ['auditLog', 'issueReports']
+};
+var BRANCH_KEY_MODULE_ = (function () {
+  var out = {};
+  Object.keys(BRANCH_MODULE_KEYS_).forEach(function (moduleId) {
+    BRANCH_MODULE_KEYS_[moduleId].forEach(function (key) { out[key] = moduleId; });
+  });
+  return out;
+})();
+var BRANCH_VIEW_PERMISSION_ = {
+  calendar: 'calendar.view', quizzes: 'quiz.view', meetings: 'meeting.view',
+  finance: 'finance.view', members: 'member.view', inventory: 'inv.view',
+  progress: 'progress.view', notices: 'notice.view', constitution: 'constitution.view',
+  tables: 'table.view'
+};
+var BRANCH_PERMISSION_DEFAULTS_ = {
+  'meeting.view':[0,1,1], 'meeting.create':[0,1,1], 'meeting.edit':[0,'own',1], 'meeting.delete':[0,0,1],
+  'meeting.minutes':[0,1,1], 'meeting.approve':[0,1,1],
+  'finance.view':[0,1,1], 'finance.create':[0,1,1], 'finance.edit':[0,'own',1], 'finance.delete':[0,0,1],
+  'finance.report':[0,1,1], 'finance.export':[0,1,1], 'claim.submit':[0,1,1], 'claim.review':[0,1,1],
+  'fee.view':[0,1,1], 'fee.mark':[0,1,1], 'fee.edit':[0,0,1],
+  'member.view':[0,1,1], 'member.create':[0,1,1], 'member.edit':[0,1,1], 'member.note':[0,1,1],
+  'member.delete':[0,0,1], 'member.export':[0,1,1], 'member.identity':[0,0,1],
+  'inv.view':[0,1,1], 'inv.manage':[0,1,1], 'inv.borrow':[0,1,1], 'inv.approve':[0,1,1], 'inv.audit':[0,1,1],
+  'calendar.view':[0,1,1], 'calendar.edit':[0,1,1], 'quiz.view':[0,1,1], 'quiz.edit':[0,1,1],
+  'progress.view':[0,1,1], 'progress.tick':[0,1,1], 'progress.config':[0,0,1],
+  'notice.view':[0,1,1], 'notice.create':[0,1,1], 'notice.edit':[0,1,1], 'notice.publish':[0,1,1], 'notice.signup':[0,1,1],
+  'table.view':[0,1,1], 'table.design':[0,0,1], 'table.sync':[0,0,1],
+  'constitution.view':[0,1,1], 'constitution.edit':[0,0,1], 'constitution.publish':[0,0,1],
+  'admin.view':[0,1,1], 'admin.accounts':[0,0,1], 'admin.data':[0,0,1], 'admin.units':[0,0,1]
+};
+function branchCanonicalRole_(role) {
+  var value = textOf(role).toLowerCase();
+  var canonical = BRANCH_ROLE_ALIASES_[value] || value;
+  return Object.prototype.hasOwnProperty.call(BRANCH_ROLE_LEVELS_, canonical) ? canonical : '';
+}
+function branchRoleLevel_(role) { return Number(BRANCH_ROLE_LEVELS_[branchCanonicalRole_(role)] || 0); }
+function staffDefaultGrant_(moduleId, role) {
+  var thresholds = BRANCH_MODULE_DEFAULTS_[moduleId];
+  var level = branchRoleLevel_(role);
+  return { show: !!(thresholds && level >= thresholds[0]), read: !!(thresholds && level >= thresholds[1]),
+    edit: !!(thresholds && level >= thresholds[2]) };
+}
+function staffAccessMatrix_(db) {
+  var source = db && db.accessControl && db.accessControl.modules || {};
+  var modules = {};
+  Object.keys(BRANCH_MODULE_DEFAULTS_).forEach(function (moduleId) {
+    var row = {}, inherited = { show: false, read: false, edit: false };
+    BRANCH_ROLE_ORDER_.forEach(function (role) {
+      var fallback = staffDefaultGrant_(moduleId, role);
+      var saved = source[moduleId] && source[moduleId][role] && typeof source[moduleId][role] === 'object'
+        ? source[moduleId][role] : {};
+      var grant = {
+        show: saved.show === undefined ? fallback.show : saved.show === true,
+        read: saved.read === undefined ? fallback.read : saved.read === true,
+        edit: saved.edit === undefined ? fallback.edit : saved.edit === true
+      };
+      if (grant.edit) grant.read = true;
+      ['show', 'read', 'edit'].forEach(function (dimension) {
+        inherited[dimension] = inherited[dimension] || grant[dimension];
+        grant[dimension] = inherited[dimension];
+      });
+      if (grant.edit) grant.read = true;
+      row[role] = grant;
+    });
+    modules[moduleId] = row;
+  });
+  return { schema: 1, branchSchema: BRANCH_SCHEMA_ID_, branchSchemaVersion: BRANCH_SCHEMA_VERSION_, modules: modules };
+}
+function staffModuleGrant_(db, moduleId, role) {
+  var canonical = branchCanonicalRole_(role);
+  var matrix = staffAccessMatrix_(db);
+  return matrix.modules[moduleId] && matrix.modules[moduleId][canonical]
+    ? matrix.modules[moduleId][canonical] : { show: false, read: false, edit: false };
+}
+function staffPermStrength_(value) { return value === 1 ? 2 : (value === 'own' || value === 'self' ? 1 : 0); }
+function staffStrongerPerm_(a, b) { return staffPermStrength_(a) >= staffPermStrength_(b) ? a : b; }
+function staffPermDefault_(permission, role) {
+  var canonical = branchCanonicalRole_(role);
+  if (canonical === 'super') return permission === 'admin.pw.super' ? 0 : 1;
+  var defaults = BRANCH_PERMISSION_DEFAULTS_[permission] || [0, 0, 0];
+  if (canonical === 'member') return defaults[0] === undefined ? 0 : defaults[0];
+  if (canonical === 'exco') return defaults[1] === undefined ? 0 : defaults[1];
+  /* chief inherits leader defaults unless a dedicated identity rule below narrows it. */
+  if (canonical === 'leader' || canonical === 'chief') return defaults[2] === undefined ? 0 : defaults[2];
+  return 0;
+}
+function staffPermValue_(db, permission, role) {
+  var wanted = branchCanonicalRole_(role), inherited = 0, answer = 0;
+  var custom = db && db.permOverrides && db.permOverrides[permission] || {};
+  BRANCH_ROLE_ORDER_.forEach(function (candidate) {
+    var proposed = Object.prototype.hasOwnProperty.call(custom, candidate)
+      ? custom[candidate] : staffPermDefault_(permission, candidate);
+    if ([0, 1, 'own', 'self'].indexOf(proposed) < 0) proposed = staffPermDefault_(permission, candidate);
+    proposed = staffStrongerPerm_(proposed, inherited);
+    inherited = proposed;
+    if (candidate === wanted) answer = proposed;
+  });
+  return answer;
+}
+function staffOwnRecord_(actor, record) {
+  var member = actor && actor.member || {};
+  var account = actor && actor.account || {};
+  var ids = [textOf(member.id), textOf(account.id), textOf(member.ymis), textOf(member.email).toLowerCase(),
+    textOf(account.username).toLowerCase(), textOf(account.email).toLowerCase()].filter(function (x) { return !!x; });
+  var owners = [record && record.memberId, record && record.createdBy, record && record.requestedBy,
+    record && record.chair, record && record.ymis, record && record.email, record && record.by].map(function (x) { return textOf(x).toLowerCase(); });
+  return owners.some(function (owner) { return !!owner && ids.indexOf(owner) >= 0; });
+}
+function staffCanPermission_(db, permission, actor, record) {
+  var value = staffPermValue_(db, permission, actor && actor.role);
+  if (value === 1) return true;
+  if (value === 'own' || value === 'self') return staffOwnRecord_(actor, record || {});
+  return false;
+}
+function staffCanModule_(db, moduleId, dimension, actor) {
+  var grant = staffModuleGrant_(db, moduleId, actor && actor.role);
+  if (grant[dimension] !== true) return false;
+  if (dimension === 'read' && BRANCH_VIEW_PERMISSION_[moduleId]) {
+    return staffCanPermission_(db, BRANCH_VIEW_PERMISSION_[moduleId], actor, actor && actor.record);
+  }
+  return true;
+}
+function staffCanAccountAdmin_(db, actor) {
+  if (!actor || actor.ok === false) return false;
+  if (actor.serverSigned || branchCanonicalRole_(actor.role) === 'super') return true;
+  return staffCanModule_(db, 'members', 'edit', actor)
+    && staffCanPermission_(db, 'admin.accounts', actor, actor.record || {});
+}
+function staffActorFromAuth_(db, writeAuth) {
+  if (!writeAuth) return { ok: false, error: '未能核對操作者身份' };
+  if (writeAuth.setup) return { ok: true, role: 'leader', setup: true, record: null };
+  if (writeAuth.serverSigned && !writeAuth.delegated) return { ok: true, role: 'super', serverSigned: true, record: null };
+  if (writeAuth.actor && writeAuth.actor.ok) return writeAuth.actor;
+  if (writeAuth.session) {
+    var found = adminFindActor_(db || {}, writeAuth.session);
+    if (found.ok) return found;
+  }
+  var delegatedRole = branchCanonicalRole_(writeAuth.role);
+  return delegatedRole ? { ok: true, role: delegatedRole, delegated: true, record: null } : { ok: false, error: '未能核對操作者身份' };
+}
+function staffSafeIdentityRow_(row) {
+  var copy = hubClone_(row || {}) || {};
+  ['pw', 'password', 'hubPw', 'hubPassword', 'passwordHash', 'salt', 'pv'].forEach(function (key) { delete copy[key]; });
+  return copy;
+}
+function staffProjectAccess_(db, actor) {
+  var level = branchRoleLevel_(actor && actor.role);
+  var full = staffAccessMatrix_(db);
+  var out = { schema: full.schema, branchSchema: full.branchSchema, branchSchemaVersion: full.branchSchemaVersion,
+    projectedFor: branchCanonicalRole_(actor && actor.role), modules: {} };
+  Object.keys(full.modules).forEach(function (moduleId) {
+    out.modules[moduleId] = {};
+    BRANCH_ROLE_ORDER_.forEach(function (role) {
+      if (branchRoleLevel_(role) <= level) out.modules[moduleId][role] = hubClone_(full.modules[moduleId][role]);
+    });
+  });
+  return out;
+}
+function staffProjectPermOverrides_(db, actor) {
+  var level = branchRoleLevel_(actor && actor.role), out = {};
+  Object.keys(db && db.permOverrides || {}).forEach(function (permission) {
+    var row = {};
+    Object.keys(db.permOverrides[permission] || {}).forEach(function (role) {
+      if (branchRoleLevel_(role) <= level) row[role] = db.permOverrides[permission][role];
+    });
+    if (Object.keys(row).length) out[permission] = row;
+  });
+  return out;
+}
+function staffSafeDb_(db, actor) {
+  db = db || {};
+  actor = actor && actor.ok === false ? actor : actor || {};
+  if (!actor || actor.ok === false) return null;
+  if (actor.setup || actor.serverSigned || branchCanonicalRole_(actor.role) === 'super') return hubClone_(db);
+  var out = hubClone_(db) || {};
+  var denied = [], actorLevel = branchRoleLevel_(actor.role);
+  Object.keys(BRANCH_MODULE_DEFAULTS_).forEach(function (moduleId) {
+    if (staffCanModule_(db, moduleId, 'read', actor)) return;
+    (BRANCH_MODULE_KEYS_[moduleId] || []).forEach(function (key) {
+      if (Object.prototype.hasOwnProperty.call(out, key)) { delete out[key]; denied.push(key); }
+    });
+  });
+  if (out.settings && typeof out.settings === 'object') {
+    Object.keys(out.settings).forEach(function (key) {
+      if (!staffCanModule_(db, staffSettingsModule_(key), 'read', actor)) delete out.settings[key];
+    });
+  }
+  if (staffCanModule_(db, 'members', 'read', actor)) {
+    var selfMemberId = textOf(actor.member && actor.member.id);
+    var selfAccountId = textOf(actor.account && actor.account.id);
+    /* Identity collections expose the actor's own row plus strictly lower roles;
+       peers remain confidential even though they share the same role label. */
+    out.members = (db.members || []).filter(function (row) {
+      return (selfMemberId && textOf(row && row.id) === selfMemberId)
+        || branchRoleLevel_(row && row.identity || 'member') < actorLevel;
+    }).map(staffSafeIdentityRow_);
+    out.accounts = (db.accounts || []).filter(function (row) {
+      return (selfAccountId && textOf(row && row.id) === selfAccountId)
+        || branchRoleLevel_(row && row.role || 'member') < actorLevel;
+    }).map(staffSafeIdentityRow_);
+    if (Array.isArray(db.deletedAccounts)) out.deletedAccounts = db.deletedAccounts.filter(function (row) {
+      return branchRoleLevel_(row && row.role || 'member') < actorLevel;
+    }).map(staffSafeIdentityRow_);
+    out.accessControl = staffProjectAccess_(db, actor);
+    out.permOverrides = staffProjectPermOverrides_(db, actor);
+  }
+  if (staffCanModule_(db, 'calendar', 'read', actor) && Array.isArray(out.events)) {
+    out.events = out.events.filter(function (row) { return hubVisible_(row, 'event', actor.role); });
+  }
+  if (staffCanModule_(db, 'quizzes', 'read', actor) && Array.isArray(out.quizzes)) {
+    out.quizzes = out.quizzes.filter(function (row) { return hubVisible_(row, 'quiz', actor.role); });
+  }
+  if (staffCanModule_(db, 'notices', 'read', actor) && Array.isArray(out.notices)) {
+    out.notices = out.notices.filter(function (row) { return hubVisible_(row, 'notice', actor.role); });
+  }
+  delete out.publicProfile;
+  out.meta = out.meta && typeof out.meta === 'object' ? out.meta : {};
+  out.meta.serverProjection = { role: branchCanonicalRole_(actor.role), deniedTopLevel: denied,
+    branchSchema: BRANCH_SCHEMA_ID_, branchSchemaVersion: BRANCH_SCHEMA_VERSION_, authenticated: true };
+  return out;
+}
+function staffSettingsModule_(key) {
+  if (key === 'troopLinks' || key === 'publicLinks') return 'links';
+  if (key === 'notice' || key === 'publicBaseUrl') return 'notices';
+  if (key === 'publicEntry') return 'finance';
+  if (key === 'publicBorrow') return 'inventory';
+  if (/^(currency|fee|subsidy|openingBalance|scoutFY|agm|receipt|fiscal|budget)/.test(key)) return 'finance';
+  if (/^(progress|badge)/.test(key)) return 'progress';
+  return 'admin';
+}
+function staffWriteDenied_(message, code) {
+  return { success: false, code: code || 'ACTION_SCOPE_DENIED', error: message || '你的身份不可以修改這項資料' };
+}
+function staffRowsById_(rows) {
+  var out = {};
+  (Array.isArray(rows) ? rows : []).forEach(function (row, index) {
+    var id = textOf(row && (row.id || row.key));
+    out[id || ('@' + index)] = row;
+  });
+  return out;
+}
+function staffValidateRows_(beforeRows, afterRows, permissionSet, db, actor) {
+  var before = staffRowsById_(beforeRows), after = staffRowsById_(afterRows), ids = {};
+  Object.keys(before).concat(Object.keys(after)).forEach(function (id) { ids[id] = true; });
+  var denied = '';
+  Object.keys(ids).some(function (id) {
+    var oldRow = before[id], newRow = after[id];
+    if (oldRow && newRow && protectedSame_(oldRow, newRow)) return false;
+    var permission = !oldRow ? permissionSet.create : (!newRow ? permissionSet.remove : permissionSet.edit);
+    var context = newRow || oldRow || {};
+    if (!permission || !staffCanPermission_(db, permission, actor, context)) {
+      denied = permission || 'unknown'; return true;
+    }
+    return false;
+  });
+  return denied ? staffWriteDenied_('細項權限不允許修改：' + denied, permissionSet && permissionSet.__deniedCode) : { success: true };
+}
+function staffValidateContentRows_(beforeRows, afterRows, kind, actor) {
+  var before = staffRowsById_(beforeRows), after = staffRowsById_(afterRows), denied = false;
+  Object.keys(before).some(function (id) {
+    if (hubVisible_(before[id], kind, actor.role)) return false;
+    if (!after[id] || !protectedSame_(before[id], after[id])) { denied = true; return true; }
+    return false;
+  });
+  if (!denied) Object.keys(after).some(function (id) {
+    if (!before[id] || !protectedSame_(before[id], after[id])) {
+      if (!hubVisible_(after[id], kind, actor.role)) { denied = true; return true; }
+    }
+    return false;
+  });
+  return denied ? staffWriteDenied_('不能讀取的內容亦不能修改或刪除', 'CONTENT_SCOPE_DENIED') : { success: true };
+}
+function staffMergeIdentityProjection_(current, incoming, actor) {
+  var actorLevel = branchRoleLevel_(actor.role);
+  /* A write may be based on an earlier lower-role projection and later submitted by
+     a freshly promoted actor.  Restore everything hidden from the projection that
+     actually produced this payload, not merely everything hidden from today's actor. */
+  var projectedRole = incoming && incoming.meta && incoming.meta.serverProjection
+    ? branchCanonicalRole_(incoming.meta.serverProjection.role) : '';
+  var projectedLevel = projectedRole ? Math.min(actorLevel, branchRoleLevel_(projectedRole)) : actorLevel;
+  ['members', 'accounts', 'deletedAccounts'].forEach(function (key) {
+    if (!Array.isArray(incoming[key]) || !Array.isArray(current[key])) return;
+    var oldMap = staffRowsById_(current[key]), next = incoming[key].slice(), seen = staffRowsById_(next);
+    current[key].forEach(function (row, index) {
+      var id = textOf(row && (row.id || row.key)) || ('@' + index);
+      var role = key === 'members' ? textOf(row && row.identity || 'member') : textOf(row && row.role || 'member');
+      /* deletedAccounts 只投影嚴格較低身份；同級刪除紀錄亦屬不可見 server 資料。 */
+      var hidden = branchRoleLevel_(role) >= projectedLevel;
+      if (hidden && !seen[id]) next.push(hubClone_(row));
+    });
+    var protectedFields = key === 'members'
+      ? ['hubPw', 'hubPassword', 'hubMustChangePw', 'pv', 'accountDeletedAt']
+      : ['pw', 'password', 'mustChangePw', 'defaultPw', 'pv', 'memberId', 'role'];
+    next.forEach(function (row, index) {
+      var id = textOf(row && (row.id || row.key)) || ('@' + index), old = oldMap[id];
+      if (!old || !row) return;
+      protectedFields.forEach(function (field) {
+        if (Object.prototype.hasOwnProperty.call(old, field)) row[field] = hubClone_(old[field]);
+        else delete row[field];
+      });
+    });
+    incoming[key] = next;
+  });
+}
+/* events／quizzes／notices 會按 actor 內容級別裁剪。完整 DB 儲存時，瀏覽器
+   冇收到的高級內容必須由 server 補回；如果 client 主動提交同 id 的改動，
+   後面的 content guard 仍會明確拒絕，不能靠猜 id 覆寫。 */
+function staffMergeContentProjection_(current, incoming, actor) {
+  var kinds = { events: 'event', quizzes: 'quiz', notices: 'notice' };
+  Object.keys(kinds).forEach(function (key) {
+    if (!Array.isArray(incoming[key]) || !Array.isArray(current[key])) return;
+    var seen = staffRowsById_(incoming[key]);
+    current[key].forEach(function (row, index) {
+      var id = textOf(row && (row.id || row.key)) || ('@' + index);
+      if (!hubVisible_(row, kinds[key], actor.role) && !seen[id]) incoming[key].push(hubClone_(row));
+    });
+  });
+}
+function staffValidateAccessWrite_(current, incoming, actor) {
+  if (!Object.prototype.hasOwnProperty.call(incoming, 'accessControl')) return { success: true };
+  var before = staffAccessMatrix_(current), actorLevel = branchRoleLevel_(actor.role);
+  var submittedRaw = hubClone_(incoming.accessControl || {}) || {};
+  submittedRaw.modules = submittedRaw.modules && typeof submittedRaw.modules === 'object' ? submittedRaw.modules : {};
+  /* 投影會完全省略較高身份；任何省略的 role／dimension 都代表「保持 server 值」，
+     唔可以跌返出廠預設。同時保留 client 明確提交的 protected 值供下面驗證。 */
+  Object.keys(before.modules).forEach(function (moduleId) {
+    submittedRaw.modules[moduleId] = submittedRaw.modules[moduleId] && typeof submittedRaw.modules[moduleId] === 'object'
+      ? submittedRaw.modules[moduleId] : {};
+    BRANCH_ROLE_ORDER_.forEach(function (role) {
+      var saved = submittedRaw.modules[moduleId][role];
+      if (!saved || typeof saved !== 'object') {
+        submittedRaw.modules[moduleId][role] = hubClone_(before.modules[moduleId][role]);
+        return;
+      }
+      ['show', 'read', 'edit'].forEach(function (dimension) {
+        if (saved[dimension] === undefined) saved[dimension] = before.modules[moduleId][role][dimension];
+      });
+    });
+  });
+  var submitted = staffAccessMatrix_({ accessControl: submittedRaw });
+  var expectedRaw = hubClone_(submittedRaw);
+  Object.keys(before.modules).forEach(function (moduleId) {
+    BRANCH_ROLE_ORDER_.forEach(function (role) {
+      if (branchRoleLevel_(role) >= actorLevel) {
+        expectedRaw.modules[moduleId][role] = hubClone_(before.modules[moduleId][role]);
+      }
+    });
+  });
+  /* 正規化 expectedRaw 會把新開給低身份的 true 合法向上繼承；除此之外，
+     actor 自己及更高身份不可被直接改動。 */
+  var expected = staffAccessMatrix_({ accessControl: expectedRaw });
+  var illegal = false;
+  Object.keys(before.modules).some(function (moduleId) {
+    return BRANCH_ROLE_ORDER_.some(function (role) {
+      if (branchRoleLevel_(role) < actorLevel) return false;
+      if (!protectedSame_(submitted.modules[moduleId][role], expected.modules[moduleId][role])) { illegal = true; return true; }
+      return false;
+    });
+  });
+  if (illegal) return staffWriteDenied_('只可以更改比自己低級的身份權限');
+  incoming.accessControl = expected;
+  return { success: true };
+}
+function staffValidatePermWrite_(current, incoming, actor) {
+  if (!Object.prototype.hasOwnProperty.call(incoming, 'permOverrides')) return { success: true };
+  var actorLevel = branchRoleLevel_(actor.role), before = current.permOverrides || {}, next = incoming.permOverrides || {};
+  var permissions = {}, merged = {}, illegal = false;
+  Object.keys(before).concat(Object.keys(next)).forEach(function (permission) { permissions[permission] = true; });
+  Object.keys(permissions).some(function (permission) {
+    var oldRow = before[permission] || {}, newRow = next[permission] || {}, outRow = {};
+    var stopped = BRANCH_ROLE_ORDER_.some(function (role) {
+      var level = branchRoleLevel_(role);
+      var oldHas = Object.prototype.hasOwnProperty.call(oldRow, role);
+      var newHas = Object.prototype.hasOwnProperty.call(newRow, role);
+      if (level < actorLevel) {
+        if (newHas && [0, 1, 'own', 'self'].indexOf(newRow[role]) < 0) { illegal = true; return true; }
+        if (newHas) outRow[role] = newRow[role];
+        return false;
+      }
+      /* 高身份欄在 actor 投影中正常會缺席：缺席就補回 server 值；若 client
+         主動夾帶，必須與 server 完全相同，否則係 forged write。 */
+      if (newHas && (!oldHas || oldRow[role] !== newRow[role])) { illegal = true; return true; }
+      if (oldHas) outRow[role] = oldRow[role];
+      return false;
+    });
+    if (Object.keys(outRow).length) merged[permission] = outRow;
+    return stopped;
+  });
+  if (illegal) return staffWriteDenied_('只可以更改比自己低級的身份細項權限');
+  incoming.permOverrides = merged;
+  return { success: true };
+}
+function prepareAuthorizedAdminWrite_(unit, incoming, writeAuth, partial) {
+  if (!incoming || typeof incoming !== 'object' || Array.isArray(incoming)) return staffWriteDenied_('寫入內容格式不正確');
+  var loaded = loadDb(textOf(unit));
+  if (!loaded.success || !loaded.db) {
+    return writeAuth && (writeAuth.setup || writeAuth.serverSigned) ? { success: true, db: incoming }
+      : staffWriteDenied_('未能讀取目前資料，已拒絕寫入');
+  }
+  var current = loaded.db;
+  var actor = staffActorFromAuth_(current, writeAuth);
+  if (!actor.ok) return staffWriteDenied_(actor.error || '未能核對操作者身份');
+  if (actor.setup || actor.serverSigned || branchCanonicalRole_(actor.role) === 'super') {
+    if (incoming.meta && incoming.meta.serverProjection) delete incoming.meta.serverProjection;
+    return { success: true, db: incoming, actor: actor };
+  }
+  var next = hubClone_(incoming) || {};
+  /* Read the projection provenance before stripping server metadata.  A payload may
+     have been produced while this same account had a lower role; rows hidden from
+     that earlier projection must remain server-side after a later promotion. */
+  staffMergeIdentityProjection_(current, next, actor);
+  staffMergeContentProjection_(current, next, actor);
+  if (next.meta && next.meta.serverProjection) delete next.meta.serverProjection;
+  var accessGuard = staffValidateAccessWrite_(current, next, actor); if (!accessGuard.success) return accessGuard;
+  var permGuard = staffValidatePermWrite_(current, next, actor); if (!permGuard.success) return permGuard;
+
+  /* 資料庫 envelope 不是一般模組資料：支部編號／schema／kind 由 server 現行
+     紀錄固定，client 不可藉整庫寫入改掉。meta 只接受 updatedAt，其他 server
+     metadata 一律保留。 */
+  ['schema', 'kind', 'unitCode'].forEach(function (fixedKey) {
+    var suppliedFixed = Object.prototype.hasOwnProperty.call(next, fixedKey);
+    var currentFixed = Object.prototype.hasOwnProperty.call(current, fixedKey);
+    var expectedFixed = currentFixed ? current[fixedKey]
+      : (fixedKey === 'schema' ? 2 : (fixedKey === 'kind' ? 'real' : textOf(unit)));
+    if (suppliedFixed && !protectedSame_(expectedFixed, next[fixedKey])) next.__forgedEnvelope = fixedKey;
+    if (!partial || suppliedFixed) next[fixedKey] = hubClone_(expectedFixed);
+  });
+  if (next.__forgedEnvelope) return staffWriteDenied_('不可更改資料庫識別欄位：' + next.__forgedEnvelope, 'PROTECTED_AUTH_FIELD');
+  if (!partial || Object.prototype.hasOwnProperty.call(next, 'meta')) {
+    var clientUpdatedAt = next.meta && next.meta.updatedAt;
+    next.meta = hubClone_(current.meta || {}) || {};
+    if (clientUpdatedAt) next.meta.updatedAt = textOf(clientUpdatedAt);
+  }
+
+  var keys = Object.keys(next);
+  for (var ki = 0; ki < keys.length; ki++) {
+    var key = keys[ki];
+    if (['schema', 'kind', 'unitCode', 'meta'].indexOf(key) >= 0) continue;
+    if (key === 'settings') {
+      var oldSettings = current.settings || {}, newSettings = next.settings || {};
+      Object.keys(oldSettings).forEach(function (name) {
+        if (!Object.prototype.hasOwnProperty.call(newSettings, name)
+            && !staffCanModule_(current, staffSettingsModule_(name), 'read', actor)) {
+          newSettings[name] = hubClone_(oldSettings[name]);
+        }
+      });
+      next.settings = newSettings;
+      var settingKeys = {};
+      Object.keys(oldSettings).concat(Object.keys(newSettings)).forEach(function (name) { settingKeys[name] = true; });
+      var settingDenied = false;
+      Object.keys(settingKeys).some(function (name) {
+        if (protectedSame_(oldSettings[name], newSettings[name])) return false;
+        var moduleId = staffSettingsModule_(name);
+        if (!staffCanModule_(current, moduleId, 'edit', actor)) { settingDenied = true; return true; }
+        return false;
+      });
+      if (settingDenied) return staffWriteDenied_('側欄編輯權限不允許修改這項設定');
+      continue;
+    }
+    /* 未登記 top-level 欄位 fail closed 落「系統」模組，唔可以因為新／拼錯
+       key 未入 mapping 就變成任何執委都可寫。 */
+    var moduleId = BRANCH_KEY_MODULE_[key] || 'admin';
+    if (!staffCanModule_(current, moduleId, 'edit', actor)
+        && !protectedSame_(current[key], next[key])) return staffWriteDenied_('沒有「' + moduleId + '」編輯權限');
+  }
+  /* Full projected writes omit denied keys; preserve them server-side. Partial writes never delete an omitted table. */
+  if (!partial) Object.keys(current).forEach(function (key) {
+    if (!Object.prototype.hasOwnProperty.call(next, key)) next[key] = hubClone_(current[key]);
+  });
+
+  var rowRules = {
+    meetings:{create:'meeting.create',edit:'meeting.edit',remove:'meeting.delete'},
+    transactions:{create:'finance.create',edit:'finance.edit',remove:'finance.delete'},
+    claims:{create:'claim.submit',edit:'claim.review',remove:'finance.delete'},
+    fees:{create:'fee.edit',edit:'fee.mark',remove:'fee.edit'}, budgets:{create:'finance.edit',edit:'finance.edit',remove:'finance.edit'},
+    members:{create:'member.create',edit:'member.edit',remove:'member.delete'},
+    accounts:{create:'admin.accounts',edit:'admin.accounts',remove:'admin.accounts',__deniedCode:'PROTECTED_AUTH_FIELD'},
+    invItems:{create:'inv.manage',edit:'inv.manage',remove:'inv.manage'},
+    invLoans:{create:'inv.borrow',edit:'inv.approve',remove:'inv.manage'}, invAudits:{create:'inv.audit',edit:'inv.audit',remove:'inv.audit'},
+    events:{create:'calendar.edit',edit:'calendar.edit',remove:'calendar.edit'}, quizzes:{create:'quiz.edit',edit:'quiz.edit',remove:'quiz.edit'},
+    notices:{create:'notice.create',edit:'notice.edit',remove:'notice.edit'}
+  };
+  var ruleKeys = Object.keys(rowRules);
+  for (var ri = 0; ri < ruleKeys.length; ri++) {
+    var rowKey = ruleKeys[ri];
+    if (!Object.prototype.hasOwnProperty.call(next, rowKey) || protectedSame_(current[rowKey] || [], next[rowKey] || [])) continue;
+    var rowGuard = staffValidateRows_(current[rowKey] || [], next[rowKey] || [], rowRules[rowKey], current, actor);
+    if (!rowGuard.success) return rowGuard;
+  }
+  if (Object.prototype.hasOwnProperty.call(next, 'members') && !protectedSame_(current.members || [], next.members || [])) {
+    var oldMemberMap = staffRowsById_(current.members || []), newMemberMap = staffRowsById_(next.members || []), identityDenied = false;
+    Object.keys(newMemberMap).some(function (id) {
+      if (!oldMemberMap[id]) return false;
+      if (protectedMemberRole_(oldMemberMap[id]) !== protectedMemberRole_(newMemberMap[id])
+          && !staffCanPermission_(current, 'member.identity', actor, newMemberMap[id])) { identityDenied = true; return true; }
+      return false;
+    });
+    if (identityDenied) return staffWriteDenied_('沒有更改身份的細項權限', 'PROTECTED_AUTH_FIELD');
+  }
+  if (Object.prototype.hasOwnProperty.call(next, 'notices') && !protectedSame_(current.notices || [], next.notices || [])) {
+    var oldNoticeMap = staffRowsById_(current.notices || []), newNoticeMap = staffRowsById_(next.notices || []), publishDenied = false;
+    Object.keys(newNoticeMap).some(function (id) {
+      var beforeNotice = oldNoticeMap[id], afterNotice = newNoticeMap[id];
+      if (afterNotice && afterNotice.status === 'published' && (!beforeNotice || beforeNotice.status !== 'published')
+          && !staffCanPermission_(current, 'notice.publish', actor, afterNotice)) { publishDenied = true; return true; }
+      return false;
+    });
+    if (publishDenied) return staffWriteDenied_('沒有發布通告的細項權限');
+  }
+  var contentKinds = { events: 'event', quizzes: 'quiz', notices: 'notice' };
+  var contentKeys = Object.keys(contentKinds);
+  for (var ci = 0; ci < contentKeys.length; ci++) {
+    var contentKey = contentKeys[ci];
+    if (!Object.prototype.hasOwnProperty.call(next, contentKey)) continue;
+    var contentGuard = staffValidateContentRows_(current[contentKey] || [], next[contentKey] || [], contentKinds[contentKey], actor);
+    if (!contentGuard.success) return contentGuard;
+  }
+  if (Object.prototype.hasOwnProperty.call(next, 'constitution') && !protectedSame_(current.constitution, next.constitution)) {
+    if (!staffCanPermission_(current, 'constitution.edit', actor, next.constitution || {})) return staffWriteDenied_('沒有團章編輯權限');
+    if (next.constitution && next.constitution.status === 'published' && (!current.constitution || current.constitution.status !== 'published')
+        && !staffCanPermission_(current, 'constitution.publish', actor, next.constitution)) return staffWriteDenied_('沒有團章發布權限');
+  }
+  if (Object.prototype.hasOwnProperty.call(next, 'tableSchema') && !protectedSame_(current.tableSchema, next.tableSchema)
+      && !staffCanPermission_(current, 'table.design', actor, next.tableSchema || {})) return staffWriteDenied_('沒有表格設計權限');
+  if (Object.prototype.hasOwnProperty.call(next, 'tableSources') && !protectedSame_(current.tableSources, next.tableSources)
+      && !staffCanPermission_(current, 'table.sync', actor, {})) return staffWriteDenied_('沒有資料同步權限');
+  return { success: true, db: next, actor: actor };
+}
+function staffLoadDbPart_(unit, partIdx, actor) {
+  var loaded = loadDb(unit);
+  if (!loaded.success || !loaded.found || !loaded.db) return { success: loaded.success, found: false, error: loaded.error || '' };
+  var projected = staffSafeDb_(loaded.db, actor);
+  var text = JSON.stringify(projected || {}), size = 1000000, parts = Math.max(1, Math.ceil(text.length / size));
+  var idx = Math.max(0, parseInt(partIdx, 10) || 0);
+  if (idx >= parts) return { success: false, found: true, error: '分段編號超出範圍' };
+  return { success: true, found: true, part: text.substring(idx * size, (idx + 1) * size), partIdx: idx,
+    parts: parts, bytes: text.length, at: loaded.at, version: loaded.version };
+}
+function staffLoadTablesPart_(unit, idx, actor) {
+  var all = loadTables(unit), i = Math.max(0, parseInt(idx, 10) || 0);
+  if (!all.success || (all.broken || []).length) return { success: false, found: all.found, broken: all.broken || [], error: all.error || '資料表有損壞' };
+  if (!all.found || !all.db) return { success: true, found: false, idx: i, count: 0, name: '', at: all.at, version: all.version };
+  var projected = staffSafeDb_(all.db, actor) || {}, names = Object.keys(projected).sort();
+  if (i >= names.length) return { success: false, found: true, idx: i, count: names.length, name: '', error: '表編號超出範圍', at: all.at, version: all.version };
+  var name = names[i];
+  return { success: true, found: true, idx: i, count: names.length, name: name, value: projected[name],
+    broken: [], at: all.at, version: all.version };
 }
 
 /* 整庫／逐表同步係資料傳輸通道，唔係授權通道。尤其 members[].identity 同
@@ -3460,7 +4045,7 @@ function validateDelegatedIdentityMap_(members, identityMap) {
     var expected = key && Object.prototype.hasOwnProperty.call(identityMap, key)
       ? textOf(identityMap[key]).toLowerCase() : 'member';
     if (protectedMemberRole_(member) !== (expected || 'member')) {
-      return protectedWriteDenied_('成員身份必須跟中央身份來源一致');
+      return protectedWriteDenied_('成員身份必須跟已核實的支部身份對照一致');
     }
     if (member.hubPw || member.hubPassword) {
       return protectedWriteDenied_('統一模式不可透過行政資料寫入本地密碼');
@@ -3470,7 +4055,7 @@ function validateDelegatedIdentityMap_(members, identityMap) {
 }
 function validateProtectedAdminWrite_(unit, incoming, writeAuth) {
   if (!incoming || typeof incoming !== 'object') return protectedWriteDenied_('寫入內容格式不正確');
-  /* 已驗 server HMAC 代表中央 platform-super；setup session 係首次建庫憑證。
+  /* 已驗 server HMAC 代表平台 super；setup session 係首次建庫憑證。
      兩者都唔係由 browser 自報（網絡入口會先刪除 marker）。 */
   if (writeAuth && ((writeAuth.serverSigned && !writeAuth.delegated) || writeAuth.setup)) return { success: true };
   var touchesMembers = Object.prototype.hasOwnProperty.call(incoming, 'members');
@@ -3484,7 +4069,7 @@ function validateProtectedAdminWrite_(unit, incoming, writeAuth) {
 
   var current = loadDb(textOf(unit));
   /* Unified 首次寫入時 compatibility DB 尚未存在；delegated actor 已由 pinned
-     baseline／中央 SSO 核實，identity map 亦已在上面逐項核對。一旦有現行版本，
+     baseline／隔離 auth fixture 核實，identity map 亦已在上面逐項核對。一旦有現行版本，
      下面仍以 server 狀態逐欄比較。 */
   if ((!current.success || !current.db) && writeAuth && writeAuth.delegated) return { success: true };
   if (!current.success || !current.db) return protectedWriteDenied_('未能讀取目前身份資料，已拒絕寫入');
@@ -3498,6 +4083,10 @@ function validateProtectedAdminWrite_(unit, incoming, writeAuth) {
     var nextMembers = protectedRowsById_(incoming.members);
     if (!oldMembers.ok || !nextMembers.ok) return protectedWriteDenied_(oldMembers.error || nextMembers.error);
     var oldMap = oldMembers.rows, nextMap = nextMembers.rows;
+    /* Unified router 已由 pinned Users 重建整張 canonical identity 投影；呢類
+       server-delegated refresh 唔係 browser 角色編輯，後面的欄位／identity map
+       檢查仍會逐項 fail closed。 */
+    var delegatedIdentity = !!(writeAuth && writeAuth.delegated);
     var oldChiefs = [], nextChiefs = [], identityChanges = [];
     Object.keys(oldMap).forEach(function (id) { if (protectedMemberRole_(oldMap[id]) === 'chief') oldChiefs.push(id); });
     Object.keys(nextMap).forEach(function (id) { if (protectedMemberRole_(nextMap[id]) === 'chief') nextChiefs.push(id); });
@@ -3508,7 +4097,7 @@ function validateProtectedAdminWrite_(unit, incoming, writeAuth) {
     var transferringChief = oldChiefs.length === 1 && actorRank >= 5 && !!actorMemberId
       && oldChiefs[0] === actorMemberId && nextChiefs.length === 1 && nextChiefs[0] !== actorMemberId
       && nextMap[actorMemberId] && protectedMemberRole_(nextMap[actorMemberId]) === 'leader';
-    if (chiefSetChanged && !claimingChief && !transferringChief) {
+    if (!delegatedIdentity && chiefSetChanged && !claimingChief && !transferringChief) {
       return protectedWriteDenied_('團長身份只可由未有團長時本人認領，或由現任團長交棒');
     }
 
@@ -3523,7 +4112,7 @@ function validateProtectedAdminWrite_(unit, incoming, writeAuth) {
         continue;
       }
       var beforeRole = protectedMemberRole_(before), afterRole = protectedMemberRole_(after);
-      if (beforeRole !== afterRole) identityChanges.push({ id: mid, before: beforeRole, after: afterRole });
+      if (!delegatedIdentity && beforeRole !== afterRole) identityChanges.push({ id: mid, before: beforeRole, after: afterRole });
       for (var mf = 0; mf < memberAuthFields.length; mf++) {
         var memberField = memberAuthFields[mf];
         /* 無團長時，已登入領袖認領本人可同一次設定本人密碼；其他密碼／撤銷欄
@@ -3540,7 +4129,7 @@ function validateProtectedAdminWrite_(unit, incoming, writeAuth) {
       var newId = nextIds[ni];
       if (oldMap[newId]) continue;
       var newRole = protectedMemberRole_(nextMap[newId]);
-      if (newRole !== 'member') identityChanges.push({ id: newId, before: '', after: newRole });
+      if (!delegatedIdentity && newRole !== 'member') identityChanges.push({ id: newId, before: '', after: newRole });
       if (nextMap[newId].hubPw || nextMap[newId].hubPassword || nextMap[newId].accountDeletedAt) {
         var claimNewPassword = claimingChief && newId === actorMemberId;
         if (!claimNewPassword) return protectedWriteDenied_('新增成員不可夾帶密碼或帳戶撤銷欄位');
@@ -3548,7 +4137,7 @@ function validateProtectedAdminWrite_(unit, incoming, writeAuth) {
     }
     for (var ic = 0; ic < identityChanges.length; ic++) {
       var change = identityChanges[ic];
-      if (['chief', 'leader', 'exco', 'member'].indexOf(change.after) < 0) {
+      if (BRANCH_VISIBLE_ROLES_.indexOf(branchCanonicalRole_(change.after)) < 0) {
         return protectedWriteDenied_('身份值不正確');
       }
       if (actorRank < 4) return protectedWriteDenied_('執委不可更改成員身份');
@@ -3592,29 +4181,6 @@ function validateProtectedAdminWrite_(unit, incoming, writeAuth) {
   }
   return { success: true };
 }
-function hubSafePublicProfile_(profile, role) {
-  var src = profile && typeof profile === 'object' ? profile : {};
-  var socials = Array.isArray(src.socials) ? src.socials : [];
-  var albums = Array.isArray(src.albums) ? src.albums : [];
-  var links = Array.isArray(src.links) ? src.links : [];
-  var managed = {};
-  socials.forEach(function (item) {
-    var kind = textOf(item && item.kind).toLowerCase();
-    if (item && textOf(item.url) && (kind === 'instagram' || kind === 'facebook' || kind === 'whatsapp')) managed[kind] = true;
-  });
-  if (albums.some(function (item) { return !!textOf(item && item.url); })) managed.album = true;
-  if (textOf(src.site && src.site.url)) managed.website = true;
-  function visibleList(list) {
-    return list.filter(function (item) { return item && textOf(item.url) && hubVisible_(item, 'profile', role); })
-      .map(function (item) { return hubClone_(item); });
-  }
-  return {
-    socials: visibleList(socials), albums: visibleList(albums), links: visibleList(links),
-    site: src.site && textOf(src.site.url) && hubVisible_(src.site, 'profile', role) ? hubClone_(src.site) : { url: '', vis: 'member' },
-    about: src.about && textOf(src.about.text) && hubVisible_(src.about, 'profile', role) ? hubClone_(src.about) : { text: '', vis: 'member' },
-    managedSlots: Object.keys(managed)
-  };
-}
 function hubSafeDb_(db, actor) {
   db = db || {};
   var member = actor.member;
@@ -3631,7 +4197,7 @@ function hubSafeDb_(db, actor) {
   }).map(function (quiz) { return hubSafeQuiz_(quiz, memberId); });
   var notices = (Array.isArray(db.notices) ? db.notices : []).filter(function (notice) {
     return notice && notice.status === 'published' && hubVisible_(notice, 'notice', role);
-  }).map(hubSafeNotice_);
+  }).map(function (notice) { return hubSafeNotice_(notice, memberId, ymis); });
   var absences = (Array.isArray(db.absences) ? db.absences : []).filter(function (absence) {
     return absence && ((memberId && textOf(absence.memberId) === memberId) || (ymis && textOf(absence.ymis) === ymis));
   }).map(hubSafeAbsence_);
@@ -3639,12 +4205,8 @@ function hubSafeDb_(db, actor) {
     schema: db.schema || 2, kind: 'real', unitCode: textOf(db.unitCode),
     unit: { code: textOf(unit.code || db.unitCode), name: textOf(unit.name), nameEn: textOf(unit.nameEn), short: textOf(unit.short), theme: hubClone_(unit.theme || {}) },
     profile: { code: textOf(profile.code || db.unitCode), name: textOf(profile.name || unit.name), nameEn: textOf(profile.nameEn || unit.nameEn), short: textOf(profile.short || unit.short), theme: hubClone_(profile.theme || unit.theme || {}) },
-    settings: {
-      troopLinks: hubClone_(db.settings && db.settings.troopLinks || {}),
-      publicLinks: hubClone_(db.settings && db.settings.publicLinks || {}),
-      publicBaseUrl: textOf(db.settings && db.settings.publicBaseUrl)
-    },
-    publicProfile: hubSafePublicProfile_(db.publicProfile, role),
+    settings: { troopLinks: hubClone_(db.settings && db.settings.troopLinks || {}) },
+    constitution: db.constitution && db.constitution.status === 'published' ? hubClone_(db.constitution) : null,
     members: [hubSafeMember_(member, role)], accounts: [], events: events, quizzes: quizzes,
     notices: notices, absences: absences,
     meta: { updatedAt: textOf(db.meta && db.meta.updatedAt), hubView: true }
@@ -3702,6 +4264,40 @@ function hubApplyMutation_(db, actor, body) {
     quiz.responses[memberId] = { name: textOf(member.name), at: new Date().toISOString().substring(0, 10), answers: answers };
     return { ok: true };
   }
+  if (action === 'hubNoticeSignup') {
+    var notice = (db.notices || []).filter(function (row) { return row && textOf(row.id) === textOf(body.noticeId); })[0];
+    if (!notice || notice.status !== 'published' || !notice.needSignup || !hubVisible_(notice, 'notice', role)) {
+      return { ok: false, error: '搵唔到可回覆嘅通告' };
+    }
+    var today = new Date().toISOString().substring(0, 10);
+    if (textOf(notice.deadline).substring(0, 10) && textOf(notice.deadline).substring(0, 10) < today) {
+      return { ok: false, error: '通告報名已截止' };
+    }
+    var supplied = body.answers && typeof body.answers === 'object' && !Array.isArray(body.answers) ? body.answers : {};
+    var answers = {}, invalid = '';
+    (Array.isArray(notice.fields) ? notice.fields : []).some(function (field) {
+      var key = textOf(field && field.key).substring(0, 80); if (!key) return false;
+      var value = supplied[key];
+      if (Array.isArray(value)) value = value.slice(0, 30).map(function (item) { return textOf(item).substring(0, 500); });
+      else value = textOf(value).substring(0, 2000);
+      if (field.required && hubAnswerEmpty_(value)) { invalid = textOf(field.label || key); return true; }
+      answers[key] = value; return false;
+    });
+    if (invalid) return { ok: false, error: '請填：' + invalid };
+    notice.signups = Array.isArray(notice.signups) ? notice.signups : [];
+    var existing = -1;
+    for (var si = 0; si < notice.signups.length; si++) {
+      var signup = notice.signups[si];
+      if (signup && ((memberId && textOf(signup.memberId) === memberId)
+          || (textOf(member.ymis) && textOf(signup.ymis) === textOf(member.ymis)))) { existing = si; break; }
+    }
+    var signupId = existing >= 0 ? textOf(notice.signups[existing].id)
+      : 'hsg_' + Utilities.getUuid().replace(/-/g, '').substring(0, 16);
+    var row = { id: signupId, memberId: memberId, ymis: textOf(member.ymis), name: textOf(member.name),
+      at: new Date().toISOString(), answers: answers, source: 'authenticated-hub' };
+    if (existing >= 0) notice.signups[existing] = row; else notice.signups.push(row);
+    return { ok: true, id: signupId };
+  }
   if (action === 'hubAbsence') {
     db.absences = Array.isArray(db.absences) ? db.absences : [];
     if (body.op === 'withdraw') {
@@ -3751,19 +4347,19 @@ function hubApplyMutation_(db, actor, body) {
      scripts/lint.mjs 會逐個比對，漏咗／多咗都會紅燈。
      （2026-09-20 之前呢句係手寫死嘅字串，一直漏咗 constitution，
        加咗 loadDbPart 之後更加唔可以再靠人手記得改。） */
-var SUPPORTED_ACTIONS = ['ping', 'test', 'status', 'sync', 'claim', 'noticeSignup', 'loan',
+var SUPPORTED_ACTIONS = ['ping', 'test', 'status', 'sync',
   'authLogin', 'authWhoAmI', 'authChangePassword', 'authResetPassword', 'authDeleteAccount', 'authRestoreAccount', 'authCreateAccount', 'authForgotPassword', 'authResetByToken',
   /* 團員入口：session 限定本人；只回安全投影／只改本人入站資料。 */
-  'hubLoad', 'hubRsvp', 'hubQuiz', 'hubAbsence',
+  'hubLoad', 'hubRsvp', 'hubQuiz', 'hubAbsence', 'hubNoticeSignup',
   'saveDb', 'loadDb', 'loadDbPart', 'dbInfo', 'saveDbPart', 'saveDbCommit', 'verifySetupKey',
-  'uploadPhotos', 'constitution', 'notices',
+  'uploadPhotos',
   'load', 'loadMine',
   'save', 'saveOtherBadge', 'reviewRequest', 'reviewLogRequest', 'addRequest', 'myRequests',
   /* ★ v2.7.2：一鍵修復（清垃圾／舊版本段）＋ 強制覆蓋（人手搶救） */
   'repairDb', 'saveDbForce',
   /* ★ v2.8.0：簡單寫入（逐表寫／逐表讀）—— 見下面 saveTables／loadTables／loadTablesPart */
   'saveTables', 'loadTables', 'loadTablesPart', 'syncCheck',
-  /* ★ v2.8.4：旅系統接駁 —— 讀／寫「直接入口」掣（旅 > 團 > 支部） */
+  /* Legacy 非 Unified 簽名兼容；Progress client／API 不路由，亦非未來 reader 契約。 */
   'getLinkState', 'setLocalLogin'];
 
 /**
@@ -3788,7 +4384,7 @@ function requireAuth(expectedKey, suppliedKey) {
    又慢又燒配額。寫入／登入／批核／重設密碼等會改嘢嘅 action 照樣逐次記。 */
 var AUDIT_SKIP_ACTIONS = { ping: 1, test: 1, status: 1, load: 1, loadMine: 1,
   loadDb: 1, loadDbPart: 1, loadTables: 1, loadTablesPart: 1, dbInfo: 1, diag: 1,
-  notices: 1, constitution: 1, myRequests: 1, authWhoAmI: 1, hubLoad: 1, getLinkState: 1 };
+  myRequests: 1, authWhoAmI: 1, hubLoad: 1, getLinkState: 1 };
 function auditAccess(body, result) {
   try {
     if (AUDIT_SKIP_ACTIONS[textOf(body && body.action)]) return;
@@ -3817,9 +4413,8 @@ function doPost(e) {
     if (body && Object.prototype.hasOwnProperty.call(body, '__serverActorSubject')) delete body.__serverActorSubject;
     if (body && Object.prototype.hasOwnProperty.call(body, '__serverIdentityMap')) delete body.__serverIdentityMap;
     auditAccess(body, 'received');
-    /* ★ 旅系統接駁（旅 > 團 > 支部）：上游簽名（sig）請求優先路由——
-       喺「直接入口」掣同 API Key 核對**之前**先驗簽名，等閂咗口（ALLOW_LOCAL_LOGIN=false）
-       嗰陣上游照樣入到，本地 apikey 就唔得。 */
+    /* Legacy server-signature transport 先驗 HMAC，再交同一個 dispatcher；簽名只係
+       server authentication，唔係用戶登入、Progress 整合狀態或未來旅系統契約。 */
     if (verifyLinkSig(e, body, rawBody)) return handleSignedRequest(e, body, rawBody);
     if (!localLoginAllowed()) return json(linkClosedResponse(textOf(body && body.action)));
     return dispatchBody(e, body);
@@ -3831,11 +4426,11 @@ function doPost(e) {
   }
 }
 
-/** doPost 實質派發（閂口／簽名檢查已喺 doPost 做咗；呢度係原本嘅既有邏輯） */
+/** doPost 實質派發（legacy 旗標／transport 檢查已喺 doPost 做咗） */
 function dispatchBody(e, body) {
   try {
     var expectedKey = PropertiesService.getScriptProperties().getProperty('API_KEY');
-    // 完整版與輕量版前端共用同一 Unified key（大寫 apiKey / 細寫 apikey 都收）
+    // 多個 client 共用同一 Unified key（大寫 apiKey / 細寫 apikey 都收）
     var key = body.apiKey || body.apikey || '';
     body.apiKey = key;
 
@@ -3861,19 +4456,31 @@ function dispatchBody(e, body) {
 
     function verifyPortalToken(unit, token, wantedRole) {
       var parts = textOf(token).split('.');
-      var secret = '' /* legacy Portal verifier disabled; Unified exchange is authoritative */;
-      if (!secret || parts.length !== 2) return { ok: false, error: '旅系統登入未設定' };
+      /* 同 BADGE／proxy 共用 API_KEY，但用固定 purpose 派生獨立 exchange key；
+         不需要另一條 Portal session secret，API Key 本身亦不會直接成為身份。 */
+      var secret = hmacSha256HexGs('vs-portal-branch-exchange-v1', getApiKey());
+      if (!secret || parts.length !== 2) return { ok: false, error: '隔離 auth fixture 未設定' };
       var expected = Utilities.computeHmacSha256Signature(parts[0], Utilities.newBlob(secret).getBytes())
         .map(function (b) { return ('0' + (b & 255).toString(16)).slice(-2); }).join('');
       var supplied = '';
       try { supplied = Utilities.base64EncodeWebSafe(Utilities.base64DecodeWebSafe(parts[1])); } catch (e) { supplied = ''; }
       /* GAS web-safe base64 比對轉 hex 較麻煩；用重新簽名的 base64 字串核對。 */
       var expectedB64 = Utilities.base64EncodeWebSafe(Utilities.computeHmacSha256Signature(parts[0], Utilities.newBlob(secret).getBytes())).replace(/=+$/, '');
-      if (supplied.replace(/=+$/, '') !== expectedB64) return { ok: false, error: '旅系統登入票據無效' };
+      if (supplied.replace(/=+$/, '') !== expectedB64) return { ok: false, error: '隔離 auth fixture 票據無效' };
       var payload = null;
       try { payload = JSON.parse(Utilities.newBlob(Utilities.base64DecodeWebSafe(parts[0])).getDataAsString()); } catch (e2) { payload = null; }
-      if (!payload || textOf(payload.u) !== textOf(unit) || Number(payload.exp || 0) <= Date.now()) return { ok: false, error: '旅系統登入票據已過期' };
-      if (wantedRole && textOf(payload.role) !== textOf(wantedRole)) return { ok: false, error: '旅系統身份不符合' };
+      var nowMs = Date.now();
+      var iat = Number(payload && payload.iat || 0);
+      var exp = Number(payload && payload.exp || 0);
+      if (!payload || textOf(payload.typ) !== 'central-sso-exchange'
+          || textOf(payload.u) !== textOf(unit)
+          || textOf(payload.iss) !== 'vs-portal'
+          || textOf(payload.aud) !== 'unified-gas:branch:' + textOf(unit)
+          || textOf(payload.src) !== 'central-travel-system'
+          || !iat || !exp || iat > nowMs + 15000 || exp <= nowMs - 15000 || exp <= iat || exp - iat > 120000) {
+        return { ok: false, error: '隔離 auth fixture 票據已過期或用途不正確' };
+      }
+      if (wantedRole && textOf(payload.role) !== textOf(wantedRole)) return { ok: false, error: '隔離 auth fixture 身份不符合' };
       return { ok: true, portal: true, role: textOf(payload.role), subject: textOf(payload.sub) };
     }
 
@@ -4089,7 +4696,7 @@ function dispatchBody(e, body) {
     if (body.action === 'authChangePassword') {
       var changeSession = requireAuthSession(body);
       if (!changeSession.ok) return json({ ok: false, success: false, error: changeSession.error, code: 'SESSION_REQUIRED' });
-      if (changeSession.portal) return json({ ok: false, success: false, error: '旅系統登入不設支部本地密碼', code: 'CENTRAL_IDENTITY_MANAGED' });
+      if (changeSession.portal) return json({ ok: false, success: false, error: '隔離 auth fixture 身份不設支部本地密碼', code: 'CENTRAL_IDENTITY_MANAGED' });
       if (textOf(body.newPassword) === '1234') return json({ ok: false, success: false, error: '新密碼唔可以繼續用預設 1234' });
       var changedPassword = withLock(function () {
         var changedDb = loadDb(textOf(body.unit));
@@ -4124,7 +4731,7 @@ function dispatchBody(e, body) {
     }
 
     /* ---- 團員入口：安全投影＋本人入站資料；API Key 永遠唔代替 session 身份 ---- */
-    if (body.action === 'hubLoad' || body.action === 'hubRsvp' || body.action === 'hubQuiz' || body.action === 'hubAbsence') {
+    if (body.action === 'hubLoad' || body.action === 'hubRsvp' || body.action === 'hubQuiz' || body.action === 'hubAbsence' || body.action === 'hubNoticeSignup') {
       var hubSession = requireAuthSession(body);
       if (!hubSession.ok) return json({ ok: false, success: false, error: hubSession.error, code: 'SESSION_REQUIRED' });
       if (body.action === 'hubLoad') {
@@ -4165,12 +4772,14 @@ function dispatchBody(e, body) {
         var targetName = textOf(body.targetUsername || body.targetEmail || body.targetYmis).toLowerCase();
         var target = null;
         /* 操作者只由已驗證 session 對回後端紀錄；actorUsername／actorRole 等 client
-           欄位全部不參與授權，中央 SSO opaque session 亦走同一路徑。 */
+           欄位全部不參與授權，隔離 auth fixture 的 opaque session 亦走同一路徑。 */
         var resetActor = resetSession.serverSigned
           ? { ok: true, role: 'super', record: null, serverSigned: true }
           : adminFindActor_(resetDb.db, resetSession);
         if (!resetActor.ok) return { success: false, error: resetActor.error, code: resetActor.code };
-        if (hubRoleRank_(resetActor.role) < hubRoleRank_('leader')) return { success: false, error: '你沒有權限重設其他帳戶密碼', code: 'ACTION_SCOPE_DENIED' };
+        if (hubRoleRank_(resetActor.role) < hubRoleRank_('leader') || !staffCanAccountAdmin_(resetDb.db, resetActor)) {
+          return { success: false, error: '你沒有權限重設其他帳戶密碼', code: 'ACTION_SCOPE_DENIED' };
+        }
         (resetDb.db && resetDb.db.accounts || []).some(function (a) {
           if (a && a.active !== false && (textOf(a.username).toLowerCase() === targetName || textOf(a.email).toLowerCase() === targetName)) { target = a; return true; }
           return false;
@@ -4216,7 +4825,9 @@ function dispatchBody(e, body) {
           ? { ok: true, role: 'super', record: null, serverSigned: true }
           : adminFindActor_(deleteDb.db, deleteSession);
         if (!deleteActor.ok) return { success: false, error: deleteActor.error, code: deleteActor.code };
-        if (hubRoleRank_(deleteActor.role) < hubRoleRank_('leader')) return { success: false, error: '你沒有權限刪除帳戶', code: 'ACTION_SCOPE_DENIED' };
+        if (hubRoleRank_(deleteActor.role) < hubRoleRank_('leader') || !staffCanAccountAdmin_(deleteDb.db, deleteActor)) {
+          return { success: false, error: '你沒有權限刪除帳戶', code: 'ACTION_SCOPE_DENIED' };
+        }
         (deleteDb.db && deleteDb.db.accounts || []).some(function (a, i) {
           if (a && (textOf(a.username).toLowerCase() === targetName3 || textOf(a.email).toLowerCase() === targetName3)) { target3 = a; targetIndex = i; return true; }
           return false;
@@ -4266,7 +4877,9 @@ function dispatchBody(e, body) {
           ? { ok: true, role: 'super', record: null, serverSigned: true }
           : adminFindActor_(restoreDb.db, restoreSession);
         if (!restoreActor.ok) return { success: false, error: restoreActor.error, code: restoreActor.code };
-        if (hubRoleRank_(restoreActor.role) < hubRoleRank_('leader')) return { success: false, error: '你沒有權限復原帳戶', code: 'ACTION_SCOPE_DENIED' };
+        if (hubRoleRank_(restoreActor.role) < hubRoleRank_('leader') || !staffCanAccountAdmin_(restoreDb.db, restoreActor)) {
+          return { success: false, error: '你沒有權限復原帳戶', code: 'ACTION_SCOPE_DENIED' };
+        }
         var restoreTarget = textOf(body.targetEmail || body.targetYmis).toLowerCase();
         var tombstone = null;
         (restoreDb.db && restoreDb.db.deletedAccounts || []).some(function (d) {
@@ -4408,10 +5021,12 @@ function dispatchBody(e, body) {
           ? { ok:true, role:'super', record:null, serverSigned:true }
           : adminFindActor_(createDb.db, createSession);
         if (!createActor.ok) return { success:false, error:createActor.error, code:createActor.code };
-        var actorRoleC = textOf(createActor.role).toLowerCase();
-        var wantedRole = textOf(body.role || 'exco').toLowerCase();
-        if (hubRoleRank_(actorRoleC) < hubRoleRank_('leader')) return { success:false, error:'你沒有權限新增帳戶', code:'ACTION_SCOPE_DENIED' };
-        if (['member', 'exco', 'leader'].indexOf(wantedRole) < 0 || hubRoleRank_(wantedRole) >= hubRoleRank_(actorRoleC)) {
+        var actorRoleC = branchCanonicalRole_(createActor.role);
+        var wantedRole = branchCanonicalRole_(body.role || 'exco');
+        if (hubRoleRank_(actorRoleC) < hubRoleRank_('leader') || !staffCanAccountAdmin_(createDb.db, createActor)) {
+          return { success:false, error:'你沒有權限新增帳戶', code:'ACTION_SCOPE_DENIED' };
+        }
+        if (BRANCH_ACCOUNT_ROLES_.indexOf(wantedRole) < 0 || hubRoleRank_(wantedRole) >= hubRoleRank_(actorRoleC)) {
           return { success:false, error:'不能建立同級或更高權限帳戶' };
         }
         /* ★ 2026-09-24：唔再開「共用帳戶」。團長／領袖只可以幫人開**個人**帳戶
@@ -4423,7 +5038,7 @@ function dispatchBody(e, body) {
           return false;
         });
         if (!memberC) return { success:false, error:'帳戶必須綁定有效名冊成員' };
-        var memberRoleC = textOf(memberC.identity || 'member').toLowerCase();
+        var memberRoleC = branchCanonicalRole_(memberC.identity || 'member');
         if (wantedRole !== memberRoleC) return { success:false, error:'帳戶權限必須跟名冊身份一致；請先在用戶頁更改身份' };
         var usernameC = textOf(body.username || body.email).trim();
         if (!usernameC) return { success:false, error:'請填帳號或 EMAIL' };
@@ -4450,6 +5065,9 @@ function dispatchBody(e, body) {
          冇樂觀鎖、冇分段暫存、冇報表重寫 —— 一個表寫唔到，其餘表照讀得到。 */
       if (body.action === 'saveTables') {
         var stx = withLock(function () {
+          var preparedTables = prepareAuthorizedAdminWrite_(body.unit, body.tables, dbSession, true);
+          if (preparedTables.success !== true) return preparedTables;
+          body.tables = preparedTables.db;
           var tableGuard = validateProtectedAdminWrite_(body.unit, body.tables, dbSession);
           return tableGuard.success === true ? saveTables(body) : tableGuard;
         });
@@ -4465,13 +5083,17 @@ function dispatchBody(e, body) {
       }
       if (body.action === 'loadTables') {
         var ltx = loadTables(textOf(body.unit));
-        return json({ ok: ltx.success === true, success: ltx.success === true, found: !!ltx.found,
-          db: ltx.db || null, tables: ltx.tables || null, broken: ltx.broken || [],
-          at: ltx.at || '', version: ltx.version || '', error: ltx.error || '' });
+        var ltxActor = ltx.db ? staffActorFromAuth_(ltx.db, dbSession) : { ok: true, role: dbSession.role, setup: dbSession.setup };
+        var ltxDb = ltx.db && ltxActor.ok ? staffSafeDb_(ltx.db, ltxActor) : null;
+        return json({ ok: ltx.success === true && ltxActor.ok !== false, success: ltx.success === true && ltxActor.ok !== false, found: !!ltx.found,
+          db: ltxDb, tables: ltxDb ? dbStats(ltxDb).counts : null, broken: ltx.broken || [],
+          at: ltx.at || '', version: ltx.version || '', error: ltxActor.error || ltx.error || '' });
       }
       /* 逐表讀：成份資料庫大過代理回應上限嗰陣，前端一個表一個表攞 */
       if (body.action === 'loadTablesPart') {
-        var ltp = loadTablesPart(textOf(body.unit), body.idx);
+        var ltpBase = loadDb(textOf(body.unit));
+        var ltpActor = ltpBase.db ? staffActorFromAuth_(ltpBase.db, dbSession) : { ok: true, role: dbSession.role, setup: dbSession.setup };
+        var ltp = ltpActor.ok ? staffLoadTablesPart_(textOf(body.unit), body.idx, ltpActor) : { success: false, error: ltpActor.error };
         return json({ ok: ltp.success === true, success: ltp.success === true, found: !!ltp.found,
           idx: ltp.idx || 0, count: ltp.count || 0, name: ltp.name || '', value: ltp.value,
           broken: ltp.broken || [],
@@ -4479,6 +5101,9 @@ function dispatchBody(e, body) {
       }
       if (body.action === 'saveDb') {
         var sv = withLock(function () {
+          var preparedDb = prepareAuthorizedAdminWrite_(body.unit, body.db, dbSession, false);
+          if (preparedDb.success !== true) return preparedDb;
+          body.db = preparedDb.db;
           var dbGuard = validateProtectedAdminWrite_(body.unit, body.db, dbSession);
           return dbGuard.success === true ? saveDb(body) : dbGuard;
         });
@@ -4501,7 +5126,13 @@ function dispatchBody(e, body) {
       }
       if (body.action === 'dbInfo') {
         var nfo = dbInfo(textOf(body.unit));
-        return json({ ok: nfo.success === true, success: nfo.success === true, found: !!nfo.found,
+        var nfoLoaded = loadDb(textOf(body.unit));
+        var nfoActor = nfoLoaded.db ? staffActorFromAuth_(nfoLoaded.db, dbSession) : { ok: true, role: dbSession.role, setup: dbSession.setup };
+        if (nfoLoaded.db && nfoActor.ok) {
+          var nfoStats = dbStats(staffSafeDb_(nfoLoaded.db, nfoActor) || {});
+          nfo.bytes = nfoStats.bytes; nfo.sizes = nfoStats.sizes; nfo.photoBytes = nfoStats.photoBytes; nfo.counts = nfoStats.counts;
+        }
+        return json({ ok: nfo.success === true && nfoActor.ok !== false, success: nfo.success === true && nfoActor.ok !== false, found: !!nfo.found,
           at: nfo.at || '', version: nfo.version || '', bytes: nfo.bytes || 0,
           sizes: nfo.sizes || null, photoBytes: nfo.photoBytes || 0, counts: nfo.counts || null,
           stagingRows: nfo.stagingRows || 0, stagingBytes: nfo.stagingBytes || 0,
@@ -4516,14 +5147,18 @@ function dispatchBody(e, body) {
       }
       /* 自 v2.6.0 起：分段讀取 —— 每次淨係回一段純文字，唔會撞代理 4.5MB 回應上限 */
       if (body.action === 'loadDbPart') {
-        var lp = loadDbPart(textOf(body.unit), body.partIdx);
+        var lpBase = loadDb(textOf(body.unit));
+        var lpActor = lpBase.db ? staffActorFromAuth_(lpBase.db, dbSession) : { ok: true, role: dbSession.role, setup: dbSession.setup };
+        var lp = lpActor.ok ? staffLoadDbPart_(textOf(body.unit), body.partIdx, lpActor) : { success: false, error: lpActor.error };
         return json({ ok: lp.success === true, success: lp.success === true, found: !!lp.found,
           part: lp.part || '', partIdx: lp.partIdx || 0, parts: lp.parts || 0, bytes: lp.bytes || 0,
           at: lp.at || '', version: lp.version || '', error: lp.error || '' });
       }
       var ld = loadDb(textOf(body.unit));
-      return json({ ok: ld.success === true, success: ld.success === true, found: !!ld.found,
-        db: ld.db || null, at: ld.at || '', version: ld.version || '', bytes: ld.bytes || 0,
+      var ldActor = ld.db ? staffActorFromAuth_(ld.db, dbSession) : { ok: true, role: dbSession.role, setup: dbSession.setup };
+      var ldDb = ld.db && ldActor.ok ? staffSafeDb_(ld.db, ldActor) : null;
+      return json({ ok: ld.success === true && ldActor.ok !== false, success: ld.success === true && ldActor.ok !== false, found: !!ld.found,
+        db: ldDb, at: ld.at || '', version: ld.version || '', bytes: ldDb ? JSON.stringify(ldDb).length : 0,
         stagingRows: ld.stagingRows || 0, stagingBytes: ld.stagingBytes || 0,
         staleRows: ld.staleRows || 0, versions: ld.versions || 0, brokenNewer: ld.brokenNewer || 0,
         error: ld.error || '' });
@@ -4542,8 +5177,8 @@ function dispatchBody(e, body) {
         at: mineData.at || '', error: mineData.error || '' });
     }
 
-    /* ---- 進度追蹤：POST 讀（供同源 server proxy 以用途分隔 HMAC
-       驗證同一個 load 業務 action）---- */
+    /* ---- 進度追蹤：POST 讀（doGet ?action=load 之外，供同源 server proxy
+       以用途分隔 HMAC 驗證同一個 load 業務 action）---- */
     if (body.action === 'load') {
       var loadAuth = requireAuth(expectedKey, key);
       if (!loadAuth.ok) return json(loadAuth);
@@ -4552,7 +5187,7 @@ function dispatchBody(e, body) {
       return json(lpData);
     }
 
-    /* ---- 進度追蹤（同進度前端共用同一個後端；API Key＝執委身份）---- */
+    /* ---- 進度追蹤（同 BADGE 共用同一個後端；API Key 只作 server HMAC／routing）---- */
     if (body.action === 'save' || body.action === 'saveOtherBadge') {
       var progressAuth = requireAuth(expectedKey, key);
       if (!progressAuth.ok) return json(progressAuth);
@@ -4564,7 +5199,7 @@ function dispatchBody(e, body) {
       return json({ ok: pbo.success === true, success: pbo.success === true, processed: pbo.processed || 0, error: pbo.error || '' });
     }
 
-    /* ---- 審批中心（執委系統內直接批；同一個 API Key＝執委身份）---- */
+    /* ---- 審批中心（執委系統內直接批；使用者身份由 session 固定）---- */
     if (body.action === 'reviewRequest' || body.action === 'reviewLogRequest') {
       var reviewAuth = requireAuth(expectedKey, key);
       if (!reviewAuth.ok) return json(reviewAuth);
@@ -4583,20 +5218,7 @@ function dispatchBody(e, body) {
         message: lq.message || '', record_id: lq.record_id || '', error: lq.error || '' });
     }
 
-    /* 公開通告（免 API Key）：只回已發布嘅通告全文 */
-    if (body.action === 'notices') {
-      return json({ success: true, ok: true, unit: textOf(body.unit), notices: loadPublicNotices(textOf(body.unit)) });
-    }
-
-    /* 公開團章（v2.5.0，免 API Key）：APP「發布」＋同步咗之後，
-       constitution.html 公開頁即刻讀到最新版 —— 只回 constitution 同旅團名，
-       唔會漏名冊／帳目等其他資料。 */
-    if (body.action === 'constitution') {
-      var cons = publicConstitution(textOf(body.unit));
-      return json({ ok: cons.success === true, success: cons.success === true, found: !!cons.found,
-        constitution: cons.constitution || null, unitName: cons.unitName || '',
-        version: cons.version || '', at: cons.at || '', error: cons.error || '' });
-    }
+    /* 匿名通告／團章 API 已刪除；內容只經已核實 hubLoad 投影提供。 */
 
     if (body.action === 'verifySetupKey') {
       if (expectedKey && key !== expectedKey) {
@@ -4613,19 +5235,10 @@ function dispatchBody(e, body) {
     if (body.action === 'ping') return json({ ok: true, msg: 'pong', unit: body.unit, at: body.at });
     /* ---- 個人化通告訂閱：只保存帳戶自己的訂閱偏好，不接受前端 memberId 冒認 ---- */
 
-    if (body.action === 'noticeSignup') {
-      /* 自 v2.5.0 起：報名除咗寫「報名」分頁，仲會寫入資料庫（APP 執委端先至睇得到） */
-      var sgn = withLock(function () { return appendSignup(body); });
-      return json({ ok: sgn.success !== false, success: sgn.success !== false,
-        msg: sgn.duplicate ? '已經記錄過呢份報名' : '已記錄報名', duplicate: !!sgn.duplicate });
-    }
-
-    if (body.action === 'claim') {
-      var saved = withLock(function () { return appendClaim(body); });
-      return json({ ok: true, msg: '已記錄，等批核', photos: saved.photos || 0 });
-    }
-    /* ---- 相片上 Drive（v2.3.0；免 API Key，同 claim 同一信任級別）----
-       APP 內申報用：只存檔回連結，唔會寫任何報表行（報表行由 syncAll 負責）。 */
+    /* 舊匿名 noticeSignup／claim 入口已刪除；個人提交必須使用 opaque member session。 */
+    /* ---- 已登入 staff 相片上 Drive（v2.3.0）----
+       同時要求 server API Key 與 staff session；只存檔回連結，唔會寫任何報表行
+       （報表行由 syncAll 負責）。 */
     if (body.action === 'uploadPhotos') {
       var uploadAuth = requireAuth(expectedKey, key); if (!uploadAuth.ok) return json(uploadAuth);
       var uploadSession = requireStaffSession(body, 3, true); if (!uploadSession.ok) return json(uploadSession);
@@ -4634,10 +5247,7 @@ function dispatchBody(e, body) {
       return json({ ok: true, links: links, saved: links.length, asked: upPhotos.length });
     }
 
-    if (body.action === 'loan') {
-      withLock(function () { appendLoan(body); });
-      return json({ ok: true, msg: '已記錄借用申請，等批核', photos: 0 });
-    }
+    /* 舊匿名 loan 入口已刪除。 */
     if (body.action === 'sync') {
       var syncAuth = requireAuth(expectedKey, key);
       if (!syncAuth.ok) return json(syncAuth);
@@ -4645,6 +5255,9 @@ function dispatchBody(e, body) {
       if (!syncSession.ok) return json(syncSession);
       var counts = withLock(function () {
         if (body.db && typeof body.db === 'object') {
+          var syncPrepared = prepareAuthorizedAdminWrite_(body.unit, body.db, syncSession, false);
+          if (syncPrepared.success !== true) return { __protectedWrite: syncPrepared };
+          body.db = syncPrepared.db;
           var syncGuard = validateProtectedAdminWrite_(body.unit, body.db, syncSession);
           if (syncGuard.success !== true) return { __protectedWrite: syncGuard };
         }
@@ -4718,6 +5331,9 @@ function dispatchBody(e, body) {
       var forceSession = requireStaffSession(body, 4, false);
       if (!forceSession.ok) return json(forceSession);
       var forcedSaved = withLock(function () {
+        var forcePrepared = prepareAuthorizedAdminWrite_(body.unit, body.db, forceSession, false);
+        if (forcePrepared.success !== true) return forcePrepared;
+        body.db = forcePrepared.db;
         var forceGuard = validateProtectedAdminWrite_(body.unit, body.db, forceSession);
         return forceGuard.success === true
           ? saveDb({ unit: textOf(body.unit), db: body.db, baseVersion: '', force: true })
@@ -4725,9 +5341,8 @@ function dispatchBody(e, body) {
       });
       return json(forcedSaved);
     }
-    /* ★ v2.8.4：旅系統接駁 —— 讀／寫我呢支後端嘅「直接入口」掣。
-       要 API Key（＝自己條 SHEET KEY）先做得；上游（旅／團）就會調咁調：
-       callDownstream(id, 'setLocalLogin', { allow: 'true'|'false' }) 經簽名閂／開我。 */
+    /* Legacy 非 Unified 入口旗標兼容：只供舊安全回歸，Progress client／API 不路由；
+       Unified 公開 router 會拒絕兩個 action。未來旅系統 reader 不使用此契約。 */
     if (body.action === 'getLinkState') {
       var lsAuth = requireAuth(expectedKey, key);
       if (!lsAuth.ok) return json(lsAuth);
@@ -4747,7 +5362,7 @@ function dispatchBody(e, body) {
       }
       PropertiesService.getScriptProperties().setProperty(LINK_FLAG, allow ? 'true' : 'false');
       return json({ success: true, ok: true, allow_local_login: allow,
-        message: allow ? '直接入口已開啟' : '直接入口已閂，只收上游 sig' });
+        message: allow ? '支部本地登入已開啟' : 'legacy 入口旗標已關閉' });
     }
     // 兼容：冇 action 但係 82venture 嘅資料（當 sync）
     if (!body.action && body.tables) {
@@ -4763,7 +5378,7 @@ function dispatchBody(e, body) {
   }
 }
 
-/** 收到 GET 時處理：?action=load 讀進度（完整版與輕量版前端用同一份資料） */
+/** 收到 GET 時處理：?action=load 讀進度（多個 client 用同一份資料） */
 function doGet(e) {
   var action = '';
   var supplied = '';
@@ -4771,16 +5386,9 @@ function doGet(e) {
     action = String((e && e.parameter && e.parameter.action) || '');
     supplied = String((e.parameter && (e.parameter.apikey || e.parameter.apiKey)) || '');
   } catch (err0) { action = ''; }
-  /* ★ v2.8.4 旅系統接駁：閂咗口，本地 apikey GET 讀一律拒（公開通告／團章照出街） */
-  if (action !== 'notices' && action !== 'constitution' && !localLoginAllowed()) {
+  /* GET 不設匿名內容例外。 */
+  if (!localLoginAllowed()) {
     return json(linkClosedResponse(action));
-  }
-  if (action === 'notices') return json({ success: true, ok: true, unit: textOf((e.parameter && e.parameter.unit) || ''), notices: loadPublicNotices(textOf((e.parameter && e.parameter.unit) || '')) });
-  if (action === 'constitution') {
-    var consG = publicConstitution(textOf((e.parameter && e.parameter.unit) || ''));
-    return json({ ok: consG.success === true, success: consG.success === true, found: !!consG.found,
-      constitution: consG.constitution || null, unitName: consG.unitName || '',
-      version: consG.version || '', at: consG.at || '', error: consG.error || '' });
   }
   if (action === 'load') {
     var expected = PropertiesService.getScriptProperties().getProperty('API_KEY');
@@ -4790,32 +5398,16 @@ function doGet(e) {
     data.success = true; data.ok = true;
     return json(data);
   }
-  /* ★ v2.7.1：後端現況自查 —— 答「點解人讀到、進度一條都冇？」。
-     要 API Key（有設就一定核對；比 load 嚴，因為會報分頁名同行數）： */
+  /* 行政資料讀取必須經 POST opaque staff session；API Key 單獨唔係用戶身份。 */
   if (action === 'loadDb' || action === 'dbInfo') {
-    var expectedDb = PropertiesService.getScriptProperties().getProperty('API_KEY');
-    if (expectedDb && supplied !== expectedDb) return json({ success: false, ok: false, error: '未授權：API Key 唔正確' });
-    var unitParam = textOf((e.parameter && e.parameter.unit) || '');
-    if (action === 'dbInfo') {
-      var gi = dbInfo(unitParam);
-      return json({ ok: gi.success === true, success: gi.success === true, found: !!gi.found,
-        at: gi.at || '', version: gi.version || '', bytes: gi.bytes || 0,
-        sizes: gi.sizes || null, photoBytes: gi.photoBytes || 0, counts: gi.counts || null, error: gi.error || '',
-        mode: gi.mode || 'blob', broken: gi.broken || [],
-        simpleRows: gi.simpleRows || 0, blobRows: gi.blobRows || 0,
-        backendVersion: gi.backendVersion || BACKEND_VERSION });
-    }
-    var gd = loadDb(unitParam);
-    return json({ ok: gd.success === true, success: gd.success === true, found: !!gd.found,
-      db: gd.db || null, at: gd.at || '', version: gd.version || '', bytes: gd.bytes || 0,
-      staleRows: gd.staleRows || 0, versions: gd.versions || 0, error: gd.error || '' });
+    return json({ ok: false, success: false, code: 'SESSION_REQUIRED', error: '請由已登入系統讀取行政資料' });
   }
   return json({
     ok: true,
     msg: '深資童軍管理系統 後端已啟動',
     spreadsheet: (function () { try { return SpreadsheetApp.getActiveSpreadsheet().getName(); } catch (err) { return '(未綁定試算表)'; } })(),
     tabs: SHEET_TABS,
-    api: ['ping', 'status', 'sync', 'saveDb', 'loadDb', 'dbInfo', 'claim', 'noticeSignup', 'loan', 'load', 'save', 'saveOtherBadge'],
+    api: ['ping', 'status', 'sync', 'saveDb', 'loadDb', 'dbInfo', 'hubLoad', 'load', 'save', 'saveOtherBadge'],
     usage: 'APP 內「資料管理 → 總表同步」填呢個 /exec 網址即可'
   });
 }
@@ -5207,6 +5799,9 @@ function saveDbCommit(body, writeAuth) {
       else merged[k] = incoming;
     });
   });
+  var preparedCommit = prepareAuthorizedAdminWrite_(unit, merged, writeAuth, false);
+  if (preparedCommit.success !== true) return preparedCommit;
+  merged = preparedCommit.db;
   var protectedCommit = validateProtectedAdminWrite_(unit, merged, writeAuth);
   if (protectedCommit.success !== true) return protectedCommit;
   var text = JSON.stringify(merged);
@@ -5959,7 +6554,7 @@ function syncAll(body) {
   counts['invItems'] = writeTab(ss, body, '物資', tables.invItems, schema.invItems, ['code', 'name', 'category', 'total', 'unit', 'location', 'condition', 'note']);
   counts['members'] = writeTab(ss, body, '團員', tables.members, schema.members, ['ymis', 'systemId', 'name', 'eng', 'identity', 'birthday', 'role', 'status', 'phone', 'email', 'join', 'note']);
 
-  // 成員名單（同進度前端共用，兩邊見同一批人）
+  // 成員名單（行政、Progress 與 BADGE action 共用同一批人）
   counts['memberList'] = writeMemberList(ss, tables.members || []);
 
   // 通告：一張通告一行
@@ -6072,66 +6667,8 @@ function writeNoticesFull(ss, unit, notices) {
   return data.length;
 }
 
-/**
- * 讀公開通告（免登入）：只回 published
- * 多個 client 共用一個後端 —— 公開頁唔使等改 Git，同步完就見到新通告
- *
- * 自 v2.5.0 起：改為由「資料庫」分頁（APP 儲存嘅正本）讀 ——
- * 以前淨係讀「通告全文」分頁，但嗰分頁要手動撳「總表同步」先會更新，
- * APP 新開／改完嘅通告喺公開頁會一直見唔到（團長回報「其他功能成唔成唔知」嘅死因之一）。
- * 「通告全文」分頁留返做後備（舊資料／從未同步過嘅旅團）。
- */
-function loadPublicNotices(unit) {
-  try {
-    var r = loadDb(unit);
-    if (r.success && r.found && r.db && Array.isArray(r.db.notices)) {
-      /* ★ 2026-09-24 團長：通告都有「邊個睇到」（喺通告編輯器設）。
-         呢個係**免登入**公開接口，所以淨係出「對外公開」（vis ＝ 'other'，
-         冇設嘅當對外公開 ＝ 同以前一樣）嗰啲；團員級／執委級／領袖級一律唔出，
-         否則未登入嘅人攞個連結就睇到內部通告。 */
-      var fromDb = r.db.notices.filter(function (n) {
-        return n && n.status === 'published' && n.id && String(n.vis || 'other') === 'other';
-      });
-      if (fromDb.length) return fromDb;
-    }
-  } catch (e0) { /* 跌落去「通告全文」分頁 */ }
-  var out = [];
-  var sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('通告全文');
-  if (!sh) return out;
-  var rows = sh.getDataRange().getValues();
-  for (var i = 1; i < rows.length; i++) {
-    var u = textOf(rows[i][0]);
-    if (unit && u && u !== unit) continue;
-    if (textOf(rows[i][2]) !== 'published') continue;
-    var raw = rows[i][4];
-    if (!raw) continue;
-    try {
-      var obj = JSON.parse(String(raw));
-      if (obj && obj.id) out.push(obj);
-    } catch (e) { /* 壞行就略過 */ }
-  }
-  return out;
-}
-
-/**
- * 公開團章（v2.5.0，免 API Key）：由「資料庫」分頁抽 constitution。
- * 只回 constitution（＋旅團名／版本）—— 名冊、帳目等一概唔會出去。
- * 只回已經有內容嘅（未寫過團章／未同步過 → found:false，公開頁會用靜態檔後備）。
- */
-function publicConstitution(unit) {
-  var r;
-  try { r = loadDb(unit); } catch (e) { return { success: false, found: false, error: String(e) }; }
-  if (!r.success) return { success: false, found: false, error: r.error || '' };
-  if (!r.found) return { success: true, found: false };
-  var db = r.db || {};
-  var c = db.constitution;
-  if (!c || !Array.isArray(c.chapters) || !c.chapters.length) return { success: true, found: false };
-  return {
-    success: true, found: true, constitution: c,
-    unitName: (db.profile && db.profile.name) || (db.unit && db.unit.name) || '',
-    version: c.version || '', at: r.at || ''
-  };
-}
+/* 舊匿名通告／團章 reader 已移除。已發布內容只會由 hubLoad 按
+   opaque member session 及可見級別建立安全投影。 */
 
 /** 通告報名（攤開） */
 function writeSignups(ss, body, notices) {
@@ -6153,10 +6690,10 @@ function writeSignups(ss, body, notices) {
 }
 
 /* ============================================================
-   完整 Unified 後端、完整版與輕量版前端：Progress
+   一個 Unified 後端、多個 client：Progress
    ------------------------------------------------------------
-   Unified GS 具備身份、行政、Progress、獎章、履歷及申報完整能力。vs_portal 係
-   功能完整版前端，vsbadge 係只呈現部分流程的輕量前端；唔存在另一支精簡 backend。
+   行政介面、Progress 與 BADGE 都係同一 Unified 後端的 client，以業務 action
+   直接讀寫指定分頁；唔存在另一個 Progress backend 或前端之間的接駁。
    共用分頁：進度追蹤 / 其他獎章 / 待批完成 / 活動履歷 / 待批履歷 / 成員名單
    讀：GET  ?action=load[&apikey=…]
    寫：POST { action:'save' | 'saveOtherBadge', apikey, changes / records }
@@ -6177,12 +6714,10 @@ function dateOf(v) {
 /* ============================================================
    ★ v2.7.1（2026-09-24 團長回報：「人係讀到，但係個個都冇進度」）
    ------------------------------------------------------------
-   load 只回資料，唔回「呢啲資料係邊張 Sheet 嘅」。同一個 /exec 可以係
-   （甲）呢個管理系統嘅後端 —— 進度追蹤／成員名單分頁喺同一張 Sheet；
-   （乙）另一支腳本／另一張 Sheet（例如淨係進度嗰張）。
-   症狀一樣（人讀到、進度全空），但原因同做法完全唔同，所以要有辦法睇
-   清楚：邊張 Sheet、有邊啲分頁、每張幾多行、進度同名冊對唔對得上。
-   要 API Key（會報分頁名同行數，唔應該公開）。
+   正式路徑只准指向本支部同一個 Unified /exec／Sheet。若人讀到但進度全空，
+   要核對 Registry 是否誤指舊 deployment，以及 active Sheet 的「進度追蹤」／
+   「成員名單」分頁是否有資料。因此保留管理員診斷：顯示 active Sheet、分頁、
+   行數及進度／名冊對應結果。要 API Key（會報分頁名同行數，唔應該公開）。
    ============================================================ */
 
 function progressMembers() {
@@ -6231,7 +6766,7 @@ function progressMembers() {
   return out;
 }
 
-/** 讀全部進度資料（同進度前端嘅 /exec?action=load 同一種格式） */
+/** 讀全部進度資料（Unified /exec?action=load 的 Progress 業務格式） */
 function loadProgressData() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var progress = {};
@@ -6375,7 +6910,7 @@ function withLock(fn) {
   }
 }
 
-/** 勾／取消勾（同進度前端寫入同一個分頁） */
+/** 勾／取消勾（Progress action 寫入同一個「進度追蹤」分頁） */
 function saveProgress(changes, confirmer) {
   var sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('進度追蹤');
   if (!sheet) return { success: false, error: '搵唔到「進度追蹤」分頁（請先執行 initializeSheets）' };
@@ -6441,9 +6976,10 @@ function saveOtherBadges(records) {
 }
 
 /* ============================================================
-   團員申報進度完成（v2.2.0，畀團員入口用；免 API Key）
-   寫入「待批完成」分頁，狀態 pending；執委喺審批中心批准後
-   先會真正寫入「進度追蹤」。唔會直接改任何進度資料。
+   團員申報進度完成（v2.2.0，畀團員入口用）
+   只可由同源 server bridge 在核實 member session、固定本人 YMIS 後呼叫；
+   寫入「待批完成」分頁，狀態 pending。執委喺審批中心批准後先會真正
+   寫入「進度追蹤」，唔會直接改任何進度資料。
    ============================================================ */
 function addProgressRequest(body) {
   var ymis = textOf(body.ymis);
@@ -6452,7 +6988,8 @@ function addProgressRequest(body) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = ss.getSheetByName('待批完成');
   if (!sheet) return { success: false, error: '搵唔到「待批完成」分頁（請先執行 initializeSheets）' };
-  var reqId = 'req_' + textOf(body.unit) + '_' + new Date().getTime() + '_' + Math.floor(Math.random() * 900 + 100);
+  var reqId = 'req_' + textOf(body.unit) + '_' + new Date().getTime() + '_'
+    + Utilities.getUuid().replace(/-/g, '');
   var reqDate = textOf(body.requested_date) || Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd');
   sheet.appendRow([reqId, ymis, textOf(body.name), itemId, textOf(body.item_name),
     reqDate, textOf(body.evidence), 'pending', new Date(), '', '', '', '']);
@@ -6483,7 +7020,7 @@ function loadMyRequests(ymis) {
 
 /* ============================================================
    審批中心：待批完成（團員申報 → 執委／領袖喺深資童軍管理系統批）
-   批准＝寫入「進度追蹤」（完整版與輕量版前端都即刻見到）
+   批准＝寫入「進度追蹤」（同一個後端的 client 都即刻見到）
    ============================================================ */
 function reviewProgressRequest(reqId, decision, note, reviewer, confirmedDate) {
   reqId = textOf(reqId);
@@ -6608,82 +7145,19 @@ function writeMemberList(ss, rows) {
 }
 
 /* ============================================================
-   公開頁動作：收支申報／物資借用／通告報名
+   已驗證 staff 相片上載
    ------------------------------------------------------------
-   v2.5.0 起呢三樣嘢**都會寫入「資料庫」分頁**（APP 嘅正本）：
-   以前只係寫報表分頁（收支申報／物資借用／報名），執委部機嘅 APP
-   永遠見唔到 —— 成員送出咗申報，司庫要自己開 Google Sheet 先知有嘢等批。
-   而家寫入資料庫之後，執委部機開住 APP（60 秒 poll／開機拉）就會自動見到。
-   （後端從來未同步過資料庫嘅旅團：照舊淨係寫報表分頁，唔會無中生有起個 db。）
+   舊匿名 claim／loan／noticeSignup helper 已移除；個人內容及 mutation
+   只可經 opaque member session 綁定的 hub action。以下 helper 只供
+   已通過 API Key + staff session 的 uploadPhotos 使用。
    ============================================================ */
 
-/**
- * 把一筆紀錄寫入資料庫（要喺 withLock 入面用）。
- * mutator(db) 改 db；回 false = 唔使存（例如重複報名）。
- * 回 { found, dbSaved, skip }（後端冇資料庫 → found:false，只寫報表分頁）。
- */
-function appendIntoDb(unit, mutator) {
-  var r = loadDb(unit);
-  if (!r.success || !r.found || !r.db) return { found: false, dbSaved: false, skip: false };
-  if (mutator(r.db) === false) return { found: true, dbSaved: false, skip: true };
-  /* 用啱啱讀到嘅版本做 baseVersion —— 同一把鎖入面冇人插到隊，實得 */
-  var sv = saveDb({ unit: unit, db: r.db, baseVersion: String(r.version || '') });
-  return { found: true, dbSaved: sv.success === true, skip: false, error: sv.error || '' };
-}
-
-/** 時間戳（同 APP 嘅 nowStamp() 一樣格式） */
-function nowStampGs() {
-  return Utilities.formatDate(new Date(), 'Asia/Hong_Kong', 'yyyy-MM-dd HH:mm:ss');
-}
-
-/** 手機記一筆（成員影相＋選欄目） */
-function appendClaim(body) {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var p = body.payload || {};
-  var name = sheetName('收支申報', body.unit || 'UNKNOWN');
-  var sh = ss.getSheetByName(name);
-  if (!sh) {
-    sh = ss.insertSheet(name);
-    sh.appendRow(['旅團', '時間', '日期', '類型', '欄目', '項目', '金額', '付款人', '備註', '相片張數', '相片連結', '紀錄編號'])
-      .getRange(1, 1, 1, 12).setFontWeight('bold');
-  }
-  var links = savePhotos(p.photos || [], body.unit || '', p.id || '', textOf(body.folderId));
-  sh.appendRow([
-    body.unit || '', new Date(), p.date || '', p.type === 'income' ? '收入' : '支出',
-    p.category || '', p.item || '', Number(p.amount) || 0, p.byName || '', p.note || '',
-    (p.photos || []).length, links.join('\n'), p.id || ''
-  ]);
-  /* 自 v2.5.0 起：同時寫入資料庫（APP「財務 → 收支申報」待批清單即刻見到） */
-  var dbR = appendIntoDb(body.unit || '', function (db) {
-    if (!Array.isArray(db.claims)) db.claims = [];
-    if (db.claims.some(function (c) { return c && String(c.id) === String(p.id || ''); })) return false;   // 防重送
-    db.claims.push({
-      id: p.id || ('cl_' + Date.now()),
-      type: p.type === 'income' ? 'income' : 'expense',
-      amount: Number(p.amount) || 0,
-      date: p.date || '',
-      category: p.category || '',
-      item: p.item || '',
-      byName: p.byName || '',
-      memberId: p.memberId || '',
-      note: (p.note || '') + (p.contact ? '（聯絡：' + p.contact + '）' : ''),
-      receipt: !!(p.receipt || (p.photos || []).length),
-      photos: links.map(function (l) { return { name: '', type: 'image/jpeg', link: l }; }),
-      photosOnDrive: links.length > 0,
-      status: 'pending',
-      requestedBy: 'public:entry',
-      requestedAt: nowStampGs()
-    });
-  });
-  return { photos: links.length, dbSaved: dbR.dbSaved, dbFound: dbR.found };
-}
-
-/** 將 base64 相片存去 Drive（未設定資料夾就只記數量） */
-/** 自 v2.3.0 起 單據 Drive 資料夾：優先次序
- *  ① 前端明確指定（APP 內「財務 → 設定」填嘅 settings.receiptDrive，uploadPhotos 帶上嚟）
- *  ② 該旅團資料庫 settings.receiptDrive（團員入口 entry.html 走呢條路）
- *  ③ Apps Script Script Property DRIVE_FOLDER_ID（部署時設定嘅預設）
- *  收連結或者 ID 都得（自動抽出 folders/… ID）。 */
+/** 將已驗證 staff 提交的 base64 相片存去 Drive（未設定資料夾就只記數量）。
+ * 自 v2.3.0 起單據 Drive 資料夾優先次序：
+ *  ① 已登入行政介面明確指定的 settings.receiptDrive；
+ *  ② 該旅團資料庫的 settings.receiptDrive；
+ *  ③ Apps Script Script Property DRIVE_FOLDER_ID（部署時設定嘅預設）。
+ * 接受連結或 ID（自動抽出 folders/… ID）；此 helper 本身不是匿名入口。 */
 function receiptFolderId(explicit, unit) {
   var v = textOf(explicit);
   if (!v && unit) {
@@ -6717,84 +7191,6 @@ function savePhotos(photos, unit, id, explicitFolder) {
     } catch (e2) { /* 單張失敗唔好中斷 */ }
   }
   return out;
-}
-
-/** 物資借用（成員公開頁 borrow.html） */
-function appendLoan(body) {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var p = body.payload || {};
-  var name = sheetName('物資借用', body.unit || 'UNKNOWN');
-  var sh = ss.getSheetByName(name);
-  if (!sh) {
-    sh = ss.insertSheet(name);
-    sh.appendRow(['旅團', '時間', '申請人', '聯絡電話', '物資編號', '物資名稱', '數量', '借用日', '歸還日', '用途', '狀態', '紀錄編號'])
-      .getRange(1, 1, 1, 12).setFontWeight('bold');
-  }
-  sh.appendRow([
-    body.unit || '', new Date(), p.byName || '', p.contact || '', p.itemCode || '', p.itemName || '',
-    Number(p.qty) || 1, p.fromDate || '', p.toDate || '', p.purpose || '', '待批核', p.id || ''
-  ]);
-  /* 自 v2.5.0 起：同時寫入資料庫（APP「物資 → 借用與批核」即刻見到） */
-  var dbR = appendIntoDb(body.unit || '', function (db) {
-    if (!Array.isArray(db.invLoans)) db.invLoans = [];
-    if (db.invLoans.some(function (l) { return l && String(l.id) === String(p.id || ''); })) return false;   // 防重送
-    db.invLoans.push({
-      id: p.id || ('ln_' + Date.now()),
-      itemId: p.itemId || '',
-      qty: Number(p.qty) || 1,
-      borrowerName: p.byName || '',
-      borrowerId: '',
-      purpose: p.purpose || '',
-      outDate: p.fromDate || '',
-      dueDate: p.toDate || '',
-      returnDate: '',
-      status: 'requested',
-      requestedBy: 'public:borrow',
-      requestedByAccountId: '',
-      requestedAt: nowStampGs(),
-      approvedBy: '',
-      note: p.contact ? '聯絡：' + p.contact : ''
-    });
-  });
-  return { dbSaved: dbR.dbSaved, dbFound: dbR.found };
-}
-
-/** 公開頁即時報名（notice.html）。
-    v2.5.0：同時寫入資料庫 —— 執委喺 APP「通告 → 報名紀錄」即刻見到，
-    並按「同一通告＋同一個名」防重複（換裝置重複提交都唔會重複入數）。 */
-function appendSignup(body) {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var p = body.payload || {};
-  var v = p.values || {};
-  var name = sheetName('報名', body.unit || 'UNKNOWN');
-  var sh = ss.getSheetByName(name) || ss.insertSheet(name);
-  if (sh.getLastRow() === 0) {
-    sh.appendRow(['旅團', '通告編號', '通告標題', '報名時間', '姓名', '聯絡', '出席與否', '全部欄位(JSON)']).getRange(1, 1, 1, 8).setFontWeight('bold');
-  }
-  var dup = false;
-  var dbR = appendIntoDb(body.unit || '', function (db) {
-    if (!Array.isArray(db.notices)) db.notices = [];
-    var n = null;
-    for (var i = 0; i < db.notices.length; i++) {
-      if (String(db.notices[i] && db.notices[i].id) === String(p.noticeId || '')) { n = db.notices[i]; break; }
-    }
-    if (!n) return false;                                   // 資料庫未有你張通告（未同步過）→ 淨係寫報表分頁
-    if (!Array.isArray(n.signups)) n.signups = [];
-    var who = String(v.name || '').trim();
-    if (who && n.signups.some(function (s) { return s && String(s.name || (s.values && s.values.name) || '').trim() === who; })) {
-      dup = true;
-      return false;                                         // 同一通告＋同名 → 唔好重複入數
-    }
-    n.signups.push({
-      id: 'sg_' + Date.now() + '_' + Math.floor(Math.random() * 1000),
-      at: p.at || nowStampGs(),
-      name: who,
-      values: v
-    });
-  });
-  if (dup) return { success: true, duplicate: true, dbSaved: false };
-  sh.appendRow([body.unit || '', p.noticeId || '', p.noticeTitle || '', p.at || new Date(), v.name || '', v.contact || '', attendOf(v), JSON.stringify(v)]);
-  return { success: true, duplicate: false, dbSaved: dbR.dbSaved, dbFound: dbR.found };
 }
 
 /* ============================================================
@@ -6843,7 +7239,11 @@ return {
   doGet: doGet,
   doPost: doPost,
   loadDb: loadDb,
-  loadTables: loadTables
+  loadTables: loadTables,
+  canAccountAdmin: staffCanAccountAdmin_,
+  canonicalRole: branchCanonicalRole_,
+  roleLevel: branchRoleLevel_,
+  visibleRoles: BRANCH_VISIBLE_ROLES_.slice(),
 };
 })();
 // ============================================================
@@ -6881,12 +7281,11 @@ var UNIFIED_PORTAL_CENTRAL_SOURCE = 'central-travel-system';
 var UNIFIED_ADMIN_SIGNED_MAX_BYTES = 4 * 1024 * 1024;
 
 var UNIFIED_PUBLIC_PORTAL_ACTIONS = {
-  ping: 1, test: 1, status: 1, notices: 1, constitution: 1,
-  noticeSignup: 1, loan: 1, claim: 1
+  ping: 1, test: 1, status: 1
 };
 var UNIFIED_ADMIN_READ_ACTIONS = {
   dbInfo: 1, loadDb: 1, loadDbPart: 1, loadTables: 1, loadTablesPart: 1,
-  syncCheck: 1
+  syncCheck: 1, operationStatus: 1
 };
 var UNIFIED_ADMIN_WRITE_ACTIONS = {
   saveDb: 1, saveDbPart: 1, saveDbCommit: 1, saveTables: 1, sync: 1,
@@ -6898,17 +7297,42 @@ var UNIFIED_ADMIN_DANGEROUS_ACTIONS = {
 var UNIFIED_PORTAL_AUTH_ACTIONS = {
   authLogin: 1, authWhoAmI: 1, authPortalExchange: 1, authChangePassword: 1,
   authResetPassword: 1, authDeleteAccount: 1, authRestoreAccount: 1,
-  authCreateAccount: 1, authForgotPassword: 1, authCompletePasswordReset: 1
+  authCreateAccount: 1, authOpenAccounts: 1, authForgotPassword: 1, authCompletePasswordReset: 1
 };
 var UNIFIED_ACCOUNT_ADMIN_ACTIONS = {
-  authResetPassword: 1, authDeleteAccount: 1, authRestoreAccount: 1, authCreateAccount: 1
+  authResetPassword: 1, authDeleteAccount: 1, authRestoreAccount: 1,
+  authCreateAccount: 1, authOpenAccounts: 1
 };
 var UNIFIED_PERSONAL_PROGRESS_ACTIONS = {
   loadMine: 1, myRequests: 1, addRequest: 1
 };
-var UNIFIED_MEMBER_HUB_ACTIONS = {
-  hubLoad: 1, hubRsvp: 1, hubQuiz: 1, hubAbsence: 1
+/* The full branch frontend reviews the same pinned BADGE request rows.  These
+   actions require both the same-origin HMAC transport and a real branch session;
+   neither API_KEY nor the browser's claimed role is accepted as the reviewer. */
+var UNIFIED_STAFF_PROGRESS_ACTIONS = {
+  reviewRequest: 1, reviewLogRequest: 1, bulkReviewRequests: 1
 };
+var UNIFIED_MEMBER_HUB_ACTIONS = {
+  hubLoad: 1, hubRsvp: 1, hubQuiz: 1, hubAbsence: 1, hubNoticeSignup: 1
+};
+
+/* Durable operation journal. A transport timeout is never proof of failure: every
+   important write is registered before dispatch and finalized after its own handler
+   returns. Duplicate IDs are never executed twice. A hard GAS termination can leave
+   an entry processing/unknown; operationStatus reports that honestly instead of
+   inviting an automatic retry. */
+var UNIFIED_OPERATION_WRITE_ACTIONS = {
+  saveDb: 1, saveDbPart: 1, saveDbCommit: 1, saveTables: 1, sync: 1, uploadPhotos: 1,
+  repairDb: 1, saveDbForce: 1,
+  authChangePassword: 1, authResetPassword: 1, authDeleteAccount: 1, authRestoreAccount: 1,
+  authCreateAccount: 1, authOpenAccounts: 1, authForgotPassword: 1, authCompletePasswordReset: 1,
+  hubRsvp: 1, hubQuiz: 1, hubAbsence: 1, hubNoticeSignup: 1,
+  addRequest: 1, reviewRequest: 1, reviewLogRequest: 1, bulkReviewRequests: 1,
+  save: 1, saveOtherBadge: 1
+};
+var UNIFIED_OPERATION_SHEET = '_Operations';
+var UNIFIED_OPERATION_HEADERS = ['operation_id', 'action', 'unit', 'state', 'outcome', 'started_at', 'updated_at', 'result_json', 'error'];
+var UNIFIED_OPERATION_ID_RE = /^[A-Za-z0-9_.:-]{12,120}$/;
 
 function unifiedJson_(obj) { return jsonResponse(obj); }
 
@@ -6929,31 +7353,210 @@ function unifiedOutput_(obj) {
   return unifiedJson_(obj || { success: false, ok: false, error: '後端回應格式異常' });
 }
 
+function unifiedOperationSheet_() {
+  var book = getSheet();
+  var sheet = book.getSheetByName(UNIFIED_OPERATION_SHEET);
+  if (!sheet) {
+    sheet = book.insertSheet(UNIFIED_OPERATION_SHEET);
+    sheet.getRange(1, 1, 1, UNIFIED_OPERATION_HEADERS.length).setValues([UNIFIED_OPERATION_HEADERS]);
+    sheet.setFrozenRows(1);
+    try { sheet.hideSheet(); } catch (ignore) {}
+  }
+  return sheet;
+}
+
+function unifiedOperationId_(body, action) {
+  var id = String(body.operationId || body.operation_id || '').trim();
+  if (!id) id = String(action || 'write') + ':' + Date.now().toString(36) + ':' + Utilities.getUuid().replace(/-/g, '').slice(0, 24);
+  return UNIFIED_OPERATION_ID_RE.test(id) ? id : '';
+}
+
+function unifiedFindOperation_(id) {
+  if (!UNIFIED_OPERATION_ID_RE.test(String(id || ''))) return null;
+  var sheet = unifiedOperationSheet_();
+  var last = sheet.getLastRow();
+  if (last < 2) return null;
+  var ids = sheet.getRange(2, 1, last - 1, 1).getValues();
+  var rowNumber = 0;
+  for (var i = ids.length - 1; i >= 0; i--) {
+    if (String(ids[i][0] || '') === String(id)) { rowNumber = i + 2; break; }
+  }
+  if (!rowNumber) return null;
+  var row = sheet.getRange(rowNumber, 1, 1, UNIFIED_OPERATION_HEADERS.length).getValues()[0];
+  return {
+    row: rowNumber, id: String(row[0] || ''), action: String(row[1] || ''), unit: String(row[2] || ''),
+    state: String(row[3] || 'unknown'), outcome: String(row[4] || 'unknown'),
+    startedAt: row[5] instanceof Date ? row[5].toISOString() : String(row[5] || ''),
+    updatedAt: row[6] instanceof Date ? row[6].toISOString() : String(row[6] || ''),
+    resultJson: String(row[7] || ''), error: String(row[8] || '')
+  };
+}
+
+function unifiedOperationPublic_(rec) {
+  if (!rec) return null;
+  var state = rec.state;
+  var outcome = rec.outcome;
+  /* A processing row older than the normal Apps Script execution window is no
+     longer evidence that work is still running. It stays durable but is reported
+     as unknown — never as failed. */
+  var age = Date.now() - Date.parse(rec.updatedAt || rec.startedAt || '');
+  if (state === 'processing' && isFinite(age) && age > 10 * 60 * 1000) state = 'unknown';
+  if (state === 'unknown' || state === 'processing') outcome = 'unknown';
+  return { id: rec.id, action: rec.action, unit: rec.unit, state: state, outcome: outcome,
+    startedAt: rec.startedAt, updatedAt: rec.updatedAt, error: rec.error || '' };
+}
+
+function unifiedBeginOperation_(body, action) {
+  if (!UNIFIED_OPERATION_WRITE_ACTIONS[action]) return { enabled: false };
+  var supplied = String(body.operationId || body.operation_id || '').trim();
+  var id = unifiedOperationId_(body, action);
+  if (!id) return { enabled: true, invalid: true };
+  body.operationId = id;
+  body.operation_id = id;
+  var lock = LockService.getScriptLock();
+  try {
+    if (!lock.tryLock(10000)) return { enabled: true, busy: true, id: id };
+    var found = unifiedFindOperation_(id);
+    /* Legacy clients do not supply an ID. In that compatibility case a deterministic
+       test UUID / same-millisecond request must still get a fresh journal row; only a
+       caller-supplied ID has idempotency semantics. */
+    if (found && !supplied) {
+      var base = id;
+      var suffix = 1;
+      while (found && suffix < 1000) {
+        id = (base + ':' + suffix).slice(0, 120);
+        found = unifiedFindOperation_(id);
+        suffix++;
+      }
+      body.operationId = id;
+      body.operation_id = id;
+    }
+    if (found && (String(found.action || '') !== String(action || '')
+        || String(found.unit || '') !== String(body.unit || ''))) {
+      return { enabled: true, mismatch: true, id: id, record: found };
+    }
+    if (found) return { enabled: true, duplicate: true, id: id, record: found };
+    var sheet = unifiedOperationSheet_();
+    var now = new Date();
+    sheet.appendRow([id, action, String(body.unit || ''), 'processing', 'unknown', now, now, '', '']);
+    if (sheet.getLastRow() > 1001) sheet.deleteRows(2, Math.min(200, sheet.getLastRow() - 801));
+    return { enabled: true, id: id, record: unifiedFindOperation_(id) };
+  } finally {
+    try { lock.releaseLock(); } catch (ignore) {}
+  }
+}
+
+function unifiedFinishOperation_(started, outcome, result, error) {
+  if (!started || !started.enabled || !started.id) return null;
+  var lock = LockService.getScriptLock();
+  try {
+    if (!lock.tryLock(20000)) return started.record || null;
+    var rec = unifiedFindOperation_(started.id);
+    if (!rec) return null;
+    var state = outcome === 'applied' ? 'applied' : outcome === 'not_applied' ? 'not_applied' : 'unknown';
+    var resultText = '';
+    try { resultText = JSON.stringify(result || {}); } catch (ignoreJson) {}
+    if (resultText.length > 40000) resultText = JSON.stringify({ success: result && result.success === true,
+      ok: result && result.ok === true, version: String(result && result.version || '') });
+    var sheet = unifiedOperationSheet_();
+    sheet.getRange(rec.row, 4, 1, 6).setValues([[
+      state, outcome, rec.startedAt ? new Date(rec.startedAt) : new Date(), new Date(), resultText,
+      String(error || result && result.error || '').slice(0, 500)
+    ]]);
+    return unifiedFindOperation_(started.id);
+  } finally {
+    try { lock.releaseLock(); } catch (ignore) {}
+  }
+}
+
+function unifiedOperationStatus_(id) {
+  var rec = unifiedFindOperation_(String(id || ''));
+  if (!rec) return unifiedJson_({ success: true, ok: true, found: false,
+    operationId: String(id || ''), outcome: 'unknown', operation: null });
+  var op = unifiedOperationPublic_(rec);
+  return unifiedJson_({ success: true, ok: true, found: true, operationId: rec.id,
+    outcome: op.outcome, mayHaveApplied: op.outcome === 'unknown' || op.outcome === 'applied', operation: op });
+}
+
+function unifiedOperationWrap_(body, action, run) {
+  var started = unifiedBeginOperation_(body, action);
+  if (!started.enabled) return run();
+  if (started.invalid) return unifiedJson_({ success: false, ok: false, reason: 'invalid_operation_id',
+    outcome: 'not_applied', error: '操作編號格式錯誤' });
+  if (started.busy) return unifiedJson_({ success: false, ok: false, reason: 'operation_journal_busy',
+    operationId: started.id, outcome: 'not_applied', mayHaveApplied: false,
+    operation: { id: started.id, state: 'not_applied', outcome: 'not_applied' }, error: '操作日誌繁忙，請稍後再試' });
+  if (started.mismatch) return unifiedJson_({ success: false, ok: false, reason: 'operation_id_reused',
+    operationId: started.id, outcome: 'not_applied', mayHaveApplied: false,
+    operation: unifiedOperationPublic_(started.record), error: '操作編號已用於另一個操作或旅團；後端冇執行今次請求' });
+  if (started.duplicate) {
+    var old = started.record;
+    var oldPublic = unifiedOperationPublic_(old);
+    if ((oldPublic.outcome === 'applied' || oldPublic.outcome === 'not_applied') && old.resultJson) {
+      try {
+        var replay = JSON.parse(old.resultJson);
+        replay.operationId = old.id; replay.operation_id = old.id; replay.outcome = oldPublic.outcome;
+        replay.operation = oldPublic; replay.deduplicated = true;
+        return unifiedJson_(replay);
+      } catch (ignoreReplay) {}
+    }
+    return unifiedJson_({ success: false, ok: false, reason: 'operation_in_progress',
+      operationId: old.id, outcome: 'unknown', mayHaveApplied: true, operation: oldPublic,
+      error: '同一操作編號已經處理過或仍在處理；為免重複，後端冇再次執行' });
+  }
+  try {
+    var out = run();
+    var parsed = unifiedOutputObject_(out);
+    if (!parsed) {
+      var unknownRec = unifiedFinishOperation_(started, 'unknown', {}, '後端回應格式異常');
+      return unifiedJson_({ success: false, ok: false, operationId: started.id, outcome: 'unknown',
+        mayHaveApplied: true, operation: unifiedOperationPublic_(unknownRec), error: '後端回應格式異常；結果未知' });
+    }
+    var applied = parsed.success === true || parsed.ok === true;
+    var outcome = applied ? 'applied' : 'not_applied';
+    var finished = unifiedFinishOperation_(started, outcome, parsed, parsed.error || '');
+    parsed.operationId = started.id;
+    parsed.operation_id = started.id;
+    parsed.outcome = outcome;
+    parsed.mayHaveApplied = applied;
+    parsed.operation = unifiedOperationPublic_(finished || started.record) || { id: started.id, state: outcome, outcome: outcome };
+    return unifiedJson_(parsed);
+  } catch (err) {
+    var failed = unifiedFinishOperation_(started, 'unknown', {}, String(err && err.message || err));
+    return unifiedJson_({ success: false, ok: false, operationId: started.id, outcome: 'unknown',
+      mayHaveApplied: true, operation: unifiedOperationPublic_(failed),
+      error: '操作中斷；可能未寫，亦可能已經寫入：' + String(err && err.message || err) });
+  }
+}
+
+/* Unified adapters consume the exact Portal compatibility branch schema. Legacy
+   BADGE spellings are adapters only; an unknown backend/platform role fails closed
+   instead of silently becoming member. */
 function unifiedRoleFromBackend_(role) {
-  var r = String(role || '').toLowerCase();
-  if (r === 'super_admin') return 'super';
-  if (r === 'admin' || r === 'group_leader') return 'chief';
-  if (r === 'branch_leader') return 'leader';
-  if (r === 'exec_committee') return 'exco';
-  return 'member';
+  return String(PortalAdminCompat_.canonicalRole(role) || '');
 }
 
 function unifiedRoleToBackend_(role) {
-  var r = String(role || '').toLowerCase();
-  if (r === 'super') return 'admin';
-  if (r === 'chief' || r === 'admin' || r === 'group_leader') return 'group_leader';
-  if (r === 'leader' || r === 'branch_leader') return 'branch_leader';
-  if (r === 'exco' || r === 'exec_committee') return 'exec_committee';
-  return 'member';
+  var canonical = unifiedRoleFromBackend_(role);
+  if (canonical === 'super') return 'admin';
+  if (canonical === 'chief') return 'group_leader';
+  if (canonical === 'leader') return 'branch_leader';
+  if (canonical === 'exco') return 'exec_committee';
+  if (canonical === 'member') return 'member';
+  return '';
 }
 
 function unifiedRoleRank_(role) {
-  var r = String(role || '').toLowerCase();
-  return { member: 0, exco: 20, exec_committee: 20, leader: 40, branch_leader: 40,
-    chief: 60, group_leader: 60, admin: 80, super: 100, super_admin: 100 }[r] || 0;
+  return Number(PortalAdminCompat_.roleLevel(role) || 0);
+}
+
+function unifiedRoleAllowedAssertion_(role) {
+  var canonical = unifiedRoleFromBackend_(role);
+  return !!canonical && PortalAdminCompat_.visibleRoles.indexOf(canonical) >= 0;
 }
 
 function unifiedScopesForRole_(role) {
+  if (!unifiedRoleFromBackend_(role)) return [];
   var scopes = ['identity:read', 'branch:read', 'progress:self'];
   if (unifiedRoleRank_(role) >= unifiedRoleRank_('exco')) scopes.push('branch:write', 'progress:manage');
   if (unifiedRoleRank_(role) >= unifiedRoleRank_('leader')) scopes.push('identity:manage', 'branch:repair');
@@ -6968,8 +7571,8 @@ function unifiedEffectiveScopes_(role, assertedScopes) {
 
 function unifiedEffectiveRole_(localBackendRole, assertedPortalRole) {
   var localPortal = unifiedRoleFromBackend_(localBackendRole);
-  var asserted = String(assertedPortalRole || '').toLowerCase();
-  if (['member', 'exco', 'leader', 'chief', 'admin', 'super'].indexOf(asserted) < 0) asserted = 'member';
+  var asserted = unifiedRoleFromBackend_(assertedPortalRole);
+  if (!localPortal || !unifiedRoleAllowedAssertion_(asserted)) return '';
   // The isolated auth fixture proves identity and membership, while the branch Users
   // row remains the action-scope ceiling. A stale/forged high role can never elevate.
   return unifiedRoleRank_(localPortal) <= unifiedRoleRank_(asserted) ? localPortal : asserted;
@@ -7020,8 +7623,8 @@ function unifiedVerifyPortalToken_(token, unit) {
     return { ok: false, code: 'SSO_TOKEN_INVALID', error: '隔離 auth fixture 票據用途不正確' };
   }
   var subject = String(payload.sub || '').trim();
-  var role = String(payload.role || '').trim().toLowerCase();
-  if (!subject || subject.length > 160 || ['member', 'exco', 'leader', 'chief', 'admin'].indexOf(role) < 0) {
+  var role = unifiedRoleFromBackend_(payload.role);
+  if (!subject || subject.length > 160 || !unifiedRoleAllowedAssertion_(role)) {
     return { ok: false, code: 'SSO_TOKEN_INVALID', error: '隔離 auth fixture 身份資料不完整' };
   }
   var jti = String(payload.jti || '').trim();
@@ -7175,6 +7778,9 @@ function unifiedResolvePortalIdentity_(verified) {
       error: '隔離 auth fixture 身份未對應此支部名冊' };
   }
   var effectiveRole = unifiedEffectiveRole_(user.role, verified.role);
+  if (!effectiveRole) {
+    return { ok: false, code: 'ROLE_NOT_ALLOWED', error: '支部帳戶身份不屬於目前 branch schema' };
+  }
   return { ok: true, ymis: String(user.ymis || ''), user: user, member: member,
     role: effectiveRole, assertedRole: verified.role,
     scopes: unifiedEffectiveScopes_(effectiveRole, verified.scopes) };
@@ -7260,7 +7866,8 @@ function unifiedResolveActor_(body, allowPortalExchangeToken) {
     return { ok: false, code: 'CENTRAL_SSO_REQUIRED',
       error: '隔離 fixture 的 legacy 入口旗標已關閉；正式支部請重新執行 initializeSheets()' };
   }
-  var role = meta && meta.role ? String(meta.role) : unifiedRoleFromBackend_(user.role);
+  var role = unifiedRoleFromBackend_(meta && meta.role ? meta.role : user.role);
+  if (!role) return { ok: false, code: 'ROLE_NOT_ALLOWED', error: '支部帳戶身份不屬於目前 branch schema' };
   return { ok: true, ymis: String(user.ymis || ymis), user: user,
     member: unifiedFindMemberBySubject_(user.ymis), role: role,
     scopes: meta && meta.scopes && meta.scopes.length ? meta.scopes : unifiedScopesForRole_(role),
@@ -7281,13 +7888,138 @@ function unifiedLocalLogin_(body) {
     error: (out && out.error) || '帳號或密碼不正確' });
   var user = out.user || {};
   var role = unifiedRoleFromBackend_(user.role);
+  if (!role) return unifiedJson_({ ok: false, success: false, code: 'ROLE_NOT_ALLOWED',
+    error: '支部帳戶身份不屬於目前 branch schema' });
   return unifiedJson_({ ok: true, success: true, sessionToken: out.token,
     sessionExpiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000,
     account: unifiedAccountPayload_({ user: user, ymis: user.ymis, role: role }),
     mustChangePw: !!out.force_change_password, localLogin: true, unifiedGsVersion: UNIFIED_GS_VERSION });
 }
 
-function unifiedAuthAlias_(action, body) {
+function unifiedAccountManager_(actor) {
+  if (actor && actor.source === 'server-super') {
+    return { ymis: 'sheep', name: '系統管理員', role: 'super_admin' };
+  }
+  var user = actor && actor.user || {};
+  return {
+    ymis: String(actor && actor.ymis || user.ymis || ''),
+    name: String(user.name || actor && actor.member && actor.member.name || ''),
+    role: String(user.role || unifiedRoleToBackend_(actor && actor.role || 'member'))
+  };
+}
+
+function unifiedCanManageAccounts_(actor, unit) {
+  if (!actor || !actor.ok) return false;
+  if (actor.source === 'server-super') return true;
+  var scopes = Array.isArray(actor.scopes) ? actor.scopes : unifiedScopesForRole_(actor.role);
+  if (unifiedRoleRank_(actor.role) < unifiedRoleRank_('leader') || scopes.indexOf('identity:manage') < 0) return false;
+  /* 帳戶 action 唔經行政 saveDb dispatcher，所以要在這裏獨立套用同一份
+     members.edit module gate ＋ admin.accounts 細項權限。 */
+  var loaded = PortalAdminCompat_.loadDb(String(unit || ''));
+  /* A brand-new Unified Sheet has no Portal DB yet.  Keep the pinned baseline's
+     leader bootstrap path; once a branch DB exists its local ACL is authoritative. */
+  if (loaded && loaded.success === true && loaded.found === false) return true;
+  if (!loaded || loaded.success !== true || !loaded.db) return false;
+  return PortalAdminCompat_.canAccountAdmin(loaded.db, {
+    ok: true, role: actor.role, member: actor.member || null,
+    record: actor.user || actor.member || null
+  });
+}
+
+function unifiedAccountTargetYmis_(body) {
+  body = body || {};
+  var direct = String(body.targetYmis || body.target_ymis || body.ymis || '').trim();
+  if (direct && findUserRecord(direct)) return direct;
+  var wanted = String(body.targetEmail || body.targetUsername || body.email || body.username || direct || '')
+    .trim().toLowerCase();
+  if (!wanted) return direct;
+  var users = getAllUsers();
+  for (var i = 0; i < users.length; i++) {
+    var user = users[i] || {};
+    if (user.has_account === false) continue;
+    if (String(user.ymis || '').trim().toLowerCase() === wanted
+        || String(user.email || '').trim().toLowerCase() === wanted) {
+      return String(user.ymis || '');
+    }
+  }
+  return direct;
+}
+
+function unifiedOpenAccountRows_(body, actor, single) {
+  var raw = Array.isArray(body.users) ? body.users : [body];
+  if (!raw.length) return unifiedJson_({ ok: false, success: false, code: 'NO_ACCOUNTS', error: '沒有開戶資料' });
+  if (raw.length > 200) return unifiedJson_({ ok: false, success: false, code: 'TOO_MANY_ACCOUNTS', error: '每批最多 200 個帳戶' });
+  var users = raw.map(function (item) {
+    item = item || {};
+    return {
+      ymis: String(item.targetYmis || item.ymis || '').trim(),
+      name: safeSheetText(item.name, 100),
+      email: String(item.email || item.username || '').trim().substring(0, 160),
+      branch: safeSheetText(item.branch, 100),
+      role: unifiedRoleToBackend_(item.role || 'member'),
+      can_tick: item.can_tick === undefined
+        ? unifiedRoleRank_(item.role || 'member') >= unifiedRoleRank_('exco')
+        : item.can_tick === true,
+      password: String(item.password || DEFAULT_TEMP_PASSWORD)
+    };
+  });
+  var result = unifiedOutputObject_(handleBulkAddUsers(users, unifiedAccountManager_(actor)))
+    || { success: false, created: 0, failed: users.length, error: '開戶失敗' };
+  result.created = Number(result.created || 0);
+  result.failed = Number(result.failed || 0);
+  if (single && result.created !== 1) {
+    return unifiedJson_({ ok: false, success: false, code: 'ACCOUNT_CREATE_FAILED',
+      error: result.error || result.results && result.results[0] && result.results[0].error || '建立帳戶失敗',
+      created: result.created, failed: result.failed, results: result.results || [] });
+  }
+  result.success = result.success === true && (result.created > 0 || result.failed === 0);
+  result.ok = result.success;
+  result.message = result.message || ('已開立 ' + result.created + ' 個帳戶'
+    + (result.failed ? '；' + result.failed + ' 個未能開立' : ''));
+  result.unifiedGsVersion = UNIFIED_GS_VERSION;
+  return unifiedJson_(result);
+}
+
+function unifiedAccountAdmin_(action, body, actor) {
+  if (!unifiedCanManageAccounts_(actor, body && body.unit)) {
+    return unifiedJson_({ ok: false, success: false, code: 'ACTION_SCOPE_DENIED',
+      error: '只有團長／領袖可以管理支部帳戶' });
+  }
+  if (action === 'authOpenAccounts') return unifiedOpenAccountRows_(body, actor, false);
+  if (action === 'authCreateAccount') return unifiedOpenAccountRows_(body, actor, true);
+
+  var targetYmis = unifiedAccountTargetYmis_(body);
+  var rec = targetYmis ? findUserRecord(targetYmis) : null;
+  if (!rec) return unifiedJson_({ ok: false, success: false, code: 'ACCOUNT_NOT_FOUND', error: '搵唔到支部帳戶' });
+  var manager = unifiedAccountManager_(actor);
+  if (action === 'authResetPassword') {
+    return handleResetPassword(targetYmis, String(body.newPassword || body.password || ''), manager);
+  }
+  if (action === 'authDeleteAccount') {
+    /* The full frontend's “delete account” means revoke login, not erase the roster
+       or Progress history.  Pinned Users remains authoritative and keeps the row. */
+    return handleSetUserStatus(targetYmis, 'inactive', manager);
+  }
+  if (action === 'authRestoreAccount') {
+    if (!canManageUser(manager, rec.user.role)) {
+      return unifiedJson_({ ok: false, success: false, code: 'ACTION_SCOPE_DENIED', error: '權限不足，不能復原此帳戶' });
+    }
+    var restored = unifiedOutputObject_(handleSetUserStatus(targetYmis, 'active', manager)) || {};
+    if (restored.success !== true) return unifiedJson_(restored);
+    var reset = unifiedOutputObject_(handleResetPassword(targetYmis,
+      String(body.newPassword || DEFAULT_TEMP_PASSWORD), manager)) || {};
+    if (reset.success !== true) {
+      reset.accountRestored = true;
+      reset.warning = '帳戶已復原，但臨時密碼未能重設';
+      return unifiedJson_(reset);
+    }
+    return unifiedJson_({ ok: true, success: true, message: '帳戶已復原，首次登入必須更改密碼',
+      unifiedGsVersion: UNIFIED_GS_VERSION });
+  }
+  return unifiedJson_({ ok: false, success: false, error: 'Unknown account action' });
+}
+
+function unifiedAuthAlias_(action, body, signedActor) {
   if (action === 'authPortalExchange') return unifiedPortalExchange_(body);
   if (action === 'authWhoAmI') return unifiedWhoAmI_(body);
   if (action === 'authLogin') return unifiedLocalLogin_(body);
@@ -7307,7 +8039,7 @@ function unifiedAuthAlias_(action, body) {
     completed.ok = completed.success === true;
     return unifiedJson_(completed);
   }
-  var actor = unifiedResolveActor_(body, false);
+  var actor = signedActor || unifiedResolveActor_(body, false);
   if (!actor.ok) return unifiedJson_({ ok: false, success: false, code: actor.code || 'SESSION_REQUIRED', error: actor.error });
   if (actor.source === 'central-sso') {
     return unifiedJson_({ ok: false, success: false, code: 'CENTRAL_IDENTITY_MANAGED',
@@ -7325,11 +8057,10 @@ function unifiedAuthAlias_(action, body) {
     }
     return unifiedJson_(changed);
   }
-  // Account creation/deletion/reset through the old Portal aliases would create
-  // a second identity source. Branch accounts are managed by the pinned BADGE Users
-  // actions; these legacy aliases therefore remain disabled.
-  return unifiedJson_({ ok: false, success: false, code: 'BRANCH_IDENTITY_MANAGED',
-    error: '支部帳戶由 BADGE Users 管理；請使用支部帳戶管理功能' });
+  /* These frontend aliases do not create a Portal identity table.  They are a thin
+     adapter onto the pinned BADGE Users handlers in this same Unified Sheet. */
+  if (UNIFIED_ACCOUNT_ADMIN_ACTIONS[action]) return unifiedAccountAdmin_(action, body, actor);
+  return unifiedJson_({ ok: false, success: false, error: 'Unknown auth action' });
 }
 
 function unifiedActorCan_(actor, action) {
@@ -7374,6 +8105,8 @@ function unifiedCanonicalMembers_(existing) {
     merged.phone = safeSheetText(prior.phone, 80)
       || (isEmail(rows[i][4]) ? '' : String(rows[i][4] || ''));
     merged.identity = unifiedRoleFromBackend_(user.role || 'member');
+    merged.hasAccount = user.has_account === true;
+    merged.accountStatus = merged.hasAccount ? String(user.status || 'active') : 'not_open';
     merged.status = user.status === 'inactive' ? 'inactive' : (prior.status || 'active');
     delete merged.pw; delete merged.hubPw; delete merged.password; delete merged.hubPassword;
     out.push(merged); seen[key] = true;
@@ -7393,6 +8126,8 @@ function unifiedCanonicalMembers_(existing) {
     /* A newly submitted roster row has no Users authority yet and therefore
        starts as member. Role changes only arrive through authoritative branch Users data. */
     kept.identity = users[key] ? unifiedRoleFromBackend_(users[key].role || 'member') : 'member';
+    kept.hasAccount = !!(users[key] && users[key].has_account === true);
+    kept.accountStatus = kept.hasAccount ? String(users[key].status || 'active') : 'not_open';
     delete kept.pw; delete kept.hubPw; delete kept.password; delete kept.hubPassword;
     out.push(kept); seen[key] = true;
   });
@@ -7411,12 +8146,16 @@ function unifiedAuthoritativeIdentityMap_() {
 function unifiedAccountProjection_(members) {
   var memberByYmis = {};
   (members || []).forEach(function (m) { memberByYmis[String(m.ymis || '').trim().toLowerCase()] = m; });
-  return getAllUsers().filter(function (u) { return u && u.status !== 'deleted' && !isSuperAdminId(u.ymis); }).map(function (u) {
+  return getAllUsers().filter(function (u) {
+    return u && u.has_account !== false && u.status !== 'deleted' && !isSuperAdminId(u.ymis);
+  }).map(function (u) {
     var member = memberByYmis[String(u.ymis || '').trim().toLowerCase()] || {};
     return {
-      id: 'central:' + String(u.ymis || ''), memberId: String(member.id || u.ymis || ''),
-      username: String(u.email || u.ymis || ''), email: String(u.email || ''), name: String(u.name || member.name || ''),
-      role: unifiedRoleFromBackend_(u.role), active: u.status === 'active', source: 'central-or-rescue'
+      id: 'unified:' + String(u.ymis || ''), memberId: String(member.id || u.ymis || ''),
+      ymis: String(u.ymis || ''), username: String(u.email || u.ymis || ''),
+      email: String(u.email || ''), name: String(u.name || member.name || ''),
+      role: unifiedRoleFromBackend_(u.role), active: u.status === 'active',
+      status: String(u.status || 'active'), source: 'unified-users'
     };
   });
 }
@@ -7476,6 +8215,11 @@ function unifiedPortalAdmin_(e, body, signedActor) {
   if (UNIFIED_PUBLIC_PORTAL_ACTIONS[action]) {
     return PortalAdminCompat_.dispatchBody(e, body);
   }
+  /* Operation IDs contain at least 96 unpredictable bits and act as read-only
+     capability receipts. Status exposes metadata only (never result_json/data), so
+     the originating public/member client can resolve a timeout without a staff
+     session and, crucially, without resending the mutation. */
+  if (action === 'operationStatus') return unifiedOperationStatus_(body.operationId || body.operation_id);
   var actor = signedActor || unifiedResolveActor_(body, false);
   if (!actor.ok) return unifiedJson_({ ok: false, success: false, code: actor.code || 'SESSION_REQUIRED', error: actor.error });
   if (!unifiedActorCan_(actor, action)) {
@@ -7487,9 +8231,16 @@ function unifiedPortalAdmin_(e, body, signedActor) {
   body.apiKey = getApiKey();
   delete body.apikey;
   body.__serverSigned = true;
-  /* Compatibility 仍要逐欄核對普通 exco／leader 的 identity 寫入。marker 只在
-     unified router 驗完 opaque actor 後記憶體注入；platform-super 保留完整 bypass。 */
-  if (actor.source !== 'server-super') {
+  /* Pinned baseline admin is an authenticated branch owner but is deliberately not
+     projected into the ordinary roster. Treat that one server-resolved account like
+     the platform owner at the compatibility boundary; otherwise an existing DB can
+     never bind it as an actor and direct account opening deadlocks. Ordinary
+     exco/leader writes remain delegated and go through per-field identity checks. */
+  var branchOwnerRole = String(actor.user && actor.user.role || '').toLowerCase();
+  var branchOwner = actor.source !== 'server-super' && actor.user
+    && (branchOwnerRole === 'admin' || branchOwnerRole === 'super_admin')
+    && String(actor.ymis || actor.user.ymis || '').trim() === String(ADMIN_YMIS).trim();
+  if (actor.source !== 'server-super' && !branchOwner) {
     body.__serverActorRole = String(actor.role || 'member');
     body.__serverActorSubject = String(actor.ymis || '');
   }
@@ -7510,7 +8261,7 @@ function unifiedPortalAdmin_(e, body, signedActor) {
       body.tables.accounts = unifiedAccountProjection_(unifiedCanonicalMembers_(body.tables.members || []));
     }
   }
-  if (actor.source !== 'server-super') body.__serverIdentityMap = unifiedAuthoritativeIdentityMap_();
+  if (actor.source !== 'server-super' && !branchOwner) body.__serverIdentityMap = unifiedAuthoritativeIdentityMap_();
   var out = PortalAdminCompat_.dispatchBody(unifiedPortalEvent_(e, body), body);
   var parsed = unifiedOutputObject_(out);
   if (!parsed) return out;
@@ -7531,15 +8282,33 @@ function unifiedPortalAdmin_(e, body, signedActor) {
       }
     }
   }
-  if (parsed.db && (action === 'loadDb' || action === 'loadTables')) {
-    parsed.db = unifiedPrepareAdminDb_(parsed.db);
-  }
-  if (action === 'loadTablesPart' && parsed.found) {
-    if (parsed.name === 'members') parsed.value = unifiedCanonicalMembers_(parsed.value || []);
-    if (parsed.name === 'accounts') parsed.value = unifiedAccountProjection_(unifiedCanonicalMembers_([]));
-  }
+  /* Portal compatibility layer has already applied the actor-specific projection.
+     Never re-expand members/accounts here: doing so would put higher identities back
+     into a lower actor's response after authorization. */
   parsed.unifiedGsVersion = UNIFIED_GS_VERSION;
   return unifiedOutput_(parsed);
+}
+
+function unifiedMemberProgressRequests_(ymis) {
+  var wanted = String(ymis || '').trim();
+  var sheet = getSheet().getSheetByName('待批完成');
+  var out = [];
+  if (!wanted || !sheet) return out;
+  var data = sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][1] || '').trim() !== wanted) continue;
+    var status = String(data[i][7] || 'pending').trim().toLowerCase();
+    if (status !== 'pending' && status !== 'approved' && status !== 'rejected') continue;
+    out.push({
+      request_id: String(data[i][0] || ''), ymis: wanted,
+      name: String(data[i][2] || ''), item_id: String(data[i][3] || ''), item_name: String(data[i][4] || ''),
+      requested_date: data[i][5] ? formatDate(data[i][5]) : '', evidence: String(data[i][6] || ''),
+      status: status, created_at: data[i][8] ? formatDate(data[i][8]) : '',
+      reviewed_at: data[i][10] ? formatDate(data[i][10]) : '', review_note: String(data[i][11] || ''),
+      confirmed_date: data[i][12] ? formatDate(data[i][12]) : ''
+    });
+  }
+  return out;
 }
 
 function unifiedLoadMine_(ymis) {
@@ -7556,8 +8325,152 @@ function unifiedLoadMine_(ymis) {
     progress: progress, flatProgress: flat, otherBadges: other,
     logs: (all.logs || []).filter(function (r) { return String(r.ymis || '') === String(ymis || ''); }),
     logRequests: (all.logRequests || []).filter(function (r) { return String(r.ymis || '') === String(ymis || ''); }),
-    requests: (all.pendingRequests || []).filter(function (r) { return String(r.ymis || '') === String(ymis || ''); }),
+    /* Baseline handleLoad only exposes pending rows.  A member's own safe history must
+       keep approved/rejected rows too, otherwise the UI says the application vanished. */
+    requests: unifiedMemberProgressRequests_(ymis),
     unifiedGsVersion: UNIFIED_GS_VERSION };
+}
+
+function unifiedProgressActorCanManage_(actor) {
+  if (!actor || !actor.ok) return false;
+  var scopes = Array.isArray(actor.scopes) ? actor.scopes : unifiedScopesForRole_(actor.role);
+  return unifiedRoleRank_(actor.role) >= unifiedRoleRank_('exco')
+    && scopes.indexOf('progress:manage') >= 0;
+}
+
+function unifiedBulkReviewRequests_(body, actor) {
+  var input = Array.isArray(body.requests) ? body.requests : [];
+  if (!input.length) return unifiedJson_({ ok: false, success: false, code: 'NO_SELECTION', error: '請先選擇要批准的申請' });
+  if (input.length > 100) return unifiedJson_({ ok: false, success: false, code: 'TOO_MANY_REQUESTS', error: '每次最多批准 100 項' });
+  if (String(body.decision || 'approved') !== 'approved') {
+    return unifiedJson_({ ok: false, success: false, code: 'BULK_APPROVE_ONLY', error: '批量操作只支援批准' });
+  }
+  var confirmedDate = String(body.confirmed_date || '').trim();
+  if (confirmedDate && !/^\d{4}-\d{2}-\d{2}$/.test(confirmedDate)) {
+    return unifiedJson_({ ok: false, success: false, code: 'INVALID_DATE', error: '確認日期格式不正確' });
+  }
+  var selected = [];
+  var seen = {};
+  for (var i = 0; i < input.length; i++) {
+    var item = input[i] || {};
+    var kind = String(item.kind || '');
+    var requestId = String(item.request_id || item.id || '').trim();
+    if ((kind !== 'req' && kind !== 'log') || !requestId || requestId.length > 160) {
+      return unifiedJson_({ ok: false, success: false, code: 'INVALID_SELECTION', error: '第 ' + (i + 1) + ' 項選擇格式不正確' });
+    }
+    var key = kind + ':' + requestId;
+    if (seen[key]) return unifiedJson_({ ok: false, success: false, code: 'DUPLICATE_SELECTION', error: '選擇中有重複申請' });
+    seen[key] = true;
+    selected.push({ kind: kind, request_id: requestId });
+  }
+
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(10000)) {
+    return unifiedJson_({ ok: false, success: false, code: 'REVIEW_BUSY', error: '系統正處理另一批審批，請稍後重試' });
+  }
+  try {
+    var reqSheet = getSheet().getSheetByName('待批完成');
+    var logReqSheet = getSheet().getSheetByName(LOG_REQ_SHEET_NAME);
+    var reqRows = reqSheet ? reqSheet.getDataRange().getValues() : [];
+    var logReqRows = logReqSheet ? logReqSheet.getDataRange().getValues() : [];
+    var logSheet = getSheet().getSheetByName(LOG_SHEET_NAME);
+    var logRows = logSheet ? logSheet.getDataRange().getValues() : [];
+
+    /* Validate the whole selection before the first mutation.  Google Sheets has no
+       transaction primitive, so this fail-before-write pass is what prevents an
+       invalid last row from leaving a surprising half-approved batch. */
+    for (var s = 0; s < selected.length; s++) {
+      var chosen = selected[s];
+      var rows = chosen.kind === 'req' ? reqRows : logReqRows;
+      var statusColumn = chosen.kind === 'req' ? 7 : 12;
+      var found = null;
+      for (var r = 1; r < rows.length; r++) {
+        if (String(rows[r][0] || '') === chosen.request_id) { found = rows[r]; break; }
+      }
+      if (!found || String(found[statusColumn] || '') !== 'pending') {
+        return unifiedJson_({ ok: false, success: false, code: 'REQUEST_NOT_PENDING',
+          error: '申請 ' + chosen.request_id + ' 已被處理或不存在；請重新讀取' });
+      }
+      if (chosen.kind === 'req') {
+        var itemId = String(found[3] || '');
+        var destination = itemId.indexOf('OT-') === 0 ? '其他獎章' : '進度追蹤';
+        if (!getSheet().getSheetByName(destination)) {
+          return unifiedJson_({ ok: false, success: false, code: 'DESTINATION_MISSING',
+            error: '「' + destination + '」工作表不存在，請先執行 initializeSheets()' });
+        }
+      } else {
+        if (!logSheet) return unifiedJson_({ ok: false, success: false, code: 'DESTINATION_MISSING',
+          error: '「' + LOG_SHEET_NAME + '」工作表不存在，請先執行 initializeSheets()' });
+        if (String(found[1] || 'new') === 'edit') {
+          var targetId = String(found[2] || '');
+          var targetFound = false;
+          for (var l = 1; l < logRows.length; l++) {
+            if (String(logRows[l][0] || '') === targetId) { targetFound = true; break; }
+          }
+          if (!targetFound) return unifiedJson_({ ok: false, success: false, code: 'LOG_TARGET_MISSING',
+            error: '履歷申請 ' + chosen.request_id + ' 的原紀錄已不存在；請先處理該項' });
+        }
+      }
+    }
+
+    var reviewer = actor.source === 'server-super'
+      ? { ymis: 'sheep', name: '系統管理員', role: 'super_admin' }
+      : actor.user;
+    var results = [];
+    var reqCount = 0;
+    var logCount = 0;
+    for (var a = 0; a < selected.length; a++) {
+      var selectedItem = selected[a];
+      var output = selectedItem.kind === 'log'
+        ? handleReviewLogRequest(selectedItem.request_id, 'approved', safeSheetText(body.review_note, 500), reviewer)
+        : handleReviewRequest(selectedItem.request_id, 'approved', safeSheetText(body.review_note, 500),
+          actor.ymis, confirmedDate);
+      var parsed = unifiedOutputObject_(output) || { success: false, error: '後端回應格式異常' };
+      results.push({ kind: selectedItem.kind, request_id: selectedItem.request_id,
+        success: parsed.success === true, error: parsed.error || '' });
+      if (parsed.success !== true) {
+        return unifiedJson_({ ok: false, success: false, code: 'BULK_REVIEW_PARTIAL',
+          error: parsed.error || '批量審批未能完成', processed: a, results: results });
+      }
+      if (selectedItem.kind === 'log') logCount++; else reqCount++;
+    }
+    return unifiedJson_({ ok: true, success: true, processed: selected.length,
+      progressRequests: reqCount, logRequests: logCount, results: results,
+      message: '已批量批准 ' + selected.length + ' 項（進度 ' + reqCount + '、履歷 ' + logCount + '）',
+      unifiedGsVersion: UNIFIED_GS_VERSION });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function unifiedStaffProgress_(e, body, raw) {
+  var action = String(body.action || '');
+  if (!unifiedVerifyLinkSig_(e, body, raw, UNIFIED_STAFF_PROGRESS_ACTIONS)) {
+    return unifiedJson_({ ok: false, success: false, code: 'SIGNATURE_REQUIRED', error: '審批請求簽名無效' });
+  }
+  var actor = null;
+  if (body.unified_super === true && String(body.on_behalf || '') === 'sheep') {
+    actor = { ok: true, ymis: 'sheep', role: 'super', source: 'server-super',
+      scopes: unifiedScopesForRole_('super'), user: { ymis: 'sheep', name: '系統管理員', role: 'super_admin' } };
+  } else {
+    actor = unifiedResolveActor_(body, false);
+  }
+  if (!actor.ok) return unifiedJson_({ ok: false, success: false, code: actor.code || 'SESSION_REQUIRED', error: actor.error });
+  if (!unifiedProgressActorCanManage_(actor)) {
+    return unifiedJson_({ ok: false, success: false, code: 'ACTION_SCOPE_DENIED', error: '你的身份不可以審批進度' });
+  }
+  if (action === 'bulkReviewRequests') return unifiedBulkReviewRequests_(body, actor);
+
+  var requestId = String(body.request_id || '').trim();
+  var decision = String(body.decision || '');
+  if (!requestId || (decision !== 'approved' && decision !== 'rejected')) {
+    return unifiedJson_({ ok: false, success: false, code: 'INVALID_REVIEW', error: '審批資料不完整' });
+  }
+  if (action === 'reviewLogRequest') {
+    return handleReviewLogRequest(requestId, decision, safeSheetText(body.review_note, 500), actor.user);
+  }
+  return handleReviewRequest(requestId, decision, safeSheetText(body.review_note, 500),
+    actor.ymis, String(body.confirmed_date || ''));
 }
 
 function unifiedPersonalProgress_(e, body, raw) {
@@ -7572,10 +8485,8 @@ function unifiedPersonalProgress_(e, body, raw) {
   if (!ymis) return unifiedJson_({ success: false, ok: false, error: '登入帳戶未綁定 YMIS' });
   if (action === 'loadMine') return unifiedJson_(unifiedLoadMine_(ymis));
   if (action === 'myRequests') {
-    var all = unifiedOutputObject_(handleGetPendingRequests()) || {};
     return unifiedJson_({ success: true, ok: true,
-      requests: (all.requests || []).filter(function (r) { return String(r.ymis || '') === ymis; }),
-      unifiedGsVersion: UNIFIED_GS_VERSION });
+      requests: unifiedMemberProgressRequests_(ymis), unifiedGsVersion: UNIFIED_GS_VERSION });
   }
   if (action === 'addRequest') {
     var result = handleRequestComplete({
@@ -7636,14 +8547,32 @@ function unifiedHubQuiz_(row, memberId) {
     at: String(mine && mine.at || ''), answers: unifiedHubAnswers_(mine && mine.answers, questions) };
   return out;
 }
-function unifiedHubNotice_(row) {
+function unifiedHubNotice_(row, memberId, ymis) {
   row = row || {};
   var title = row.title && typeof row.title === 'object'
     ? { zh: String(row.title.zh || ''), en: String(row.title.en || '') }
     : { zh: String(row.title || ''), en: '' };
-  return { id: String(row.id || ''), title: title, status: String(row.status || ''), vis: String(row.vis || ''),
-    type: String(row.type || ''), eventDate: String(row.eventDate || ''), deadline: String(row.deadline || ''),
-    needSignup: !!row.needSignup, publishAt: String(row.publishAt || '') };
+  var body = row.body && typeof row.body === 'object'
+    ? { zh: String(row.body.zh || ''), en: String(row.body.en || '') }
+    : { zh: String(row.body || ''), en: '' };
+  var fields = (Array.isArray(row.fields) ? row.fields : []).map(function (field) {
+    return { key: String(field && field.key || ''), label: String(field && field.label || ''),
+      type: String(field && field.type || 'text'), required: !!(field && field.required),
+      options: (Array.isArray(field && field.options) ? field.options : []).map(String) };
+  });
+  var mySignup = null;
+  (Array.isArray(row.signups) ? row.signups : []).some(function (signup) {
+    if (signup && ((memberId && String(signup.memberId || '') === String(memberId))
+        || (ymis && String(signup.ymis || '') === String(ymis)))) { mySignup = signup; return true; }
+    return false;
+  });
+  return { id: String(row.id || ''), title: title, body: body, status: String(row.status || ''), vis: String(row.vis || ''),
+    type: String(row.type || ''), eventDate: String(row.eventDate || ''), deadline: String(row.deadline || ''), venue: String(row.venue || ''),
+    assemblyTime: String(row.assemblyTime || ''), dismissTime: String(row.dismissTime || ''), assemblyPlace: String(row.assemblyPlace || ''),
+    dismissPlace: String(row.dismissPlace || ''), fee: String(row.fee || ''), uniform: String(row.uniform || ''),
+    bring: String(row.bring || ''), contact: String(row.contact || ''), needSignup: !!row.needSignup,
+    fields: fields, publishAt: String(row.publishAt || ''),
+    mySignup: mySignup ? { id: String(mySignup.id || ''), at: String(mySignup.at || ''), answers: unifiedHubClone_(mySignup.answers || {}) } : null };
 }
 function unifiedHubAbsence_(row) {
   row = row || {};
@@ -7655,17 +8584,18 @@ function unifiedHubAbsence_(row) {
 }
 function unifiedHubRank_(role) {
   var r = String(role || '').toLowerCase();
-  if (r === 'super' || r === 'chief' || r === 'admin' || r === 'group_leader' || r === 'super_admin') return 5;
+  if (r === 'super' || r === 'super_admin') return 6;
+  if (r === 'chief' || r === 'admin' || r === 'group_leader') return 5;
   if (r === 'leader' || r === 'branch_leader') return 4;
   if (r === 'exco' || r === 'exec_committee') return 3;
   return r === 'member' ? 2 : 0;
 }
 function unifiedHubVisRank_(vis, fallback) {
   var v = String(vis || fallback || 'member').toLowerCase();
-  return v === 'other' ? 1 : v === 'member' ? 2 : v === 'exco' ? 3 : v === 'leader' ? 4 : v === 'chief' ? 5 : 2;
+  return v === 'other' ? 2 : v === 'member' ? 2 : v === 'exco' ? 3 : v === 'leader' ? 4 : v === 'chief' ? 5 : 2;
 }
 function unifiedHubVisible_(record, kind, role) {
-  var fallback = kind === 'notice' ? 'other' : 'member';
+  var fallback = 'member';
   if (kind === 'event' && record && record.visibility === 'exco') fallback = 'exco';
   return unifiedHubVisRank_(record && record.vis, fallback) <= unifiedHubRank_(role);
 }
@@ -7681,27 +8611,6 @@ function unifiedHubContext_(loaded, actor) {
   });
   if (!member) return { ok: false, code: 'SESSION_ACCOUNT_MISSING', error: '登入帳戶未綁定有效名冊成員' };
   return { ok: true, db: db, member: member, role: actor.role, version: loaded.version || '', at: loaded.at || '' };
-}
-function unifiedHubPublic_(profile, role) {
-  var src = profile && typeof profile === 'object' ? profile : {};
-  var socials = Array.isArray(src.socials) ? src.socials : [];
-  var albums = Array.isArray(src.albums) ? src.albums : [];
-  var links = Array.isArray(src.links) ? src.links : [];
-  var managed = {};
-  socials.forEach(function (item) {
-    var kind = String(item && item.kind || '').toLowerCase();
-    if (item && item.url && (kind === 'instagram' || kind === 'facebook' || kind === 'whatsapp')) managed[kind] = true;
-  });
-  if (albums.some(function (item) { return !!(item && item.url); })) managed.album = true;
-  if (src.site && src.site.url) managed.website = true;
-  function list(rows) {
-    return rows.filter(function (item) { return item && item.url && unifiedHubVisible_(item, 'profile', role); })
-      .map(unifiedHubClone_);
-  }
-  return { socials: list(socials), albums: list(albums), links: list(links),
-    site: src.site && src.site.url && unifiedHubVisible_(src.site, 'profile', role) ? unifiedHubClone_(src.site) : { url: '', vis: 'member' },
-    about: src.about && src.about.text && unifiedHubVisible_(src.about, 'profile', role) ? unifiedHubClone_(src.about) : { text: '', vis: 'member' },
-    managedSlots: Object.keys(managed) };
 }
 function unifiedHubProjection_(ctx) {
   var db = ctx.db;
@@ -7719,14 +8628,12 @@ function unifiedHubProjection_(ctx) {
   }).map(function (row) { return unifiedHubQuiz_(row, memberId); });
   var notices = (db.notices || []).filter(function (row) {
     return row && row.status === 'published' && unifiedHubVisible_(row, 'notice', role);
-  }).map(unifiedHubNotice_);
+  }).map(function (notice) { return unifiedHubNotice_(notice, memberId, ymis); });
   return { schema: db.schema || 2, kind: 'real', unitCode: String(db.unitCode || ''),
     unit: { code: String(unit.code || db.unitCode || ''), name: String(unit.name || ''), nameEn: String(unit.nameEn || ''), short: String(unit.short || ''), theme: unifiedHubClone_(unit.theme || {}) },
     profile: { code: String(profile.code || db.unitCode || ''), name: String(profile.name || unit.name || ''), nameEn: String(profile.nameEn || unit.nameEn || ''), short: String(profile.short || unit.short || ''), theme: unifiedHubClone_(profile.theme || unit.theme || {}) },
-    settings: { troopLinks: unifiedHubClone_(db.settings && db.settings.troopLinks || {}),
-      publicLinks: unifiedHubClone_(db.settings && db.settings.publicLinks || {}),
-      publicBaseUrl: String(db.settings && db.settings.publicBaseUrl || '') },
-    publicProfile: unifiedHubPublic_(db.publicProfile, role),
+    settings: { troopLinks: unifiedHubClone_(db.settings && db.settings.troopLinks || {}) },
+    constitution: db.constitution && db.constitution.status === 'published' ? unifiedHubClone_(db.constitution) : null,
     members: [{ id: memberId, ymis: ymis, name: String(member.name || ''), email: String(member.email || ''),
       identity: String(role || 'member'), status: String(member.status || 'active') }], accounts: [],
     events: events, quizzes: quizzes, notices: notices,
@@ -7782,6 +8689,38 @@ function unifiedHubMutate_(ctx, body) {
     quiz.responses = quiz.responses && typeof quiz.responses === 'object' ? quiz.responses : {};
     quiz.responses[memberId] = { name: String(member.name || ''), at: new Date().toISOString().slice(0, 10), answers: answers };
     return { ok: true };
+  }
+  if (action === 'hubNoticeSignup') {
+    var notice = (db.notices || []).filter(function (row) { return row && String(row.id || '') === String(body.noticeId || ''); })[0];
+    if (!notice || notice.status !== 'published' || !notice.needSignup || !unifiedHubVisible_(notice, 'notice', ctx.role)) {
+      return { ok: false, error: '搵唔到可回覆嘅通告' };
+    }
+    var today = new Date().toISOString().slice(0, 10);
+    if (String(notice.deadline || '').slice(0, 10) && String(notice.deadline || '').slice(0, 10) < today) return { ok: false, error: '通告報名已截止' };
+    var supplied = body.answers && typeof body.answers === 'object' && !Array.isArray(body.answers) ? body.answers : {};
+    var answers = {}, invalid = '';
+    (Array.isArray(notice.fields) ? notice.fields : []).some(function (field) {
+      var key = String(field && field.key || '').slice(0, 80); if (!key) return false;
+      var value = supplied[key];
+      if (Array.isArray(value)) value = value.slice(0, 30).map(function (item) { return String(item == null ? '' : item).slice(0, 500); });
+      else value = String(value == null ? '' : value).slice(0, 2000);
+      if (field.required && unifiedHubEmpty_(value)) { invalid = String(field.label || key); return true; }
+      answers[key] = value; return false;
+    });
+    if (invalid) return { ok: false, error: '請填：' + invalid };
+    notice.signups = Array.isArray(notice.signups) ? notice.signups : [];
+    var existing = -1;
+    for (var si = 0; si < notice.signups.length; si++) {
+      var signup = notice.signups[si];
+      if (signup && ((memberId && String(signup.memberId || '') === memberId)
+          || (String(member.ymis || '') && String(signup.ymis || '') === String(member.ymis || '')))) { existing = si; break; }
+    }
+    var signupId = existing >= 0 ? String(notice.signups[existing].id || '')
+      : 'hsg_' + Utilities.getUuid().replace(/-/g, '').slice(0, 16);
+    var savedSignup = { id: signupId, memberId: memberId, ymis: String(member.ymis || ''), name: String(member.name || ''),
+      at: new Date().toISOString(), answers: answers, source: 'authenticated-hub' };
+    if (existing >= 0) notice.signups[existing] = savedSignup; else notice.signups.push(savedSignup);
+    return { ok: true, id: signupId };
   }
   if (action === 'hubAbsence') {
     db.absences = Array.isArray(db.absences) ? db.absences : [];
@@ -7900,8 +8839,11 @@ function onOpen() {
 
 function doGet(e) {
   var action = String((e && e.parameter && e.parameter.action) || '');
-  if (action === 'notices' || action === 'constitution' || action === 'status' || action === 'ping' || action === 'test') {
+  if (action === 'status' || action === 'ping' || action === 'test') {
     return PortalAdminCompat_.doGet(e);
+  }
+  if (action === 'notices' || action === 'constitution') {
+    return unifiedJson_({ ok: false, success: false, code: 'SESSION_REQUIRED', error: '內容只限已登入支部成員' });
   }
   return badgeDoGet_(e);
 }
@@ -7943,10 +8885,18 @@ function doPost(e) {
             error: '支部帳戶由 BADGE Users 管理；請使用支部帳戶管理功能' });
         }
       }
-      return unifiedAuthAlias_(action, body);
+      return unifiedOperationWrap_(body, action, function () { return unifiedAuthAlias_(action, body); });
     }
-    if (UNIFIED_PERSONAL_PROGRESS_ACTIONS[action]) return unifiedPersonalProgress_(e, body, parsed.raw);
-    if (UNIFIED_MEMBER_HUB_ACTIONS[action]) return unifiedMemberHub_(body);
+    if (UNIFIED_STAFF_PROGRESS_ACTIONS[action]
+        && (action === 'bulkReviewRequests' || body.sig || (e && e.parameter && e.parameter.sig))) {
+      return unifiedOperationWrap_(body, action, function () { return unifiedStaffProgress_(e, body, parsed.raw); });
+    }
+    if (UNIFIED_PERSONAL_PROGRESS_ACTIONS[action]) {
+      return unifiedOperationWrap_(body, action, function () { return unifiedPersonalProgress_(e, body, parsed.raw); });
+    }
+    if (UNIFIED_MEMBER_HUB_ACTIONS[action]) {
+      return unifiedOperationWrap_(body, action, function () { return unifiedMemberHub_(body); });
+    }
     if (UNIFIED_PUBLIC_PORTAL_ACTIONS[action] || UNIFIED_ADMIN_READ_ACTIONS[action] ||
         UNIFIED_ADMIN_WRITE_ACTIONS[action] || UNIFIED_ADMIN_DANGEROUS_ACTIONS[action]) {
       var signedActor = null;
@@ -7964,9 +8914,9 @@ function doPost(e) {
           scopes: unifiedScopesForRole_('super'),
           user: { ymis: 'sheep', name: '系統管理員', role: 'super_admin' } };
       }
-      return unifiedPortalAdmin_(e, body, signedActor);
+      return unifiedOperationWrap_(body, action, function () { return unifiedPortalAdmin_(e, body, signedActor); });
     }
-    return badgeDoPost_(e);
+    return unifiedOperationWrap_(body, action, function () { return badgeDoPost_(e); });
   } catch (err) {
     return unifiedJson_({ success: false, ok: false, error: String(err && err.message || err),
       unifiedGsVersion: UNIFIED_GS_VERSION });

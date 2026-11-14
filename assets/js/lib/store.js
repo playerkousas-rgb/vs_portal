@@ -25,6 +25,8 @@ import {
   SKIP_TOP, diffDb as _diffDb, applyChanges as _applyChanges, clone as _clone,
   threeWay as _threeWay, overridesFor as _overridesFor
 } from './merge3.js';
+import { branchIdentityIds, canonicalRole, rolesAscending } from './branch-config.js';
+import { migrateAccessControl } from './access-schema.js';
 
 export const SCHEMA = 2;
 
@@ -58,43 +60,43 @@ export const LEGACY_SHARED_USERNAMES = ['leader', 'exco'];
 
 /** 清走舊版種落嘅共用帳戶（領袖／執行委員會）。@returns {boolean} 有冇改動 */
 /**
- * 一次過把舊「旅團設定 → 團員睇到嘅公開連結」6 個槽搬入 `db.publicProfile`。
- * 放喺 store.js（而唔係 public-profile.js）係為咗唔好整個循環 import
- * （public-profile.js 要 import store.js 嘅 load／commit）。
- * @returns {boolean} 有冇搬過嘢（有就要 persistLocalOnly）
+ * 刪除已否決的匿名「公開資料」資料模型。
+ *
+ * `db.publicProfile`、`vis:"other"` 與 `_troopLinksMigrated` 都屬於舊的
+ * 免登入發佈定義；新架構的跨支部分享會由已登入的來源／接收雙方授權，
+ * 不可把舊資料直接升格成旅層分享。因此這裡是刪除，不是隱藏或停用。
+ * @returns {boolean} 有冇清理過舊資料
  */
-export function migrateTroopLinks(db) {
-  if (!db || db._troopLinksMigrated) return false;
-  const L = db.settings?.troopLinks || {};
-  db._troopLinksMigrated = true;
-  const urls = Object.values(L).map(v => String(v || '').trim()).filter(Boolean);
-  if (!urls.length) return true;                    // 冇嘢要搬，但記低已經搬過
-  const pp = db.publicProfile || (db.publicProfile = {});
-  ['socials', 'albums', 'links'].forEach(k => { if (!Array.isArray(pp[k])) pp[k] = []; });
-  pp.site = pp.site || { url: '', vis: 'member' };
-  const have = new Set([...pp.socials, ...pp.albums, ...pp.links]
-    .map(x => String(x.url || '').trim().replace(/\/+$/, '')));
-  const norm = u => String(u).trim().replace(/\/+$/, '');
-  const mk = () => `pp_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-  const put = (arr, rec) => {
-    if (have.has(norm(rec.url))) return;
-    have.add(norm(rec.url));
-    arr.push({ id: mk(), ...rec });
-  };
-  const SOCIAL = { instagram: 'Instagram', facebook: 'Facebook', whatsapp: 'WhatsApp' };
-  let n = 0;
-  Object.keys(SOCIAL).forEach(k => {
-    const u = String(L[k] || '').trim();
-    if (!u) return;
-    put(pp.socials, { kind: k, title: `旅團${SOCIAL[k]}`, url: u, desc: SOCIAL[k], vis: 'member' }); n++;
-  });
-  if (String(L.album || '').trim()) { put(pp.albums, { title: '活動相簿', url: String(L.album).trim(), desc: '活動相', vis: 'member' }); n++; }
-  if (String(L.drive || '').trim()) { put(pp.links, { title: 'Google Drive', url: String(L.drive).trim(), desc: '雲端硬碟／共用資料夾', vis: 'member' }); n++; }
-  if (String(L.website || '').trim() && !String(pp.site?.url || '').trim()) {
-    pp.site = { url: String(L.website).trim(), title: '旅團網頁', desc: '', vis: pp.site?.vis || 'member' }; n++;
+export function removeAnonymousPublicData(db) {
+  if (!db || typeof db !== 'object') return false;
+  let changed = false;
+  if (Object.prototype.hasOwnProperty.call(db, 'publicProfile')) { delete db.publicProfile; changed = true; }
+  if (Object.prototype.hasOwnProperty.call(db, '_troopLinksMigrated')) { delete db._troopLinksMigrated; changed = true; }
+  if (db.settings && typeof db.settings === 'object') {
+    ['publicBaseUrl', 'publicLinks', 'publicEntry', 'publicBorrow'].forEach(key => {
+      if (Object.prototype.hasOwnProperty.call(db.settings, key)) { delete db.settings[key]; changed = true; }
+    });
+    if (db.settings.notice && typeof db.settings.notice === 'object') {
+      const notice = { ...db.settings.notice };
+      let noticeChanged = false;
+      ['publicBaseUrl', 'submitUrl'].forEach(key => {
+        if (Object.prototype.hasOwnProperty.call(notice, key)) { delete notice[key]; noticeChanged = true; }
+      });
+      if (noticeChanged) {
+        if (Object.keys(notice).length) db.settings.notice = notice; else delete db.settings.notice;
+        changed = true;
+      }
+    }
   }
-  if (n) console.info(`[store] 已把 ${n} 條舊「旅團設定」公開連結搬入公開資料`);
-  return true;
+  if (db.backend && Object.prototype.hasOwnProperty.call(db.backend, 'noticeSubmitUrl')) {
+    delete db.backend.noticeSubmitUrl; changed = true;
+  }
+  ['events', 'notices', 'quizzes'].forEach(key => {
+    (Array.isArray(db[key]) ? db[key] : []).forEach(row => {
+      if (row && row.vis === 'other') { row.vis = 'member'; changed = true; }
+    });
+  });
+  return changed;
 }
 
 export function migrateSharedAccounts(db) {
@@ -136,20 +138,52 @@ function lsDel(key) {
   try { localStorage.removeItem(key); } catch { delete memoryStore[key]; }
 }
 
+const UNSAFE_DATA_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
+/** Reject object-key payloads that can become prototype-pollution gadgets when a
+ * backup/backend object is later merged with Object.assign or spread helpers. */
+export function assertSafeDataTree(value, { maxDepth = 80, maxNodes = 1_000_000 } = {}) {
+  let nodes = 0;
+  const visit = (item, depth) => {
+    if (++nodes > maxNodes) throw new Error('資料結構過大');
+    if (depth > maxDepth) throw new Error('資料結構層數過深');
+    if (item === null || typeof item !== 'object') return;
+    if (Array.isArray(item)) { item.forEach(child => visit(child, depth + 1)); return; }
+    const proto = Object.getPrototypeOf(item);
+    if (proto !== Object.prototype && proto !== null) throw new Error('資料包含不安全物件類型');
+    for (const key of Object.keys(item)) {
+      if (UNSAFE_DATA_KEYS.has(key)) throw new Error(`資料包含不安全欄位：${key}`);
+      visit(item[key], depth + 1);
+    }
+  };
+  visit(value, 0);
+  return true;
+}
+
 /* ---------------- 升級：用戶身份（領袖 / 執委 / 團員） ----------------
    舊資料庫嘅團員紀錄冇 identity 欄。呢度由職位／標籤推算一次，
    之後喺「用戶」頁可以隨時改。回傳 true = 有改動（要 persist）。 */
-const IDENTITY_KEYS = ['chief', 'leader', 'exco', 'member'];
+const IDENTITY_KEYS = branchIdentityIds();
 export function migrateIdentities(db) {
   if (!db || !Array.isArray(db.members)) return false;
   let changed = false;
   db.members.forEach(m => {
-    if (IDENTITY_KEYS.includes(m.identity)) return;
-    const t = `${m.role || ''} ${(m.tags || []).join(' ')}`.toLowerCase();
+    const canonical = canonicalRole(m.identity);
+    if (canonical && IDENTITY_KEYS.includes(canonical)) {
+      if (m.identity !== canonical) { m.identity = canonical; changed = true; }
+      return;
+    }
+    const t = `${m.identity || ''} ${m.role || ''} ${(m.tags || []).join(' ')}`.toLowerCase();
+    const committeeRole = rolesAscending({ includeHidden: false }).find(role => role.level === 2)?.id || 'member';
     m.identity = /(團長|領袖|leader|scouter)/.test(t) ? 'leader'
-      : /(執委|執行委員會|exco|committee|主席|司庫|文書)/.test(t) ? 'exco'
+      : /(執委|執行委員會|exco|committee|主席|司庫|文書)/.test(t) ? committeeRole
         : 'member';
     changed = true;
+  });
+  ['accounts', 'deletedAccounts'].forEach(key => {
+    (Array.isArray(db[key]) ? db[key] : []).forEach(account => {
+      const role = canonicalRole(account && account.role);
+      if (role && account.role !== role) { account.role = role; changed = true; }
+    });
   });
   return changed;
 }
@@ -227,13 +261,12 @@ function blankDb(code, entry = {}) {
     schema: SCHEMA,
     kind: 'real',
     unitCode: code,
-    unit: { code, name: entry.name || code, nameEn: entry.nameEn || '', short: entry.short || code, theme: entry.theme || {} },
+    unit: { code, name: entry.name || code, nameEn: entry.nameEn || '', short: entry.short || code, section: entry.section || '', theme: entry.theme || {} },
     settings: {
       currency: 'HK$', feePerYear: 360, feePeriodLabel: '', subsidyPercent: 30, subsidyCap: 70,
       openingBalance: 0, openingBalanceDate: todayISO().slice(0, 4) + '-04-01',
       scoutFYStartMonth: 4, scoutFYStartDay: 1,
-      agmDates: [{ year: new Date().getFullYear(), date: '', note: '未設定' }],
-      publicBaseUrl: ''
+      agmDates: [{ year: new Date().getFullYear(), date: '', note: '未設定' }]
     },
     accounts: [],                       // 冇共用帳戶：身份即帳號（見上面 migrateSharedAccounts）
     constitution: { version: '0.1', status: 'draft', title: { zh: '團章', en: 'Constitution' }, preamble: { zh: '', en: '' }, chapters: [], appendices: [], history: [] },
@@ -350,14 +383,10 @@ function seedBackend(db, code) {
     apiKey: unitSync.apiKey !== undefined ? unitSync.apiKey : (be?.apiKey || ''),
     name: be?.name || '總表（Apps Script）',
     shared: !unitSync.url,
-    noticeSubmitUrl: s.notice?.submitUrl || be?.noticeSubmitUrl || url,
     updated: be?.updated || ''
   };
   db.sync = { ...(db.sync || {}), url: db.sync?.url || url, unit: db.sync?.unit || unitSync.unit || code, apiKey: db.sync?.apiKey ?? (unitSync.apiKey ?? ''), log: db.sync?.log || [] };
   db.settings = { ...s };
-  db.settings.notice = { ...(s.notice || {}), submitUrl: s.notice?.submitUrl || url };
-  db.settings.publicEntry = { ...(s.publicEntry || {}), submitUrl: s.publicEntry?.submitUrl || url };
-  db.settings.publicBorrow = { ...(s.publicBorrow || {}), submitUrl: s.publicBorrow?.submitUrl || url };
 }
 
 /* ---------------- 初始化 ---------------- */
@@ -372,17 +401,18 @@ function seedBackend(db, code) {
  * ★ 2026-09-24：以前呢度仲有「真實／示範（MOCK）」兩個模式，團長話
  *   「我都在用要MOCK 幹什麼」→ 拆走。而家只有一個旅團資料庫，
  *   唔會再出現「入錯示範空間、資料冇同步」呢類 bug。 */
-function resolveTarget(opts = {}, url = new URLSearchParams(location.search)) {
+function resolveTarget(opts = {}, url = new URLSearchParams(globalThis.location?.search || '')) {
   const urlUnitRaw = String(url.get('u') || '').trim();
-  let code;
-  if (opts.unit) code = String(opts.unit);
-  else code = urlUnitRaw || lsGet(K.unit) || defaultUnitCode();
+  let rawCode;
+  if (opts.unit) rawCode = String(opts.unit).trim();
+  else rawCode = urlUnitRaw || lsGet(K.unit) || defaultUnitCode();
+  const code = canonicalUnitCode(rawCode) || rawCode;
   if (code) lsSet(K.lastReal, code);
-  return { code };
+  return { code, rawCode };
 }
 
 export async function init(opts = {}) {
-  const { code } = resolveTarget(opts);
+  const { code, rawCode } = resolveTarget(opts);
   const nextScope = opts.scope === 'hub' || opts.mode === 'hub' ? 'hub' : 'admin';
   /* 測試／單頁若重新 init 另一旅團或 scope，唔可以沿用上一個記憶體 DB。 */
   if (state.unitCode !== code || state.scope !== nextScope) {
@@ -393,10 +423,17 @@ export async function init(opts = {}) {
   state.scope = nextScope;
 
   const key = activeDbKey(code);
-  const raw = lsGet(key);
+  /* 早期版本容許 ?u=82 建立另一個 localStorage namespace。第一次以新版本
+     開啟時，如 canonical 0082 尚未有資料，就只讀一次舊 alias 作無損搬遷。 */
+  const aliasKey = rawCode && rawCode !== code
+    ? (state.scope === 'hub' ? hubDbKey(rawCode) : dbKey(rawCode)) : '';
+  let raw = lsGet(key);
+  let loadedFromAlias = false;
+  if (!raw && aliasKey) { raw = lsGet(aliasKey); loadedFromAlias = !!raw; }
   if (raw) {
     try {
       const parsed = JSON.parse(raw);
+      assertSafeDataTree(parsed);
       /* 舊版 hub key 可能曾誤存 buildSeed() 的完整行政種子。只接受明確標記的
          安全空殼／server hub projection；其餘一律丟棄並重建空殼。 */
       const safeHubCache = parsed?.meta?.hubView === true || parsed?.meta?.hubShell === true;
@@ -423,9 +460,32 @@ export async function init(opts = {}) {
       persistLocalOnly();
     }
   }
+  /* unitCode 係 server-authoritative envelope 欄。網址 alias（82）只可用來搵到
+     Registry 的 canonical code（0082），絕不可一路流入 DB／Sheet 形成第二套資料。 */
+  let canonicalizedUnit = loadedFromAlias;
+  if (String(state.db.unitCode || '') !== code) { state.db.unitCode = code; canonicalizedUnit = true; }
+  if (state.db.unit && typeof state.db.unit === 'object' && String(state.db.unit.code || '') !== code) {
+    state.db.unit.code = code; canonicalizedUnit = true;
+  }
+  if (state.db.profile && typeof state.db.profile === 'object' && String(state.db.profile.code || '') !== code) {
+    state.db.profile.code = code; canonicalizedUnit = true;
+  }
+  if (state.db.sync && typeof state.db.sync === 'object' && String(state.db.sync.unit || '') !== code) {
+    state.db.sync.unit = code; canonicalizedUnit = true;
+  }
+  if (canonicalizedUnit) persistLocalOnly();
   /* 開機升級（帳戶名單／身份／systemId／期初結餘／後端設定）全部只寫本機 ——
      佢哋唔係用家嘅改動，唔應該令 pending 由 0 變 1（否則一開機就話「未儲存」）。 */
   if (!Array.isArray(state.db.accounts)) { state.db.accounts = []; persistLocalOnly(); }
+  /* 支部類別係角色 schema 的選擇依據；舊 DB 冇存 section 時由公開 Registry 補回。 */
+  {
+    const section = String(unitEntry(code)?.section || '').trim();
+    if (section && !String(state.db.unit?.section || '').trim()) {
+      state.db.unit = { ...(state.db.unit || {}), section };
+      if (state.db.profile) state.db.profile = { ...state.db.profile, section };
+      persistLocalOnly();
+    }
+  }
   /* 清走舊版嘅共用帳戶（領袖／執行委員會）—— 2026-09-24「身份即帳號」 */
   if (migrateSharedAccounts(state.db)) persistLocalOnly();
   // 用戶名冊升級：舊資料冇「身份」欄 → 由職位／標籤推算（領袖 / 執委 / 團員）
@@ -434,21 +494,16 @@ export async function init(opts = {}) {
   if (migrateMemberKeys(state.db)) persistLocalOnly();
   // 期初結餘：舊嘅全域數字如果係上年度嘅期初，自動搬返去對應年度（見 migrateOpeningBalances）
   if (migrateOpeningBalances(state.db)) persistLocalOnly();
-  /* ★ 公開資料統一（2026-09-24 團長）：
-     「旅團設定嗰啲 LINK 都會放埋係公開資料度，理論上所有公開嘅資料都會喺公開資料睇到
-      —— 旅團設定嗰啲料基本上都係一啲公開資料而已。」
-
-     所以舊「旅團設定 → 團員睇到嘅公開連結」嗰 6 個槽（Drive／相簿／IG／FB／網頁／
-     WhatsApp）**一次過搬入 `db.publicProfile`**，之後：
-       · 填嘢嘅位 ＝ 旅團設定（`#/admin/settings`）
-       · 睇嘢嘅位 ＝ 公開資料（`#/links`，只讀一覽表）
-     搬完舊資料一條都唔會唔見。 */
-  if (migrateTroopLinks(state.db)) persistLocalOnly();
+  /* 已否決的匿名「公開資料」要真正刪除，唔保留停用資料或自動搬遷。 */
+  if (removeAnonymousPublicData(state.db)) persistLocalOnly();
+  /* 權限矩陣係支部資料 schema 的一部分。開機即補齊／正規化，確保舊備份、
+     裁剪投影或手改 JSON 都只能得到 edit=>read 及向上單調的有效矩陣。 */
+  if (state.scope === 'admin' && !state.db.meta?.serverProjection && migrateAccessControl(state.db)) persistLocalOnly();
   // 後端設定升級：舊資料庫（未有 sync 設定）自動補上 Registry / unit.json 嘅 Apps Script 網址
   {
-    const before = JSON.stringify([state.db.sync?.url || '', state.db.settings?.notice?.submitUrl || '', state.db.settings?.publicEntry?.submitUrl || '', state.db.settings?.publicBorrow?.submitUrl || '']);
+    const before = JSON.stringify([state.db.sync?.url || '', state.db.backend?.gasUrl || '']);
     if (state.db.sync?.url !== undefined || !state.db.backend) seedBackend(state.db, code);
-    const after = JSON.stringify([state.db.sync?.url || '', state.db.settings?.notice?.submitUrl || '', state.db.settings?.publicEntry?.submitUrl || '', state.db.settings?.publicBorrow?.submitUrl || '']);
+    const after = JSON.stringify([state.db.sync?.url || '', state.db.backend?.gasUrl || '']);
     if (before !== after) persistLocalOnly();
   }
   lsSet(K.unit, code);
@@ -509,12 +564,10 @@ export function load() {
 }
 export function tryLoad() { return state.db; }
 
-/* 後端自動儲存 hook（由 remote.js 喺開機時掛上；避免 store ↔ remote 循環 import）。
-   冇掛住（例如測試、公開頁）就淨係寫本機，行為同以前一樣。
-
-   ★ 2026-09-24（團長：「用戶根本沒寫入後端」）：hook 而家會收到
-      { critical, reason } —— critical＝呢次改動係「另一部機要即刻見到」嘅嘢
-      （開人／設密碼／改身份／批開戶），remote.js 會即刻寫後端，唔等 debounce。 */
+/* 後端狀態 hook（由 remote.js 喺開機時掛上；避免 store ↔ remote 循環 import）。
+   佢只更新「未儲存（N）」提示，絕不發網絡寫入。冇掛住（例如測試、公開頁）
+   就照樣只寫本機。{ critical, reason } 只用嚟將帳戶級改動標紅，提醒用戶要喺
+   對方用另一部機登入之前撳頂部「儲存到後端」。 */
 let saveHook = null;
 export function setSaveHook(fn) { saveHook = typeof fn === 'function' ? fn : null; }
 
@@ -555,8 +608,9 @@ export const save = commit;
  * 另一個分頁）就用嗰個 email 登唔到。團長 2026-09-24 原話：
  *   「1 邊能用 email 登入、1 邊不能，那＝用戶根本沒寫入後端。」
  *
- * 所以呢啲改動寫完本機之後，會叫 remote.js **即刻**寫後端（唔等 debounce）。
- * 寫唔成功唔會靜靜地吞：頂部狀態會轉做「未儲存」，改動仍然留喺本機。
+ * 所以呢啲改動寫完本機之後，會把 pendingAccounts 計數標紅，叫 remote.js
+ * 更新頂部「未儲存」提示；**絕不即刻寫後端**。用戶仍要親自撳頂部唯一嘅
+ * 「儲存到後端」，登出／離頁亦會擋住提醒。
  */
 export function commitCritical(reason = '') { persist({ critical: true, reason }); return state.db; }
 
@@ -648,7 +702,8 @@ export function exportAll() {
 export function importAll(jsonText) {
   let obj;
   try { obj = JSON.parse(jsonText); } catch (e) { throw new Error('JSON 格式錯誤'); }
-  if (!obj || typeof obj !== 'object' || !obj.schema) throw new Error('唔似係本系統嘅備份檔（缺少 schema）');
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj) || !obj.schema) throw new Error('唔似係本系統嘅備份檔（缺少 schema）');
+  assertSafeDataTree(obj);
   if (obj.schema !== SCHEMA) throw new Error(`備份版本（schema ${obj.schema}）同現時版本（${SCHEMA}）唔一致`);
   delete obj._exportedFrom;
   delete obj._exportedAt;
@@ -658,6 +713,7 @@ export function importAll(jsonText) {
   state.db = obj;
   state.db.accounts = Array.isArray(obj.accounts) ? obj.accounts : [];
   migrateSharedAccounts(state.db);
+  removeAnonymousPublicData(state.db);
   if (keepSync) state.db.sync = { ...keepSync, pending: Number(keepSync.pending || 0) };
   if (keepBackend) state.db.backend = keepBackend;
   state.db.unitCode = state.unitCode;
@@ -703,10 +759,18 @@ function fillCollections(db) {
 }
 
 /** 剝走簿記／連線設定 —— 基準快照同比對都用呢個形狀 */
+function deniedProjectionKeys(db) {
+  const keys = db?.meta?.serverProjection?.deniedTopLevel;
+  return new Set(Array.isArray(keys) ? keys.map(String) : []);
+}
+
 export function stripForBase(db) {
+  const denied = deniedProjectionKeys(db);
   const out = {};
-  Object.keys(db || {}).forEach(k => { if (!SKIP_TOP.has(k)) out[k] = db[k]; });
-  return fillCollections(_clone(out));
+  Object.keys(db || {}).forEach(k => { if (!SKIP_TOP.has(k) && !denied.has(k)) out[k] = db[k]; });
+  const normalized = fillCollections(_clone(out));
+  denied.forEach(key => { delete normalized[key]; });
+  return normalized;
 }
 
 /** 而家嘅基準快照：{ version, at, db } ；未有就 null */
@@ -716,7 +780,8 @@ export function getBase() {
   if (!raw) return null;
   try {
     const b = JSON.parse(raw);
-    return b && typeof b === 'object' && b.db ? b : null;
+    assertSafeDataTree(b);
+    return b && typeof b === 'object' && !Array.isArray(b) && b.db ? b : null;
   } catch { return null; }
 }
 
@@ -743,11 +808,14 @@ export function clearBase() {
 /** 後端拉返嚟嘅 db 先過一次同本機一樣嘅升級（identity／systemId／帳戶），
     咁基準、本機、後端三份先至係同一個形狀，唔會生出幻影改動。 */
 export function normalizeRemote(remoteDb) {
+  assertSafeDataTree(remoteDb || {});
   const db = fillCollections(_clone(remoteDb || {}));
   if (!Array.isArray(db.accounts)) db.accounts = [];
   migrateSharedAccounts(db);
+  removeAnonymousPublicData(db);
   migrateIdentities(db);
   migrateMemberKeys(db);
+  if (!db.meta?.serverProjection) migrateAccessControl(db);
   return db;
 }
 
@@ -766,12 +834,16 @@ function keepLocalWiring(next, local) {
 
 /** 要寫上後端嘅內容：資料本身＋meta，**唔包括** sync／backend（每部機自己嘅連線設定） */
 export function exportForBackend(db = state.db) {
+  const denied = deniedProjectionKeys(db);
   const out = {};
-  Object.keys(db || {}).forEach(k => { if (k !== 'sync' && k !== 'backend') out[k] = db[k]; });
+  Object.keys(db || {}).forEach(k => {
+    if (k !== 'sync' && k !== 'backend' && !denied.has(k)) out[k] = db[k];
+  });
   out.schema = SCHEMA;
   out.kind = 'real';
   out.unitCode = state.unitCode;
   out.meta = { ...(out.meta || {}), updatedAt: nowStamp() };
+  delete out.meta.serverProjection;
   return out;
 }
 
@@ -873,6 +945,7 @@ export function reloadFromStorage() {
   if (!raw) return state.db;
   try {
     const parsed = JSON.parse(raw);
+    assertSafeDataTree(parsed);
     if (parsed && parsed.schema === SCHEMA) state.db = parsed;
   } catch { /* ignore */ }
   baseMem = undefined;
@@ -1020,12 +1093,19 @@ export function getSession() {
       lsDel(K.session);
       return null;
     }
+    const identity = canonicalRole(session.role);
+    if (identity && identity !== session.role) {
+      session.role = identity;
+      lsSet(K.session, JSON.stringify(session));
+    }
     return session;
   } catch {
     return null;
   }
 }
 export function setSession(s) {
-  if (!s) lsDel(K.session); else lsSet(K.session, JSON.stringify(s));
+  if (!s) { lsDel(K.session); return; }
+  const identity = canonicalRole(s.role);
+  lsSet(K.session, JSON.stringify(identity ? { ...s, role: identity } : s));
 }
 export const SESSION_KEY = K.session;

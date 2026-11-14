@@ -695,10 +695,16 @@ section('只有一個儲存方式（原始碼守門：冇自動寫、冇 poll、
     && /state\.scope === 'hub'[\s\S]{0,100}\? buildHubShell\(/.test(storeSrc)
     && /hubShell: true/.test(storeSrc)
     && /backendUrl: beFromQuery\(\)/.test(hubSrc));
-  ok('團員 mutation 唔先樂觀改本機；失敗保留明確可重試狀態',
+  ok('團員 mutation 唔先樂觀改本機；unknown 鎖住重送，只准 readback 核對',
     /hubSubmitState/.test(hubSrc) && /id="hubRetrySubmit"/.test(hubSrc)
-    && /本機畫面未當作成功/.test(hubSrc)
+    && /id="hubCheckSubmit"/.test(hubSrc) && /結果未知，已鎖住重送/.test(hubSrc)
+    && /hubMutationVisible/.test(hubSrc) && /outcome === 'not_applied'/.test(hubSrc)
+    && /venture82\.hub-uncertain\.v1/.test(hubSrc) && /restoreRememberedHubUnknown/.test(hubSrc)
+    && /rememberHubUnknown\(hubSubmitState\.unknown\)/.test(hubSrc)
     && !/update\('events'|update\('quizzes'|submitAbsence\(|withdrawAbsence\(/.test(stripComments(hubSrc)));
+  ok('團員安全投影採用亦以明確 outcome 優先，unknown/not_applied 唔會當成功',
+    /const explicit = String\(result\?\.outcome/.test(remoteSrc)
+      && /const applied = explicit \? explicit === 'applied'/.test(remoteSrc));
   ok('總表同步：「測試連線」掣已清理（唔會再有淨讀嘅測試掣）', !/act === 'test-sync'/.test(tablesSrc));
   ok('總表同步：報表同步唔會夾帶整個 db、唔會清 pending', /payload\.skipDb = true/.test(tablesSrc) && !/payload\.db = db/.test(tablesSrc) && !/pending: 0, lastPushAt/.test(tablesSrc));
   ok('總表同步：冇咗「會議模式」開關', !/y-poll/.test(tablesSrc));
@@ -716,7 +722,9 @@ section('只有一個儲存方式（原始碼守門：冇自動寫、冇 poll、
     /uploadPhotos\(photos/.test(financeSrc) && /photosOnDrive/.test(financeSrc));
   const conSrc = fs.readFileSync(path.join(ROOT, 'assets/js/views/constitution.js'), 'utf8');
   const notSrc = fs.readFileSync(path.join(ROOT, 'assets/js/views/notices.js'), 'utf8');
-  ok('團章發布／通告同步都行同一條 saveWithDialog', /saveWithDialog/.test(conSrc) && /saveWithDialog/.test(notSrc) && !/syncNow|pushToMaster/.test(conSrc) && !/pushToMaster/.test(notSrc));
+  ok('團章發布只排隊等頂部明確儲存；通告同步仍行唯一 saveWithDialog',
+    !/saveWithDialog/.test(conSrc) && /頂部「儲存到後端」/.test(conSrc)
+      && /saveWithDialog/.test(notSrc) && !/syncNow|pushToMaster/.test(conSrc) && !/pushToMaster/.test(notSrc));
   const dlgSrc = fs.readFileSync(path.join(ROOT, 'assets/js/views/syncdialog.js'), 'utf8');
   ok('衝突對話框：預設保留後端、剔咗先用我嘅、有「全部用我嘅」', /useMine/.test(dlgSrc) && /保留後端/.test(dlgSrc) && /全部剔/.test(dlgSrc));
 }
@@ -1116,6 +1124,20 @@ section('總表同步經同源代理（唔填 /exec 都得）');
   ok('★ 代理回未授權 → 唔可以扮成功', r2.ok === false, JSON.stringify(r2).slice(0, 160));
   ok('錯誤原因要浮得返上嚟', /未授權/.test(String(r2.msg || '')), String(r2.msg || '').slice(0, 100));
 
+  /* Receipt/status envelope can be transport-ok while the original write is still
+     unknown. Explicit durable outcome must win over ok/success booleans. */
+  proxyReply = { ok: true, success: true, outcome: 'unknown', operation: { state: 'unknown' } };
+  const rUnknown = await tables.pushToMaster({ silent: true });
+  ok('★ 明確 outcome=unknown 就算 envelope ok:true 都唔可以當同步成功',
+    rUnknown.ok === false && rUnknown.outcome === 'unknown', JSON.stringify(rUnknown).slice(0, 180));
+
+  /* Parse the complete response before truncating diagnostics. A valid GAS response
+     can exceed 2KB; slicing first turns valid JSON into an ambiguous false failure. */
+  proxyReply = { ok: true, success: true, padding: 'x'.repeat(2500), outcome: 'applied' };
+  const rLarge = await tables.pushToMaster({ silent: true });
+  ok('★ 超過 2KB 嘅完整 JSON 回應仍然解析到（只截短 log，唔截短 parser input）',
+    rLarge.ok === true && rLarge.outcome === 'applied', JSON.stringify(rLarge).slice(0, 180));
+
   /* 純靜態部署（冇 /api/proxy）＋ 冇填網址 → 先至係真・未設定 */
   globalThis.fetch = async (url) => {
     const clean = String(url).split('?')[0].replace(/^\.?\//, '');
@@ -1148,72 +1170,50 @@ section('總表同步經同源代理（唔填 /exec 都得）');
 }
 
 /* ============================================================
-   ⑨ 舊系統遷移：指去 82venture 嘅公開網址要搵得出＋一鍵搬
-   ------------------------------------------------------------
-   各旅團資料庫入面嘅公開網址（通告／團章／公開頁）好可能仲係
-   舊站嗰陣填嘅 82venture.vercel.app —— 嗰啲 QR／WhatsApp 連結
-   退役之後會死晒。呢度驗：搵得出、搬得啱、頁面識得警告。
-   （沿用第 ⑧ 節嘅 jsdom 環境：location ＝ http://localhost:8080/）
+   ⑨ 舊匿名網址已退役：資料庫覆寫不再影響分享連結
    ============================================================ */
-section('舊系統遷移（一鍵搬公開網址）');
+section('舊公開網址退役（只派 authenticated members.html）');
 {
   const store = await import('../assets/js/lib/store.js');
   const model = await import('../assets/js/lib/model.js');
 
-  ok('認得舊站網址', model.isLegacyUrl('https://82venture.vercel.app/notice.html?u=0082&n=x') === true);
-  ok('唔理大細楷', model.isLegacyUrl('https://82VENTURE.VERCEL.APP/entry.html') === true);
-  ok('相對路徑唔算舊站', model.isLegacyUrl('notice.html?u=0082') === false);
-  ok('新站唔算舊站', model.isLegacyUrl('https://ecportal.vercel.app/notice.html') === false);
+  ok('舊 host 仍在退役截停清單', model.LEGACY_HOSTS.includes('82venture.vercel.app'));
   ok('而家唔係喺舊站', model.onLegacyHost() === false);
 
-  /* 播種：扮 0082 資料庫入面仲有舊網址（單旅團年代填落嘅） */
+  /* 即使舊資料庫仍夾帶 public URL，model 都不會再採用或提供搬遷控制；
+     只有同源 members.html 可以作內容入口。 */
   const db = store.load();
   db.settings.notice = { ...(db.settings.notice || {}), publicBaseUrl: 'https://82venture.vercel.app/notice.html' };
   db.settings.publicBaseUrl = 'https://82venture.vercel.app/constitution.html?u={u}';
   db.settings.publicLinks = {
-    ...(db.settings.publicLinks || {}), base: '',
-    'entry.html': 'https://82venture.vercel.app/entry.html', 'borrow.html': ''
+    base: 'https://82venture.vercel.app/',
+    'entry.html': 'javascript:alert(1)',
+    'borrow.html': 'https://evil.example/borrow.html'
   };
   store.commit();
 
-  const found = model.findLegacyPublicUrls();
-  ok('★ 搵得出 3 個指去舊站嘅設定', found.length === 3, JSON.stringify(found.map(f => f.key)));
-  ok('搬遷淨係換 host（path＋參數照留）',
-    model.migrateLegacyUrl('https://82venture.vercel.app/notice.html?u=0082&n=5') === 'http://localhost:8080/notice.html?u=0082&n=5',
-    model.migrateLegacyUrl('https://82venture.vercel.app/notice.html?u=0082&n=5'));
-  ok('唔係舊站網址就原樣回傳',
-    model.migrateLegacyUrl('https://ecportal.vercel.app/x') === 'https://ecportal.vercel.app/x');
+  const memberLinks = model.memberLinks();
+  ok('舊 public URL 設定完全不影響派發連結',
+    memberLinks.length === 1 && memberLinks[0].id === 'hub'
+      && /members\.html/.test(memberLinks[0].url)
+      && !/82venture|evil|javascript/i.test(memberLinks[0].url),
+    JSON.stringify(memberLinks));
 
-  const n = model.migrateLegacyPublicUrls();
-  ok('★ 一鍵搬走 3 個', n === 3, String(n));
-  ok('搬完之後搵唔到舊站網址', model.findLegacyPublicUrls().length === 0);
-  ok('通告網址已經係而家呢個站',
-    store.load().settings.notice.publicBaseUrl === 'http://localhost:8080/notice.html',
-    store.load().settings.notice.publicBaseUrl);
-  ok('{u} 參數搬完之後仲喺度',
-    store.load().settings.publicBaseUrl === 'http://localhost:8080/constitution.html?u={u}',
-    store.load().settings.publicBaseUrl);
-
-  /* 公開資料頁會出 banner（播返個舊嘅先） */
-  store.load().settings.publicLinks['borrow.html'] = 'https://82venture.vercel.app/borrow.html';
-  store.commit();
   const links = await import('../assets/js/views/links.js');
-  /* ★ 2026-09-24 團長：「公開資料其實唔係要填嘢嘅，係方便了解有乜嘢而家正喺度公開」
-     → 預設嗰版係只讀一覽表；舊站警告要兩個分頁都見到（擺咗喺 render() 頂）。 */
   const html = links.render();
-  ok('★ 公開資料頁有舊站警告＋一鍵搬掣', /舊系統/.test(html) && /data-act="migrate-urls"/.test(html));
-  /* 逐條連結卡嘅警告喺「團員入口（分享）」分頁（嗰度先係派得出去嗰啲連結） */
-  const htmlHub = links.render({ id: 'hub' });
-  ok('受影響嘅連結卡有警告', /退役之後會死/.test(htmlHub));
-  ok('★ 兩個分頁都有舊站警告（一覽表版唔會漏）', /舊系統/.test(htmlHub));
+  ok('團員入口頁沒有「搬公開網址」或匿名預覽控制',
+    /團員入口/.test(html) && /要先核實個人身份|仍然要.*登入/.test(html)
+      && !/migrate-urls|預覽對外專頁|公開資料/.test(html));
 
-  /* 通告分享連結都係同一個來源（搬完就啱） */
   const notices = await import('../assets/js/views/notices.js');
   store.add('notices', { id: 'n_legacy1', title: { zh: '測試通告' }, status: 'published' });
   const rec = store.find('notices', 'n_legacy1');
-  ok('通告 publicUrl 用搬完之後嘅新網址',
-    notices.publicUrl(rec).startsWith('http://localhost:8080/notice.html?'), notices.publicUrl(rec));
+  const noticeUrl = notices.publicUrl(rec);
+  ok('通告分享固定使用 authenticated hub hash route',
+    /members\.html/.test(noticeUrl) && noticeUrl.endsWith('#/notice/n_legacy1')
+      && !/82venture|evil|javascript/i.test(noticeUrl), noticeUrl);
 }
+
 
 /* ============================================================
    ⑧ 分件儲存（v2.4.0 長壽命架構）

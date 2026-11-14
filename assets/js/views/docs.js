@@ -12,7 +12,7 @@ import { load, currentUnit } from '../lib/store.js';
 import { envUnitTemplate, envUnitSteps } from '../lib/onboard.js';
 import { esc, icon, copyText, toast } from '../lib/util.js';
 import { go } from '../lib/router.js';
-import { pageHead, tabs, noteBox, kv } from './ui.js';
+import { pageHead, tabs, noteBoxHtml, kvHtml } from './ui.js';
 
 let section = 'start';
 let lang = 'zh';
@@ -51,13 +51,13 @@ export function render(params) {
     <div class="card no-print" style="align-self:start">
       <div class="card-head"><div class="card-title">目錄</div></div>
       <div style="padding:8px 0">
-        ${nav.map(([k, l]) => `<div class="list-item" style="cursor:pointer" data-sec="${k}">
-          <div class="li-main"><div class="li-t sm ${section === k ? 'semibold' : ''}" style="${section === k ? 'color:var(--brand-700)' : ''}">${esc(l)}</div></div>
+        ${nav.map(([k, l]) => `<div class="list-item" style="cursor:pointer" data-sec="${esc(k)}">
+          <div class="li-main"><div class="li-t sm ${section === k ? 'semibold' : ''}" style="${esc(section === k ? 'color:var(--brand-700)' : '')}">${esc(l)}</div></div>
           ${section === k ? icon('chevronR', 15) : ''}
         </div>`).join('')}
       </div>
       <div style="padding:14px 16px;border-top:1px solid var(--line-2)">
-        ${noteBox(`目前旅團：<b>${esc(profile().name || '')}</b><br>身份：${esc(displayName())}（${ROLES[currentRole()]?.name || ''}）
+        ${noteBoxHtml(`目前旅團：<b>${esc(profile().name || '')}</b><br>身份：${esc(displayName())}（${esc(ROLES[currentRole()]?.name || '')}）
           `)}
       </div>
     </div>
@@ -127,7 +127,7 @@ function accountsDoc() {
       <tr><td>團員</td><td>YMIS＋密碼</td><td>團員頁（自己進度、連結）</td></tr>
     </tbody>
   </table>
-  ${noteBox('執委唔使每人開「執委帳戶」。名冊剔做執委，下次用同一個 YMIS 入就係管理系統。', 'brand')}
+  ${noteBoxHtml('執委唔使每人開「執委帳戶」。名冊剔做執委，下次用同一個 YMIS 入就係管理系統。', 'brand')}
   ${H('開戶')}
   <div class="steps">
     <div class="step"><div>名冊有個名＝已開戶：首次密碼 <code>1234</code>，第一次登入要改</div></div>
@@ -142,28 +142,17 @@ function constitutionDoc() {
   const c = load().constitution;
   return `
   ${H('內建團章')}
-  ${P(`現時版本 <b>v${esc(c.version || '')}</b>，${(c.chapters || []).length} 章，中英對照（資料由你嘅 Google Doc 內建）。`)}
-  ${H('睇／改')}
+  ${P(`現時版本 <b>v${esc(c.version || '')}</b>，${(c.chapters || []).length} 章，中英對照。`)}
+  ${H('睇／改／發布')}
   <div class="steps">
     <div class="step"><div>右上角切換 <b>中文 / English / 中英對照</b></div></div>
-    <div class="step"><div>有編輯權（領袖或超管）就按「編輯」</div></div>
-    <div class="step"><div>逐章改標題、逐條改條文，可以加章節、加條文、加子項（甲／乙／(i)）</div></div>
-    <div class="step"><div>改完按「發布新版本」填版本號同摘要</div></div>
+    <div class="step"><div>有團章編輯權先可以改章節、條文同子項；發布權再獨立核對</div></div>
+    <div class="step"><div>發布後撳「儲存到後端」，團員入口只會投影已發布版本</div></div>
   </div>
   ${H('輸出')}
-  <table class="table table-compact">
-    <thead><tr><th>格式</th><th>用途</th></tr></thead>
-    <tbody>
-      <tr><td>Word（.doc）</td><td>交去總會／列印；Word、Google Docs 都開得</td></tr>
-      <tr><td>PDF</td><td>按「PDF」→ 列印視窗選「另存為 PDF」</td></tr>
-      <tr><td>Markdown</td><td>放上網／版本管理</td></tr>
-      <tr><td>單一 HTML</td><td>一個檔案包含全份團章＋中英切換，可離線睇、可上載做公開頁</td></tr>
-      <tr><td>constitution.json</td><td>發布檔：上載去 <code>data/units/${esc(currentUnit())}/</code> 更新公開頁</td></tr>
-    </tbody>
-  </table>
+  ${P('Word、PDF、Markdown、HTML 同 JSON 都係管理者下載的文件／備份；下載檔本身唔係匿名發布機制，唔應上載去公開網站。')}
   ${H('QR Code 畀團員睇')}
-  ${P(`QR Code 會指向 <code>constitution.html?u=${esc(currentUnit())}</code>（免登入公開閱讀頁，同樣有中英切換）。`)}
-  ${P('如果想指向自己嘅網址（例如你上載咗單一 HTML 去學校網站），喺右邊「公開網址」改咗佢再儲存，QR 就會跟住變。')}`;
+  ${P(`QR 指向 <code>members.html?u=${esc(currentUnit())}#/constitution</code>。成員掃描後仍要用本團個人身份登入；後端核實 session 先回已發布團章。QR 本身唔係閱讀憑證。`)}`;
 }
 
 function financeDoc() {
@@ -177,7 +166,7 @@ function financeDoc() {
     <li>「兩條數對照」一表睇齊兩個制嘅結果</li>
     <li>輸出 Word／PDF：可以一份文件同時載兩份報告（AGM 用），亦可以只出一份</li>
   </ul>
-  ${noteBox(`<b>AGM 日期每年都唔同</b>：喺「財務 → 年結報告 → 逐年輸入 AGM 日期」逐年填。
+  ${noteBoxHtml(`<b>AGM 日期每年都唔同</b>：喺「財務 → 年結報告 → 逐年輸入 AGM 日期」逐年填。
     未填／未確認嘅年份會標示「未確認」，報告頁同儀表板都會提醒你；確認之後報告就用你填嘅日期起計。`, 'info')}
   ${H('日常記帳')}
   <div class="steps">
@@ -212,7 +201,7 @@ function financeDoc() {
     <li>🖨 可以直接列印<b>團費收據</b>；「複製催繳名單」可以貼落 WhatsApp</li>
     <li>期別跟童軍年度（2026 年 9 月收嘅係 <code>2026-27</code>）；中途入團自己改成按月金額</li>
   </ul>
-  ${noteBox('想睇完整日常流程（連月結／年結步驟）：去「教學 → <b>日常點輸入</b>」，或者睇 repo 內 <code>docs/DAILY_ENTRY.md</code>（可以列印貼喺會議室）。', 'brand')}`;
+  ${noteBoxHtml('想睇完整日常流程（連月結／年結步驟）：去「教學 → <b>日常點輸入</b>」，或者睇 repo 內 <code>docs/DAILY_ENTRY.md</code>（可以列印貼喺會議室）。', 'brand')}`;
 }
 
 function dailyDoc() {
@@ -225,7 +214,7 @@ function dailyDoc() {
       <tr><td>你墊支買咗嘢</td><td><b>財務 → 收支申報 → 我要申報</b></td><td>金額、日期、項目、分類（等批核後自動入帳）</td></tr>
       <tr><td>開完會 / 活動後一次過補</td><td><b>財務 → 匯入</b>（貼上或上載 CSV）</td><td>一段表：日期、類型、項目、金額</td></tr>
       <tr><td>收團費</td><td><b>財務 → 團費</b>（收款表）</td><td>喺團員一行按「標記已收」→ 自動入帳</td></tr>
-      <tr><td><b>成員自己交單</b>（取代 Google Form）</td><td><b>手機開 <code>entry.html?u=0082</code></b>（掃 QR）</td><td>影相 → 揀欄目 → 金額、項目、姓名（免登入）</td></tr>
+      <tr><td><b>成員個人交單</b></td><td><b>暫停</b></td><td>舊匿名 entry.html 已刪；等 session-bound 個人 action 完成先開放</td></tr>
     </tbody>
   </table></div>
 
@@ -238,7 +227,7 @@ function dailyDoc() {
     <div class="step"><div>揀<b>分類</b>同<b>方式</b>；有單據就勾「已收到單據」，填單號</div></div>
     <div class="step"><div>按「新增帳目」。完 —— 結餘即刻更新，月結／年結自動計</div></div>
   </div>
-  ${noteBox('記帳三句真言：<b>分類要一致</b>（同一個意思用同一個分類，年結才靚）、<b>項目寫得具體</b>（三個月後你自己都睇得明）、<b>單據影相／編號</b>（有單冇單，一查就知）。', 'brand')}
+  ${noteBoxHtml('記帳三句真言：<b>分類要一致</b>（同一個意思用同一個分類，年結才靚）、<b>項目寫得具體</b>（三個月後你自己都睇得明）、<b>單據影相／編號</b>（有單冇單，一查就知）。', 'brand')}
 
   ${H('團費：金額可以年年改，記錄邊個交咗')}
   ${P('「財務 → 團費」有一張<b>收款表</b>：每位團員一行，一眼睇齊邊個交咗、幾時交、用咩方式交、單號幾多。')}
@@ -251,7 +240,7 @@ function dailyDoc() {
     <div class="step"><div>要收據：按 🖨 → 即刻列印／存 PDF（有司庫簽署位）</div></div>
     <div class="step"><div>追人：「<b>複製催繳名單</b>」→ 直接貼落 WhatsApp 群；或者輸出收款表 Word 貼堂</div></div>
   </div>
-  ${noteBox(`<b>新入團按月計</b>（跟團章第 8 條）：如果中途入團，按「建立 $360」之後再改成實際金額（例如 6 個月 = $180）就得。<br>
+  ${noteBoxHtml(`<b>新入團按月計</b>（跟團章第 8 條）：如果中途入團，按「建立 $360」之後再改成實際金額（例如 6 個月 = $180）就得。<br>
     海外團員收 1/4（$90）。`, 'info')}
 
   ${H('月結（每月 5 分鐘）')}
@@ -276,7 +265,7 @@ function dailyDoc() {
     <div class="step"><div>睇預覽（讀到幾多筆、收入／支出合計、認得出邊幾位交咗團費）</div></div>
     <div class="step"><div>按「確認匯入」→ 帳目同團費紀錄一齊建立；錯嘅可以逐筆刪</div></div>
   </div>
-  ${noteBox('欄位名可以照用你原本嘅中文字：日期 / 類型（收入、支出）/ 項目 / 金額 / 分類 / 方式 / 經手人（負責人）/ 年度 / 團費（打 ✓ 或寫團員名）/ 備註。系統會自動對位，唔需要改格式。', 'info')}
+  ${noteBoxHtml('欄位名可以照用你原本嘅中文字：日期 / 類型（收入、支出）/ 項目 / 金額 / 分類 / 方式 / 經手人（負責人）/ 年度 / 團費（打 ✓ 或寫團員名）/ 備註。系統會自動對位，唔需要改格式。', 'info')}
 
   ${H('想印出嚟貼喺房？')}
   ${P('呢一頁可以按瀏覽器「列印」存成 PDF，貼喺物資房／會議室；或者喺「財務 → 匯入」下載空白範本 CSV，跟住格式填就得。')}`;
@@ -284,42 +273,21 @@ function dailyDoc() {
 
 function mobileDoc() {
   return `
-  ${H('一句話：唔使再開 Google Form，用手機影相就交得')}
-  ${P('成員（同家長）唔需要帳號：掃 QR 或者開 <code>entry.html?u=0082</code> 就得。流程係 <b>① 揀支出／收入 → ② 影相 → ③ 揀欄目 → ④ 打金額 → 送出</b>。')}
+  ${H('團員入口：一條登入 QR')}
+  ${P('只派 <code>members.html?u=旅團編號</code>。QR 只帶用戶去登入頁；後端用 opaque session 對回本團個人身份，再按身份層級投影活動、試卷、通告同已發布團章。')}
+  ${noteBoxHtml('<b>匿名入口已刪除：</b><code>entry.html</code>、<code>borrow.html</code>、<code>notice.html</code>、<code>constitution.html</code> 舊網址只會轉去團員登入入口；後端亦唔再接受匿名 claim／loan／noticeSignup／notices／constitution action。', 'brand')}
+  ${H('通告分享同報名')}
   <div class="steps">
-    <div class="step"><div>領袖／執委：<b>財務 → 收支申報 → 右上「畀成員自己填（QR）」</b></div></div>
-    <div class="step"><div>彈出嘅 QR Code：<b>下載 SVG</b> 或按「<b>列印 QR 海報</b>」→ 貼喺團址／物資房／派通告</div></div>
-    <div class="step"><div>同時都可以「複製網址」貼落 WhatsApp 群</div></div>
-    <div class="step"><div>成員照住做：揀欄目（例：活動／交通／膳食／團費收入）、影低單據、打金額同理姓名</div></div>
-    <div class="step"><div>送出之後：如果旅團設定咗 Apps Script，紀錄<b>直接寫入總 Sheet</b>；未設定就存喺成員自己部手機，佢可以按「複製內容」傳畀司庫</div></div>
+    <div class="step"><div>通告 → 開新通告 → 選擇「邊個睇到」（只列本支部已登入身份）</div></div>
+    <div class="step"><div>發布後可複製登入連結、WhatsApp 文字或 QR；連結保留指定通告路線</div></div>
+    <div class="step"><div>成員登入後先收到通告全文；報名回覆由 server session 綁定本人，唔採用前端自報身份</div></div>
+    <div class="step"><div>行政介面「通告 → 報名紀錄」睇名單、輸出 CSV／Word 或列印</div></div>
   </div>
-  ${noteBox('想完全自動：喺「財務 → 收支申報 → 畀成員自己填」貼上 Apps Script <code>/exec</code> 網址（同「資料管理 → 總表同步」可以共用同一個），成員一送出就入總表嘅「待批申報」分頁，仲可以順手存埋相片去 Google Drive。', 'brand')}
-
-  ${H('執委／領袖喺 APP 內填')}
-  <div class="steps">
-    <div class="step"><div><b>儀表板 → 「影相記一筆」</b>：最快，開門就係申報表</div></div>
-    <div class="step"><div>或者 <b>財務 → 收支申報 → 我要申報</b>：一樣有相機、日期、分類</div></div>
-    <div class="step"><div>批核：喺「收支申報」按「<b>批准並入帳</b>」→ 自動寫入帳目（金額、分類、日期、相片一齊跟）</div></div>
-    <div class="step"><div>相片太佔位？去「資料管理 → 儲存與備份」按「清理已入帳嘅相片（保留記錄）」</div></div>
-  </div>
-
-  ${H('通告：一撳 WhatsApp 分享 ＋ QR 報名')}
-  <div class="steps">
-    <div class="step"><div><b>通告 → 開新通告</b>：揀類型（活動／會議／招募／一般／AGM）</div></div>
-    <div class="step"><div>填<b>中文標題</b>（英文標題可留空）；打內容（活動通告記得填日期、地點、費用、截止日期、名額）</div></div>
-    <div class="step"><div>需要報名就開「<b>要報名</b>」→ 下面可以<b>自己加／改／刪報名欄目</b>（姓名、電話、飲食禁忌、備註…），剔「必填」</div></div>
-    <div class="step"><div>按「<b>發布並分享</b>」→ 彈出<b>分享對話框</b></div></div>
-    <div class="step"><div>撳「<b>用 WhatsApp 分享</b>」：即刻開 WhatsApp，標題／日期／地點／費用／截止／內容重點同<b>報名連結</b>都自動填好（可以改完先送）</div></div>
-    <div class="step"><div>要貼圖就用「<b>儲存 QR 圖</b>」（存落手機相簿再貼落群組），或者「列印 QR 海報」貼喺團址</div></div>
-    <div class="step"><div>成員／家長<b>免登入</b>撳連結／掃 QR 就睇到通告全文，順手報名</div></div>
-    <div class="step"><div>返到 APP：通告 → 該通告 → <b>報名名單</b>（出席／唔出席／未回覆）可以睇／匯出 CSV／Word、列印簽到表</div></div>
-  </div>
-  ${noteBox('公開頁係獨立嘅 <code>notice.html?u=0082&amp;n=通告編號</code>：只顯示該張通告，唔會露出其他資料。<b>每次分享一張</b>，到期就喺 APP 內改狀態，或者直接開新一張。報名會以業務 action 直接寫入同一個旅團後端。', 'info')}
-
+  ${H('收支申報／物資借用')}
+  ${P('舊匿名手機表已停用。目前收支申報只可在已登入行政介面使用；團員個人申報／借用要等專用 session-bound action 完成先重新開放，唔會退回「填姓名就當本人」的做法。')}
   ${H('常見問題')}
-  ${P('<b>冇網絡？</b>APP 同公開頁都係靜態檔案，載入之後照用得；送出嘅紀錄會先存喺裝置，之後再傳畀司庫。')}
-  ${P('<b>驚亂？</b>申報只係「待批核」，要司庫或領袖按批准才會入帳；錯嘅可以拒絕或者刪除。')}
-  ${P('<b>想改欄目？</b>通告嘅報名欄目係逐張通告自己設定；財務／物資／用戶／會議嘅欄目，去返<b>嗰個分頁</b>按右上角「<b>欄位</b>」掣（唔再需要一個獨立「表格」分頁）。')}`;
+  ${P('<b>可唔可以把 QR 當公開頁？</b>唔可以。未登入者只見登入閘；身份、可見範圍同寫入對象全部由後端核實。')}
+  ${P('<b>跨支部資料點分享？</b>唔用匿名網址。要經來源支部批准整個資料包、接收支部接受、再由接收支部授權本地身份三道獨立門。')}`;
 }
 
 function tablesDoc() {
@@ -346,21 +314,21 @@ function tablesDoc() {
     <div class="step"><div>對應唔啱就逐個下拉改；可以剔「匯入前清空該表」避免重複</div></div>
     <div class="step"><div>按「匯入」→ 有預覽筆數；之後可以「儲存做同步來源」，隨時再按「同步」拉最新版本</div></div>
   </div>
-  ${noteBox('冇公開連結都可以：喺 Sheet 選取範圍 → Ctrl+C → 按「改為貼上 CSV」照樣讀得到。', 'info')}
+  ${noteBoxHtml('冇公開連結都可以：喺 Sheet 選取範圍 → Ctrl+C → 按「改為貼上 CSV」照樣讀得到。', 'info')}
 
   ${H('③ Unified 總表：完整後端、完整版＋輕量版前端')}
-  ${noteBox('<b>施工次序：BOOK → BADGE → 5 個支部系統（現在）→ 最後才建立旅系統。</b>現階段未有中央旅系統；支部本地帳戶／session 係正常主入口，<code>ALLOW_LOCAL_LOGIN</code> 必須保持開啟。', 'info')}
+  ${noteBoxHtml('<b>施工次序：BOOK → BADGE → 5 個支部系統（現在）→ 最後才建立旅系統。</b>現階段未有中央旅系統；支部本地帳戶／session 係正常主入口，<code>ALLOW_LOCAL_LOGIN</code> 必須保持開啟。', 'info')}
   ${P('每個旅團只使用<b>一張專屬 Google Sheet ＋ 一支完整 Unified Apps Script</b>；GS 具備行政、身份、進度、獎章、履歷及申報能力。支部系統係功能完整版前端，BADGE 係只呈現部分流程嘅輕量前端。')}
   <div class="steps">
     <div class="step"><div>開旅團專屬 Google Sheet → <b>擴充功能 → Apps Script</b></div></div>
-    <div class="step"><div>APP 內免登入或於「總表同步 → <b>下載 Unified Code.gs</b>」→ 全部取代貼上</div></div>
+    <div class="step"><div>APP 內「總表同步 → <b>下載 Unified Code.gs</b>」→ 全部取代貼上</div></div>
     <div class="step"><div>執行 <code>initializeSheets</code> 增補全部分頁，再執行 <code>showApiKey</code> 安全保存同一 API Key</div></div>
     <div class="step"><div><b>部署 → 新增部署作業 → 網頁應用程式</b>；執行身分：我；存取權：任何人；只用正式 <code>/exec</code></div></div>
     <div class="step"><div>管理員喺 Vercel 只登記 <code>TROOP_&lt;ID&gt;_NAME／BACKEND／APIKEY</code> 三項並 Redeploy</div></div>
     <div class="step"><div>登入後撳頂部「<b>儲存到後端</b>」；server 以 session 核對身份，browser 唔保存 API Key</div></div>
     <div class="step"><div>每次更新 Unified Code.gs 後在測試副本重跑一次 <code>initializeSheets</code>；只可增補，既有資料及 Key 必須不變</div></div>
   </div>
-  ${noteBox('<b>完整 Unified 後端、兩種前端定位。</b>vs_portal 功能完整版與 vsbadge 輕量版共用同一 Sheet；不要設定 <code>PORTAL*</code>／<code>PROGRESS*</code> 第二套 secret、backend 或 key，亦不要另建 BADGE 精簡 GS。前端功能面唔取代 server role／scope 授權。', 'brand')}
+  ${noteBoxHtml('<b>完整 Unified 後端、兩種前端定位。</b>vs_portal 功能完整版與 vsbadge 輕量版共用同一 Sheet；不要設定 <code>PORTAL*</code>／<code>PROGRESS*</code> 第二套 secret、backend 或 key，亦不要另建 BADGE 精簡 GS。前端功能面唔取代 server role／scope 授權。', 'brand')}
 
   ${H('④ 儲存與備份')}
   ${P('所有資料存喺<b>你自己嘅瀏覽器</b>（localStorage，大約 5MB）。相片最佔位，所以：')}
@@ -382,7 +350,7 @@ function inventoryDoc() {
     <div class="step"><div>取走物資時按「已取走」→ 系統自動 <b>−庫存</b></div></div>
     <div class="step"><div>歸還時按「已歸還」→ 系統自動 <b>＋庫存</b></div></div>
   </div>
-  ${noteBox('可用數量＝登記總數 ＋ 盤點調整 − 未歸還借用。因為係即時由紀錄推算，唔會出現「加減錯數」。', 'brand')}
+  ${noteBoxHtml('可用數量＝登記總數 ＋ 盤點調整 − 未歸還借用。因為係即時由紀錄推算，唔會出現「加減錯數」。', 'brand')}
   ${H('盤點')}
   ${P('每次活動前後去「盤點紀錄 → 新增盤點」，填 −1／+2 同原因（損耗、遺失、新購），庫存就會跟住調整，並且有紀錄可查。')}
   ${H('輸出')}
@@ -414,7 +382,7 @@ function progressDoc() {
   ${H('設計：完整 Unified 後端、功能完整版＋輕量版前端')}
   ${P('旅團只有<b>一個完整後端</b> —— 一張 Google Sheet ＋ 一支具備身份、行政、Progress、獎章、履歷及申報能力的 Unified Apps Script。'
     + '<b>vs_portal 係功能完整版前端；vsbadge 係輕量前端</b>，只呈現部分流程。Progress 係完整版前端內的模組。')}
-  ${noteBox('瀏覽器不保存後端網址或 API Key；進度頁亦不接受第二支 GAS 或 BADGE 精簡 GS。'
+  ${noteBoxHtml('瀏覽器不保存後端網址或 API Key；進度頁亦不接受第二支 GAS 或 BADGE 精簡 GS。'
     + 'API Key 只作 server routing／用途分隔 HMAC 根，<b>不等於執委身份</b>；功能有冇顯示亦唔係授權。每個 action 由 allowlist、opaque session 角色及 scope 共同限制。', 'brand')}
 
   ${H('三項設定（與 BADGE 完全相同）')}
@@ -426,7 +394,7 @@ TROOP_${esc(unit)}_APIKEY</pre>
     <li><code>BACKEND</code>：同一 Unified GAS 正式 <code>/exec</code></li>
     <li><code>APIKEY</code>：同一 Sheet 的 <code>API_KEY</code>；只留 server</li>
   </ul>
-  ${noteBox('不要設定 <code>PROGRESSBACKEND</code>／<code>PROGRESSAPIKEY</code>，亦不要叫用戶在「進度」頁貼 Key。更新 Vercel 後要 Redeploy。', 'info')}
+  ${noteBoxHtml('不要設定 <code>PROGRESSBACKEND</code>／<code>PROGRESSAPIKEY</code>，亦不要叫用戶在「進度」頁貼 Key。更新 Vercel 後要 Redeploy。', 'info')}
 
   ${H('讀寫與批核')}
   <ul style="padding-left:18px;line-height:1.9" class="sm">
@@ -446,7 +414,7 @@ TROOP_${esc(unit)}_APIKEY</pre>
 /* 管理員專用（方法 A：Git Registry）—— 普通用戶冇 Git／Vercel 權限，唔需要見到 */
 function adminGitSteps() {
   return `
-  ${H('管理員接入（Vercel 接線；Git 只放可選公開資料）')}
+  ${H('管理員接入（Vercel 接線；Git 唔放支部業務資料）')}
   <div class="steps">
     <div class="step"><div>正式接線只用 <b>Vercel 環境變數</b>：<code>TROOP_&lt;ID&gt;_NAME／BACKEND／APIKEY</code>，然後 Redeploy</div></div>
     <div class="step"><div>如想 API 未載入前都顯示公開名稱，可選擇喺 <code>data/units.json</code> 加 <code>code／name／section</code> 等 metadata</div></div>
@@ -475,7 +443,7 @@ function multiUnitOnboardSteps() {
 function multiUnitOnboardNote() {
   return `
   ${H('新旅團點接入？')}
-  ${noteBox('旅團自己申請接入嘅步驟（起後端 → initializeSheets → 部署 → 送出申請）'
+  ${noteBoxHtml('旅團自己申請接入嘅步驟（起後端 → initializeSheets → 部署 → 送出申請）'
     + '喺<b>登入前嘅旅團閘「部署指南」</b>已經有齊，毋須登入都睇得到。<br>'
     + '呢個平台嘅旅團登記（<code>TROOP_&lt;編號&gt;_*</code> 設定）由<b>超級管理員</b>負責 —— '
     + '將你嘅 <code>/exec</code> 網址同 API Key 交畀佢就得。', 'info')}`;
@@ -496,7 +464,7 @@ function multiUnitDoc() {
   ${isSuper() ? multiUnitOnboardSteps() : multiUnitOnboardNote()}
   ${isSuper() ? adminGitSteps() : ''}
   ${H('資料隔離')}
-  ${P('每個旅團嘅資料存喺 <code>venture82.unit.&lt;編號&gt;.db.v2</code>，互相睇唔到、改唔到。團章公開頁用 <code>constitution.html?u=編號</code>，QR Code 亦會自動帶旅團編號。')}
+  ${P('每個旅團嘅本機工作副本存喺獨立 namespace，後端亦按旅團同 session 核實。團章 QR 指向團員登入入口內的 <code>#/constitution</code> 路線，唔設匿名公開頁。')}
   ${H('權限')}
   ${P('每個旅團有自己嘅帳戶清單（領袖 / 執委）。超管帳戶係全平台共用嘅隱藏帳戶。')}`;
 }
@@ -510,7 +478,7 @@ function multiUnitDoc() {
 function superOnlyDoc() {
   return `
   ${H('呢一章只限超級管理員')}
-  ${noteBox('「開新旅團」要改 Vercel 環境變數（`TROOP_<編號>_*`），<b>只有超級管理員做得到</b>。'
+  ${noteBoxHtml('「開新旅團」要改 Vercel 環境變數（`TROOP_<編號>_*`），<b>只有超級管理員做得到</b>。'
     + '如果你要開新旅團，將旅團嘅 <code>/exec</code> 網址同 API Key 交畀系統管理員就得。', 'warn')}
   ${P('日常團務請睇：<b>快速開始</b>、<b>進度紀錄（同一個後端）</b>、<b>財務</b>、<b>日常點輸入</b>等章節。')}`;
 }
@@ -519,7 +487,7 @@ function newUnitDoc() {
   return `
   ${H('開新旅團：方法 B（唔使改 Git，最快）')}
   ${P('情境：<b>旅團畀你一個 Apps Script <code>/exec</code> 網址 ＋ API Key</b>，你想佢即刻可以登入用。')}
-  ${noteBox('兩個方法並存，唔使二選一：<br>'
+  ${noteBoxHtml('兩個方法並存，唔使二選一：<br>'
     + '<b>方法 B（呢一章）</b>＝喺 Vercel 加環境變數，唔使改 Git；旅團由空白資料開始，'
     + '團章／名冊／舊帳之後慢慢入（或者隨時搬去方法 A）。<br>'
     + '<b>方法 A</b>＝喺 <code>data/units.json</code> ＋ <code>data/units/&lt;編號&gt;/</code> 加檔案（可以預載資料）。', 'brand')}
@@ -550,23 +518,22 @@ function newUnitDoc() {
   <div class="steps">
     ${envUnitSteps('0081').map(x => `<div class="step"><div>${esc(x)}</div></div>`).join('')}
   </div>
-  ${noteBox('環境變數<b>要 Redeploy 先生效</b>（唔係即刻）。部署完旅團清單就會見到新編號，'
+  ${noteBoxHtml('環境變數<b>要 Redeploy 先生效</b>（唔係即刻）。部署完旅團清單就會見到新編號，'
     + '佢嘅資料由<b>空白</b>開始（唔會讀 <code>data/units/&lt;編號&gt;/</code>，因為冇呢個資料夾）。', 'warn')}
 
   ${H('第 3 步：旅團登入之後')}
   <ul style="padding-left:18px;line-height:1.95" class="sm">
-    <li><b>通告</b>：開通告 → 喺「總表同步」撳一次同步 → 公開頁（<code>notice.html?u=&lt;編號&gt;&amp;n=&lt;通告編號&gt;</code>）
-      會直接由佢自己嘅後端讀 → 可以 WhatsApp 分享 ＋ QR 收報名（唔使改 Git 都公開到）</li>
+    <li><b>通告</b>：開通告 → 發布 → 儲存到後端；WhatsApp／QR 指向團員登入入口的指定通告路線，登入後先讀同回覆</li>
     <li><b>進度</b>：自動沿用同一個 <code>TROOP_&lt;編號&gt;_BACKEND</code> ＋ <code>_APIKEY</code>；
       不另設進度後端，瀏覽器亦不會要求貼 Key</li>
-    <li><b>團章</b>：去「團章」寫好 → 發布 → 公開頁 <code>constitution.html?u=&lt;編號&gt;</code></li>
+    <li><b>團章</b>：去「團章」寫好 → 發布 → 儲存；成員登入後由 <code>#/constitution</code> 閱讀</li>
     <li><b>名冊</b>：去「用戶」加執委／領袖帳戶同團員（之後同步一次就會寫入佢自己嘅 Sheet）</li>
   </ul>
 
   ${H('方法 A：Git Registry（想預載資料先用）')}
   <div class="steps">
     <div class="step"><div>喺 <code>data/units.json</code> 嘅 <code>units</code> 加一個編號：
-      <code>"0100": { "code": "0100", "name": "…", "dataPath": "data/units/0100/", "backend": { "gasUrl": "…/exec", "apiKey": "…" } }</code></div></div>
+      <code>"0100": { "code": "0100", "name": "…", "section": "…" }</code>。<b>唔可以</b>把 API Key 或支部業務資料放入 Git。</div></div>
     <div class="step"><div>建立 <code>data/units/0100/</code>，複製 0082 嘅檔案再改（<code>unit.json</code>／
       <code>constitution.json</code>／<code>members.json</code>／<code>finance.json</code>／<code>inventory.json</code>…）</div></div>
     <div class="step"><div>Commit & push → 部署 → 旅團清單見到新編號</div></div>

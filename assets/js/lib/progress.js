@@ -12,6 +12,8 @@
 
 import { load, getSession } from './store.js';
 import { unitEntry } from './units.js';
+import { canonicalRole, roleLevel } from './branch-config.js';
+import { beginOperation, operationResult } from './operations.js';
 
 /** 預設考核項目定義（app 內建，離線可用） */
 export const DEFAULT_CATALOG_URL = 'data/progress/items.json';
@@ -41,28 +43,45 @@ export function progressIsRegistered() {
 }
 
 /* ---------- 呼叫 /api/progress（同源） ---------- */
+const PROGRESS_WRITE_ACTIONS = new Set(['save', 'saveOtherBadge', 'reviewRequest', 'reviewLogRequest', 'bulkReviewRequests', 'addRequest']);
 async function callApi(payload, { timeoutMs = 60000 } = {}) {
+  const outgoing = { ...(payload || {}) };
+  const operation = PROGRESS_WRITE_ACTIONS.has(String(outgoing.action || ''))
+    ? beginOperation(outgoing.action, { operationId: outgoing.operationId, unit: outgoing.unit, label: 'Progress' })
+    : null;
+  if (operation) { outgoing.operationId = operation.id; outgoing.operation_id = operation.id; }
+  const finish = (response, sent = true) => operation
+    ? { ...response, ...operationResult(response, operation, { sent }) }
+    : response;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const res = await fetch('./api/progress', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(outgoing),
       signal: ctrl.signal
     });
     const text = await res.text();
     let json = null;
     try { json = JSON.parse(text); } catch (e) { /* 唔係 JSON：多數係冇 API（純靜態伺服器） */ }
     if (!json) {
-      return { ok: false, reason: 'no_api',
-        error: '呢部伺服器冇 /api/progress（Progress 要經同源 server API 讀寫支部 Unified Sheet）。本機可以用 `npm run dev`，或在 Vercel 部署。' };
+      return finish({ ok: false, reason: res.status === 404 ? 'no_api' : 'bad_response',
+        mayHaveApplied: operation && res.status !== 404,
+        error: res.status === 404
+          ? '呢部伺服器冇 /api/progress（Progress 要經同源 server API 讀寫支部 Unified Sheet）。本機可以用 `npm run dev`，或在 Vercel 部署。'
+          : 'Progress API 回應格式異常；寫入結果未能確定' }, res.status !== 404);
     }
-    return json;
+    const merged = { ...json };
+    if (json.data?.operation && !merged.operation) merged.operation = json.data.operation;
+    if (json.data?.operationId && !merged.operationId) merged.operationId = json.data.operationId;
+    return finish(merged, true);
   } catch (e) {
     const aborted = e?.name === 'AbortError';
-    return { ok: false, reason: aborted ? 'timeout' : 'network',
-      error: aborted ? 'Progress action 逾時（Unified GAS 冇回應）' : '本系統 API（/api/progress）暫時無法回應' };
+    return finish({ ok: false, reason: aborted ? 'timeout' : 'network', mayHaveApplied: !!operation,
+      error: aborted
+        ? 'Progress action 逾時；可能未寫，亦可能已寫入。系統冇自動重送。'
+        : 'Progress API 斷線；寫入結果未能確定，系統冇自動重送。' }, true);
   } finally {
     clearTimeout(timer);
   }
@@ -119,6 +138,24 @@ export async function reviewRequest(requestId, { decision = 'approved', note = '
 export async function reviewLogRequest(requestId, { decision = 'approved', note = '', reviewer = '' } = {}) {
   return callApi({ ...cfgPayload(), action: 'reviewLogRequest',
     data: { request_id: requestId, decision, review_note: note, reviewer } });
+}
+
+/**
+ * 審批中心批量批准：browser 只發一次 request；混合進度／履歷選擇會由
+ * Unified handler 在同一次鎖內先全批驗證，再寫入同一 Sheet。
+ */
+export async function bulkReviewRequests(requests, { note = '', confirmedDate = '' } = {}) {
+  const selected = (Array.isArray(requests) ? requests : []).map(row => ({
+    kind: String(row?.kind || ''), request_id: String(row?.request_id || row?.id || '')
+  }));
+  return callApi({ ...cfgPayload(), action: 'bulkReviewRequests',
+    data: { requests: selected, decision: 'approved', review_note: note,
+      confirmed_date: confirmedDate } });
+}
+
+/** 只讀查 Progress 寫入狀態；唔會重送原本 action。 */
+export async function checkProgressOperation(operationId) {
+  return callApi({ ...cfgPayload(), action: 'operationStatus', data: { operationId: String(operationId || '') } }, { timeoutMs: 25000 });
 }
 
 /** 顯示用：遮一遮 /exec 嘅部署 ID（唔使成條長 URL 擺上螢幕） */
@@ -202,7 +239,8 @@ export function matchLocalMember(members, remote) {
 function progressIgnoredSafe(m) {
   if (!m) return false;
   if (m.status === 'alumni') return true;
-  if (m.identity === 'leader') return true;
+  const identity = canonicalRole(m.identity || m.role);
+  if (identity && roleLevel(identity) >= roleLevel('leader')) return true;
   const t = `${m.role || ''} ${m.name || ''} ${(m.tags || []).join(' ')}`;
   return /管理員|超管|admin|系統管理員/i.test(t);
 }
@@ -215,7 +253,7 @@ export function summarizeRemote(data, { catalog = null, roster = [] } = {}) {
   const members = (data?.members || []).filter(m => {
     if (remoteIsAdmin(m)) return false;
     const local = matchLocalMember(roster, m);
-    if (local && (local.identity === 'leader' || progressIgnoredSafe(local))) return false;
+    if (local && progressIgnoredSafe(local)) return false;
     return true;
   });
   const progress = data?.progress || {};

@@ -1,0 +1,135 @@
+/* ============================================================
+   全系統手機適配層
+   ------------------------------------------------------------
+   main.css 仍然係設計 token／桌面基礎；呢層專責動態 viewport、safe area、
+   觸控目標、modal、寬表同窄屏文件。避免每個 view 自己再發明 breakpoint。
+   ============================================================ */
+
+html { overflow-x: clip; }
+body { min-width: 0; }
+img, canvas, video { max-width: 100%; height: auto; }
+.scroll-x { max-width: 100%; overscroll-behavior-inline: contain; scrollbar-gutter: stable; }
+.stat-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:14px; }
+.bulk-diff { max-height:min(46dvh,420px); border:1px solid var(--line); border-radius:12px; }
+.bulk-diff .table th { top:0; }
+.mobile-only { display:none !important; }
+.topbar-tools { min-width:0; flex-wrap:nowrap; justify-content:flex-end; }
+.topbar-secondary { display:inline-flex; }
+
+/* 檔案／來源遷移流程共用 */
+.migration-steps { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
+.migration-step { border:1px solid var(--line); border-radius:12px; padding:12px; background:var(--card); }
+.migration-step b { display:block; margin-bottom:3px; }
+.source-map { display:grid; grid-template-columns:minmax(0,1fr) minmax(180px,1fr); gap:8px 12px; align-items:center; padding:8px 0; border-bottom:1px solid var(--line-2); }
+.source-map:last-child { border-bottom:0; }
+
+@media (max-width:1023px) {
+  :root { --topbar-h:56px; }
+  .topbar { min-height:var(--topbar-h); height:auto; padding:6px 12px; }
+  .topbar-secondary { display:none !important; }
+  .topbar-tools { gap:6px; }
+  .topbar-tools #syncChip .badge { display:none; }
+  .topbar-tools #syncChip { display:block; }
+  .topbar-tools #syncActBtn { height:42px; max-width:46vw; overflow:hidden; text-overflow:ellipsis; }
+  .content { width:100%; min-width:0; }
+  .stat-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .migration-steps { grid-template-columns:1fr; }
+}
+
+@media (max-width:760px) {
+  body { font-size:14px; }
+  .mobile-only { display:initial !important; }
+  .desktop-only { display:none !important; }
+  .content { padding:12px 10px 8px; }
+  .page-head { gap:10px; margin-bottom:14px; }
+  .page-head > div:first-child { min-width:0; width:100%; }
+  .page-head > .row { width:100%; display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .page-head > .row .btn, .page-head > .row .seg { min-width:0; width:100%; }
+  .page-sub { overflow-wrap:anywhere; }
+  .card { border-radius:13px; }
+  .card-head { padding:12px 13px; }
+  .card-head > div:first-child { min-width:0; }
+  .card-head .row { max-width:100%; }
+  .card-head .btn { min-width:0; }
+  .stat { padding:12px; min-width:0; }
+  .stat-label, .stat-foot, .stat-sub { overflow-wrap:anywhere; }
+  .stat-value { font-size:21px; }
+  .note-box { padding:10px 11px; overflow-wrap:anywhere; }
+  .kv { grid-template-columns:1fr; gap:2px; }
+  .kv dd { margin:0 0 8px; overflow-wrap:anywhere; }
+  .kv-row { align-items:flex-start; flex-wrap:wrap; }
+  .kv-row > span:first-child { width:100%; }
+
+  /* 舊 CSS 曾經收埋 table 最後一欄／細操作掣，手機反而做唔到工作。
+     全部保留，寬表由 scroll-x 橫向捲；操作欄不得用 display:none 假裝適配。 */
+  .table th:last-child, .table td:last-child { display:table-cell; }
+  .table .row-actions { display:flex; }
+  .table td.right .btn-xs { display:inline-flex; }
+  .scroll-x > .table { min-width:max(100%, 620px); }
+  .scroll-x > .table.table-compact { min-width:max(100%, 560px); }
+  .table th, .table td { padding-left:11px; padding-right:11px; }
+  .table td { overflow-wrap:anywhere; }
+
+  .seg { width:100%; scroll-snap-type:x proximity; }
+  .seg button { flex:0 0 auto; min-height:40px; scroll-snap-align:start; }
+  .chipbar { flex-wrap:nowrap; overflow-x:auto; max-width:100%; padding-bottom:3px; scroll-snap-type:x proximity; }
+  .chip { min-height:40px; display:inline-flex; align-items:center; flex:0 0 auto; scroll-snap-align:start; }
+  .toolbar { align-items:stretch; }
+  .toolbar > * { max-width:100%; }
+  .search-wrap { min-width:0; width:100%; }
+
+  .overlay { align-items:flex-end; padding:0; }
+  .modal, .modal-wide {
+    width:100%; max-width:none; max-height:calc(100dvh - env(safe-area-inset-top));
+    border-radius:18px 18px 0 0;
+  }
+  .modal-head { padding:15px 14px 12px; }
+  .modal-body { padding:14px; overscroll-behavior:contain; }
+  .modal-foot { padding:10px 12px calc(10px + env(safe-area-inset-bottom)); }
+  .modal-foot .btn { min-height:44px; }
+
+  .doc { padding:18px 14px !important; border-radius:12px; font-size:14px; line-height:1.75; overflow-wrap:anywhere; }
+  .doc .doc-h1 { font-size:22px; letter-spacing:.16em; }
+  .doc .art-item { margin-left:12px; }
+  .doc .art-item.level2 { margin-left:24px; }
+
+  .schema-row { grid-template-columns:1fr; gap:8px; }
+  .schema-row > .row { justify-content:flex-start; }
+  .map-row, .source-map { grid-template-columns:1fr; }
+  .link-card { padding:12px; }
+  .link-card .row .btn { flex:1 1 auto; }
+  .photo-actions .btn { flex:1 1 auto; }
+  .migration-step { padding:10px 11px; }
+
+  .cal-grid { min-width:560px; }
+  .cal-cell { min-height:62px; }
+  .cal-ev { min-height:36px; white-space:normal; }
+
+  #toasts { bottom:calc(74px + env(safe-area-inset-bottom)); width:calc(100% - 20px); }
+  .toast { max-width:100%; border-radius:12px; align-items:flex-start; }
+  .tabbar button { min-height:50px; }
+}
+
+@media (max-width:430px) {
+  .g-5,.g-4,.g-3,.g-2,.g-2-1,.g-1-2 { grid-template-columns:1fr; }
+  .stat-grid { grid-template-columns:1fr 1fr; gap:8px; }
+  .page-head > .row { grid-template-columns:1fr; }
+  .topbar .tb-sub { display:none; }
+  .topbar .tb-title { font-size:15px; }
+  .topbar-tools #syncActBtn { max-width:52vw; padding-inline:10px; }
+  .qr-box { max-width:100%; }
+}
+
+/* 真正觸控裝置：唔理 viewport 幾闊，互動目標都至少 44px。 */
+@media (pointer:coarse) {
+  .btn, .btn-sm, .btn-xs, .btn-icon, .role-card, .unit-card, .gate-unit { min-height:44px; }
+  .btn-icon { min-width:44px; }
+  .check input, input[type="checkbox"], input[type="radio"] { min-width:22px; min-height:22px; }
+  .input, .select { min-height:44px; height:44px; }
+  .textarea { min-height:108px; }
+}
+
+@media print {
+  .mobile-only { display:none !important; }
+  .migration-steps { display:block; }
+}

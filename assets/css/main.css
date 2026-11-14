@@ -459,6 +459,22 @@ svg{ display:block; }
 .perm-cell.perm-editable:active{ transform:scale(.94); }
 .perm-dot{ position:absolute; top:2px; right:4px; font-size:8px; color:var(--accent); line-height:1; }
 .perm-cell .badge{ font-size:11px; }
+.perm-group-title{ background:#FBF6F7; font-weight:700; font-size:12px; letter-spacing:.04em; color:var(--faint); padding:8px 14px !important; }
+
+/* 側欄權限：每格固定三粒小 switch，跟區管理系統的一頁式開關清單。 */
+.access-table td{ vertical-align:middle; }
+.access-switches{ display:flex; align-items:center; justify-content:center; gap:5px; min-width:190px; }
+.access-switch{
+  appearance:none; border:1px solid var(--line); background:#F7F4F5; color:var(--muted);
+  border-radius:999px; min-width:58px; padding:4px 7px; display:inline-flex; align-items:center;
+  justify-content:space-between; gap:5px; font:inherit; font-size:10px; line-height:1.2; cursor:pointer;
+  transition:background .13s,border-color .13s,color .13s,box-shadow .13s;
+}
+.access-switch b{ font-size:10px; color:var(--faint); }
+.access-switch:hover{ border-color:var(--brand-300); box-shadow:0 0 0 2px rgba(123,34,51,.08); }
+.access-switch.is-on{ background:var(--ok-bg); border-color:#A9D5BE; color:#17633A; }
+.access-switch.is-on b{ color:#17633A; }
+.access-switch.is-readonly,.access-switch:disabled{ cursor:default; opacity:.7; box-shadow:none; }
 
 .list-item{
   display:flex; align-items:center; gap:12px; padding:12px 14px; border-bottom:1px solid var(--line-2);

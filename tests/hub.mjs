@@ -2,13 +2,13 @@
    tests/hub.mjs — 團員入口（members.html）端到端測試
    ------------------------------------------------------------
    對應團長 2026-09-18 回報嘅問題：
-     ① 公開連結（IG／FB／網頁）→ 團員入口要顯示到（資料喺後端）
+     ① 本團內部連結（IG／FB／網頁）→ 核實登入後先顯示（資料喺後端）
      ② 團員報出席：登入咗就知係邊個，唔可以再叫佢「填自己個名」
         （以前 needName 條路係壞嘅 —— 個名欄根本冇 render，次次都彈提示）
      ③ 登入要保持（localStorage，唔係 sessionStorage）
      ⑤ 截止咗報名嘅通告／過去嘅活動要由清單消失
      ⑥ 新裝置（無痕）開團員入口：由後端拉資料 → 登入得 → RSVP 寫得返上去
-   環境：假 GAS（tests/_fakegas.mjs）＋ dev-server（/api/proxy），
+   環境：真 UnifiedCode.gs VM（tests/_realgas.mjs）＋ dev-server（/api/proxy），
    兩個獨立「裝置」：A＝執委（種資料＋推後端）、B＝團員手機（全新）。
    用法：node tests/hub.mjs
    ============================================================ */
@@ -94,7 +94,8 @@ const runDevice = (plan) => new Promise((resolve) => {
 
 try {
   spawnBg([path.join(ROOT, 'tests', '_realgas.mjs'), String(GAS_PORT)], {
-    REALGAS_APIKEY: 'test_key_0082'
+    REALGAS_APIKEY: 'test_key_0082',
+    REALGAS_UNIFIED: '1'
   });
   spawnBg([path.join(ROOT, 'dev-server.mjs')], {
     TROOP_0082_BACKEND: FAKE_EXEC,
@@ -105,7 +106,7 @@ try {
   });
   const gasUp = await waitPort(GAS_PORT);
   const webUp = await waitPort(WEB_PORT);
-  ok('真 Code.gs 後端＋dev-server 已啟動', gasUp && webUp);
+  ok('真 UnifiedCode.gs 後端＋dev-server 已啟動', gasUp && webUp);
   const platformAuth = await fetch(`${BASE}/api/auth`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ user: 'sheep', password: TEST_SUPER_PASSWORD })
@@ -119,16 +120,19 @@ try {
     { op: 'wipe' },
     { op: 'addMember', name: '陳大文', ymis: '2026000001', identity: 'member' },
     { op: 'addMember', name: '李小美', ymis: '2026000002', identity: 'member' },
-    /* 王領袖（leader）—— 用嚟驗「邊個睇到」：佢要見到團員見唔到嘅公開資料。
-       ★ 成年人（團長／領袖）**唔可以**用首次密碼 1234 自出自入（security），
-         一定要由執委喺「用戶與身份」幫佢設密碼 —— 所以要用 addStaff + setHubPw。 */
-    { op: 'addStaff', name: '王領袖', ymis: '2026000004', identity: 'leader' },
-    { op: 'setHubPw', id: '@last', pw: 'leader123' },
+    /* 王領袖（leader）—— 用嚟驗本地內容層級：佢要見到團員見唔到嘅內部內容。
+       成年人唔可以靠名冊＋首次密碼 1234 自出自入；下面會由支部 admin
+       明確建立 Unified Users leader role，再以專用 action 設密碼。 */
+    { op: 'addStaff', name: '王領袖', ymis: '2026000004', email: 'leader@example.com', identity: 'leader' },
     { op: 'patchSettings', patch: {
-      troopLinks: { instagram: 'https://instagram.com/test82', facebook: 'https://facebook.com/test82', website: 'https://example.com' }
+      troopLinks: {
+        instagram: 'https://instagram.com/test82', facebook: 'https://facebook.com/test82',
+        website: 'https://example.com', album: 'https://photos.example.org/internal',
+        whatsapp: 'javascript:alert(1)'
+      }
     } },
-    /* 公開資料（2026-09-24 團長第 3／4 點）—— 團員入口要讀呢度 show 社交媒體／相簿／網站／連結
-       注意：instagram 同 website 兩個槽呢度「管緊」咗 → 旅團設定嗰兩條要讓位。 */
+    /* 舊 publicProfile fixture 刻意夾帶社交／相簿／about 同 executable URL。
+       已否決的匿名資料模型必須在同步邊界被刪除，唔可以在 hub 復活。 */
     { op: 'setPublicProfile', obj: {
       about: { text: '我團 1982 年成立，逢星期六集會。', vis: 'member' },
       site: { url: 'https://troop82.example.org', title: '82 旅網站', desc: '旅團官方網站', vis: 'member' },
@@ -138,11 +142,12 @@ try {
         { id: 'pp_wa', kind: 'whatsapp', title: '領袖群組', url: 'https://chat.whatsapp.com/leaders', desc: '只限領袖', vis: 'leader' }
       ],
       albums: [{ id: 'pp_al', title: '2026 夏季營相簿', url: 'https://photos.example.org/summer', desc: '夏季營', vis: 'member' }],
-      links: [{ id: 'pp_l1', title: '香港童軍總會', url: 'https://www.scout.org.hk', desc: '總會通告', vis: 'member' }]
+      links: [
+        { id: 'pp_l1', title: '香港童軍總會', url: 'https://www.scout.org.hk', desc: '總會通告', vis: 'member' },
+        { id: 'pp_bad', title: '不安全連結', url: 'javascript:alert(1)', desc: '應被封鎖', vis: 'member' }
+      ]
     } },
-    /* ★ APP 內內容（行事曆／通告／試卷）嘅「邊個睇到」—— 喺各自編輯器設，
-       團員入口要跟住過濾（團長 2026-09-24：「公開資料我係指行事曆、通告、試卷
-       呢類有機會想告知非團員嘅內容」） */
+    /* APP 內內容（行事曆／通告／試卷）按本支部 authenticated identity 過濾。 */
     { op: 'put', coll: 'events', rows: [
       { id: 'ev_future', title: '秋季露營', date: '2026-12-19', dateEnd: '2026-12-20', time: '09:00', venue: '營地', visibility: 'members', vis: 'member', status: 'confirmed', rsvp: {} },
       { id: 'ev_leader', title: '領袖內部會議', date: '2026-12-22', dateEnd: '', time: '20:00', venue: '團址', visibility: 'members', vis: 'leader', status: 'confirmed', rsvp: {} },
@@ -164,6 +169,25 @@ try {
     { op: 'push' }
   ] });
   ok('裝置 A 推後端成功', A.steps?.find(s => s.op === 'push')?.ok === true, JSON.stringify(A.steps?.find(s => s.op === 'push')));
+
+  /* Users 係唯一帳戶／role 權威。未開戶名冊不得自行升權，所以由真正 branch admin
+     明確建立 leader Users row；再一次批量建立兩個 member，最後走專用 reset action。 */
+  const branchAdmin = await proxyCall({ action: 'authLogin', unit: '0082', username: 'admin@example.com', password: 'changeme' });
+  const branchSession = String(branchAdmin.sessionToken || '');
+  const leaderOpen = await proxyCall({ action: 'authOpenAccounts', unit: '0082', sessionToken: branchSession, users: [{
+    targetYmis: '2026000004', ymis: '2026000004', name: '王領袖', email: 'leader@example.com',
+    role: 'leader', password: 'leader-temp'
+  }] });
+  const membersOpen = await proxyCall({ action: 'authOpenAccounts', unit: '0082', sessionToken: branchSession, users: [
+    { targetYmis: '2026000001', ymis: '2026000001', name: '陳大文', role: 'member', password: '1234' },
+    { targetYmis: '2026000002', ymis: '2026000002', name: '李小美', role: 'member', password: '1234' }
+  ] });
+  const leaderReset = await proxyCall({ action: 'authResetPassword', unit: '0082', sessionToken: branchSession,
+    targetYmis: '2026000004', newPassword: 'leader123' });
+  ok('支部 admin 已在同一 Unified Users 開立王領袖帳戶、批量開立團員帳戶及重設領袖密碼',
+    branchAdmin.ok === true && leaderOpen.ok === true && Number(leaderOpen.created || 0) === 1
+      && membersOpen.ok === true && Number(membersOpen.created || 0) === 2 && leaderReset.success === true,
+    JSON.stringify({ branchAdmin: branchAdmin.ok, leaderOpen, membersOpen, leaderReset }).slice(0, 400));
 
   /* ============ 裝置 B（團員手機，全新）：members.html ============ */
   section('裝置 B（全新團員手機）：團員入口');
@@ -233,23 +257,23 @@ try {
   ok('顯示登入團員名（陳大文）', pageTxt().includes('陳大文'));
   ok('旅團連結：FB 有得撳（後台填嘅資料經後端同步過嚟）', !!doc.querySelector('a[href*="facebook.com/test82"]'));
 
-  /* ============ 公開資料（團長第 3／4 點）喺團員入口渲染 ============ */
-  section('公開資料：團員入口讀「公開資料」＋「旅團設定」兩個來源');
+  /* ============ authenticated 旅團連結；舊匿名 publicProfile 不得復活 ============ */
+  section('已登入旅團連結：只讀 troopLinks，舊 publicProfile 被移除');
   const hrefs = () => [...doc.querySelectorAll('a.hub-card')].map(a => a.getAttribute('href') || '');
-  ok('★ 公開資料：IG 出到（社交媒體）', hrefs().some(h => h.includes('instagram.com/pp82')), hrefs().join(' | '));
-  ok('★ 公開資料：YouTube 出到（公開資料先有嘅平台）', hrefs().some(h => h.includes('youtube.com/@pp82')));
-  ok('★ 公開資料：相簿出到', hrefs().some(h => h.includes('photos.example.org/summer')));
-  ok('★ 公開資料：網站出到', hrefs().some(h => h.includes('troop82.example.org')));
-  ok('★ 公開資料：其他連結出到（香港童軍總會）', hrefs().some(h => h.includes('scout.org.hk')));
-  ok('★ 公開資料：「關於我團」文字出到（APP 內嘅內容）', pageTxt().includes('我團 1982 年成立'));
-  ok('★ 合併：IG 唔會出兩條（公開資料管緊嗰個槽 → 旅團設定嗰條讓位）',
-    !hrefs().some(h => h.includes('instagram.com/test82')), hrefs().join(' | '));
-  ok('★ 合併：網頁一樣唔會出兩條（公開資料 site 管緊 website 槽）',
-    !hrefs().some(h => h.includes('https://example.com')), hrefs().join(' | '));
-  ok('★ 合併：公開資料冇管嘅槽照用旅團設定（FB 出到）', hrefs().some(h => h.includes('facebook.com/test82')));
-  ok('★ 可見範圍：團員睇唔到「只限領袖」嘅 WhatsApp 群組',
-    !hrefs().some(h => h.includes('chat.whatsapp.com/leaders')), hrefs().join(' | '));
-  ok('★ 可見範圍：團員連「只限領袖」嘅名都唔會見到', !pageTxt().includes('領袖群組'));
+  ok('旅團設定 IG／FB／網站只在登入後 hub 顯示',
+    hrefs().some(h => h.includes('instagram.com/test82'))
+      && hrefs().some(h => h.includes('facebook.com/test82'))
+      && hrefs().some(h => h.includes('https://example.com')), hrefs().join(' | '));
+  ok('旅團設定內部相簿在登入後顯示', hrefs().some(h => h.includes('photos.example.org/internal')));
+  const unsafeHubCard = [...doc.querySelectorAll('a.hub-card')]
+    .find(a => /WhatsApp/.test(a.textContent || ''));
+  ok('內部連結 executable URL 會被移除或降級成不可執行 #',
+    (!unsafeHubCard || unsafeHubCard.getAttribute('href') === '#')
+      && !hrefs().some(h => String(h).trim().toLowerCase().startsWith('javascript:')),
+    unsafeHubCard?.getAttribute('href') || 'removed');
+  ok('舊 publicProfile 社交／相簿／about 一項都不會在 hub 復活',
+    !hrefs().some(h => ['instagram.com/pp82', 'youtube.com/@pp82', 'photos.example.org/summer', 'scout.org.hk'].some(part => h.includes(part)))
+      && !pageTxt().includes('我團 1982 年成立') && !pageTxt().includes('領袖群組'));
   ok('★ APP 內內容：團員睇到「團員級」嘅活動（秋季露營）', pageTxt().includes('秋季露營'));
   ok('★ APP 內內容：團員**睇唔到**「領袖級」嘅活動', !pageTxt().includes('領袖內部會議'));
   ok('★ APP 內內容：團員睇到「團員級」嘅試卷', pageTxt().includes('測驗卷'));
@@ -270,6 +294,21 @@ try {
   ok('通告：草稿唔會出街', !pageTxt().includes('草稿通告'));
   ok('唔會再叫團員「填自己個名」（登入咗就知係邊個）',
     !/我叫咩名|自己打|記住喺呢部機/.test(pageTxt()), pageTxt().slice(0, 200));
+
+  window.location.hash = '#/constitution';
+  window.dispatchEvent(new window.HashChangeEvent('hashchange'));
+  await wait(180);
+  ok('已登入團員可在 hub 閱讀 server 投影的已發布團章',
+    pageTxt().includes('第一章 總則') && pageTxt().includes('第 1 條')
+      && pageTxt().includes('版本 3.1') && pageTxt().includes('只限已登入成員'),
+    pageTxt().slice(0, 220));
+  window.location.hash = '#/notice/n_plain';
+  window.dispatchEvent(new window.HashChangeEvent('hashchange'));
+  await wait(180);
+  ok('已登入團員可直接開 authenticated 通告路線', pageTxt().includes('普通通告'));
+  window.location.hash = '#/home';
+  window.dispatchEvent(new window.HashChangeEvent('hashchange'));
+  await wait(180);
 
   section('回覆出席（RSVP）—— 登入身份，唔使填名');
   /* 入活動詳情 */
@@ -403,7 +442,9 @@ try {
       (mine2?.data?.requests || []).some(r => r.request_id === mine?.request_id), JSON.stringify((mine2?.data?.requests || []).length));
     const staffLogin = await proxyCall({ action: 'authLogin', unit: '0082', username: '2026000004', password: 'leader123' });
     const staffSession = String(staffLogin.sessionToken || '');
-    ok('進度管理操作先取得領袖 server session', staffLogin.ok === true && !!staffSession, JSON.stringify(staffLogin).slice(0, 120));
+    ok('進度管理操作先取得領袖 server session',
+      staffLogin.ok === true && staffLogin.account?.role === 'leader' && !!staffSession,
+      JSON.stringify(staffLogin).slice(0, 160));
     const loadAfter = await progCall('load', {}, staffSession);
     ok('★ 進度照讀得到，名冊仲同步埋新增團員（saveDb 會更新「成員名單」分頁）',
       (loadAfter?.data?.members || []).length >= 3 && loadAfter?.ok === true,
@@ -426,11 +467,12 @@ try {
     for (let i = 0; i < 30; i++) {
       await wait(200);
       progTxt2 = doc.getElementById('progressBody')?.textContent || '';
-      if (/已完成 1 項/.test(progTxt2) || /已批准/.test(progTxt2)) break;
+      if (/已完成 1 項/.test(progTxt2) && /已批准/.test(progTxt2)) break;
     }
-    ok('團員再入進度頁：自己嗰項變咗「已完成」（有批核人）',
-      /已完成 1 項/.test(progTxt2) && progTxt2.includes('陳領袖'), progTxt2.slice(0, 160));
-    ok('申請紀錄顯示「已批准」（團員自己睇到進度）', /已批准/.test(progTxt2));
+    ok('團員再入進度頁：自己嗰項變咗「已完成」（批核人固定為登入領袖，唔信 client 偽造名）',
+      /已完成 1 項/.test(progTxt2) && progTxt2.includes('2026000004') && !progTxt2.includes('陳領袖'),
+      progTxt2.slice(0, 240));
+    ok('申請紀錄保留並顯示「已批准」（團員自己睇到歷史）', /已批准/.test(progTxt2));
     const otherLogin = await proxyCall({ action: 'authLogin', unit: '0082', username: '2026000002', password: '1234' });
     const mine3 = await progCall('myRequests', { ymis: '2026000001' }, String(otherLogin.sessionToken || ''));
     ok('myRequests 只回登入者自己嘅紀錄（client 偽造陳大文 YMIS 都見唔到）',
@@ -491,8 +533,8 @@ try {
   ok('登出後返登入閘', !!doc.querySelector('#hubLogin'));
   ok('登出後 localStorage 狀態清走', window.localStorage.getItem(authKey) === null);
 
-  /* ===== 可見範圍升級：換個高權限嘅人登入，要見到團員見唔到嘅公開資料 ===== */
-  section('可見範圍：領袖登入見到團員見唔到嘅公開資料（上層必定睇到下層）');
+  /* ===== 可見範圍升級：高身份見到低身份內容＋領袖限定內容 ===== */
+  section('可見範圍：領袖見到低層內容及領袖限定內容');
   doc.querySelector('#hYmis').value = '2026000004';
   doc.querySelector('#hPass').value = 'leader123';   // 領袖一定要執委設密碼，冇 1234 呢條路
   doc.querySelector('#hubLogin').dispatchEvent(new window.Event('submit', { bubbles: true, cancelable: true }));
@@ -501,61 +543,48 @@ try {
   ok('領袖（王領袖）登入成功', leaderIn, pageTxt().slice(0, 120));
   [...doc.querySelectorAll('.overlay button')].find(b => /稍後/.test(b.textContent || ''))?.click();
   await wait(200);
-  /* 登入後會返返去上次睇緊嗰版（#/progress）—— 要撳「返回」去主頁先睇到公開資料 */
+  /* 登入後會返返去上次睇緊嗰版（#/progress）—— 返回主頁核對內容投影。 */
   [...doc.querySelectorAll('[data-open="#/home"]')][0]?.click();
   await wait(250);
   ok('領袖登入後去到主頁（要睇「我要做」嗰幾張卡）', pageTxt().includes('我要做'), pageTxt().slice(0, 120));
-  ok('★ 領袖見到「只限領袖」嘅 WhatsApp 群組（團員見唔到）',
-    hrefs().some(h => h.includes('chat.whatsapp.com/leaders')), hrefs().join(' | '));
-  ok('★ 領袖一樣見到「團員級」嘅公開資料（低層俾到，上層必定睇到）',
-    hrefs().some(h => h.includes('instagram.com/pp82')) && hrefs().some(h => h.includes('photos.example.org/summer')),
-    hrefs().join(' | '));
-  ok('領袖都見到「關於我團」', pageTxt().includes('我團 1982 年成立'));
+  ok('領袖一樣見到 authenticated troopLinks（本地登入身份共用）',
+    hrefs().some(h => h.includes('instagram.com/test82'))
+      && hrefs().some(h => h.includes('photos.example.org/internal')), hrefs().join(' | '));
+  ok('領袖亦不會令已退役 publicProfile 復活',
+    !hrefs().some(h => ['instagram.com/pp82', 'youtube.com/@pp82', 'photos.example.org/summer'].some(part => h.includes(part)))
+      && !pageTxt().includes('我團 1982 年成立'));
   ok('領袖見到自己嘅身份標籤', pageTxt().includes('領袖'));
   ok('★ APP 內內容：領袖見到「領袖級」嘅活動（團員見唔到）', pageTxt().includes('領袖內部會議'));
   ok('★ APP 內內容：領袖見到「領袖級」嘅試卷（團員見唔到）', pageTxt().includes('領袖評核卷'));
   ok('★ APP 內內容：領袖見到「領袖級」嘅通告（團員見唔到）', pageTxt().includes('領袖內部通告'));
   ok('★ 上層必定睇到下層：領袖一樣見到團員級嘅嘢', pageTxt().includes('秋季露營') && pageTxt().includes('普通通告'));
 
-  /* ============ 公開頁：通告（後端正本）＋ 團章（後端 constitution） ============ */
-  section('公開頁：通告由後端正本讀（新發布即刻見到）');
-  {
-    const r = await proxyCall({ action: 'notices', unit: '0082' });
-    const ids = (r.notices || []).map(n => n.id).sort();
-    /* ★ 免登入公開接口要過濾「邊個睇到」—— 淨係出「對外公開」嗰啲。
-       n_plain 係團員級、n_leader 係領袖級，兩個都**唔可以**喺免登入接口出。 */
-    ok('免登入讀到已發布通告（只有 published ＋ 對外公開）', JSON.stringify(ids) === JSON.stringify(['n_closed', 'n_open']), JSON.stringify(ids));
-  }
+  /* ============ 匿名 action 必須拒絕；內容只在當前 authenticated hub ============ */
+  section('匿名內容 action 已退役；領袖內容仍只經 hub session');
+  const anonymousNotices = await proxyCall({ action: 'notices', unit: '0082' });
+  const anonymousConstitution = await proxyCall({ action: 'constitution', unit: '0082' });
+  ok('匿名 notices／constitution action 都被 Edge allowlist 拒絕',
+    anonymousNotices.success === false && anonymousConstitution.success === false,
+    JSON.stringify({ anonymousNotices, anonymousConstitution }).slice(0, 220));
 
-  section('公開頁：團章由後端讀（發布＋同步即刻見到）');
-  {
-    const r = await proxyCall({ action: 'constitution', unit: '0082' });
-    ok('免登入讀到已發布團章', r.ok === true && r.found === true && !!r.constitution?.chapters?.length, JSON.stringify(r).slice(0, 120));
-    ok('團章版本正確（v3.1）', r.constitution?.version === '3.1');
-    ok('只回 constitution，唔會漏名冊／帳目（安全）', r.db === undefined && !JSON.stringify(r).includes('hubPw'));
-  }
+  window.location.hash = '#/notice/n_leader';
+  window.dispatchEvent(new window.HashChangeEvent('hashchange'));
+  await wait(180);
+  ok('領袖可經已核實 session 直接閱讀領袖級通告', pageTxt().includes('領袖內部通告'));
+  window.location.hash = '#/constitution';
+  window.dispatchEvent(new window.HashChangeEvent('hashchange'));
+  await wait(180);
+  ok('領袖同樣經 hub 閱讀已發布團章，沒有獨立免登入 renderer',
+    pageTxt().includes('第一章 總則') && pageTxt().includes('版本 3.1')
+      && pageTxt().includes('只限已登入成員'));
 
-  /* constitution.html 真頁面（jsdom）：fetch 行真 HTTP 經 dev-server */
-  {
-    const cHtml = fs.readFileSync(path.join(ROOT, 'constitution.html'), 'utf8');
-    const dom2 = new JSDOM(cHtml, { url: `${BASE}/constitution.html?u=0082`, pretendToBeVisual: true, runScripts: 'dangerously' });
-    const w2 = dom2.window;
-    for (const k of ['document', 'navigator', 'localStorage', 'location', 'HTMLElement',
-      'CustomEvent', 'Event', 'Node', 'getComputedStyle', 'URL', 'URLSearchParams']) {
-      if (w2[k] === undefined) continue;
-      try { Object.defineProperty(globalThis, k, { value: w2[k], configurable: true, writable: true }); } catch { /* ignore */ }
-    }
-    globalThis.window = w2;
-    await import('../assets/js/public.js');
-    let paperTxt = '';
-    for (let i = 0; i < 60; i++) {
-      await wait(100);
-      paperTxt = w2.document.getElementById('paper')?.textContent || '';
-      if (paperTxt.includes('總則')) break;
-    }
-    ok('團章公開頁顯示到後端最新版（以前只會 404）', paperTxt.includes('第一章') && paperTxt.includes('本團名為測試旅深資童軍團'), paperTxt.slice(0, 120));
-    ok('公開頁顯示版本號 v3.1', (w2.document.getElementById('app')?.textContent || '').includes('3.1'));
-  }
+  const compatibility = ['public.js', 'public-notice.js', 'public-entry.js', 'public-borrow.js'];
+  ok('舊頁 script 全部只轉向 members.html，沒有匿名 fetch',
+    compatibility.every(file => {
+      const source = fs.readFileSync(path.join(ROOT, 'assets/js', file), 'utf8');
+      return source.includes("new URL('./members.html'") && source.includes('location.replace')
+        && !source.includes('fetch(');
+    }));
 } catch (e) {
   fail++;
   console.log('  ✗ 測試流程爆咗：' + (e?.stack || e));

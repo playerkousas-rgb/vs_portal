@@ -11,6 +11,7 @@ import { registry } from './units.js';
 import { unifiedGasTemplate } from './unifiedtemplate.generated.js';
 import { download } from './exporter.js';
 import { toast, copyText, icon, esc, modal } from './util.js';
+import { newOperationId, uncertainWriteText } from './operations.js';
 
 export const APP_TYPE = '82venture';       // 中央收件匣用 appType 分辨來源（同 VSBADGE 共用收件匣）
 export const APP_NAME = '深資童軍管理系統';        // 全名，方便管理員喺 ADMIN 系統睇到係邊個 app
@@ -47,7 +48,7 @@ export function adminInbox() {
 }
 
 const EXEC_RE = /^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]{10,}\/exec\/?$/i;
-const ID_RE = /^[0-9A-Za-z_-]{1,32}$/;
+const ID_RE = /^[0-9A-Za-z][0-9A-Za-z_-]{0,31}$/;
 
 /**
  * 驗證申請內容。
@@ -110,13 +111,32 @@ async function postViaProxy(payload, action, timeoutMs) {
     let j = null;
     try { j = await r.json(); } catch (e) { j = null; }
     if (!j || typeof j !== 'object') {
-      /* 同源冇 /api（靜態部署）→ 話畀呼叫者知，改用直接 POST */
-      return { available: false, ms: Date.now() - t0 };
+      /* 只有明確 404（靜態部署冇 function）先等於未送；其他非 JSON
+         可能係 function 已轉發後逾時／崩潰，結果必須當 unknown。 */
+      if (r.status === 404) return { available: false, ok: false, outcome: 'not_sent', ms: Date.now() - t0 };
+      return { available: true, ok: false, outcome: 'unknown', mayHaveApplied: true, ms: Date.now() - t0,
+        errors: [`代理回應格式異常（HTTP ${r.status}）；未能確定 ADMIN 有冇收到`] };
     }
-    if (j.success !== false) return { available: true, ok: true, ms: Date.now() - t0 };
-    return { available: true, ok: false, ms: Date.now() - t0, errors: [j.error || '管理員收件匣話送唔到'] };
+    const explicit = [j.outcome, j.operation?.outcome]
+      .map(x => String(x || '').trim().toLowerCase())
+      .find(x => ['applied', 'not_applied', 'not_sent', 'unknown'].includes(x)) || '';
+    const success = r.ok && j.success !== false && j.ok !== false;
+    const outcome = explicit || (success ? 'applied' : (r.status >= 500 ? 'unknown' : 'not_applied'));
+    if (outcome === 'applied') {
+      return { available: true, ok: true, outcome, mayHaveApplied: true, ms: Date.now() - t0 };
+    }
+    return { available: true, ok: false, outcome,
+      mayHaveApplied: j.mayHaveApplied === true || outcome === 'unknown' || outcome === 'applied',
+      ms: Date.now() - t0,
+      errors: [j.error || (outcome === 'unknown'
+        ? '代理未能確定 ADMIN 有冇收到'
+        : '管理員收件匣話送唔到')] };
   } catch (e) {
-    return { available: false, ms: Date.now() - t0, errors: [e?.name === 'AbortError' ? '逾時' : (e?.message || String(e))] };
+    let staticFile = false;
+    try { staticFile = globalThis.location?.protocol === 'file:'; } catch { /* ignore */ }
+    if (staticFile) return { available: false, ok: false, outcome: 'not_sent', ms: Date.now() - t0 };
+    return { available: true, ok: false, outcome: 'unknown', mayHaveApplied: true, ms: Date.now() - t0,
+      errors: [e?.name === 'AbortError' ? '代理逾時；未能確定 ADMIN 有冇收到' : `${e?.message || String(e)}；未能確定 ADMIN 有冇收到`] };
   } finally { clearTimeout(timer); }
 }
 
@@ -135,21 +155,24 @@ async function postDirectToInbox(payload, timeoutMs) {
       signal: ctrl.signal
     });
     clearTimeout(timer);
-    return { ok: true, via: 'direct', receipt: false, ms: Date.now() - t0, payload };
+    /* no-cors 只證明瀏覽器已經嘗試送出，讀唔到 ADMIN 回應；不可聲稱已套用。 */
+    return { ok: false, via: 'direct', receipt: false, outcome: 'unknown', mayHaveApplied: true,
+      ms: Date.now() - t0, payload,
+      errors: ['直接送出冇回執；未能確定 ADMIN 有冇收到，系統唔會自動重送'] };
   } catch (e) {
     clearTimeout(timer);
     const aborted = e?.name === 'AbortError';
     return {
-      ok: false, via: 'direct', receipt: false, ms: Date.now() - t0,
-      errors: [aborted ? `提交逾時（${Math.round(timeoutMs / 1000)} 秒冇回應）` : (e?.message || String(e))],
+      ok: false, via: 'direct', receipt: false, outcome: 'unknown', mayHaveApplied: true, ms: Date.now() - t0,
+      errors: [aborted ? `提交逾時（${Math.round(timeoutMs / 1000)} 秒）；結果未知，系統冇重送` : `${e?.message || String(e)}；結果未知，系統冇重送`],
       payload
     };
   }
 }
 
 /**
- * 送出申請：先經同源 proxy，唔得就自己直接送多一次。
- * 兩條路都只可以確認「送出去咗」——收件匣唔回執（ADMIN 收到就 OK）。
+ * 送出申請：先經同源 proxy；只有明確 404／明確未套用先用直接後備。
+ * timeout／斷線／壞回應一律保留 operation ID 並停止，絕不自動重送。
  * @returns {{ok:boolean, via:'proxy'|'direct', receipt:boolean, ms:number, payload:object, errors?:string[]}}
  */
 export async function submitApplication(input = {}, timeoutMs = 20000) {
@@ -159,24 +182,27 @@ export async function submitApplication(input = {}, timeoutMs = 20000) {
   if (!box.configured) {
     return { ok: false, via: 'proxy', receipt: false, errors: ['未設定管理員收件匣（data/units.json → admin.submitUrl）'], payload: v.payload };
   }
+  const operationId = newOperationId('submitRegistration');
+  v.payload.operationId = operationId;
+  v.payload.operation_id = operationId;
   const viaProxy = await postViaProxy(v.payload, 'submitRegistration', timeoutMs);
   if (viaProxy.available && viaProxy.ok) {
-    return { ok: true, via: 'proxy', receipt: false, ms: viaProxy.ms, payload: v.payload };
+    return { ok: true, via: 'proxy', receipt: false, outcome: 'applied', operationId,
+      ms: viaProxy.ms, payload: v.payload };
   }
-  /* 伺服器路線送唔到（或者根本冇 /api/proxy）→ 自己直接送多一次，
-     寧願管理員收到兩次，都好過收唔到（兩條路都唔會有回執，App 只會話「已送出」）。 */
+  if (viaProxy.outcome === 'unknown') {
+    return { ok: false, via: 'proxy', receipt: false, outcome: 'unknown', mayHaveApplied: true,
+      operationId, ms: viaProxy.ms, payload: v.payload,
+      errors: [...(viaProxy.errors || []), uncertainWriteText(operationId)] };
+  }
+  /* 只喺代理明確不存在／明確未套用時用直接後備；timeout、斷線、壞回應
+     一律 unknown 並停止，唔會用第二條路製造重複申請。 */
   const direct = await postDirectToInbox(v.payload, timeoutMs);
-  if (direct.ok) {
-    return {
-      ...direct,
-      errors: viaProxy.available ? viaProxy.errors : undefined   /* 伺服器路線嘅錯誤，用嚟提示 */
-    };
-  }
   return {
-    ok: false, via: direct.via, receipt: false,
+    ...direct, operationId,
     ms: (viaProxy.ms || 0) + (direct.ms || 0),
-    payload: v.payload,
-    errors: [...(viaProxy.available ? (viaProxy.errors || []) : []), ...(direct.errors || [])]
+    errors: [...(viaProxy.available ? (viaProxy.errors || []) : []), ...(direct.errors || []),
+      ...(direct.outcome === 'unknown' ? [uncertainWriteText(operationId)] : [])]
   };
 }
 
@@ -193,6 +219,7 @@ export function applicationText(payload = {}) {
     `主系統網址：${p.mainSystemUrl || ''}`,
     `備註：${p.note || '（無）'}`,
     `送出時間：${p.at || ''}`,
+    `操作編號：${p.operationId || p.operation_id || '（未建立）'}`,
     `appType：${p.appType || APP_TYPE} · app：${p.appName || APP_NAME}`
   ].join('\n');
 }
@@ -280,7 +307,7 @@ export function validateIssue(input = {}) {
   return { ok: errors.length === 0, errors, payload };
 }
 
-/** 送出求救報告 —— 同 submitApplication 一模一樣（先 proxy 後 direct）。 */
+/** 送出求救報告 —— 同 submitApplication 一樣；不會在未知結果後自動改路重送。 */
 export async function submitIssue(input = {}, timeoutMs = 20000) {
   const v = validateIssue(input);
   if (!v.ok) return { ok: false, via: 'proxy', receipt: false, errors: v.errors, payload: v.payload };
@@ -288,22 +315,25 @@ export async function submitIssue(input = {}, timeoutMs = 20000) {
   if (!box.configured) {
     return { ok: false, via: 'proxy', receipt: false, errors: ['未設定管理員收件匣（data/units.json → admin.submitUrl）'], payload: v.payload };
   }
+  const operationId = newOperationId('submitIssue');
+  v.payload.operationId = operationId;
+  v.payload.operation_id = operationId;
   const viaProxy = await postViaProxy(v.payload, 'submitIssue', timeoutMs);
   if (viaProxy.available && viaProxy.ok) {
-    return { ok: true, via: 'proxy', receipt: false, ms: viaProxy.ms, payload: v.payload };
+    return { ok: true, via: 'proxy', receipt: false, outcome: 'applied', operationId,
+      ms: viaProxy.ms, payload: v.payload };
+  }
+  if (viaProxy.outcome === 'unknown') {
+    return { ok: false, via: 'proxy', receipt: false, outcome: 'unknown', mayHaveApplied: true,
+      operationId, ms: viaProxy.ms, payload: v.payload,
+      errors: [...(viaProxy.errors || []), uncertainWriteText(operationId)] };
   }
   const direct = await postDirectToInbox(v.payload, timeoutMs);
-  if (direct.ok) {
-    return {
-      ...direct,
-      errors: viaProxy.available ? viaProxy.errors : undefined
-    };
-  }
   return {
-    ok: false, via: direct.via, receipt: false,
+    ...direct, operationId,
     ms: (viaProxy.ms || 0) + (direct.ms || 0),
-    payload: v.payload,
-    errors: [...(viaProxy.available ? (viaProxy.errors || []) : []), ...(direct.errors || [])]
+    errors: [...(viaProxy.available ? (viaProxy.errors || []) : []), ...(direct.errors || []),
+      ...(direct.outcome === 'unknown' ? [uncertainWriteText(operationId)] : [])]
   };
 }
 
@@ -320,7 +350,8 @@ export function issueText(payload = {}) {
     '問題詳情：',
     p.desc || '',
     '',
-    `送出時間：${p.at || ''}`
+    `送出時間：${p.at || ''}`,
+    `操作編號：${p.operationId || p.operation_id || '（未建立）'}`
   ].join('\n');
 }
 
@@ -339,7 +370,7 @@ export async function openMemberSOS(who = {}) {
     title: '求救 —— 回報問題',
     wide: true,
     sub: '寫低閣下遇到嘅問題，我哋會經 ADMIN 收到＋轉寄返畀你 Email 跟進',
-    body: `
+    trustedBodyHtml: `
       <div class="note-box mb-12">${icon('alert', 15)}<div>
         SEND 出去嘅嘢＝下面你填嘅嘢＋旅團編號／回報人／Email（幫 ADMIN 知邊個回報）：
         <div class="xs mono mt-4">旅團編號：${esc(unit || '（未揀）')}${name ? ` · 回報人：${esc(name)}` : ''}${contact ? ` · Email：${esc(contact)}` : ''}</div>
@@ -398,7 +429,7 @@ export async function openMemberSOS(who = {}) {
     await modal({
       title: '已送出畀 ADMIN',
       sub: `${res.payload.title} · ${res.payload.severity || '高'} · ${res.via === 'proxy' ? '經伺服器轉發' : '直接送出'}${res.ms != null ? ` · ${res.ms} ms` : ''}`,
-      body: `
+      trustedBodyHtml: `
         <div class="note-box info mb-12">${icon('check', 15)}<div>
           你份問題回報已經入咗<b>ADMIN「問題回報」看板</b>。<br>
           <span class="xs">ADMIN 收到會登記跟進，再轉寄去你 Email。佢唔會即時覆你。</span>
@@ -407,23 +438,26 @@ export async function openMemberSOS(who = {}) {
     });
     return true;
   }
-  /* 送唔到：留返段字喺手，可複製 WhatsApp／電郵畀管理員 */
+  /* 未確認結果保留操作編號，唔提供盲目重送；明確 not_applied 先可重試。 */
   const { copyText } = await import('./util.js');
-  const sig = (res.errors || []).join(' · ') || '送出失敗';
-  toast(sig, 'err');
+  const unknown = res.outcome === 'unknown' || res.mayHaveApplied === true;
+  const sig = (res.errors || []).join(' · ') || (unknown ? '送出結果未知' : '送出失敗');
+  toast(sig, unknown ? 'warn' : 'err');
   const action = await modal({
-    title: '送唔到去 ADMIN',
+    title: unknown ? '求救報告送出結果未知' : '送唔到去 ADMIN',
     wide: true,
-    sub: res.via === 'proxy' ? '（經伺服器轉發時失敗）' : '（直接送出時失敗）',
-    body: `
-      <div class="note-box danger mb-12">${icon('alert', 15)}<div>
+    sub: `${res.via === 'proxy' ? '（經伺服器轉發）' : '（直接送出）'}${res.operationId ? ` · 操作 ${res.operationId}` : ''}`,
+    trustedBodyHtml: `
+      <div class="note-box ${unknown ? 'warn' : 'danger'} mb-12">${icon('alert', 15)}<div>
         <b>${esc(sig)}</b><br>
-        <span class="xs">你打嗰啲嘢仲喺下面 —— 複製落嚟，WhatsApp／電郵畀平台管理員都一樣跟進。</span>
+        <span class="xs">${unknown
+          ? '可能未送到，亦可能 ADMIN 已經收到。系統冇自動重送；未核對操作編號之前唔好再送同一份報告。請複製下面內容聯絡管理員查證。'
+          : '你打嗰啲嘢仲喺下面 —— 複製落嚟，WhatsApp／電郵畀平台管理員都一樣跟進。'}</span>
       </div></div>
       <textarea class="input mono" rows="8" readonly style="font-size:12px">${esc(issueText(res.payload))}</textarea>`,
     actions: [
       { label: '關閉', class: 'btn', value: null },
-      { label: '再試一次', class: 'btn', value: 'retry' },
+      ...(!unknown ? [{ label: '再試一次', class: 'btn', value: 'retry' }] : []),
       { label: '複製報告內容', class: 'btn-primary', value: 'copy' }
     ]
   });

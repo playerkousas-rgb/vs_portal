@@ -16,6 +16,7 @@
    ============================================================ */
 
 import { load, commit, add, audit, currentUnit, switchUnit } from '../lib/store.js';
+import { canonicalRole } from '../lib/branch-config.js';
 import { ROLES, accounts, can, changeOwnPassword, currentRole, isSuper, displayName } from '../lib/auth.js';
 import { profile, settings, members } from '../lib/model.js';
 import * as fiscalLib from '../lib/fiscal.js';
@@ -23,22 +24,11 @@ import { unitList, isLocalUnit, saveLocalUnit, removeLocalUnit, loadRegistry, re
 import { envUnitTemplate } from '../lib/onboard.js';
 import { esc, icon, modal, confirmDlg, toast, copyText } from '../lib/util.js';
 import { go } from '../lib/router.js';
-import { pageHead, tabs, empty, kv, stat, noteBox } from './ui.js';
-import { renderPublicLinksEditor, mountPublicLinksEditor } from './public-links-editor.js';
+import { pageHead, tabs, empty, kvHtml, stat, noteBoxHtml } from './ui.js';
 
 let tab = 'unit';
 
 export function title() { return '系統'; }
-
-/** 舊「團員睇到嘅公開連結」6 個槽已經自動搬入公開資料 —— 話聲領袖知 */
-function legacyTroopLinksNote() {
-  const L = settings()?.troopLinks || {};
-  const n = Object.values(L).filter(v => String(v || '').trim()).length;
-  if (!n) return '';
-  return noteBox(`<b>舊嗰 ${n} 條「團員睇到嘅公開連結」已經自動搬咗落下面。</b>
-    以後統一喺「公開資料」一欄度改（每一項仲可以設「邊個睇到」）。
-    去<b>側邊欄「公開資料」</b>可以一眼睇晒而家公開緊啲乜。`);
-}
 
 export function render(params) {
   /* ★ 2026-09-24 團長：
@@ -87,25 +77,13 @@ function unitView() {
             <div class="field"><label class="label">主辦機構</label><input class="input" id="u-sponsor" value="${esc(p.sponsor || '')}"></div>
             <div class="field" style="grid-column:1/-1"><label class="label">團址</label><input class="input" id="u-address" value="${esc(p.address || '')}"></div>
             <div class="field"><label class="label">主色（棗紅）</label><input class="input" id="u-color" value="${esc(p.theme?.brand700 || '#7B2233')}"></div>
-            <div class="field"><label class="label">年度團費</label><input class="input" id="u-fee" type="number" value="${s.feePerYear || 360}"></div>
-            <div class="field"><label class="label">公開網址基底（可選）</label><input class="input" id="u-public" value="${esc(s.publicBaseUrl || '')}" placeholder="https://…/constitution.html?u={u}"></div>
+            <div class="field"><label class="label">年度團費</label><input class="input" id="u-fee" type="number" value="${esc(s.feePerYear || 360)}"></div>
             <div class="field" style="grid-column:1/-1"><label class="label">單據相片 Drive 資料夾（同「財務 → 設定」同步）</label>
               <input class="input" id="u-receipt" value="${esc(s.receiptDrive || '')}" placeholder="https://drive.google.com/drive/folders/…">
-              <div class="hint mt-4">申報相片會存入呢個資料夾（唔係上面「團員睇到嘅公開連結」嗰個旅團 Drive —— 兩樣嘢）。留空＝用後端預設。</div></div>
+              <div class="hint mt-4">申報相片會存入呢個資料夾（只供後端保存單據，唔會向未登入訪客公開）。留空＝用後端預設。</div></div>
           </div>
           <div id="u-err" class="err mt-8"></div>
           <button class="btn btn-primary mt-16" data-act="save-unit" ${can('admin.units') ? '' : 'disabled'}>${icon('save', 16)} 儲存旅團資料</button>
-        </div>
-      </div>
-
-      ${legacyTroopLinksNote()}
-
-      <div class="card">
-        <div class="card-head"><div><div class="card-title">公開資料（填嘢嘅位）</div>
-          <div class="card-sub">旅團網站、關於我團、社交媒體、相簿、其他連結 —— 每項可以設「邊個睇到」</div></div>
-          <button class="btn btn-sm" data-go="#/links">${icon('globe', 14)} 去睇一覽表</button></div>
-        <div style="padding:16px 18px">
-          ${renderPublicLinksEditor()}
         </div>
       </div>
 
@@ -127,7 +105,7 @@ function unitView() {
         </div>
         <div style="padding:14px 16px;border-top:1px solid var(--line-2)">
           ${isSuper()
-            ? `${noteBox('<b>想開新旅團？</b>（只限超級管理員）最快嘅方法 B：喺 Vercel 加 5 個 '
+            ? `${noteBoxHtml('<b>想開新旅團？</b>（只限超級管理員）最快嘅方法 B：喺 Vercel 加 5 個 '
                 + '<code>TROOP_&lt;編號&gt;_*</code> 環境變數 → Redeploy，唔使改 Git。'
                 + '（方法 A：喺 <code>data/units.json</code> ＋ <code>data/units/&lt;編號&gt;/</code> 加檔案，可以預載資料。）', 'info')}
               <div class="row gap-8 wrap mt-12">
@@ -144,7 +122,7 @@ function unitView() {
       <div class="card">
         <div class="card-head"><div class="card-title">資料來源</div></div>
         <div style="padding:16px 18px">
-          ${kv([
+          ${kvHtml([
             ['目前旅團', esc(currentUnit())],
             ['資料檔', `<span class="mono xs">${esc(load().meta?.seedSource || '')}</span>`],
             ['儲存位置', `<span class="mono xs">venture82.unit.${esc(currentUnit())}.db.v2</span>`],
@@ -160,7 +138,7 @@ function auditView() {
   /* ★ 2026-09-24 團長：「操作紀錄不顯示超級管理員的紀錄」。
      超管係平台層（品牌通行帳號），唔屬於旅團團務 —— 佢嘅操作唔應該出現喺旅團嘅紀錄入面。
      舊紀錄冇 role 欄，就用操作者名兜底（超管帳號固定叫 sheep）。 */
-  const logs = (load().auditLog || []).filter(l => l?.role !== 'super' && String(l?.by || '').toLowerCase() !== 'sheep');
+  const logs = (load().auditLog || []).filter(l => canonicalRole(l?.role) !== 'super' && String(l?.by || '').toLowerCase() !== 'sheep');
   const hidden = (load().auditLog || []).length - logs.length;
   return `
   <div class="card">
@@ -181,11 +159,6 @@ function auditView() {
 export function mount(root) {
   root.querySelectorAll('[data-go]').forEach(el => el.addEventListener('click', () => go(el.dataset.go)));
 
-  /* 公開資料**填嘢嘅位**（社交媒體／相簿／網站／關於我團／其他連結）。
-     ★ 團長 2026-09-24：「公開資料其實唔係要填嘢嘅，係方便了解有乜嘢而家正喺度公開」
-     —— 所以填嘢放喺「旅團設定」，睇嘢（只讀一覽表）喺側邊欄「公開資料」。 */
-  mountPublicLinksEditor(root);
-
   root.querySelectorAll('[data-act]').forEach(b => b.addEventListener('click', async () => {
     const act = b.dataset.act;
 
@@ -199,7 +172,7 @@ export function mount(root) {
       p.theme = { ...(p.theme || {}), brand700: v('#u-color') };
       const db = load();
       db.unit = p;
-      db.settings = { ...db.settings, feePerYear: Number(v('#u-fee')) || 360, publicBaseUrl: v('#u-public'), receiptDrive: v('#u-receipt').trim() };
+      db.settings = { ...db.settings, feePerYear: Number(v('#u-fee')) || 360, receiptDrive: v('#u-receipt').trim() };
       /* 年度團費：同時寫入逐年 map（本年度）—— 財務「設定」頁逐年度表用同一份 */
       try {
         const { scoutFYLabel } = fiscalLib;
@@ -213,7 +186,7 @@ export function mount(root) {
       if (!isSuper()) { toast('只有超級管理員可以開新旅團（要改 Vercel 設定）', 'err'); return; }
       const r = await modal({
         title: '產生環境變數（開新旅團）', sub: '方法 B：唔使改 Git，貼落 Vercel 就得',
-        body: `<div class="grid g-2" style="gap:12px">
+        trustedBodyHtml: `<div class="grid g-2" style="gap:12px">
             <div class="field"><label class="label">旅團編號</label><input class="input" id="q-code" placeholder="0081"></div>
             <div class="field"><label class="label">旅團名稱</label><input class="input" id="q-name" placeholder="第八十一旅深資童軍團"></div>
             <div class="field" style="grid-column:1/-1"><label class="label">/exec 網址</label><input class="input" id="q-exec" placeholder="https://script.google.com/macros/s/AKfy…/exec"></div>
@@ -239,7 +212,7 @@ export function mount(root) {
     if (act === 'add-local-unit') {
       const r = await modal({
         title: '新增本地旅團（測試用）', sub: '只存喺呢部機，唔會寫入 data/ 檔案',
-        body: `<div class="grid g-2" style="gap:12px">
+        trustedBodyHtml: `<div class="grid g-2" style="gap:12px">
             <div class="field"><label class="label">旅團編號</label><input class="input" id="q-code" placeholder="例：0099"></div>
             <div class="field"><label class="label">名稱</label><input class="input" id="q-name" placeholder="例：第 99 旅深資童軍團"></div>
           </div>`,
@@ -272,7 +245,7 @@ export function mount(root) {
 export async function ownPasswordForm() {
   const r = await modal({
     title: '更改我嘅密碼',
-    body: `<div class="field"><label class="label">目前密碼 <span class="req">*</span></label>
+    trustedBodyHtml: `<div class="field"><label class="label">目前密碼 <span class="req">*</span></label>
         <input class="input" id="q-old" type="password"></div>
       <div class="field mt-12"><label class="label">新密碼 <span class="req">*</span></label>
         <input class="input" id="q-p1" type="password" autocomplete="new-password"></div>

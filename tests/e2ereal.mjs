@@ -65,8 +65,12 @@ const waitPort = async (port, ms = 10000) => {
 
 const GAS_PORT = await freePort();
 const WEB_PORT = await freePort();
+const UNIFIED_GAS_PORT = await freePort();
+const UNIFIED_WEB_PORT = await freePort();
 const BASE = `http://127.0.0.1:${WEB_PORT}`;
 const REAL_EXEC = `http://127.0.0.1:${GAS_PORT}/exec`;
+const UNIFIED_BASE = `http://127.0.0.1:${UNIFIED_WEB_PORT}`;
+const UNIFIED_EXEC = `http://127.0.0.1:${UNIFIED_GAS_PORT}/exec`;
 
 const procs = [];
 const spawnBg = (args, env = {}) => {
@@ -76,8 +80,8 @@ const spawnBg = (args, env = {}) => {
 };
 process.on('exit', () => procs.forEach(p => { try { p.kill('SIGKILL'); } catch { /* ignore */ } }));
 
-const runDevice = (plan) => new Promise((resolve) => {
-  const p = spawn(process.execPath, [path.join(ROOT, 'tests', '_device.mjs'), BASE, JSON.stringify(plan)],
+const runDevice = (plan, base = BASE) => new Promise((resolve) => {
+  const p = spawn(process.execPath, [path.join(ROOT, 'tests', '_device.mjs'), base, JSON.stringify(plan)],
     { cwd: ROOT, env: { ...process.env }, stdio: ['ignore', 'pipe', 'pipe'] });
   let buf = '', err = '';
   p.stdout.on('data', d => { buf += d; });
@@ -540,35 +544,65 @@ section('⑨ ★ 搶救：後端讀唔到 → 修復 → 新裝置讀到（真 C
     JSON.stringify({ v: info.versions, staging: info.stagingRows, stale: info.staleRows }));
 }
 
-section('多人驗收：新建個人身份 → 專用 server 密碼 action → 新裝置登入 → 第二人寫入');
+section('多人驗收：真 Unified Users 開戶 → 新裝置登入 → 第二人寫入同一 Sheet');
 {
+  /* 帳戶權威已移到完整 UnifiedCode.gs 的 pinned Users；舊 Code.gs 只留行政
+     compatibility，不能拿來假裝測 authOpenAccounts。另起真 Unified VM，仍經同一
+     dev-server /api/proxy 和真前端，避免測試把第二套 Portal identity 當成功。 */
+  spawnBg([path.join(ROOT, 'tests', '_realgas.mjs'), String(UNIFIED_GAS_PORT)], {
+    REALGAS_APIKEY: KEY, REALGAS_UNIFIED: '1'
+  });
+  spawnBg([path.join(ROOT, 'dev-server.mjs')], {
+    PORT: String(UNIFIED_WEB_PORT),
+    V82_PROXY_TEST: '1',
+    TROOP_0082_BACKEND: UNIFIED_EXEC,
+    TROOP_0082_APIKEY: KEY,
+    SUPER_KEY: SUPER_PASSWORD
+  });
+  ok('真 UnifiedCode.gs 帳戶後端已啟動',
+    (await waitPort(UNIFIED_GAS_PORT)) && (await waitPort(UNIFIED_WEB_PORT)));
+
   const A = await runDevice({ steps: [
     { op: 'load' },
-    { op: 'addStaff', name: '甲領袖', email: 'leader-a@example.com' },
+    { op: 'wipe' },
+    { op: 'addMember', name: '原有團員', ymis: '2026000101' },
+    { op: 'addMember', name: '搶救後加入', ymis: '2026000102' },
+    { op: 'push' },
+    { op: 'login', login: 'admin@example.com', pw: 'changeme' },
+    { op: 'addStaff', name: '甲領袖', email: 'leader-a@example.com', ymis: '2026000103', identity: 'leader' },
+    /* 開戶不得暗中代用戶寫名冊：先明確 push + readback，再 server-first 開戶。 */
+    { op: 'push' },
     { op: 'setHubPw', id: '@last', pw: 'test-pw-a' },
+    { op: 'login', login: 'leader-a@example.com', pw: 'test-pw-a' },
     { op: 'push' }
-  ] });
-  ok('甲建立帳號、設定密碼、頂部儲存到真 Sheet',
-    step(A, 'setHubPw').ok && step(A, 'push').ok, JSON.stringify(A.steps).slice(0, 500));
+  ] }, UNIFIED_BASE);
+  ok('甲由支部 admin 開戶，未經第二套 identity 即可登入並保持同步',
+    step(A, 'setHubPw').ok && (A.steps || []).filter(x => x.op === 'login').at(-1)?.ok
+      && step(A, 'push').ok,
+    JSON.stringify(A.steps).slice(0, 700));
   const B = await runDevice({ steps: [
     { op: 'login', login: 'leader-a@example.com', pw: 'test-pw-a' },
     { op: 'load' },
-    { op: 'addStaff', name: '乙執委', email: 'leader-b@example.com', identity: 'exco' },
+    { op: 'addStaff', name: '乙執委', email: 'leader-b@example.com', ymis: '2026000104', identity: 'exco' },
+    { op: 'push' },
     { op: 'setHubPw', id: '@last', pw: 'test-pw-b' },
     { op: 'push' }
-  ] });
-  ok('全新裝置乙用甲的帳號經真後端登入', step(B, 'login').ok && step(B, 'login').gateOk,
+  ] }, UNIFIED_BASE);
+  ok('全新裝置乙用甲的 Unified Users 帳號經真後端登入', step(B, 'login').ok && step(B, 'login').gateOk,
     JSON.stringify(step(B, 'login')));
-  ok('乙讀到甲的資料，按層級建立較低權限執委並以專用 action 設密碼',
+  ok('甲讀到同一 Sheet，按層級直接開立較低權限執委帳戶',
     step(B, 'load').members === 3 && step(B, 'setHubPw').ok && step(B, 'push').ok,
-    JSON.stringify(B.steps).slice(0, 500));
+    JSON.stringify(B.steps).slice(0, 700));
   const C = await runDevice({ steps: [
     { op: 'login', login: 'leader-b@example.com', pw: 'test-pw-b' },
     { op: 'load' }
-  ] });
-  ok('第三部全新裝置以乙的獨立執委身份可登入，讀到四人資料',
-    step(C, 'login').ok && step(C, 'load').members === 4,
-    JSON.stringify(C.steps).slice(0, 500));
+  ] }, UNIFIED_BASE);
+  const cLoad = step(C, 'load');
+  ok('第三部全新裝置以乙執委身份登入，只收到本人＋較低身份安全投影',
+    step(C, 'login').ok && cLoad.members === 3
+      && cLoad.names.includes('乙執委') && cLoad.names.includes('原有團員')
+      && cLoad.names.includes('搶救後加入') && !cLoad.names.includes('甲領袖'),
+    JSON.stringify(C.steps).slice(0, 700));
 }
 
 console.log(`\n${fail ? '❌' : '✅'} 端到端（真 Code.gs）：${pass} 過 / ${fail} 唔過（${Date.now() - START}ms）`);

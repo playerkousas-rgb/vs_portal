@@ -17,15 +17,17 @@
    ============================================================ */
 import { loadRegistry, defaultUnitCode } from './lib/units.js';
 import { init, load, getSession, setSession } from './lib/store.js';
-import { profile, publicEvents, RSVP, quizzes, activeMembers, publicPageUrl, troopPublicLinks, identityOf, IDENTITIES } from './lib/model.js';
-import { publicProfile, visibleTo, socialName, socialIcon, contentVis } from './lib/public-profile.js';
+import { profile, publicEvents, RSVP, quizzes, activeMembers, troopPublicLinks, identityOf, IDENTITIES } from './lib/model.js';
+import { visibleTo, contentVis } from './lib/content-visibility.js';
 import { loadMe, saveMe } from './lib/member-me.js';
 import { loadHubAuth, saveHubAuth, clearHubAuth } from './lib/hub-session.js';
 import { beFromQuery } from './lib/gateway.js';
 import { loginMember, changeMemberOwnPassword, TEMP_PASSWORD } from './lib/auth.js';
 import { progressConfigured, loadMyProgress, loadItems, flattenItems, memberDetail, submitProgressRequest } from './lib/progress.js';
 import { absencesOf, allAbsences, ABSENCE_STATUS, ABSENCE_SLOTS, absenceCounts } from './lib/absence.js';
-import { esc, icon, toast, todayISO, modal, confirmDlg, closeAllModals, uid } from './lib/util.js';
+import { esc, icon, toast, todayISO, modal, confirmDlg, closeAllModals, uid, safeHref } from './lib/util.js';
+import { uncertainWriteText, finishOperation } from './lib/operations.js';
+import { boundedPercent } from './views/ui.js';
 
 const app = document.getElementById('app');
 let syncReady = false;      /* 後端路由準備好（已有 session 就完成安全投影核實）先畀登入 */
@@ -36,20 +38,90 @@ let syncError = '';
 /* 團員入口嘅 remote 模組引用（syncBoot 入面 assign）。
    rsvp()／submitQuiz() 要用佢 —— 見 pushSubmit() 註解。 */
 let hubRemote = null;
-/* 本人 mutation 唔再先改本機：pending／失敗都有明確狀態，失敗可原封重試。
+/* 本人 mutation 唔再先改本機：pending／確定未套用／結果未知分開顯示。
+   只有 not_applied 才可原封重試；unknown 會鎖住並核對後端投影，絕不盲目重送。
    成功回應帶 server projection，remote 採用後先重畫，所以毋須「估」回滾。 */
-let hubSubmitState = { pending: false, retry: null };
+let hubSubmitState = { pending: false, retry: null, unknown: null };
+const HUB_UNCERTAIN_KEY = 'venture82.hub-uncertain.v1';
+
+function hubUncertainMap() {
+  try {
+    const value = JSON.parse(localStorage.getItem(HUB_UNCERTAIN_KEY) || '{}');
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  } catch { return {}; }
+}
+function hubActorKey(auth = loadHubAuth(code())) {
+  const subject = String(auth?.id || auth?.ymis || '').trim();
+  return subject ? `${code()}:${subject}` : '';
+}
+function rememberHubUnknown(value, auth = loadHubAuth(code())) {
+  const key = hubActorKey(auth);
+  if (!key) return;
+  try { localStorage.setItem(HUB_UNCERTAIN_KEY, JSON.stringify({ ...hubUncertainMap(), [key]: value })); } catch { /* memory state still locks this page */ }
+}
+function clearRememberedHubUnknown(auth = loadHubAuth(code())) {
+  const key = hubActorKey(auth);
+  if (!key) return;
+  try {
+    const map = hubUncertainMap();
+    delete map[key];
+    localStorage.setItem(HUB_UNCERTAIN_KEY, JSON.stringify(map));
+  } catch { /* ignore */ }
+}
+function restoreRememberedHubUnknown(auth = loadHubAuth(code())) {
+  const key = hubActorKey(auth);
+  const value = key ? hubUncertainMap()[key] : null;
+  return value && value.operationId && value.kind && value.payload
+    ? { pending: false, retry: null, unknown: value }
+    : { pending: false, retry: null, unknown: null };
+}
 
 function hubSubmitBanner() {
   if (hubSubmitState.pending) {
     return `<div class="note-box info mb-12" id="hubSubmitState">${icon('cloud', 14)}<div><b>${esc(hubSubmitState.pending)}送出中…</b><div class="xs mt-4">請勿關閉頁面。</div></div></div>`;
   }
+  const unknown = hubSubmitState.unknown;
+  if (unknown) return `<div class="note-box warn mb-12" id="hubSubmitState">${icon('alert', 14)}<div class="grow">
+    <b>${esc(unknown.what)}結果未知，已鎖住重送</b>
+    <div class="xs mt-4">${esc(uncertainWriteText(unknown.operationId))}</div>
+    <button class="btn btn-xs mt-8" id="hubCheckSubmit" type="button">重新載入本人資料核對</button>
+  </div></div>`;
   const retry = hubSubmitState.retry;
   if (!retry) return '';
   return `<div class="note-box danger mb-12" id="hubSubmitState">${icon('alert', 14)}<div class="grow">
-    <b>${esc(retry.what)}未送到</b><div class="xs mt-4">${esc(retry.error || '網絡或後端暫時失敗')}。本機畫面未當作成功；可以安全重試。</div>
+    <b>${esc(retry.what)}確定未送到</b><div class="xs mt-4">${esc(retry.error || '後端拒絕請求')}。本機畫面未當作成功；可以安全重試。</div>
     <button class="btn btn-xs btn-danger mt-8" id="hubRetrySubmit" type="button">重新送出</button>
   </div></div>`;
+}
+
+function hubMutationVisible(kind, payload = {}) {
+  const db = load();
+  const memberId = String((db.members || [])[0]?.id || '');
+  if (kind === 'rsvp') {
+    const mine = (db.events || []).find(row => String(row.id || '') === String(payload.eventId || ''))?.rsvp?.[memberId];
+    return !!mine && String(mine.status || '') === String(payload.status || '')
+      && String(mine.time || '') === String(payload.time || '')
+      && String(mine.reason || '') === String(payload.reason || '');
+  }
+  if (kind === 'quiz') {
+    const answers = (db.quizzes || []).find(row => String(row.id || '') === String(payload.quizId || ''))?.responses?.[memberId]?.answers;
+    if (!answers || typeof answers !== 'object') return false;
+    return Object.entries(payload.answers || {}).every(([key, value]) => JSON.stringify(answers[key] ?? '') === JSON.stringify(value ?? ''));
+  }
+  if (kind === 'notice') {
+    const signup = (db.notices || []).find(row => String(row.id || '') === String(payload.noticeId || ''))?.mySignup;
+    if (!signup?.answers || typeof signup.answers !== 'object') return false;
+    return Object.entries(payload.answers || {}).every(([key, value]) => JSON.stringify(signup.answers[key] ?? '') === JSON.stringify(value ?? ''));
+  }
+  if (kind === 'absence') {
+    const row = (db.absences || []).find(item => String(item.id || '') === String(payload.id || ''));
+    if (payload.op === 'withdraw') return !row;
+    return !!row && String(row.date || '') === String(payload.date || '')
+      && String(row.slot || '') === String(payload.slot || '')
+      && String(row.reason || '') === String(payload.reason || '')
+      && String(row.plan || '') === String(payload.plan || '');
+  }
+  return false;
 }
 
 /**
@@ -58,22 +130,36 @@ function hubSubmitBanner() {
  * 團員交嘅嘢係**入站資料**：呢部機係團員嘅，佢交完就關，永遠唔會有人喺佢部機
  * 撳「儲存到後端」。如果暫存住，份回覆就永遠困喺團員部機 —— 等如冇交過。
  *
- * 所以入站提交即刻走 hubRsvp／hubQuiz／hubAbsence：GAS 由 opaque session 對回本人，
+ * 所以入站提交即刻走 hubRsvp／hubQuiz／hubNoticeSignup／hubAbsence：GAS 由 opaque session 對回本人，
  * 完全唔採用 client memberId／role，只改本人嗰格。寫完回本人安全投影，唔會下載、
  * 亦唔會上傳整份行政資料庫。
  */
 async function pushSubmit(what, kind, payload) {
   if (hubSubmitState.pending) return { ok: false, error: '上一項仍在送出' };
+  if (hubSubmitState.unknown) {
+    toast('上一項結果仍然未知；請先重新載入核對，系統冇重送', 'warn');
+    return { ok: false, outcome: 'unknown', error: '上一項結果仍然未知' };
+  }
   const fail = (error) => {
-    hubSubmitState = { pending: false, retry: { what, kind, payload: JSON.parse(JSON.stringify(payload || {})), error: String(error || '未知錯誤') } };
+    hubSubmitState = { pending: false, unknown: null,
+      retry: { what, kind, payload: JSON.parse(JSON.stringify(payload || {})), error: String(error || '未知錯誤') } };
     paint();
-    toast(`${what}未送到後端 —— 請按「重新送出」`, 'warn');
-    return { ok: false, error: String(error || '未知錯誤') };
+    toast(`${what}確定未送到後端 —— 可以按「重新送出」`, 'warn');
+    return { ok: false, outcome: 'not_applied', error: String(error || '未知錯誤') };
+  };
+  const unknown = (result = {}) => {
+    const operationId = String(result.operationId || result.operation_id || result.operation?.id || '');
+    hubSubmitState = { pending: false, retry: null,
+      unknown: { what, kind, payload: JSON.parse(JSON.stringify(payload || {})), operationId, error: String(result.error || '') } };
+    rememberHubUnknown(hubSubmitState.unknown);
+    paint();
+    toast(`${what}結果未知；操作 ${operationId || '未提供'}。系統冇重送。`, 'warn');
+    return { ...result, ok: false, outcome: 'unknown', mayHaveApplied: true, operationId };
   };
   if (!hubRemote?.remoteConfigured?.()) return fail('旅團後端未設定');
   const auth = loadHubAuth(code());
   if (!auth?.sessionToken) return fail('登入狀態已失效，請重新登入');
-  hubSubmitState = { pending: what, retry: null };
+  hubSubmitState = { pending: what, retry: null, unknown: null };
   paint();
   try {
     const options = { sessionToken: auth.sessionToken };
@@ -81,15 +167,23 @@ async function pushSubmit(what, kind, payload) {
       ? await hubRemote.saveHubRsvp(payload, options)
       : kind === 'quiz'
         ? await hubRemote.saveHubQuiz(payload, options)
-        : await hubRemote.saveHubAbsence(payload, options);
-    if (!r?.ok) return fail(r?.error || '後端拒絕請求');
-    /* 後端回嘅係寫完之後嘅本人安全投影；remote 已採用後先當成功。 */
-    hubSubmitState = { pending: false, retry: null };
+        : kind === 'notice'
+          ? await hubRemote.saveHubNoticeSignup(payload, options)
+          : await hubRemote.saveHubAbsence(payload, options);
+    const outcome = String(r?.outcome || r?.operation?.outcome || '').toLowerCase();
+    if (outcome === 'unknown' || outcome === 'processing') return unknown(r);
+    if (outcome === 'not_applied' || outcome === 'not_sent') return fail(r?.error || '後端拒絕請求');
+    if (outcome !== 'applied' && r?.mayHaveApplied === true) return unknown(r);
+    if (outcome !== 'applied' && !r?.ok) return fail(r?.error || '後端拒絕請求');
+    /* 明確 applied 優先過 transport envelope。後端回嘅係寫完之後嘅本人
+       安全投影；remote 採用後先當成功。 */
+    hubSubmitState = { pending: false, retry: null, unknown: null };
+    clearRememberedHubUnknown(auth);
     paint();
     toast(`${what}已送出`, 'ok');
     return r;
   } catch (e) {
-    return fail(e?.message || '網絡錯誤');
+    return unknown({ error: e?.message || '網絡錯誤' });
   }
 }
 
@@ -112,6 +206,9 @@ async function boot() {
      ?be= 經 Apps Script /exec 白名單後只作 routing，令未登記旅團的自助連結
      都可登入；安全空殼不會為取得路由而讀完整靜態行政 seed。 */
   await init({ mode: 'hub', scope: 'hub', unit: code, backendUrl: beFromQuery() });
+  /* 未確認寫入跨 reload 保持鎖住；否則 timeout 後重新整理就會產生新
+     operation ID，使用者一撳便可能重複交 RSVP／答卷／請假。 */
+  hubSubmitState = restoreRememberedHubUnknown(loadHubAuth(code));
   app.innerHTML = '<div class="hub-wrap" style="padding-top:32px"><div class="card card-pad muted">正在連接旅團後端…</div></div>';
   await syncBoot();
 }
@@ -124,7 +221,7 @@ async function syncBoot() {
     const store = await import('./lib/store.js');
     store.setSaveHook(null);       // 團員寫入走 hubRsvp/hubQuiz/hubAbsence，唔走整庫同步
     if (!hubRemote.remoteConfigured?.()) {
-      syncError = '呢個網址冇帶旅團編號，或者未接後端 —— 請用系統「公開資料」頁生成嘅連結。';
+      syncError = '呢個網址冇帶旅團編號，或者未接後端 —— 請用系統「團員入口」頁重新產生登入連結。';
     } else {
       const auth = loadHubAuth(code());
       if (auth?.sessionToken) {
@@ -132,6 +229,11 @@ async function syncBoot() {
         if (!rc?.ok) {
           clearHubIdentity(auth);
           syncError = rc?.error || '登入狀態已失效，請重新登入';
+        } else {
+          const canonical = canonicalHubAuth(auth);
+          if (canonical?.id !== auth.id || canonical?.identity !== auth.identity || canonical?.name !== auth.name) {
+            saveHubAuth(code(), canonical);
+          }
         }
       }
       window.addEventListener('v82:sync', paintSyncBadge);
@@ -147,6 +249,25 @@ async function syncBoot() {
 }
 
 function code() { return load().unitCode; }
+
+/**
+ * Unified Users 用 YMIS 做登入 subject，但 Portal 行政資料用不可變 member id。
+ * 安全投影只會帶本人一行名冊，所以每次拉完投影後以 id／YMIS 對回該行，
+ * 絕不能假設登入 account.memberId（舊 Users adapter 可能係 YMIS）等於 Portal id。
+ */
+function projectedMember(auth) {
+  if (!auth) return null;
+  const id = String(auth.id || '');
+  const ymis = String(auth.ymis || '').trim();
+  return activeMembers().find(m => (id && String(m.id || '') === id)
+    || (ymis && String(m.ymis || '').trim() === ymis)) || null;
+}
+function canonicalHubAuth(auth) {
+  const m = projectedMember(auth);
+  if (!m) return auth;
+  return { ...auth, id: String(m.id || auth.id || ''), ymis: String(m.ymis || auth.ymis || ''),
+    name: String(m.name || auth.name || ''), identity: String(m.identity || auth.identity || 'member') };
+}
 
 /* 頂部右邊嘅同步狀態（等團員／領袖一眼睇到「資料係咪最新」） */
 function paintSyncBadge() {
@@ -173,9 +294,9 @@ function paintSyncBadge() {
 
 function paint() {
   const p = profile();
-  const auth = loadHubAuth(code());
+  const auth = canonicalHubAuth(loadHubAuth(code()));
   if (!auth) return paintGate();
-  saveMe({ id: auth.id, name: auth.name });
+  saveMe({ id: auth.id, name: auth.name }, code());
   const hash = location.hash.replace(/^#\/?/, '') || 'home';
   const [sec, id] = hash.split('/');
   const ident = auth.identity || 'member';
@@ -197,6 +318,8 @@ function paint() {
     ${hubSubmitBanner()}
     ${sec === 'cal' && id ? eventDetail(id, auth)
       : sec === 'quiz' && id ? quizFill(id, auth)
+      : sec === 'notice' && id ? noticeDetail(id, auth)
+      : sec === 'constitution' ? constitutionPage()
       : sec === 'progress' ? progressPage(auth)
       : sec === 'absence' ? absencePage(auth)
       : home(auth)}
@@ -257,9 +380,14 @@ function paintGate() {
       if (shared?.sessionToken === res.sessionToken) setSession(null);
       return;
     }
-    saveHubAuth(code(), { id: m.id, name: m.name, ymis: m.ymis, identity: m.identity || 'member',
-      mustChangePw: !!res.mustChangePw, sessionToken: res.sessionToken, sessionExpiresAt: res.sessionExpiresAt });
-    saveMe({ id: m.id, name: m.name });
+    const projected = activeMembers().find(row => String(row.ymis || '').trim() === String(m.ymis || '').trim()) || null;
+    const memberAuth = {
+      id: projected?.id || m.id, name: projected?.name || m.name, ymis: projected?.ymis || m.ymis,
+      identity: projected?.identity || m.identity || 'member', mustChangePw: !!res.mustChangePw,
+      sessionToken: res.sessionToken, sessionExpiresAt: res.sessionExpiresAt
+    };
+    saveHubAuth(code(), memberAuth);
+    saveMe({ id: memberAuth.id, name: memberAuth.name }, code());
     syncError = '';
     paint();
     if (res.mustChangePw) forceMemberPw(m.id);
@@ -267,108 +395,53 @@ function paintGate() {
 }
 
 /* ============================================================
-   公開資料（團員入口版）
+   已登入團員資源
    ------------------------------------------------------------
-   團長 2026-09-24：「團員入口應該讀『旅團設定』頁嘅資料（主要係連結）
-   同『公開資料』（主要係 APP 內嘅內容）。」
-
-   兩個來源：
-     A. 旅團設定（`settings.troopLinks`，經 `troopPublicLinks()`）
-        —— 6 個固定槽：Drive／相簿／IG／FB／網頁／WhatsApp。登入咗就見到。
-     B. 公開資料（`db.publicProfile`）
-        —— 社交媒體／相簿／網站／其他連結／「關於我團」，
-           每一項都有「邊個睇到」：`other(1) < member(2) < exco(3) < leader(4) < chief(5)`。
-
-   ★ 合併規則 —— 唔會出現兩條一樣嘅 IG：
-     · 公開資料**有設**嗰個槽（IG／FB／WhatsApp／相簿／網站）→ 一律由公開資料話事：
-       睇得到就出，睇唔到就**連旅團設定嗰條都唔出**。
-       因為團長喺「公開資料」設咗可見範圍，就係想由嗰度統一管晒對外嘅嘢。
-     · 公開資料**冇設**嗰個槽 → 用返旅團設定嗰條（舊資料唔會無端端消失）。
-       Drive 喺公開資料冇對應，所以永遠嚟自旅團設定。
+   匿名 `db.publicProfile` 已刪除。團員入口只可在後端核實 session 並取得安全
+   投影後顯示 `settings.troopLinks` 的固定內部資源；未登入 gate 一律不渲染。
    ============================================================ */
 
-/** 呢位團員嘅身份（用嚟計「邊個睇到」）。未登入／搵唔到＝''→ 乜都唔見。 */
 function viewerIdentity(auth) {
-  const m = activeMembers().find(x => x.id === auth?.id) || null;
-  return m ? identityOf(m) : '';
+  const member = projectedMember(auth);
+  return member ? identityOf(member) : '';
 }
-/** 行事曆／通告／試卷：呢位團員睇唔睇到？（各自嘅編輯器設「邊個睇到」） */
-function canSeeContent(rec, kind, role) {
-  return visibleTo(contentVis(rec, kind), role);
+function canSeeContent(record, kind, role) {
+  return visibleTo(contentVis(record, kind), role);
 }
-function safeHref(u) {
-  const s = String(u || '').trim();
-  if (!s) return '';
-  if (/^(https?:|mailto:|tel:)/i.test(s)) return s;
-  return 'https://' + s.replace(/^\/+/, '');
+function externalHref(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '#';
+  const direct = safeHref(raw, { allowRelative: false, allowContact: true });
+  if (direct !== '#') return direct;
+  if (/^[A-Za-z0-9.-]+(?:\/[^\s]*)?$/.test(raw)) return safeHref('https://' + raw, { allowRelative: false, allowContact: false });
+  return '#';
 }
-function card(it) {
-  return { href: safeHref(it.url), ic: it.ic || 'link', label: String(it.title || it.label || '').trim(), desc: String(it.desc || '').trim(), url: String(it.url || '').trim() };
-}
-
-/** 公開資料 ＋ 旅團設定 → 團員入口見到嘅嘢。
- *  回傳 { about, groups:[{title, desc, items}] } —— 冇嘢嘅組唔會出。 */
-function hubPublic(auth) {
-  const role = viewerIdentity(auth);
-  const pp = publicProfile();
-  const seen = (arr) => (Array.isArray(arr) ? arr : []).filter(x => String(x?.url || '').trim());
-  const may = (it) => visibleTo(it?.vis, role);
-
-  const socials = seen(pp.socials).filter(may);
-  const albums = seen(pp.albums).filter(may);
-  const links = seen(pp.links).filter(may);
-  const siteUrl = String(pp.site?.url || '').trim();
-  const siteOn = siteUrl && may(pp.site);
-  const aboutTx = String(pp.about?.text || '').trim();
-  const aboutOn = aboutTx && may(pp.about);
-
-  const legacy = troopPublicLinks();                       // 旅團設定（6 個固定槽）
-  const legacyById = id => legacy.find(l => l.id === id);
-  /* 公開資料「管緊」邊啲槽 —— 管緊嘅話，旅團設定嗰條要讓位（包括設咗睇唔到） */
-  /* 後端安全投影會移除睇唔到項目嘅 URL，但保留 managedSlots，
-     避免隱藏咗嘅公開資料槽又跌返去顯示旅團設定舊連結。 */
-  const managed = new Set(Array.isArray(pp.managedSlots) ? pp.managedSlots : []);
-  seen(pp.socials).forEach(s => { if (['instagram', 'facebook', 'whatsapp'].includes(s.kind)) managed.add(s.kind); });
-  if (seen(pp.albums).length) managed.add('album');
-  if (siteUrl) managed.add('website');
-  /** 旅團設定嗰條要讓位俾公開資料 —— 公開資料管緊呢個槽就唔出 */
-  const fallback = (id, ic) => {
-    const l = legacyById(id);
-    return (l && !managed.has(id)) ? card({ ...l, ic }) : null;
+function card(item) {
+  return {
+    href: externalHref(item.url), ic: item.ic || item.icon || 'link',
+    label: String(item.title || item.label || '').trim(),
+    desc: String(item.desc || '').trim(), url: String(item.url || '').trim()
   };
-  const plus = (...arr) => arr.filter(Boolean);
-
-  /* ① 社交媒體 —— 公開資料嘅（連 YouTube／Telegram／電郵／電話）＋ 旅團設定剩低嘅 */
-  const socialItems = [
-    ...socials.map(s => card({ ...s, ic: socialIcon(s.kind), desc: s.desc || socialName(s.kind) })),
-    ...plus(fallback('instagram', 'instagram'), fallback('facebook', 'facebook'), fallback('whatsapp', 'whatsapp'))
-  ];
-
-  /* ② 相簿 —— 公開資料嘅相簿 ＋ 旅團設定「相簿」＋「Drive」（Drive 公開資料冇得設） */
-  const albumItems = [
-    ...albums.map(a => card({ ...a, ic: 'image' })),
-    ...plus(fallback('album', 'image'), legacyById('drive') ? card({ ...legacyById('drive'), ic: 'cloud' }) : null)
-  ];
-
-  /* ③ 網站與其他連結 —— 公開資料「網站」／旅團設定「網頁」／公開資料其他連結 */
-  const linkItems = [
-    ...plus(siteOn ? card({ title: pp.site.title || '旅團網站', url: siteUrl, desc: pp.site.desc || '', ic: 'globe' }) : null,
-            fallback('website', 'globe')),
-    ...links.map(l => card({ ...l, ic: 'external' }))
-  ];
-
-  const groups = [
-    { title: '社交媒體', desc: '我團嘅 IG／FB／YouTube 等 —— 撳一下就開', items: socialItems },
-    { title: '相簿', desc: '活動相、共用雲端硬碟', items: albumItems },
-    { title: '網站與其他連結', desc: '旅團網頁同其他有用連結', items: linkItems }
-  ].filter(g => g.items.length);
-
-  return { about: aboutOn ? aboutTx : '', groups };
+}
+function hubResources() {
+  const links = troopPublicLinks().filter(link => String(link?.url || '').trim()).map(link => card(link));
+  /* 原有固定槽的 id 在 model() 轉成 label 後可能因舊資料語言不同；按原順序分組
+     只係介面整理，全部資料仍已經過登入後安全投影。 */
+  const social = links.filter(link => /instagram|facebook|whatsapp|ig|fb/i.test(`${link.label} ${link.url}`));
+  const albums = links.filter(link => /相簿|album|drive|雲端/i.test(`${link.label} ${link.url}`));
+  const used = new Set([...social, ...albums]);
+  const other = links.filter(link => !used.has(link));
+  return [
+    { title: '社交媒體', desc: '本團已登入成員使用的社交平台入口', items: social },
+    { title: '相簿與雲端', desc: '本團成員資源', items: albums },
+    { title: '網站與連結', desc: '本團成員常用連結', items: other }
+  ].filter(group => group.items.length);
 }
 
 /** 一張連結卡（團員入口用） */
 function linkCard(it) {
-  return `<a class="hub-card" href="${esc(it.href)}" target="_blank" rel="noopener noreferrer">
+  const href = safeHref(it.href, { allowRelative: false, allowContact: true });
+  return `<a class="hub-card" href="${esc(href)}" target="_blank" rel="noopener noreferrer">
     <span class="stat-ic">${icon(it.ic, 18)}</span>
     <div class="grow"><div class="semibold">${esc(it.label || it.href)}</div>
       ${it.desc ? `<div class="xs muted mt-4">${esc(it.desc)}</div>` : ''}
@@ -399,35 +472,23 @@ function home(auth) {
   const qz = quizzes().filter(q => q.status !== 'closed' && canSeeContent(q, 'quiz', role));
   /* ③ 通告：已發布嘅全部顯示 —— 截止咗報名嘅會擺後＋標「已截止」，
      內容照開得到（成員遲咗想報就問領袖／執委）；草稿先係完全唔出街。 */
-  /* ★ 通告都有「邊個睇到」（喺通告編輯器設，預設「對外公開」＝免登入都睇到） */
+  /* 通告可見範圍只接受已登入身份；舊 other 會收窄成團員。 */
   const notices = (load().notices || []).filter(n => n.status === 'published' && canSeeContent(n, 'notice', role))
     .sort((a, b) => Number(closedN(a, today)) - Number(closedN(b, today)));
-  const media = hubPublic(auth);
-  const u = code();
+  const resourceGroups = hubResources();
   const tools = [
     { href: '#/progress', icon: 'target', title: '我的進度', desc: '睇自己獎章進度，仲可以申報完成咗邊項' },
     { href: '#/absence', icon: 'calendar', title: '我的請假', desc: '嚟唔到？寫低邊日同原因，等覆核' },
-    { href: publicPageUrl('entry.html', { u }), icon: 'camera', title: '影單據／記一筆', desc: '墊支或代收，影相交司庫' },
-    { href: publicPageUrl('borrow.html', { u }), icon: 'grid', title: '借物資', desc: '申請借用旅團物資' },
-    { href: publicPageUrl('constitution.html', { u }), icon: 'book', title: '團章', desc: '免登入閱讀' }
+    { href: '#/constitution', icon: 'book', title: '團章', desc: '登入後閱讀已發布版本' }
   ];
   return `
     <div class="semibold mb-8">我要做</div>
-    ${tools.map(t => t.href.startsWith('#')
-      ? `<button class="hub-card" type="button" data-open="${esc(t.href)}" style="width:100%;text-align:left">
-          <span class="stat-ic">${icon(t.icon, 18)}</span>
-          <div class="grow"><div class="semibold">${esc(t.title)}</div><div class="xs muted mt-4">${esc(t.desc)}</div></div>
-        </button>`
-      : `<a class="hub-card" href="${esc(withName(t.href, auth))}">
-          <span class="stat-ic">${icon(t.icon, 18)}</span>
-          <div class="grow"><div class="semibold">${esc(t.title)}</div><div class="xs muted mt-4">${esc(t.desc)}</div></div>
-        </a>`).join('')}
+    ${tools.map(t => `<button class="hub-card" type="button" data-open="${esc(t.href)}" style="width:100%;text-align:left">
+      <span class="stat-ic">${icon(t.icon, 18)}</span>
+      <div class="grow"><div class="semibold">${esc(t.title)}</div><div class="xs muted mt-4">${esc(t.desc)}</div></div>
+    </button>`).join('')}
 
-    ${media.about ? `
-    <div class="semibold mt-24 mb-8">關於我團</div>
-    <div class="card card-pad"><div class="sm" style="white-space:pre-wrap">${esc(media.about)}</div></div>` : ''}
-
-    ${media.groups.map(g => `
+    ${resourceGroups.map(g => `
     <div class="semibold mt-24 mb-8">${esc(g.title)}</div>
     <div class="xs muted mb-8">${esc(g.desc)}</div>
     ${g.items.map(linkCard).join('')}`).join('')}
@@ -436,7 +497,7 @@ function home(auth) {
     ${evs.length ? evs.map(e => {
       const st = myRsvp(e, auth);
       const overnight = e.dateEnd && e.dateEnd !== e.date;
-      return `<button class="hub-card" type="button" data-open="#/cal/${e.id}" style="width:100%;text-align:left">
+      return `<button class="hub-card" type="button" data-open="#/cal/${esc(e.id)}" style="width:100%;text-align:left">
         <span class="stat-ic">${icon('calendar', 18)}</span>
         <div class="grow"><div class="semibold">${esc(e.title)}${overnight ? ' <span class="tag">過夜</span>' : ''}</div>
           <div class="xs muted mt-4">${overnight ? `${esc(e.date)} 至 ${esc(e.dateEnd)}` : esc(e.date)} ${esc(e.time || '')} · ${esc(e.venue || '')}</div>
@@ -449,7 +510,7 @@ function home(auth) {
     <div class="xs muted mb-8">完咗嘅活動 —— 想睇返內容就入去睇；遲咗想參加同類型活動可以留意下一個</div>
     ${pastEvs.map(e => {
       const st = myRsvp(e, auth);
-      return `<button class="hub-card" type="button" data-open="#/cal/${e.id}" style="width:100%;text-align:left;opacity:.78">
+      return `<button class="hub-card" type="button" data-open="#/cal/${esc(e.id)}" style="width:100%;text-align:left;opacity:.78">
         <span class="stat-ic">${icon('calendar', 18)}</span>
         <div class="grow"><div class="semibold">${esc(e.title)} <span class="badge b-grey">已完結</span></div>
           <div class="xs muted mt-4">${esc(e.date)}${e.dateEnd && e.dateEnd !== e.date ? ' 至 ' + esc(e.dateEnd) : ''} ${esc(e.venue || '')}</div>
@@ -458,7 +519,7 @@ function home(auth) {
     }).join('')}` : ''}
 
     <div class="semibold mt-24 mb-8">試卷</div>
-    ${qz.length ? qz.map(q => `<button class="hub-card" type="button" data-open="#/quiz/${q.id}" style="width:100%;text-align:left">
+    ${qz.length ? qz.map(q => `<button class="hub-card" type="button" data-open="#/quiz/${esc(q.id)}" style="width:100%;text-align:left">
       <span class="stat-ic">${icon('note', 18)}</span>
       <div class="grow"><div class="semibold">${esc(q.title)}</div>
         <div class="xs muted mt-4">${(q.questions || []).length} 題</div></div>
@@ -466,40 +527,25 @@ function home(auth) {
 
     <div class="semibold mt-24 mb-8">通告</div>
     ${notices.length ? notices.map(n => {
-      const href = publicPageUrl('notice.html', { u, n: n.id });
       const closed = closedN(n, today);
-      return `<a class="hub-card" href="${esc(withName(href, auth))}" ${closed ? 'style="opacity:.78"' : ''}>
+      return `<button class="hub-card" type="button" data-open="#/notice/${esc(n.id)}" style="width:100%;text-align:left${closed ? ';opacity:.78' : ''}">
         <span class="stat-ic">${icon('megaphone', 18)}</span>
         <div class="grow"><div class="semibold">${esc(n.title?.zh || n.id)}${closed ? ' <span class="badge b-grey">已截止</span>' : ''}</div>
           <div class="xs muted mt-4">${esc(n.eventDate || '')} ${n.needSignup
             ? (closed ? '· 報名已截止（想報就搵領袖／執委）' : (n.deadline ? `· 截止 ${esc(n.deadline)}` : '· 可回覆出席'))
             : ''}</div></div>
-      </a>`;
+      </button>`;
     }).join('') : '<div class="card card-pad muted">暫時未有已發布通告。</div>'}
   `;
-}
-
-function withName(url, auth) {
-  const me = loadMe();
-  const name = me.name || auth?.name || '';
-  if (!name) return url;
-  try {
-    const u = new URL(url, location.href);
-    u.searchParams.set('name', name);
-    if (me.id || auth?.id) u.searchParams.set('mid', me.id || auth.id);
-    return u.toString();
-  } catch { return url; }
 }
 
 /* ============================================================
    回覆出席／交卷 —— 直接用登入身份（登入咗就知你係邊個）
    ============================================================ */
 function whoAmI(auth) {
-  if (auth?.id) {
-    const m = activeMembers().find(x => x.id === auth.id) || null;
-    return { id: auth.id, name: m?.name || auth.name || '', email: m?.email || '' };
-  }
-  return null;
+  const m = projectedMember(auth);
+  if (m?.id) return { id: m.id, name: m.name || auth?.name || '', email: m.email || '' };
+  return auth?.id ? { id: auth.id, name: auth.name || '', email: '' } : null;
 }
 
 function myRsvp(e, auth) {
@@ -521,6 +567,106 @@ function myRsvpLine(e, auth) {
   return lab;
 }
 
+function noticeFieldValue(field, signup) {
+  const value = signup?.answers?.[field.key];
+  return value === undefined || value === null ? '' : value;
+}
+
+function noticeFieldHtml(field, signup, auth) {
+  const key = String(field?.key || '');
+  const label = String(field?.label || key);
+  const type = String(field?.type || 'text');
+  const automatic = key === 'name' ? (auth?.name || '') : key === 'ymis' ? (auth?.ymis || '') : '';
+  const value = automatic || noticeFieldValue(field, signup);
+  const required = field?.required ? ' <span class="req">*</span>' : '';
+  const attrs = `data-notice-field="${esc(key)}" ${field?.required ? 'required' : ''}`;
+  if (type === 'textarea') {
+    return `<div class="field mt-12"><label class="label">${esc(label)}${required}</label><textarea class="textarea" rows="3" ${attrs}>${esc(value)}</textarea></div>`;
+  }
+  if (type === 'select') {
+    return `<div class="field mt-12"><label class="label">${esc(label)}${required}</label><select class="select" ${attrs}>
+      <option value="">請選擇</option>${(field.options || []).map(option => `<option value="${esc(option)}" ${String(value) === String(option) ? 'selected' : ''}>${esc(option)}</option>`).join('')}</select></div>`;
+  }
+  if (type === 'radio') {
+    return `<fieldset class="field mt-12"><legend class="label">${esc(label)}${required}</legend>${(field.options || []).map(option =>
+      `<label class="check"><input type="radio" name="notice-${esc(key)}" value="${esc(option)}" ${attrs} ${String(value) === String(option) ? 'checked' : ''}> ${esc(option)}</label>`).join('')}</fieldset>`;
+  }
+  if (type === 'check') {
+    const values = Array.isArray(value) ? value.map(String) : [];
+    return `<fieldset class="field mt-12"><legend class="label">${esc(label)}${required}</legend>${(field.options || []).map(option =>
+      `<label class="check"><input type="checkbox" value="${esc(option)}" ${attrs} ${values.includes(String(option)) ? 'checked' : ''}> ${esc(option)}</label>`).join('')}</fieldset>`;
+  }
+  const htmlType = ['number', 'tel', 'email', 'date'].includes(type) ? type : 'text';
+  return `<div class="field mt-12"><label class="label">${esc(label)}${required}</label><input class="input" type="${htmlType}" value="${esc(value)}" ${attrs} ${automatic ? 'readonly' : ''}></div>`;
+}
+
+function noticeDetail(id, auth) {
+  const notice = (load().notices || []).find(row => String(row.id || '') === String(id || ''));
+  if (!notice) return `<button class="btn btn-sm" data-open="#/home">← 返回</button><div class="card card-pad mt-12">你無權閱讀或者搵唔到呢張通告。</div>`;
+  const info = [
+    ['日期', notice.eventDate], ['地點', notice.venue], ['集合', [notice.assemblyTime, notice.assemblyPlace].filter(Boolean).join(' · ')],
+    ['解散', [notice.dismissTime, notice.dismissPlace].filter(Boolean).join(' · ')], ['費用', notice.fee],
+    ['服飾', notice.uniform], ['攜帶', notice.bring], ['聯絡', notice.contact]
+  ].filter(([, value]) => String(value || '').trim());
+  const closed = closedN(notice, todayISO());
+  return `<button class="btn btn-sm" data-open="#/home">← 返回</button>
+    <article class="card card-pad mt-12">
+      <div class="xs faint">已登入通告 · ${esc(notice.publishAt || '')}</div>
+      <h2 class="mt-8">${esc(notice.title?.zh || notice.id)}</h2>
+      ${notice.title?.en ? `<div class="muted">${esc(notice.title.en)}</div>` : ''}
+      ${info.length ? `<div class="mt-16">${info.map(([label, value]) => `<div class="row-between sm" style="padding:6px 0;border-bottom:1px solid var(--line-2)"><b>${esc(label)}</b><span>${esc(value)}</span></div>`).join('')}</div>` : ''}
+      ${notice.body?.zh ? `<div class="mt-16" style="white-space:pre-wrap">${esc(notice.body.zh)}</div>` : ''}
+      ${notice.body?.en ? `<div class="mt-12 muted" style="white-space:pre-wrap">${esc(notice.body.en)}</div>` : ''}
+    </article>
+    ${notice.needSignup ? `<form class="card card-pad mt-12" id="hubNoticeSignup">
+      <div class="semibold">${notice.mySignup ? '更新我的回覆' : '回覆通告'}</div>
+      <div class="xs muted mt-4">回覆會直接綁定目前登入的 ${esc(auth?.name || '')}；唔接受冒認其他成員。</div>
+      ${closed ? `<div class="note-box warn mt-12"><div>報名已截止${notice.deadline ? `（${esc(notice.deadline)}）` : ''}。</div></div>`
+        : (notice.fields || []).map(field => noticeFieldHtml(field, notice.mySignup, auth)).join('')
+          + `<div id="hubNoticeErr" class="err mt-8"></div><button class="btn btn-primary btn-block mt-16" type="submit">${notice.mySignup ? '更新回覆' : '送出回覆'}</button>`}
+    </form>` : ''}`;
+}
+
+function constitutionPage() {
+  const constitution = load().constitution;
+  if (!constitution || constitution.status !== 'published') {
+    return `<button class="btn btn-sm" data-open="#/home">← 返回</button><div class="card card-pad mt-12">暫時未有已發布團章。</div>`;
+  }
+  const chapters = (constitution.chapters || []).map(chapter => `<section class="mt-24">
+    <h3 style="color:var(--brand-700);border-bottom:1px solid var(--line);padding-bottom:7px">${esc(chapter.heading?.zh || '')}${chapter.heading?.en ? ` <span class="sm muted">／ ${esc(chapter.heading.en)}</span>` : ''}</h3>
+    ${(chapter.articles || []).map(article => `<div class="mt-12"><div>${esc(article.zh || '')}</div>${article.en ? `<div class="sm muted">${esc(article.en)}</div>` : ''}
+      ${(article.items || []).map(item => `<div class="sm mt-6" style="margin-left:${item.level === 2 ? '32px' : '18px'}">${esc(item.zh || '')}${item.en ? `<div class="muted">${esc(item.en)}</div>` : ''}</div>`).join('')}</div>`).join('')}
+  </section>`).join('');
+  return `<button class="btn btn-sm" data-open="#/home">← 返回</button><article class="card card-pad mt-12">
+    <div class="center"><div class="xs faint">只限已登入成員</div><h2 class="mt-8">${esc(constitution.title?.zh || '團章')}</h2>
+      ${constitution.title?.en ? `<div class="muted">${esc(constitution.title.en)}</div>` : ''}</div>
+    ${constitution.preamble?.zh || constitution.preamble?.en ? `<div class="note-box brand mt-16"><div>${esc(constitution.preamble?.zh || '')}${constitution.preamble?.en ? `<div class="sm muted mt-4">${esc(constitution.preamble.en)}</div>` : ''}</div></div>` : ''}
+    ${chapters}
+    <div class="xs faint mt-24">版本 ${esc(constitution.version || '')} · 更新 ${esc(constitution.updated || '')}</div>
+  </article>`;
+}
+
+async function submitNoticeSignup(auth) {
+  const noticeId = location.hash.split('/')[2] || '';
+  const notice = (load().notices || []).find(row => String(row.id || '') === String(noticeId));
+  if (!notice) return;
+  const answers = {};
+  for (const field of (notice.fields || [])) {
+    const controls = [...app.querySelectorAll('[data-notice-field]')].filter(control => control.dataset.noticeField === String(field.key || ''));
+    let value = '';
+    if (field.type === 'check') value = controls.filter(control => control.checked).map(control => control.value);
+    else if (field.type === 'radio') value = controls.find(control => control.checked)?.value || '';
+    else value = controls[0]?.value?.trim?.() ?? controls[0]?.value ?? '';
+    if (field.required && (Array.isArray(value) ? !value.length : !String(value).trim())) {
+      const error = app.querySelector('#hubNoticeErr');
+      if (error) { error.textContent = `請填：${field.label || field.key}`; error.style.display = 'block'; }
+      return;
+    }
+    answers[field.key] = value;
+  }
+  await pushSubmit('通告回覆', 'notice', { noticeId, answers });
+}
+
 function eventDetail(id, auth) {
   const e = (load().events || []).find(x => x.id === id);
   if (!e || e.visibility === 'exco') return '<div class="card card-pad">搵唔到呢個活動。</div>';
@@ -536,11 +682,11 @@ function eventDetail(id, auth) {
         ? `<div class="badge b-grey mt-16">活動已結束</div>`
         : `<div class="semibold sm mt-16">我會…</div>
       <div class="row wrap gap-8 mt-8">
-        <button class="btn btn-sm ${st === 'present' ? 'btn-primary' : ''}" type="button" data-eid="${e.id}" data-rsvp="present">${RSVP.present.label}</button>
-        <button class="btn btn-sm ${st === 'absent' ? 'btn-primary' : ''}" type="button" data-eid="${e.id}" data-rsvp="absent">${RSVP.absent.label}</button>
+        <button class="btn btn-sm ${st === 'present' ? 'btn-primary' : ''}" type="button" data-eid="${esc(e.id)}" data-rsvp="present">${RSVP.present.label}</button>
+        <button class="btn btn-sm ${st === 'absent' ? 'btn-primary' : ''}" type="button" data-eid="${esc(e.id)}" data-rsvp="absent">${RSVP.absent.label}</button>
       </div>
       ${st ? `<div class="xs mt-10"><span class="badge ${RSVP[st]?.cls || ''}">已回覆：${esc(myRsvpLine(e, auth))}</span>
-        <button class="btn btn-xs btn-ghost" type="button" data-eid="${e.id}" data-rsvp="edit">改一改</button></div>` : ''}`}
+        <button class="btn btn-xs btn-ghost" type="button" data-eid="${esc(e.id)}" data-rsvp="edit">改一改</button></div>` : ''}`}
     </div>`;
 }
 
@@ -561,8 +707,9 @@ function progressPage(auth) {
    一齊上後端，領袖／執委喺管理系統行事曆「請假」tab 覆核。
    ============================================================ */
 function absencePage(auth) {
-  const memberId = String(auth?.id || '');
-  const ymis = String(auth?.ymis || '');
+  const member = projectedMember(auth);
+  const memberId = String(member?.id || auth?.id || '');
+  const ymis = String(member?.ymis || auth?.ymis || '');
   const cn = absenceCounts();
   const mine = absencesOf(memberId, ymis).slice().sort((a, b) => String(b.date || '').localeCompare(String(a.date || '')));
   return `<button class="btn btn-ghost btn-sm mb-12" type="button" data-open="#/home">${icon('chevronL', 14)} 返回</button>
@@ -599,11 +746,11 @@ async function bindAbsenceHub(auth) {
     const r = await modal({
       title: '請假',
       sub: '寫低邊日嚟唔到同原因；覆核通過先計數',
-      body: `<div class="grid g-2" style="gap:12px">
+      trustedBodyHtml: `<div class="grid g-2" style="gap:12px">
           <div class="field"><label class="label">日子 <span class="req">*</span></label>
             <input class="input" type="date" id="ab-date" value="${esc(todayISO())}"></div>
           <div class="field"><label class="label">時段</label>
-            <select class="select" id="ab-slot">${ABSENCE_SLOTS.map(s => `<option value="${s.id}" ${s.id === 'full' ? 'selected' : ''}>${s.label}</option>`).join('')}</select></div>
+            <select class="select" id="ab-slot">${ABSENCE_SLOTS.map(s => `<option value="${esc(s.id)}" ${s.id === 'full' ? 'selected' : ''}>${esc(s.label)}</option>`).join('')}</select></div>
         </div>
         <div class="field mt-12"><label class="label">原因 <span class="req">*</span></label>
           <textarea class="textarea" id="ab-reason" rows="3" maxlength="2000" placeholder="例：屋企有事／學校補課／唔舒服"></textarea></div>
@@ -675,10 +822,12 @@ async function fillProgressPage(auth) {
       <div class="card card-pad">
         <div class="semibold">我的進度</div>
         <div class="xs muted mt-4">已完成 <b>${d.done}</b> 項 · YMIS ${esc(ymis)}${myName ? ' · ' + esc(myName) : ''}</div>
-        ${(d.badges || []).filter(b => b.total).map(b => `
+        ${(d.badges || []).filter(b => b.total).map(b => {
+          const rate = boundedPercent(b.rate);
+          return `
           <div class="mt-16">
-            <div class="row-between sm"><span>${esc(b.icon || '')} ${esc(b.name)}</span><span class="mono xs">${b.done}/${b.total}（${b.rate}%）</span></div>
-            <div class="progress mt-4"><i style="width:${b.rate}%"></i></div>
+            <div class="row-between sm"><span>${esc(b.icon || '')} ${esc(b.name)}</span><span class="mono xs">${b.done}/${b.total}（${rate}%）</span></div>
+            <div class="progress mt-4"><i style="width:${rate}%"></i></div>
             <div class="mt-8">
               ${b.items.map(x => x.done ? `
                 <div class="row-between sm" style="padding:5px 0;border-bottom:1px solid var(--line-2)">
@@ -690,7 +839,8 @@ async function fillProgressPage(auth) {
                   <button class="btn btn-xs btn-primary" type="button" data-claim="${esc(x.id)}" data-name="${esc(x.name)}">${icon('plus', 12)} 申報完成</button>
                 </div>`).join('')}
             </div>
-          </div>`).join('') || '<div class="xs muted mt-8">未有考核項目定義。</div>'}
+          </div>`;
+        }).join('') || '<div class="xs muted mt-8">未有考核項目定義。</div>'}
       </div>
       <div class="card mt-16">
         <div class="card-head"><div><div class="card-title">我嘅申報紀錄</div>
@@ -720,7 +870,7 @@ async function claimProgressDialog(auth, itemId, itemName) {
   const r = await modal({
     title: '申報完成',
     sub: itemName,
-    body: `<div class="field"><label class="label">完成日期</label>
+    trustedBodyHtml: `<div class="field"><label class="label">完成日期</label>
         <input class="input" type="date" id="rqDate" value="${esc(todayISO())}"></div>
       <div class="field mt-12"><label class="label">證據／簡介（可空）</label>
         <textarea class="textarea" id="rqEv" rows="3" placeholder="例：2026 夏季營完成咗全程、導師簽名紀錄…"></textarea></div>
@@ -765,6 +915,38 @@ function quizFill(id, auth) {
 }
 
 function bind(auth) {
+  app.querySelector('#hubCheckSubmit')?.addEventListener('click', async () => {
+    const unknown = hubSubmitState.unknown;
+    if (!unknown || !auth?.sessionToken) return;
+    let journalOutcome = 'unknown';
+    if (unknown.operationId) {
+      const status = await hubRemote?.checkOperationStatus?.(unknown.operationId);
+      journalOutcome = String(status?.operation?.outcome || status?.outcome || 'unknown').toLowerCase();
+    }
+    if (journalOutcome === 'not_applied') {
+      finishOperation(unknown.operationId, { state: 'not_applied', outcome: 'not_applied', mayHaveApplied: false });
+      clearRememberedHubUnknown(auth);
+      hubSubmitState = { pending: false, unknown: null,
+        retry: { what: unknown.what, kind: unknown.kind, payload: unknown.payload, error: '操作日誌確認未套用' } };
+      paint();
+      toast('操作日誌確認未套用；而家先可以安全重新送出', 'warn');
+      return;
+    }
+    const r = await hubRemote?.loadHubView?.({ sessionToken: auth.sessionToken });
+    if (!r?.ok) { toast(r?.error || '重新載入失敗；結果仍然未知', 'warn'); return; }
+    if (journalOutcome === 'applied' || hubMutationVisible(unknown.kind, unknown.payload)) {
+      if (unknown.operationId) finishOperation(unknown.operationId, { state: 'applied', outcome: 'applied', mayHaveApplied: true });
+      hubSubmitState = { pending: false, retry: null, unknown: null };
+      clearRememberedHubUnknown(auth);
+      paint();
+      toast(journalOutcome === 'applied'
+        ? '操作日誌確認已套用；已重新讀取，冇重送'
+        : '重新讀取已見到呢項操作，確認已套用；冇重送', 'ok');
+    } else {
+      toast('操作日誌同重新讀取仍未能確認；結果繼續鎖住，冇重送。', 'warn');
+      paint();
+    }
+  });
   app.querySelector('#hubRetrySubmit')?.addEventListener('click', async () => {
     const retry = hubSubmitState.retry;
     if (retry) await pushSubmit(retry.what, retry.kind, retry.payload);
@@ -777,12 +959,13 @@ function bind(auth) {
   app.querySelectorAll('[data-open]').forEach(b => b.addEventListener('click', () => { location.hash = b.dataset.open; paint(); }));
   app.querySelectorAll('[data-rsvp]').forEach(b => b.addEventListener('click', () => rsvp(b.dataset.eid, b.dataset.rsvp, auth)));
   app.querySelector('[data-quiz-submit]')?.addEventListener('click', () => submitQuiz(location.hash.split('/')[2] || location.hash.split('/')[1], auth));
+  app.querySelector('#hubNoticeSignup')?.addEventListener('submit', event => { event.preventDefault(); submitNoticeSignup(auth); });
 }
 
 /** 團員入口求救 —— 同管理系統走同一條 ADMIN「問題回報」（圖書館嗰張表）。 */
 async function openHubSOS(auth) {
   const { openMemberSOS } = await import('./lib/onboard.js');
-  const m = auth?.id ? activeMembers().find(x => x.id === auth.id) : null;
+  const m = projectedMember(auth);
   openMemberSOS({ troopId: code(), name: m?.name || auth?.name || '', contact: m?.email || '' });
 }
 
@@ -836,7 +1019,7 @@ async function openRsvpForm(e, ident, cur, fieldsHtml, onMount) {
   const r = await modal({
     title: '回覆出席',
     sub: `${e.title}（${e.date}${e.time ? ' ' + e.time : ''}）`,
-    body: fieldsHtml,
+    trustedBodyHtml: fieldsHtml,
     onMount,
     actions: [
       { label: '取消', class: 'btn', value: null },
@@ -876,9 +1059,13 @@ async function submitQuiz(id, auth) {
   if (!q) return;
   const answers = {};
   (q.questions || []).forEach(item => {
-    if (item.type === 'multi') answers[item.id] = [...app.querySelectorAll(`[data-ans="${item.id}"]:checked`)].map(el => el.value);
-    else if (item.type === 'single') answers[item.id] = app.querySelector(`[data-ans="${item.id}"]:checked`)?.value || '';
-    else answers[item.id] = app.querySelector(`[data-ans="${item.id}"]`)?.value.trim() || '';
+    /* Filter by dataset instead of interpolating an imported question ID into a
+       CSS selector (quotes/brackets in legacy data must not alter the query). */
+    const fields = [...app.querySelectorAll('[data-ans]')]
+      .filter(el => el.dataset.ans === String(item.id || ''));
+    if (item.type === 'multi') answers[item.id] = fields.filter(el => el.checked).map(el => el.value);
+    else if (item.type === 'single') answers[item.id] = fields.find(el => el.checked)?.value || '';
+    else answers[item.id] = fields[0]?.value.trim() || '';
     if (item.required && (!answers[item.id] || (Array.isArray(answers[item.id]) && !answers[item.id].length))) {
       toast('請填：' + item.prompt, 'err'); answers._bad = true;
     }
@@ -897,7 +1084,7 @@ async function forceMemberPw(memberId) {
   const r = await modal({
     title: '首次登入：請改密碼',
     sub: `唔可以繼續用預設 ${TEMP_PASSWORD}`,
-    body: `<div class="field"><label class="label">新密碼</label>
+    trustedBodyHtml: `<div class="field"><label class="label">新密碼</label>
         <input class="input" id="mp1" type="password" autocomplete="new-password"></div>
       <div class="field mt-12"><label class="label">再輸入一次</label>
         <input class="input" id="mp2" type="password" autocomplete="new-password"></div>

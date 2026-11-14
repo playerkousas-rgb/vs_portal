@@ -1,18 +1,18 @@
 /* ============================================================
    notices.js — 通告 / 通函
-   開一張通告 → 分享連結／QR Code 畀人睇 → 可以報名
-   報名：① 上載公開頁（免登入）自己填；② 有設 GAS 網址就直接送去總表
+   分享連結只會進入已登入團員入口；後端按 session 投影內容並綁定回覆身份。
    ============================================================ */
 
 import { collection, add, update, remove, commit, load, find } from '../lib/store.js';
 import { esc, icon, modal, confirmDlg, toast, toastAction, uid, fmtDate, todayISO, nowStamp, copyText, qrSvg, qrImg, photoViewer } from '../lib/util.js';
 import { toWord, printDoc, toCSV, toMarkdown, toStandaloneHtml, download as dlFile, downloadQrImage, downloadQrSvg, stamp } from '../lib/exporter.js';
 import { go, parse, setQuery } from '../lib/router.js';
-import { can, current } from '../lib/auth.js';
-import { profile, settings, members, isLegacyUrl, publicPageUrl } from '../lib/model.js';
-import { pageHead, tabs, stat, empty, noteBox, photoPicker, photoStrip, bindPhotoPicker } from './ui.js';
+import { can, current, currentRole } from '../lib/auth.js';
+import { profile, settings, members, publicPageUrl } from '../lib/model.js';
+import { pageHead, tabs, stat, empty, emptyWithAction, noteBoxHtml, photoPicker, photoStrip, bindPhotoPicker } from './ui.js';
 import { compressImage, formatBytes } from '../lib/files.js';
 import { NOTICE_INFO_FIELDS, noticeInfoRows } from '../lib/notice-fields.js';
+import { visibleContent } from '../lib/content-visibility.js';
 
 let tab = 'list';
 let filter = 'open';
@@ -65,21 +65,22 @@ export function ensureAttendField(n) {
   if (fields.some(f => ATTEND_KEYS.includes(f.key) || /出席/.test(f.label || ''))) return n;
   const next = [...fields, { key: 'attend', label: '出席與否', type: 'radio', required: false, options: ATTEND_OPTIONS }];
   update('notices', n.id, { fields: next });
-  return find('notices', n.id) || { ...n, fields: next };
+  return visibleNotice(n.id) || { ...n, fields: next };
 }
 
 export function title() { return '通告'; }
 
 function notices() {
-  return collection('notices').slice().sort((a, b) =>
+  return collection('notices').filter(notice => visibleContent(notice, 'notice', currentRole())).slice().sort((a, b) =>
     String(b.publishAt || b.createdAt || '').localeCompare(String(a.publishAt || a.createdAt || '')));
 }
+function visibleNotice(id) { const notice = find('notices', id); return notice && visibleContent(notice, 'notice', currentRole()) ? notice : null; }
 function published(n) { return n.status === 'published'; }
 function signupsOf(n) { return Array.isArray(n.signups) ? n.signups : []; }
 
 export function render(params) {
   if (params.id === 'new') return editor(null);
-  if (params.id === 'edit') return editor(find('notices', params.action));
+  if (params.id === 'edit') { const notice = visibleNotice(params.action); return notice ? editor(notice) : empty('shield', '你無權閱讀呢張通告'); }
   if (params.id && ['list', 'signups', 'settings'].includes(params.id)) tab = params.id;
   else if (!params.id) tab = ['list', 'signups', 'settings'].includes(params.query?.tab) ? params.query.tab : 'list';
   else if (params.id) return detail(params.id, params.query);
@@ -93,11 +94,11 @@ export function render(params) {
     title: '通告',
     sub: `${all.length} 張 · 已發布 ${open.length} 張 · 收到報名 ${totalSignups} 份`,
     actions: `
-      <button class="btn btn-sm" data-act="preview-public">${icon('eye', 15)} 公開頁預覽</button>
+      <button class="btn btn-sm" data-act="preview-public">${icon('eye', 15)} 團員頁預覽</button>
       <button class="btn btn-sm" data-fields="notices">${icon('table', 15)} 欄位</button>
       ${can('notice.create') ? `<button class="btn btn-sm btn-primary" data-act="new">${icon('plus', 15)} 開新通告</button>` : ''}`
   })}
-  ${tabs([['list', '通告列表', all.length], ['signups', '報名紀錄', totalSignups], ['settings', '分享設定']], tab)}
+  ${tabs([['list', '通告列表', all.length], ['signups', '報名紀錄', totalSignups], ['settings', '登入分享']], tab)}
   ${tab === 'signups' ? signupsView() : tab === 'settings' ? settingsView() : listView()}`;
 }
 
@@ -110,7 +111,7 @@ function listView() {
   <div class="row-between wrap gap-12 mb-16 no-print">
     <div class="chipbar">
       ${[['open', '已發布'], ['draft', '草稿'], ['all', '全部']].map(([id, l]) =>
-        `<button class="chip" data-nf="${id}" aria-pressed="${filter === id}">${l} <span class="faint">${id === 'all' ? notices().length : notices().filter(n => id === 'open' ? published(n) : !published(n)).length}</span></button>`).join('')}
+        `<button class="chip" data-nf="${esc(id)}" aria-pressed="${esc(filter === id)}">${l} <span class="faint">${id === 'all' ? notices().length : notices().filter(n => id === 'open' ? published(n) : !published(n)).length}</span></button>`).join('')}
     </div>
     ${can('notice.create') ? `<button class="btn btn-sm" data-act="new">${icon('plus', 15)} 開新通告</button>` : ''}
   </div>
@@ -141,9 +142,9 @@ function noticeCard(n) {
         </div>
       </div>
       <div class="row gap-6 wrap no-print">
-        <button class="btn btn-xs" data-open="${n.id}">詳情</button>
-        ${can('notice.edit') ? `<button class="btn btn-xs" data-editn="${n.id}">${icon('edit', 13)}</button>` : ''}
-        <button class="btn btn-xs" data-share="${n.id}">${icon('share', 13)} 分享</button>
+        <button class="btn btn-xs" data-open="${esc(n.id)}">詳情</button>
+        ${can('notice.edit') ? `<button class="btn btn-xs" data-editn="${esc(n.id)}">${icon('edit', 13)}</button>` : ''}
+        <button class="btn btn-xs" data-share="${esc(n.id)}">${icon('share', 13)} 分享</button>
       </div>
     </div>
   </div>`;
@@ -153,8 +154,8 @@ function noticeCard(n) {
    詳情
    ============================================================ */
 function detail(id, query) {
-  const n = find('notices', id);
-  if (!n) return empty('megaphone', '搵唔到通告', '', `<button class="btn mt-12" data-go="#/notices">返回列表</button>`);
+  const n = visibleNotice(id);
+  if (!n) return emptyWithAction('megaphone', '搵唔到通告', '', '<button class="btn mt-12" data-go="#/notices">返回列表</button>');
   const s = signupsOf(n);
   const url = publicUrl(n);
   const A = attendanceSummary(n);
@@ -166,9 +167,9 @@ function detail(id, query) {
     title: n.title?.zh || '通告',
     sub: `${typeLabel(n.type)} · ${published(n) ? '已發布 ' + (n.publishAt || '') : '草稿'} · 回覆 ${s.length} 份${n.needSignup ? `（出席 ${A.yes} · 唔出席 ${A.no} · 未回覆 ${A.none}）` : ''}`,
     actions: `<button class="btn btn-sm" data-go="#/notices">${icon('chevronL', 15)} 返回</button>
-      ${published(n) ? `<button class="btn btn-sm" data-share="${n.id}">${icon('share', 15)} 分享 / QR</button>` : ''}
+      ${published(n) ? `<button class="btn btn-sm" data-share="${esc(n.id)}">${icon('share', 15)} 分享 / QR</button>` : ''}
       <button class="btn btn-sm" data-act="export">${icon('download', 15)} 輸出</button>
-      ${can('notice.edit') ? `<button class="btn btn-sm btn-primary" data-editn="${n.id}">${icon('edit', 15)} 編輯</button>` : ''}`
+      ${can('notice.edit') ? `<button class="btn btn-sm btn-primary" data-editn="${esc(n.id)}">${icon('edit', 15)} 編輯</button>` : ''}`
   })}
 
   <div class="grid g-2-1">
@@ -206,7 +207,7 @@ function detail(id, query) {
           <div><div class="card-title">回覆出席與否（${A.yes + A.no + A.other} / ${A.total} 已回覆）</div>
             <div class="card-sub">以名冊為本：出席 ${A.yes} · 唔出席 ${A.no} · 未回覆 ${A.none}${A.extras ? ` · 名冊以外 ${A.extras} 份` : ''}</div></div>
           <div class="row gap-6 wrap">
-            ${attField ? '' : can('notice.edit') ? `<button class="btn btn-sm" data-act="add-attend-field" data-id="${n.id}">${icon('plus', 15)} 加「出席與否」欄</button>` : ''}
+            ${attField ? '' : can('notice.edit') ? `<button class="btn btn-sm" data-act="add-attend-field" data-id="${esc(n.id)}">${icon('plus', 15)} 加「出席與否」欄</button>` : ''}
             <button class="btn btn-sm" data-act="export-attend">${icon('download', 15)} 出席表 CSV</button>
             ${can('notice.edit') ? `<button class="btn btn-sm" data-act="add-signup">${icon('plus', 15)} 幫人回覆</button>` : ''}
           </div>
@@ -223,8 +224,8 @@ function detail(id, query) {
                 <td class="center mono xs">${esc(String(r.at || '').slice(0, 16).replace('T', ' '))}</td>
                 <td class="sm">${esc(r.contact || '')}</td>
                 <td class="right">${can('notice.edit') ? `
-                  <button class="btn btn-xs" data-attend="yes" data-mid="${r.id}">出席</button>
-                  <button class="btn btn-xs" data-attend="no" data-mid="${r.id}">唔出席</button>` : ''}</td>
+                  <button class="btn btn-xs" data-attend="yes" data-mid="${esc(r.id)}">出席</button>
+                  <button class="btn btn-xs" data-attend="no" data-mid="${esc(r.id)}">唔出席</button>` : ''}</td>
               </tr>`).join('')}
               ${rows.extras.map(r => `<tr>
                 <td class="semibold">${esc(r.name)} <span class="xs faint">（名冊以外）</span></td>
@@ -233,7 +234,7 @@ function detail(id, query) {
                   <span class="dot"></span>${esc(attendLabel(r.state))}</span></td>
                 <td class="center mono xs">${esc(String(r.at || '').slice(0, 16).replace('T', ' '))}</td>
                 <td class="sm">${esc(r.contact || '')}</td>
-                <td class="right">${can('notice.edit') ? `<button class="btn btn-xs btn-ghost" data-delsignup="${r.signup?.id || ''}">${icon('trash', 12)}</button>` : ''}</td>
+                <td class="right">${can('notice.edit') ? `<button class="btn btn-xs btn-ghost" data-delsignup="${esc(r.signup?.id || '')}">${icon('trash', 12)}</button>` : ''}</td>
               </tr>`).join('')}
             </tbody>
           </table>
@@ -242,7 +243,7 @@ function detail(id, query) {
 
       ${s.length ? `<div class="card mt-16">
         <div class="card-head"><div><div class="card-title">報名原始紀錄（${s.length}）</div>
-          <div class="card-sub">公開頁收到嘅回覆會顯示喺呢度</div></div>
+          <div class="card-sub">已登入團員入口收到嘅回覆會顯示喺呢度</div></div>
           <button class="btn btn-sm" data-act="export-signups">${icon('download', 15)} CSV</button></div>
         <div style="padding:10px 18px">
           ${s.map(r => `<div class="signup-item">
@@ -250,7 +251,7 @@ function detail(id, query) {
               <div class="xs faint">${esc(summaryOf(r))}</div></div>
             <div class="row gap-6">
               <span class="xs faint">${esc(String(r.at || '').slice(0, 16).replace('T', ' '))}</span>
-              ${can('notice.edit') ? `<button class="btn btn-xs btn-ghost" data-delsignup="${r.id}">${icon('trash', 12)}</button>` : ''}
+              ${can('notice.edit') ? `<button class="btn btn-xs btn-ghost" data-delsignup="${esc(r.id)}">${icon('trash', 12)}</button>` : ''}
             </div></div>`).join('')}
         </div>
       </div>` : ''}
@@ -279,7 +280,7 @@ function detail(id, query) {
 
       <div class="card">
         <div class="card-head"><div><div class="card-title">分享報名（WhatsApp）</div>
-          <div class="card-sub">貼落 WhatsApp 群 → 團員／家長一撳就開通告同報名表（免登入）</div></div></div>
+          <div class="card-sub">貼落本團 WhatsApp 群 → 成員登入後開通告同報名表</div></div></div>
         <div style="padding:14px 16px">
           ${published(n) ? `
             <div class="qr-box" style="width:180px;margin:0 auto 10px" id="noticeQr">${qrImg(url, 180)}</div>
@@ -293,12 +294,12 @@ function detail(id, query) {
               <button class="btn btn-sm btn-block" data-act="qr-svg">${icon('download', 15)} 下載 QR Code（SVG）</button>
               <button class="btn btn-sm btn-block" data-act="qr-poster">${icon('print', 15)} 列印 QR 海報</button>
               ${can('table.sync') ? `
-              <div class="xs semibold muted mt-8" style="border-top:1px solid var(--line-2);padding-top:10px">公開頁睇到最新版本</div>
-              <button class="btn btn-sm btn-block btn-accent" data-act="sync-notice">${icon('refresh', 15)} 同步到公開頁</button>
-              <div class="xs faint center mt-6">公開頁讀你旅團 Sheet 嘅「通告全文」分頁 —— 開新／改完通告撳一次，團員先睇到。</div>` : ''}
+              <div class="xs semibold muted mt-8" style="border-top:1px solid var(--line-2);padding-top:10px">團員入口睇到最新版本</div>
+              <button class="btn btn-sm btn-block btn-accent" data-act="sync-notice">${icon('refresh', 15)} 同步到團員入口</button>
+              <div class="xs faint center mt-6">團員入口經登入 session 讀安全投影 —— 開新／改完通告撳一次，團員先睇到。</div>` : ''}
             </div>` : `
             <div class="sm muted mb-12">發布之後先有分享連結同 QR Code。</div>
-            ${can('notice.publish') ? `<button class="btn btn-primary btn-block" data-act="publish" data-id="${n.id}">${icon('megaphone', 16)} 立即發布</button>` : ''}`}
+            ${can('notice.publish') ? `<button class="btn btn-primary btn-block" data-act="publish" data-id="${esc(n.id)}">${icon('megaphone', 16)} 立即發布</button>` : ''}`}
         </div>
       </div>
 
@@ -309,9 +310,9 @@ function detail(id, query) {
         </div></div>` : ''}
 
       ${can('notice.edit') ? `<div class="card"><div style="padding:14px 16px" class="col gap-8">
-        <button class="btn btn-sm btn-block" data-act="toggle-publish" data-id="${n.id}">${icon('eye', 15)} ${published(n) ? '改回草稿' : '發布'}</button>
-        <button class="btn btn-sm btn-block" data-act="duplicate" data-id="${n.id}">${icon('copy', 15)} 複製成新通告</button>
-        <button class="btn btn-sm btn-block btn-ghost" data-act="del" data-id="${n.id}">${icon('trash', 15)} 刪除</button>
+        <button class="btn btn-sm btn-block" data-act="toggle-publish" data-id="${esc(n.id)}">${icon('eye', 15)} ${published(n) ? '改回草稿' : '發布'}</button>
+        <button class="btn btn-sm btn-block" data-act="duplicate" data-id="${esc(n.id)}">${icon('copy', 15)} 複製成新通告</button>
+        <button class="btn btn-sm btn-block btn-ghost" data-act="del" data-id="${esc(n.id)}">${icon('trash', 15)} 刪除</button>
       </div></div>` : ''}
     </div>
   </div>`;
@@ -434,7 +435,7 @@ function signupsView() {
         <td class="right mono" style="color:var(--danger)">${A.no}</td>
         <td class="right mono">${A.none}</td>
         <td class="mono sm">${esc(n.deadline || '—')}</td>
-        <td class="right"><button class="btn btn-xs" data-open="${n.id}">明細</button></td>
+        <td class="right"><button class="btn btn-xs" data-open="${esc(n.id)}">明細</button></td>
       </tr>`).join('')}</tbody>
     </table></div>
   </div>` : ''}
@@ -443,11 +444,11 @@ function signupsView() {
       <thead><tr><th>時間</th><th>通告</th><th>姓名</th><th>聯絡</th><th>其他</th><th></th></tr></thead>
       <tbody>${rows.map(({ n, r }) => `<tr>
         <td class="mono xs">${esc(String(r.at || '').slice(0, 16).replace('T', ' '))}</td>
-        <td class="sm"><a href="#/notices/${n.id}">${esc(n.title?.zh || '')}</a></td>
+        <td class="sm"><a href="#/notices/${esc(n.id)}">${esc(n.title?.zh || '')}</a></td>
         <td class="semibold sm">${esc(r.name || r.values?.name || '')}</td>
         <td class="sm">${esc(r.values?.contact || r.contact || '')}</td>
         <td class="sm">${esc(summaryOf({ ...r, values: omit(r.values, ['name', 'contact']) }))}</td>
-        <td class="right">${can('notice.edit') ? `<button class="btn btn-xs btn-ghost" data-delsignup="${r.id}" data-notice="${n.id}">${icon('trash', 12)}</button>` : ''}</td>
+        <td class="right">${can('notice.edit') ? `<button class="btn btn-xs btn-ghost" data-delsignup="${esc(r.id)}" data-notice="${esc(n.id)}">${icon('trash', 12)}</button>` : ''}</td>
       </tr>`).join('')}</tbody></table></div>` : empty('users', '未有報名紀錄')}
   </div>`;
 }
@@ -458,47 +459,24 @@ function omit(obj, keys) {
 }
 
 /* ============================================================
-   分享設定
+   登入分享
    ============================================================ */
 function settingsView() {
-  const s = settings().notice || {};
+  const hub = publicPageUrl('members.html', { u: load().unitCode });
   return `
-  <div class="grid g-2">
-    <div class="card"><div class="card-head"><div><div class="card-title">公開頁網址</div>
-      <div class="card-sub">通告會用嘅網址（QR Code / 分享連結用呢個）</div></div></div>
-      <div style="padding:16px 18px">
-        <div class="field"><label class="label">公開頁基礎網址</label>
-          <input class="input" id="n-base" value="${esc(s.publicBaseUrl || '')}" placeholder="例：https://你的網址/notice.html">
-          ${isLegacyUrl(s.publicBaseUrl || '') ? `<div class="xs mt-4" style="color:var(--danger)">⚠ 呢個網址指去舊系統（82venture.vercel.app）——去「<b>公開資料</b>」可以一鍵搬晒所有舊連結去而家呢個站。</div>` : ''}
-          <div class="hint">留空就用 <code>notice.html?u=${esc(load().unitCode)}&n=&lt;通告編號&gt;</code>（同團章公開頁一樣，可上載去任何靜態主機）。</div></div>
-        <div class="field mt-12"><label class="label">預設報名表</label>
-          <div class="sm muted">新通告預設會用：${DEFAULT_FIELDS.map(f => esc(f.label)).join('、')}</div></div>
-        ${can('notice.edit') ? `<button class="btn btn-primary mt-12" data-act="save-settings">${icon('save', 15)} 儲存</button>` : ''}
-      </div>
-    </div>
-
-    <div class="card"><div class="card-head"><div><div class="card-title">報名送去邊？</div>
-      <div class="card-sub">跨裝置收集報名（要一個 Google Apps Script 網址）</div></div></div>
-      <div style="padding:16px 18px">
-        <div class="field"><label class="label">報名收集網址（Apps Script / 任何表單端點）</label>
-          <input class="input" id="n-submit" value="${esc(s.submitUrl || '')}" placeholder="https://script.google.com/macros/s/…/exec">
-          <div class="hint">設定咗：公開頁嘅報名會直接 POST 去你嘅總表（Google Sheet）。
-            未設定：報名會存喺填表人自己嗰部裝置，領袖可以喺該裝置輸出 CSV。
-            Apps Script 範本可以喺「資料管理」下載。</div></div>
-        ${can('notice.edit') ? `<button class="btn btn-primary mt-12" data-act="save-settings">${icon('save', 15)} 儲存</button>` : ''}
-      </div>
-    </div>
-
-    <div class="card"><div class="card-head"><div class="card-title">可以公開分享嘅頁面</div></div>
-      <div style="padding:16px 18px" class="sm">
-        <div class="row-between" style="padding:6px 0"><span><b>通告公開頁</b>（免登入、可報名）</span><code class="xs">notice.html?u=${esc(load().unitCode)}&amp;n=&lt;編號&gt;</code></div>
-        <div class="row-between" style="padding:6px 0"><span><b>團章公開頁</b></span><code class="xs">constitution.html?u=${esc(load().unitCode)}</code></div>
-        <div class="hint mt-8">兩個頁面都係獨立檔案，可以連 <code>data/units/&lt;編號&gt;/</code> 一齊上載去 GitHub Pages／Netlify／學校網頁空間。</div>
-      </div>
+  <div class="card" style="max-width:760px">
+    <div class="card-head"><div><div class="card-title">已登入分享</div>
+      <div class="card-sub">通告同報名一律經團員入口核實身份，唔再設匿名公開頁或外部收集網址</div></div></div>
+    <div style="padding:18px">
+      ${noteBoxHtml(`<b>三道保護：</b>連結只帶人去登入頁；後端用 opaque session 對回本團成員；回覆會綁定該成員，唔採用前端自報姓名／身份。`, 'brand')}
+      <div class="field mt-12"><label class="label">本團團員入口</label>
+        <input class="input" value="${esc(hub)}" readonly>
+        <div class="hint">每張通告的 QR 會指向呢個登入入口內的指定通告。未登入者只會見到登入畫面，唔會收到通告內容。</div></div>
+      <div class="field mt-12"><label class="label">新通告預設報名欄位</label>
+        <div class="sm muted">${DEFAULT_FIELDS.map(f => esc(f.label)).join('、')}</div></div>
     </div>
   </div>`;
 }
-
 /** 由表單讀返所有活動詳情欄位 */
 function theInfoPatch(root) {
   const out = {};
@@ -546,7 +524,7 @@ function editor(n) {
       <div class="card"><div style="padding:18px 20px">
         <div class="grid g-2" style="gap:12px">
           <div class="field"><label class="label">通告類型</label>
-            <select class="select" id="n-type">${TYPES.map(([v, l]) => `<option value="${v}" ${d.type === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></div>
+            <select class="select" id="n-type">${TYPES.map(([v, l]) => `<option value="${esc(v)}" ${d.type === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}</select></div>
           ${infoFieldHtml('eventDate', d)}
           <div class="field" style="grid-column:1/-1"><label class="label">標題（中文） <span class="req">*</span></label>
             <input class="input" id="n-title" value="${esc(d.title?.zh || '')}" placeholder="例：2026 秋季露營 — 報名及須知"></div>
@@ -558,7 +536,7 @@ function editor(n) {
             <textarea class="textarea" id="n-body-en" style="min-height:90px">${esc(d.body?.en || '')}</textarea></div>
         </div>
 
-        <div class="card-sub mt-12" style="border-top:1px solid var(--line-2);padding-top:12px">活動詳情（會顯示喺通告、公開頁、WhatsApp 分享同列印，亦會寫入總表「通告」分頁）</div>
+        <div class="card-sub mt-12" style="border-top:1px solid var(--line-2);padding-top:12px">活動詳情（會顯示喺通告、團員入口、WhatsApp 分享同列印，亦會寫入總表「通告」分頁）</div>
         <div class="grid g-2" style="gap:12px;margin-top:8px">
           ${NOTICE_INFO_FIELDS.filter(f => f.key !== 'eventDate').map(f => infoFieldHtml(f.key, d)).join('')}
         </div>
@@ -582,9 +560,9 @@ function editor(n) {
       <div class="card"><div class="card-head"><div class="card-title">狀態</div></div>
         <div style="padding:14px 16px" class="col gap-8">
           <div>${d.status === 'published' ? '<span class="badge b-ok"><span class="dot"></span>已發布</span>' : '<span class="badge b-warn"><span class="dot"></span>草稿（未發布）</span>'}</div>
-          <button class="btn btn-primary btn-block" data-act="save" data-publish="${d.status === 'published' ? '1' : ''}">${icon('save', 16)} 儲存${d.status === 'published' ? '' : '草稿'}</button>
+          <button class="btn btn-primary btn-block" data-act="save" data-publish="${esc(d.status === 'published' ? '1' : '')}">${icon('save', 16)} 儲存${d.status === 'published' ? '' : '草稿'}</button>
           <button class="btn btn-block" data-act="save-publish">${icon('megaphone', 16)} 儲存並發布</button>
-          ${!isNew ? `<button class="btn btn-block btn-ghost" data-act="del" data-id="${d.id}">${icon('trash', 15)} 刪除</button>` : ''}
+          ${!isNew ? `<button class="btn btn-block btn-ghost" data-act="del" data-id="${esc(d.id)}">${icon('trash', 15)} 刪除</button>` : ''}
         </div>
       </div>
 
@@ -592,8 +570,8 @@ function editor(n) {
         <div style="padding:14px 18px" class="sm muted">
           <ul style="padding-left:18px;line-height:1.85">
             <li>發布後會出現 <b>分享連結 + QR Code</b>，貼落 WhatsApp 群就得</li>
-            <li>公開頁<b>免登入</b>，團員／家長用手機開就見到通告</li>
-            <li>要收報名：喺「分享設定」填 Apps Script 網址（就會自動寫入總表）；<br>未填都收得，只係存在填表人嗰部機</li>
+            <li>連結先要求本團成員登入；未登入者睇唔到內容</li>
+            <li>報名直接用登入身份送到本團後端，唔接受匿名或自報身份</li>
             <li>通告唔會包含任何私人資料</li>
           </ul>
         </div>
@@ -617,10 +595,10 @@ function infoFieldHtml(key, d) {
 function fieldsHtml() {
   return `
     ${draftFields.length ? draftFields.map((f, i) => `
-      <div class="schema-row" data-f="${i}">
+      <div class="schema-row" data-f="${esc(i)}">
         <input class="input" data-k="label" value="${esc(f.label || '')}" placeholder="欄位名稱" style="padding:7px 10px">
         <select class="select" data-k="type" style="padding:7px 10px">
-          ${FIELD_TYPES.map(([v, l]) => `<option value="${v}" ${f.type === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}
+          ${FIELD_TYPES.map(([v, l]) => `<option value="${esc(v)}" ${f.type === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}
         </select>
         <div class="row gap-6">
           <input class="input" data-k="options" value="${esc((f.options || []).join('、'))}" placeholder="選項（用、分隔）"
@@ -628,9 +606,9 @@ function fieldsHtml() {
           <label class="check xs"><input type="checkbox" data-k="required" ${f.required ? 'checked' : ''}> 必填</label>
         </div>
         <div class="row gap-4">
-          <button class="btn btn-xs btn-ghost" data-up="${i}" ${i === 0 ? 'disabled' : ''}>↑</button>
-          <button class="btn btn-xs btn-ghost" data-down="${i}" ${i === draftFields.length - 1 ? 'disabled' : ''}>↓</button>
-          <button class="btn btn-xs btn-ghost" data-delf="${i}">${icon('trash', 12)}</button>
+          <button class="btn btn-xs btn-ghost" data-up="${esc(i)}" ${i === 0 ? 'disabled' : ''}>↑</button>
+          <button class="btn btn-xs btn-ghost" data-down="${esc(i)}" ${i === draftFields.length - 1 ? 'disabled' : ''}>↓</button>
+          <button class="btn btn-xs btn-ghost" data-delf="${esc(i)}">${icon('trash', 12)}</button>
         </div>
       </div>`).join('') : '<div class="sm faint">未有欄位（可以唔加，純粹發布通告）</div>'}`;
 }
@@ -639,10 +617,8 @@ function fieldsHtml() {
    公開網址
    ============================================================ */
 export function publicUrl(n) {
-  const s = settings().notice || {};
-  const file = s.publicBaseUrl || 'notice.html';
-  const sep = file.includes('?') ? '&' : '?';
-  return `${file}${sep}u=${encodeURIComponent(load().unitCode)}&n=${encodeURIComponent(n.id)}`;
+  const hub = publicPageUrl('members.html', { u: load().unitCode });
+  return `${hub}#/notice/${encodeURIComponent(n.id)}`;
 }
 /* ============================================================
    分享（執委貼落 WhatsApp 群 → 團員／家長直接報名）
@@ -681,10 +657,10 @@ export function mount(root, params) {
   root.querySelectorAll('[data-nf]').forEach(b => b.addEventListener('click', () => { filter = b.dataset.nf; refresh(); }));
   root.querySelectorAll('[data-open]').forEach(b => b.addEventListener('click', () => go('#/notices/' + b.dataset.open)));
   root.querySelectorAll('[data-editn]').forEach(b => b.addEventListener('click', () => go('#/notices/edit/' + b.dataset.editn)));
-  root.querySelectorAll('[data-share]').forEach(b => b.addEventListener('click', () => shareDialog(find('notices', b.dataset.share))));
+  root.querySelectorAll('[data-share]').forEach(b => b.addEventListener('click', () => shareDialog(visibleNotice(b.dataset.share))));
   /* 一按就記錄出席 / 唔出席（防呆：會先寫入呢部裝置，可以撳「還原」） */
   root.querySelectorAll('[data-attend]').forEach(b => b.addEventListener('click', () => {
-    const n = find('notices', params.id);
+    const n = visibleNotice(params.id);
     const mid = b.dataset.mid;
     const state = b.dataset.attend;
     if (!n || !mid) return;
@@ -696,7 +672,7 @@ export function mount(root, params) {
   root.querySelectorAll('[data-delsignup]').forEach(b => b.addEventListener('click', async () => {
     const noticeId = b.dataset.notice || params.id;
     if (!(await confirmDlg({ title: '刪除報名', danger: true, okText: '確定刪除', message: '確定刪除呢份報名紀錄？' }))) return;
-    const n = find('notices', noticeId);
+    const n = visibleNotice(noticeId);
     if (!n) return;
     update('notices', n.id, { signups: signupsOf(n).filter(x => x.id !== b.dataset.delsignup) });
     toast('已刪除報名', 'ok'); refresh();
@@ -704,7 +680,7 @@ export function mount(root, params) {
 
   // 相片檢視
   root.querySelectorAll('[data-photo]').forEach(el => el.addEventListener('click', () => {
-    const n = find('notices', params.id);
+    const n = visibleNotice(params.id);
     photoViewer(n?.attachments || [], Number(el.dataset.i));
   }));
 
@@ -740,9 +716,8 @@ export function mount(root, params) {
           needSignup: root.querySelector('#n-need').checked,
           fields: draftFields,
           attachments: draftPhotos.photos,
-          /* ★「邊個睇到」（五級）—— 通告預設對外公開（免登入睇到，同而家一樣）。
-             去側邊欄「公開資料」可以一眼睇晒而家公開緊啲乜。 */
-          vis: root.querySelector('#n-vis')?.value || 'other'
+          /* 內容可見範圍只接受已登入身份；舊匿名 other 不再產生。 */
+          vis: root.querySelector('#n-vis')?.value || 'member'
         };
         if (act === 'save-publish' || b.dataset.publish === '1') {
           patch.status = 'published';
@@ -778,7 +753,7 @@ export function mount(root, params) {
     /* 「開新通告」掣（列表頁／頁頭）：一定要喺讀 params.id 之前處理，
        否則 params.id 唔係通告 id，find() 會回 undefined（跟 views/members.js 嘅寫法） */
     if (act === 'new') { draft = null; draftPhotos = { photos: [] }; return go('#/notices/new'); }
-    const n = find('notices', params.id);
+    const n = visibleNotice(params.id);
     if (act === 'publish') { update('notices', n.id, { status: 'published', publishAt: n.publishAt || todayISO() }); toast('已發布', 'ok'); refresh(); }
     if (act === 'toggle-publish') { update('notices', n.id, { status: published(n) ? 'draft' : 'published', publishAt: n.publishAt || todayISO() }); refresh(); }
     if (act === 'copy-link') {
@@ -814,7 +789,7 @@ export function mount(root, params) {
     if (act === 'qr-poster') { if (!n) return; qrPoster(n); }
     if (act === 'add-attend-field') {
       const updated = ensureAttendField(n);
-      toast('已加「出席與否」欄（公開頁即刻生效）', 'ok');
+      toast('已加「出席與否」欄（團員入口即刻生效）', 'ok');
       refresh();
       return;
     }
@@ -840,7 +815,7 @@ export function mount(root, params) {
     if (act === 'add-signup') {
       const r = await modal({
         title: '幫人報名', sub: n.title?.zh || '',
-        body: `<div class="col gap-10">
+        trustedBodyHtml: `<div class="col gap-10">
           ${(n.fields || []).map(f => `<div class="field"><label class="label">${esc(f.label)}${f.required ? ' <span class="req">*</span>' : ''}</label>
             ${fieldInput(f, '')}</div>`).join('')}
         </div>`,
@@ -848,20 +823,11 @@ export function mount(root, params) {
           { label: '加入', class: 'btn-primary', onClick: el => collectFields(el, n.fields) }]
       });
       if (!r) return;
-      const cur = find('notices', n.id);
+      const cur = visibleNotice(n.id);
       add_signup(cur || n, r);
       toast('已加入報名', 'ok'); refresh();
     }
-    if (act === 'save-settings') {
-      const db = load();
-      db.settings = { ...db.settings, notice: {
-        ...(db.settings.notice || {}),
-        publicBaseUrl: root.querySelector('#n-base').value.trim(),
-        submitUrl: root.querySelector('#n-submit').value.trim()
-      } };
-      commit(); toast('已儲存分享設定', 'ok');
-    }
-    /* 「同步到公開頁」：公開頁（notice.html）由後端嘅「資料庫」分頁讀已發布通告，
+    /* 「同步到團員入口」：團員入口由後端安全投影讀已發布通告，
        所以呢個掣 ＝ 行**同一條**儲存路（saveWithDialog）。冇另一條寫入路。 */
     if (act === 'sync-notice') {
       const keep = b.innerHTML;
@@ -870,7 +836,7 @@ export function mount(root, params) {
       try {
         const { saveWithDialog } = await import('./syncdialog.js');
         const r = await saveWithDialog({ silent: true, toastOk: false });
-        if (r?.ok) toast('已儲存到後端 —— 公開頁而家見到最新通告', 'ok');
+        if (r?.ok) toast('已儲存到後端 —— 團員入口而家見到最新通告', 'ok');
         else if (!['busy', 'no_base', 'not_configured'].includes(r?.reason)) toast('儲存失敗：' + (r?.error || '寫唔入後端') + '（' + hint + '）', 'err');
       } catch (e) {
         toast('儲存失敗：' + (e?.message || e) + '（' + hint + '）', 'err');
@@ -882,7 +848,7 @@ export function mount(root, params) {
     if (act === 'preview-public') {
       const first = notices().find(published) || notices()[0];
       if (!first) { toast('未有通告', 'err'); return; }
-      window.open(publicUrl(first), '_blank');
+      window.open(publicUrl(first), '_blank', 'noopener');
     }
   }));
 }
@@ -925,7 +891,22 @@ function syncFields(root) {
   draft.fields = draftFields;
 }
 
-/* ---------- 欄位輸入（公開頁同內部都用） ---------- */
+/* ---------- 欄位輸入（團員入口同內部都用） ---------- */
+const RESERVED_FIELD_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
+function validNoticeFields(fields) {
+  const seen = new Set();
+  return (Array.isArray(fields) ? fields : []).filter(f => {
+    const key = String(f?.key || '').trim();
+    if (!key || key.length > 100 || /[\u0000-\u001f\u007f]/.test(key)
+      || RESERVED_FIELD_KEYS.has(key) || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+function noticeFieldsByKey(container, key) {
+  return [...container.querySelectorAll('[data-fk]')].filter(el => el.dataset.fk === String(key));
+}
+
 export function fieldInput(f, value) {
   const v = value === undefined || value === null ? '' : value;
   const req = f.required ? 'required' : '';
@@ -938,17 +919,17 @@ export function fieldInput(f, value) {
   if (f.type === 'check') return `<div class="col gap-6">${(f.options || []).map(o => `
     <label class="check"><input type="checkbox" data-fk="${esc(f.key)}" value="${esc(o)}" ${Array.isArray(v) && v.includes(o) ? 'checked' : ''}> ${esc(o)}</label>`).join('')}</div>`;
   const type = f.type === 'number' ? 'number' : f.type === 'date' ? 'date' : f.type === 'tel' ? 'tel' : f.type === 'email' ? 'email' : 'text';
-  return `<input class="input" type="${type}" data-fk="${esc(f.key)}" ${req} value="${esc(v)}" ${f.type === 'number' ? 'step="0.01"' : ''}>`;
+  return `<input class="input" type="${esc(type)}" data-fk="${esc(f.key)}" ${req} value="${esc(v)}" ${f.type === 'number' ? 'step="0.01"' : ''}>`;
 }
 export function collectFields(container, fields) {
-  const out = {};
-  (fields || []).forEach(f => {
-    const els = container.querySelectorAll(`[data-fk="${f.key}"]`);
+  const out = Object.create(null);
+  validNoticeFields(fields).forEach(f => {
+    const els = noticeFieldsByKey(container, f.key);
     if (!els.length) return;
     if (f.type === 'check') {
-      out[f.key] = Array.from(els).filter(e => e.checked).map(e => e.value);
+      out[f.key] = els.filter(e => e.checked).map(e => e.value);
     } else if (f.type === 'radio') {
-      const c = Array.from(els).find(e => e.checked);
+      const c = els.find(e => e.checked);
       out[f.key] = c ? c.value : '';
     } else {
       out[f.key] = els[0].value.trim();
@@ -957,7 +938,7 @@ export function collectFields(container, fields) {
   return out;
 }
 /**
- * 記錄某位用戶嘅出席與否（內部／公開頁收到嘅回覆以外，領袖可以手動改）
+ * 記錄某位用戶嘅出席與否（內部／已登入團員入口收到嘅回覆以外，領袖可以手動改）
  * 做法：喺該張通告嘅 signups 入面加／改一筆，標記 manual。
  */
 export function markAttendance(n, m, state) {
@@ -1008,25 +989,21 @@ async function shareDialog(n) {
     if (!ok) return;
     update('notices', n.id, { status: 'published', publishAt: n.publishAt || todayISO() });
     refresh();
-    n = find('notices', n.id);
+    n = visibleNotice(n.id);
   }
   const url = publicUrl(n);
   const A = attendanceSummary(n);
   await modal({
     title: '分享通告（WhatsApp 報名）', sub: n.title?.zh || '', wide: true,
-    body: `
+    trustedBodyHtml: `
       <div class="grid g-2" style="gap:14px">
         <div class="center"><div class="qr-box" style="width:220px;margin:0 auto">${qrImg(url, 220)}</div>
-          <div class="xs faint mt-8">團員／家長掃 QR 就開到通告${n.needSignup ? '同報名表' : ''}</div>
+          <div class="xs faint mt-8">本團成員掃 QR、登入後先開到通告${n.needSignup ? '同報名表' : ''}</div>
           ${n.needSignup ? `<div class="xs faint mt-4">已報名 ${signupsOf(n).length} 份 · 出席 ${A.yes} · 唔出席 ${A.no} · 未回覆 ${A.none}</div>` : ''}
         </div>
         <div class="col gap-10">
-          <div class="field"><label class="label">${n.needSignup ? '報名連結（免登入）' : '通告連結（免登入）'}</label>
+          <div class="field"><label class="label">${n.needSignup ? '報名連結（要登入）' : '通告連結（要登入）'}</label>
             <input class="input" id="sh-url" value="${esc(url)}" readonly></div>
-          ${isLegacyUrl(url) ? `<div class="note-box danger">${icon('alert', 15)}<div>
-            <b>⚠ 呢條連結指去舊系統（82venture.vercel.app）！</b>舊站退役之後團員掃唔到嘢——
-            唔好派住，先去「<b>公開資料</b>」撳「一鍵轉去而家呢個網址」，再返嚟分享。
-          </div></div>` : ''}
           <button class="btn btn-primary btn-block" data-sh="wa-open">${icon('send', 15)} 用 WhatsApp 分享</button>
           <button class="btn btn-block" data-sh="copy">${icon('copy', 15)} 複製連結</button>
           <button class="btn btn-block" data-sh="wa-copy">${icon('copy', 15)} 複製 WhatsApp 文字</button>
@@ -1035,7 +1012,7 @@ async function shareDialog(n) {
           <div class="field"><label class="label">文字預覽（可以自己改完再複製）</label>
             <textarea class="textarea" id="sh-text" rows="7">${esc(shareText(n))}</textarea></div>
           <div class="hint">「用 WhatsApp 分享」會直接開 WhatsApp（手機／網頁版），文字同連結已經填好；
-            團員撳連結就開通告${n.needSignup ? '、填名報名' : ''}，免登入。</div>
+            團員撳連結後登入就開通告${n.needSignup ? '、填名報名' : ''}。未登入者唔會收到內容。</div>
         </div>
       </div>`,
     actions: [{ label: '關閉', class: 'btn', value: null }],
@@ -1070,7 +1047,7 @@ async function exportDialog(n) {
   const A = attendanceSummary(n);
   await modal({
     title: '輸出通告', sub: n.title?.zh || '', wide: true,
-    body: `
+    trustedBodyHtml: `
       <div class="grid g-2" style="gap:14px">
         <div>
           <div class="xs semibold muted mb-8">連回覆出席與否一齊出（建議）</div>
@@ -1121,7 +1098,7 @@ function qrPoster(n) {
   printDoc({
     title: n.title?.zh || '通告',
     org: profile().name,
-    bodyHtml: `<div style="text-align:center">
+    trustedBodyHtml: `<div style="text-align:center">
       <div class="doc-title" style="font-size:22pt;letter-spacing:.2em;margin-bottom:4pt">${esc(n.title?.zh || '通告')}</div>
       <div class="doc-sub">${esc(profile().name || '')}${n.eventDate ? ' · ' + esc(n.eventDate) : ''}${n.deadline ? ' · 回覆截止 ' + esc(n.deadline) : ''}</div>
       <div style="margin:18pt auto;width:230px">${qrSvg(url, 7, 2)}</div>
@@ -1186,13 +1163,13 @@ export function exportNoticeFullWord(n) {
   toWord({
     filename: `通告連出席回覆_${(n.title?.zh || 'untitled').slice(0, 20)}_${stamp()}.doc`,
     title: (n.title?.zh || '通告') + '（連出席回覆）', org: profile().name,
-    bodyHtml: noticeDocHtml(n, { withReplies: true })
+    trustedBodyHtml: noticeDocHtml(n, { withReplies: true })
   });
 }
 export function printNoticeFull(n) {
   printDoc({
     title: (n.title?.zh || '通告') + '（連出席回覆）', org: profile().name,
-    bodyHtml: noticeDocHtml(n, { withReplies: true })
+    trustedBodyHtml: noticeDocHtml(n, { withReplies: true })
   });
 }
 export function exportAttendanceCsv(n) {
@@ -1216,7 +1193,7 @@ export function exportAttendanceWord(n) {
   toWord({
     filename: `出席回覆表_${(n.title?.zh || n.id).slice(0, 20)}_${stamp()}.doc`,
     title: '出席回覆表', org: profile().name,
-    bodyHtml: `<div class="doc-head"><div class="doc-title">出席回覆表</div>
+    trustedBodyHtml: `<div class="doc-head"><div class="doc-title">出席回覆表</div>
       <div class="doc-sub">${esc(n.title?.zh || '')} · ${esc(n.eventDate || '')} · 統計 ${esc(nowStamp())}</div></div>
       ${attendanceDocHtml(n)}`
   });
@@ -1245,7 +1222,7 @@ export function exportNoticeStandalone(n) {
   const html = toStandaloneHtml({
     filename: `通告_${(n.title?.zh || n.id).slice(0, 20)}_${stamp()}.html`,
     title: n.title?.zh || '通告', org: profile().name,
-    bodyHtml: noticeDocHtml(n, { withReplies: true })
+    trustedBodyHtml: noticeDocHtml(n, { withReplies: true })
   });
   toast('已輸出單一 HTML（可離線／可上載）', 'ok');
   return html;
@@ -1254,11 +1231,11 @@ export function exportNoticeStandalone(n) {
 export function exportNoticeWord(n) {
   toWord({
     filename: `通告_${(n.title?.zh || 'untitled').slice(0, 20)}_${stamp()}.doc`,
-    title: n.title?.zh || '通告', org: profile().name, bodyHtml: noticeBodyHtml(n)
+    title: n.title?.zh || '通告', org: profile().name, trustedBodyHtml: noticeBodyHtml(n)
   });
 }
 export function printNotice(n) {
-  printDoc({ title: n.title?.zh || '通告', org: profile().name, bodyHtml: noticeBodyHtml(n) });
+  printDoc({ title: n.title?.zh || '通告', org: profile().name, trustedBodyHtml: noticeBodyHtml(n) });
 }
 export function exportSignupsCsv(groups, filename) {
   const rows = [];
@@ -1289,7 +1266,7 @@ export function exportAllSignupsWord() {
       <td>${esc(String(r.at || '').slice(0, 16).replace('T', ' '))}</td></tr>`).join('')}</tbody></table>`).join('');
   toWord({
     filename: `通告報名總表_${stamp()}.doc`, title: '通告報名總表', org: profile().name,
-    bodyHtml: `<div class="doc-head"><div class="doc-title">通告報名總表</div>
+    trustedBodyHtml: `<div class="doc-head"><div class="doc-title">通告報名總表</div>
       <div class="doc-sub">${esc(profile().name || '')} · ${esc(todayISO())}</div></div>${body || '<p>（未有報名）</p>'}`
   });
   toast('已輸出 Word', 'ok');

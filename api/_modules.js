@@ -1,28 +1,45 @@
-// 支部模組註冊：只作 server-side capability discovery；真正資料 action 仍須由 GAS 驗證 session/role。
-export const MODULES = Object.freeze({
-  notices: { id: 'notices', label: '通告', defaultEnabled: true, roles: ['leader', 'admin', 'exco', 'member'] },
-  calendar: { id: 'calendar', label: '行事曆', defaultEnabled: true, roles: ['leader', 'admin', 'exco', 'member'] },
-  inventory: { id: 'inventory', label: '物資', defaultEnabled: true, roles: ['leader', 'admin', 'exco', 'member'] },
-  finance: { id: 'finance', label: '財務', defaultEnabled: true, roles: ['leader', 'admin', 'exco'] },
-  members: { id: 'members', label: '團員及帳戶', defaultEnabled: true, roles: ['leader', 'admin', 'exco'] },
-  progress: { id: 'progress', label: '進度', defaultEnabled: true, roles: ['leader', 'admin', 'exco', 'member'] }
-});
+// Branch-schema capability discovery only. Effective grants live in the branch DB and
+// are always rechecked by GAS against a verified session; this metadata is never an
+// authorization decision and does not define platform-global identities.
+import {
+  ACTIVE_BRANCH_SCHEMA_ID, SIDEBAR_MODULES, defaultModuleGrant, roleDef
+} from '../assets/js/lib/branch-config.js';
+
+export const BRANCH_SCHEMA_ID = ACTIVE_BRANCH_SCHEMA_ID;
+export const MODULES = Object.freeze(Object.fromEntries(
+  SIDEBAR_MODULES.map(module => [module.id, Object.freeze({
+    id: module.id, label: module.label, defaultEnabled: true
+  })])
+));
 
 function list(value) {
   return String(value || '').split(',').map(x => x.trim().toLowerCase()).filter(Boolean);
 }
 
+/**
+ * Return branch-local defaults for discovery/backward compatibility. The caller's
+ * role is intentionally resolved through this branch schema rather than a universal
+ * role array. db.accessControl from authenticated GAS remains authoritative.
+ */
 export function moduleState(unit, role) {
   const disabled = new Set(list(unit?.disabledModules || process.env[`TROOP_${String(unit?.code || '').toUpperCase()}_DISABLEDMODULES`]));
   const enabled = new Set(list(unit?.enabledModules || process.env[`TROOP_${String(unit?.code || '').toUpperCase()}_MODULES`]));
-  return Object.values(MODULES).map(m => ({
-    ...m,
-    enabled: disabled.has(m.id) ? false : (enabled.size ? enabled.has(m.id) : m.defaultEnabled),
-    allowed: (m.roles || []).includes(String(role || '').toLowerCase())
-  }));
+  const identity = roleDef(role);
+  return SIDEBAR_MODULES.map(module => {
+    const configured = disabled.has(module.id) ? false : (enabled.size ? enabled.has(module.id) : true);
+    const grant = identity ? defaultModuleGrant(module, identity) : { show: false, read: false, edit: false };
+    return {
+      ...MODULES[module.id],
+      branchSchema: ACTIVE_BRANCH_SCHEMA_ID,
+      enabled: configured,
+      grant,
+      /* Compatibility field for old discovery clients; not an authorization result. */
+      allowed: configured && grant.read === true
+    };
+  });
 }
 
 export function isModuleAllowed(unit, role, id) {
-  const item = moduleState(unit, role).find(m => m.id === String(id || '').toLowerCase());
-  return !!item?.enabled && !!item?.allowed;
+  const item = moduleState(unit, role).find(module => module.id === String(id || '').toLowerCase());
+  return !!item?.enabled && item.grant?.read === true;
 }

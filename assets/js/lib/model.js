@@ -3,31 +3,33 @@
    （會議狀態、團員／生日、財務統計、物資庫存、團章）
    ============================================================ */
 
-import { load, collection, find, commit } from './store.js';
+import { load, collection, find } from './store.js';
 import { unitEntry } from './units.js';
 import { isExecUrl, normExecUrl } from './gateway.js';
 import { todayISO, parseBirthday, daysUntilBirthday, ageFrom, turningAge } from './dates.js';
 import { agmIsDefault, unitFYOf, scoutFYLabel, scoutFYRange, inRange } from './fiscal.js';
+import { roleLevel, rolesAscending } from './branch-config.js';
 export * from './fiscal.js';
 
 /* ---------------- 基本 ---------------- */
 export function settings() { return load().settings || {}; }
 export function profile() { return load().profile || load().unit || {}; }
-export function currency() { return settings().currency || 'HK$'; }
+export function currency() {
+  const value = String(settings().currency || 'HK$').trim();
+  /* Currency labels are rendered in many text/HTML summaries. Keep this helper
+     plain-text-safe so an imported settings object cannot turn money() into markup. */
+  if (!value || value.length > 16 || /[<>&"'`\\\u0000-\u001f\u007f]/.test(value)) return 'HK$';
+  return value;
+}
 export function money(n) {
   const v = Number(n) || 0;
   return currency() + v.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 }
 
-/* ---------------- 公開頁連結（成員免登入用） ----------------
-   entry.html      手機記一筆（收支申報）
-   borrow.html     物資借用申請
-   notice.html     通告 + 回覆出席與否
-   constitution.html 團章
-   全部都可以喺「系統 → 旅團設定」或者「成員連結」頁改做自己嘅網址。 */
-/** 旅團公開連結（Drive／相簿／IG／FB／網頁），團員登入後先見到 */
+/* ---------------- 已登入團員入口 ---------------- */
+/** 旅團內部連結（Drive／相簿／IG／FB／網頁），只有 hub session 核實後先投影。 */
 export function troopPublicLinks() {
-  const L = settings().troopLinks || {};
+  const links = settings().troopLinks || {};
   const rows = [
     ['drive', 'Google Drive', '雲端硬碟／共用資料夾'],
     ['album', '相簿', '活動相／相簿連結'],
@@ -36,197 +38,73 @@ export function troopPublicLinks() {
     ['website', '網頁', '旅團／主辦機構網站'],
     ['whatsapp', 'WhatsApp', '聯絡／群組連結']
   ];
-  return rows.map(([id, label, desc]) => ({
-    id, label, desc, url: String(L[id] || '').trim()
-  })).filter(x => x.url);
+  return rows.map(([id, label, desc]) => ({ id, label, desc, url: String(links[id] || '').trim() }))
+    .filter(item => item.url);
 }
 
+/**
+ * 建立本站路線。舊函式名保留畀現有呼叫者，但唔再接受資料庫覆寫 host；
+ * 敏感內容只可以由同源 members.html 登入入口取得。
+ */
 export function publicPageUrl(file, params = {}) {
-  const s = settings().publicLinks || {};
   const origin = (typeof location !== 'undefined' && location.origin && location.origin !== 'null')
-    ? location.origin + String(location.pathname).replace(/[^/]*$/, '')
-    : '';
-  const target = s[file] || s.base || (origin ? origin + file : file);
+    ? location.origin + String(location.pathname).replace(/[^/]*$/, '') : '';
+  const fallback = origin ? origin + String(file || '') : String(file || '');
   let url;
-  try { url = new URL(target, origin || undefined); }
-  catch { return target; }
-  const p = { ...params };
-  /* 自助後端（?be=）：平台伺服器端未登記呢個旅團嗰陣，公開頁經 /api/proxy
-     一定 404（「找不到此旅團」）—— 團章／通告／記帳／借用條條都死。
-     而家由領袖呢邊把旅團自己嘅 /exec 附埋入連結（呢啲連結本來就係派畀團員嘅，
-     /exec 本身又係「任何人」存取，所以冇多洩露任何嘢；API Key 永遠唔會附）。
-     平台已經登記好（backendReady）就唔使附，保持網址簡潔。 */
-  if (p.be === undefined) {
-    const be = selfServeExec();
-    if (be) p.be = be;
+  try { url = new URL(fallback, origin || undefined); }
+  catch { return fallback; }
+  const next = { ...params };
+  if (next.be === undefined) {
+    const backend = selfServeExec();
+    if (backend) next.be = backend;
   }
-  Object.entries(p).forEach(([k, v]) => {
-    if (v !== undefined && v !== null && v !== '') url.searchParams.set(k, v);
+  Object.entries(next).forEach(([key, value]) => {
+    if (value !== undefined && value !== null && value !== '') url.searchParams.set(key, value);
   });
   return url.toString();
 }
 
-/**
- * 領袖自己登記咗嘅後端 /exec（「總表同步 → 同步設定」嗰格）。
- * 只喺**平台伺服器端未有登記**嗰陣先回傳 —— 平台接線正常就用返正路。
- * @returns {string} 合格嘅 /exec，或者 ''
- */
+/** 領袖自己登記的 /exec；只作登入後端 routing，永遠唔附 API Key。 */
 export function selfServeExec() {
   try {
     const db = load();
     const url = String(db?.sync?.url || db?.backend?.gasUrl || '').trim();
     if (!isExecUrl(url)) return '';
-    const code = db?.unitCode || '';
-    const entry = code ? unitEntry(code) : null;
-    if (entry?.backendReady === true) return '';       // 平台已登記 → 唔使附
-    return normExecUrl(url);
+    const entry = db?.unitCode ? unitEntry(db.unitCode) : null;
+    return entry?.backendReady === true ? '' : normExecUrl(url);
   } catch { return ''; }
 }
 
-/** 公開連結而家會行邊條路（「成員連結」頁顯示用，等領袖睇到條 link 係咪真係用得） */
+/** 團員入口會行的平台接線；呢個只描述 routing，唔代表匿名授權。 */
 export function publicLinkRoute() {
   const db = load();
-  const code = db?.unitCode || '';
-  const entry = code ? unitEntry(code) : null;
-  if (entry?.backendReady === true) {
-    return { route: 'proxy', label: '平台代理', ok: true,
-      detail: '旅團已喺平台伺服器端登記，公開頁經 /api/proxy 讀寫後端（正路）。' };
-  }
-  const be = selfServeExec();
-  if (be) {
-    return { route: 'direct', label: '旅團自己嘅 /exec', ok: true,
-      detail: '平台未登記呢個旅團，所以連結附咗你自己嘅 /exec（?be=）—— 團章／通告／記帳／借用照樣用到。' };
-  }
+  const entry = db?.unitCode ? unitEntry(db.unitCode) : null;
+  if (entry?.backendReady === true) return { route: 'proxy', label: '平台代理', ok: true,
+    detail: '團員入口經 /api/proxy 到支部後端；內容仍要先核實個人登入 session。' };
+  const backend = selfServeExec();
+  if (backend) return { route: 'direct', label: '旅團自己嘅 /exec', ok: true,
+    detail: '連結只附支部 /exec 作 routing；後端仍會核實 opaque session，API Key 唔會放入網址。' };
   return { route: 'none', label: '未接後端', ok: false,
-    detail: '平台未登記呢個旅團，你自己都未貼 /exec —— 公開頁會讀唔到後端資料。'
-      + '去「資料管理 → 總表同步 → 同步設定」貼 /exec（＋API Key）就會即刻修好。' };
+    detail: '未有平台代理或支部 /exec，團員登入後亦無法取得安全投影。請先完成總表同步設定。' };
 }
-/** 成員用嘅公開連結清單（「成員連結」頁同 QR 都用呢個） */
+
+/** 對外只派一條登入入口；通告／團章用 hash 路線進入同一 authenticated hub。 */
 export function memberLinks() {
   const code = load().unitCode;
-  const out = [
-    {
-      id: 'hub', icon: 'home', label: '團員入口（掃一次就齊）',
-      desc: '只需派呢一條：行事曆、回覆出席、試卷、影單據、借物資、團章、通告。QR／WhatsApp 都用呢條。',
-      url: publicPageUrl('members.html', { u: code })
-    },
-    {
-      id: 'entry', icon: 'camera', label: '收支申報（手機記一筆）',
-      desc: '成員影相 → 揀欄目 → 金額 → 送出，司庫批核後自動入帳（取代 Google Form）',
-      url: publicPageUrl('entry.html', { u: code })
-    },
-    {
-      id: 'borrow', icon: 'grid', label: '物資借用申請',
-      desc: '成員自己申請借物資，執委喺 APP 批核；借出／歸還自動加減庫存',
-      url: publicPageUrl('borrow.html', { u: code })
-    },
-    {
-      id: 'constitution', icon: 'book', label: '團章（公開閱讀）',
-      desc: '免登入閱讀最新版團章，可輸出 Word / PDF',
-      url: publicPageUrl('constitution.html', { u: code })
-    }
-  ];
-  /* ★ 通告有「邊個睇到」：呢度列嘅係**派得出去**嘅公開連結（免登入），
-     所以淨係列「對外公開」嗰啲；收窄咗嘅通告唔會喺呢度出現（唔好派錯出去）。 */
-  collection('notices').filter(n => n.status === 'published' && String(n.vis || 'other') === 'other').slice(0, 40).forEach(n => {
-    out.push({
-      id: 'notice:' + n.id, icon: 'megaphone', label: `通告：${n.title?.zh || n.id}`,
-      desc: `免登入閱讀${n.needSignup ? '＋回覆出席與否' : ''}${n.deadline ? `（截止 ${n.deadline}）` : ''}`,
-      url: publicPageUrl('notice.html', { u: code, n: n.id })
-    });
-  });
-  return out;
+  return [{
+    id: 'hub', icon: 'home', label: '團員登入入口',
+    desc: '行事曆、回覆、試卷、通告同已發布團章全部先登入，後端再按身份投影。',
+    url: publicPageUrl('members.html', { u: code })
+  }];
 }
 
-/* ---------------- 舊系統遷移（82venture → ecportal） ----------------
-   82venture.vercel.app 係舊嘅單旅團系統，退役之後上面嘅公開頁
-   （notice.html / entry.html / borrow.html / constitution.html）會死晒。
-   但各旅團資料庫入面儲存咗嘅公開網址（settings.notice.publicBaseUrl、
-   settings.publicBaseUrl、settings.publicLinks.*）好可能仲指去舊站 ——
-   嗰陣時舊站就係正站，個個都係咁填，仲會跟埋後端同步去每一部機。
-   呢度幫手搵出嚟＋一鍵搬去而家呢個站。
-   （新舊站嘅公開頁檔名一樣，所以淨係換 host 就得，path＋參數照留。） */
-
-/** 已經退役嘅舊站（唔好再派呢啲 host 嘅連結／QR 出街） */
+/** 已退役舊站；只供 main.js 阻止用家繼續使用舊部署。 */
 export const LEGACY_HOSTS = ['82venture.vercel.app'];
-/** 新正站（舊站截停畫面會指去呢度；轉 custom domain 嗰陣記得改埋呢度） */
 export const CANONICAL_HOST = 'ecportal.vercel.app';
 export const canonicalUrl = () => `https://${CANONICAL_HOST}/`;
-
-function hostOf(u) {
-  try { return new URL(String(u || ''), 'https://x.invalid').hostname.toLowerCase(); }
-  catch { return ''; }
-}
-
-/** 呢條連結係咪指去舊站？（相對路徑／留空＝唔係） */
-export function isLegacyUrl(u) {
-  const h = hostOf(u);
-  return !!h && h !== 'x.invalid' && LEGACY_HOSTS.includes(h);
-}
-
-/** 而家係咪喺舊站開緊？（main.js boot 截停用） */
 export function onLegacyHost() {
-  try {
-    return LEGACY_HOSTS.includes(String(location.hostname || '').toLowerCase());
-  } catch { return false; }
-}
-
-/** 把舊站網址換成而家呢個站（淨換 host；唔係舊站網址就原樣回傳） */
-export function migrateLegacyUrl(u) {
-  try {
-    if (!isLegacyUrl(u)) return String(u || '');
-    const cur = (typeof location !== 'undefined' && location.origin && location.origin !== 'null')
-      ? location.origin : '';
-    if (!cur) return String(u);
-    const next = new URL(String(u));
-    const curU = new URL(cur);
-    next.protocol = curU.protocol;
-    next.host = curU.host;
-    return next.toString();
-  } catch { return String(u || ''); }
-}
-
-/** 搵出資料庫入面所有指去舊站嘅公開網址設定（[{ key, label, url }]） */
-export function findLegacyPublicUrls() {
-  const out = [];
-  const s = settings() || {};
-  const push = (key, label, url) => {
-    if (url && isLegacyUrl(url)) out.push({ key, label, url: String(url) });
-  };
-  push('notice.publicBaseUrl', '通告公開頁基礎網址', s.notice?.publicBaseUrl);
-  push('publicBaseUrl', '團章公開網址', s.publicBaseUrl);
-  const pl = s.publicLinks || {};
-  push('publicLinks.base', '公開頁基礎網址', pl.base);
-  for (const f of ['entry.html', 'borrow.html', 'notice.html', 'constitution.html']) {
-    push('publicLinks.' + f, `公開頁 ${f}`, pl[f]);
-  }
-  return out;
-}
-
-/** 一鍵搬：把上面搵到嘅全部換成而家呢個站。回傳搬咗幾多個。 */
-export function migrateLegacyPublicUrls() {
-  const found = findLegacyPublicUrls();
-  if (!found.length) return 0;
-  const db = load();
-  db.settings = { ...(db.settings || {}) };
-  for (const { key } of found) {
-    if (key === 'notice.publicBaseUrl') {
-      db.settings.notice = {
-        ...(db.settings.notice || {}),
-        publicBaseUrl: migrateLegacyUrl(db.settings.notice?.publicBaseUrl)
-      };
-    } else if (key === 'publicBaseUrl') {
-      db.settings.publicBaseUrl = migrateLegacyUrl(db.settings.publicBaseUrl);
-    } else if (key.startsWith('publicLinks.')) {
-      const k = key.slice('publicLinks.'.length);
-      db.settings.publicLinks = {
-        ...(db.settings.publicLinks || {}),
-        [k]: migrateLegacyUrl(db.settings.publicLinks?.[k])
-      };
-    }
-  }
-  commit();
-  return found.length;
+  try { return LEGACY_HOSTS.includes(String(location.hostname || '').toLowerCase()); }
+  catch { return false; }
 }
 
 /* ---------------- 會議 ---------------- */
@@ -262,12 +140,12 @@ export function statusBadge(s) {
  *   `chief`（團長）每個旅團**永遠只有一位**，係最高權限，可以轉移。
  *   冇人自動升級做 chief：一定係有人明確設定／由現任團長轉移。
  */
-export const IDENTITIES = {
-  chief:  { l: '團長', short: '團長', c: 'b-warn', level: 4 },
-  leader: { l: '領袖', short: '領袖', c: 'b-brand', level: 3 },
-  exco:   { l: '執委', short: '執委', c: 'b-info', level: 2 },
-  member: { l: '團員', short: '團員', c: 'b-grey', level: 1 }
-};
+const IDENTITY_BADGE_BY_LEVEL = { 1: 'b-grey', 2: 'b-info', 3: 'b-brand', 4: 'b-warn' };
+export const IDENTITIES = Object.freeze(Object.fromEntries(
+  rolesAscending({ includeHidden: false }).map(role => [role.id, {
+    l: role.name, short: role.short || role.name, c: IDENTITY_BADGE_BY_LEVEL[role.level] || 'b-grey', level: role.level
+  }])
+));
 export function identityLabel(m) {
   const k = m?.identity || 'member';
   return (IDENTITIES[k] || IDENTITIES.member).l;
@@ -284,7 +162,7 @@ export function guessIdentity(m) {
      團長每個旅團只有一位，一定係人手設定／由前任轉移，
      舊資料嘅「團長」職位一律先當領袖（否則升級會變出幾個團長）。 */
   if (/(團長|領袖|leader|scouter|隊長)/.test(t)) return 'leader';
-  if (/(執委|執行委員會|exco|committee|主席|司庫|文書)/.test(t)) return 'exco';
+  if (/(執委|執行委員會|exco|committee|主席|司庫|文書)/.test(t)) return rolesAscending({ includeHidden: false }).find(role => role.level === 2)?.id || 'member';
   return 'member';
 }
 export function membersByIdentity(k) { return members().filter(m => identityOf(m) === k); }
@@ -301,7 +179,7 @@ export function activeMembers() { return members().filter(m => m.status !== 'alu
    把領袖當「未填 YMIS」係計錯。呢度按身份揀啱嘅 key。 */
 
 /** 身份係唔係「成人領袖」類（團長／領袖）—— 佢哋對外系統用 Email，唔用 YMIS */
-export function isAdultIdentity(m) { const k = identityOf(m); return k === 'chief' || k === 'leader'; }
+export function isAdultIdentity(m) { return roleLevel(identityOf(m)) >= roleLevel('leader'); }
 
 /** 呢位用戶**應該**用邊種外部 key（團長／領袖→email，其他→ymis） */
 export function expectedKeyKind(m) { return isAdultIdentity(m) ? 'email' : 'ymis'; }

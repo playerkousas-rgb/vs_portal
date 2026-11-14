@@ -1,3 +1,5 @@
+import { beginOperation, operationResult } from './operations.js';
+
 /* ============================================================
    gateway.js — 前端 → 旅團後端（Apps Script /exec）嘅統一入口
    ------------------------------------------------------------
@@ -83,6 +85,14 @@ export function beFromQuery(search) {
    前端一定要認得出呢種情況 —— 佢嘅救法（分段讀／瘦身）同「後端壞咗」完全唔同。 */
 export const PAYLOAD_TOO_LARGE_RE = /PAYLOAD_TOO_LARGE|response.{0,20}too large|body.{0,20}too large|payload.{0,20}exceed/i;
 
+/* 重要寫入一定帶不可預測 operation ID。讀取、登入同狀態查詢唔會建立寫入紀錄。 */
+export const CRITICAL_WRITE_ACTIONS = new Set([
+  'saveDb', 'saveDbPart', 'saveDbCommit', 'saveTables', 'sync', 'uploadPhotos', 'repairDb', 'saveDbForce',
+  'authChangePassword', 'authResetPassword', 'authDeleteAccount', 'authRestoreAccount', 'authCreateAccount', 'authOpenAccounts',
+  'authForgotPassword', 'authResetByToken', 'authCompletePasswordReset', 'hubRsvp', 'hubQuiz', 'hubAbsence', 'hubNoticeSignup',
+  'submitRegistration', 'submitIssue'
+]);
+
 /** 回應過大嗰陣嘅人話解釋（唔會再講「未設定後端網址」） */
 function tooLargeError(status, text) {
   if (PAYLOAD_TOO_LARGE_RE.test(text)) {
@@ -115,8 +125,10 @@ async function postJson(endpoint, body, timeoutMs, plain) {
     if (!json) {
       return {
         ok: false, json: null, status: res.status,
-        /* 同源 proxy 根本唔存在（靜態伺服器回 HTML／404） */
-        noApi: res.status === 404 || /<!doctype|<html/i.test(text),
+        /* 只可喺伺服器明確話 endpoint 不存在／方法不支援時改走直連。
+           502/503 HTML 錯誤頁可能係 proxy 已經把寫入送上游之後先崩潰；
+           若把「任何 HTML」都當 noApi 再送一次，就會製造重複寫入。 */
+        noApi: res.status === 404 || res.status === 405,
         /* 回應過大（Vercel 4.5MB 硬上限）要**講真話**：呢個唔係「後端壞」，
            更唔係「未設定後端網址」—— 係資料庫大過單一回應上限，要分段讀。
            2026-09-20 事故：呢度淨係回「回應格式異常」，用家完全估唔到死因。 */
@@ -141,41 +153,72 @@ async function postJson(endpoint, body, timeoutMs, plain) {
  *   - unit      旅團編號（必填）
  *   - execUrl   自助路線嘅 /exec（留空＝淨係試 proxy）
  *   - apiKey    自助路線要帶嘅 key（proxy 路線唔使 —— 伺服器端會注入）
+ *   - preferDirect  已由旅團內容明確指定 /exec 時，直接用該 URL（唔先撞代理）
  *   - timeoutMs
  * @returns {Promise<{ok:boolean, json:object|null, via:'proxy'|'direct'|'none',
  *                    error:string, reason:string, unregistered:boolean}>}
  *   `via` ＝ 最後真係行咗邊條路（界面／診斷用嚟講清楚）
  *   `unregistered` ＝ proxy 話「平台未登記呢個旅團」（自助路線嘅訊號）
  */
-export async function postBackend(payload, { unit, execUrl = '', apiKey = '', timeoutMs = 60000 } = {}) {
+export async function postBackend(payload, { unit, execUrl = '', apiKey = '', timeoutMs = 60000, preferDirect = false } = {}) {
+  const action = String(payload?.action || '');
+  const operation = CRITICAL_WRITE_ACTIONS.has(action)
+    ? beginOperation(action, { operationId: payload?.operationId || payload?.operation_id, unit, label: action })
+    : null;
   const body0 = { ...payload, unit };
+  if (operation) {
+    body0.operationId = operation.id;
+    body0.operation_id = operation.id; // 舊／其他 client 合約兼容
+  }
+  const done = (result, { sent = true } = {}) => {
+    if (!operation) return result;
+    const j = result?.json && typeof result.json === 'object' ? result.json : {};
+    const classified = operationResult({
+      ...j,
+      ok: result?.ok === true && j.ok !== false && j.success !== false,
+      reason: j.reason || j.code || result?.reason || '',
+      error: j.error || result?.error || '',
+      mayHaveApplied: j.mayHaveApplied === true || (sent && !result?.json && ['timeout', 'network', 'bad_response'].includes(String(result?.reason || '')))
+    }, operation, { sent });
+    /* For mutations, the durable write outcome—not HTTP/envelope success—is the
+       public success flag. This prevents ok:true + outcome:unknown/not_applied
+       from being consumed as a confirmed write, and accepts an explicit applied
+       result even if an outer proxy envelope was pessimistic. */
+    return { ...result, ...classified, ok: classified.outcome === 'applied',
+      operationId: classified.operationId || operation.id };
+  };
   let unregistered = false;
 
   /* ---- ① 同源 proxy（正路）----
      **唔送瀏覽器 Key**：代理永遠用伺服器 Registry 入面嘅 Key，
      本機貼嘅 Key 只畀直連 /exec 用，唔可以蓋過伺服器設定。 */
-  if (proxyUsable()) {
+  if (proxyUsable() && !preferDirect) {
     const body = { ...body0 };
     // 同源代理用伺服器 Key；本機舊 Key 只留畀直連 /exec，唔好傳去代理。
     delete body.apiKey; delete body.apikey;
     const r = await postJson('api/proxy', body, timeoutMs, false);
     const errText = String(r.json?.error || '');
-    if (r.json && !UNREGISTERED_RE.test(errText)) {
-      return { ok: r.ok, json: r.json, via: 'proxy', error: r.error, reason: r.reason, unregistered: false, tooLarge: false };
+    /* Only the proxy's own 404 may trigger the direct fallback. An upstream could
+       return similar wording after a write; matching text alone and resending that
+       mutation would risk a duplicate. New proxies also provide a machine reason. */
+    const proxySaysUnregistered = !!r.json && r.status === 404
+      && (r.json.reason === 'not_registered' || UNREGISTERED_RE.test(errText));
+    if (r.json && !proxySaysUnregistered) {
+      return done({ ok: r.ok, json: r.json, via: 'proxy', error: r.error, reason: r.reason, unregistered: false, tooLarge: false });
     }
     /* proxy 明確話「未登記呢個旅團」→ 唔係失敗，係「平台未接線」→ 跌落入 ② */
-    if (r.json && UNREGISTERED_RE.test(errText)) unregistered = true;
+    if (proxySaysUnregistered) unregistered = true;
     /* proxy 回咗其他錯誤（未授權／後端壞／逾時／回應過大）→ 如實報，唔好扮冇事 */
     if (!unregistered) {
-      if (r.json) return { ok: false, json: r.json, via: 'proxy', error: errText || r.error, reason: r.reason || 'backend', unregistered: false, tooLarge: false };
+      if (r.json) return done({ ok: false, json: r.json, via: 'proxy', error: errText || r.error, reason: r.reason || 'backend', unregistered: false, tooLarge: false });
       /* ★ 回應過大（Vercel 4.5MB）一定唔可以跌落 ②：
          後端答咗話，只係答唔晒 —— 跌去自助路線只會對用家講
          「未設定後端網址」，把真正死因（資料庫太大）完全蓋住。
          （2026-09-20 事故。） */
       if (r.tooLarge) {
-        return { ok: false, json: null, via: 'proxy', error: r.error, reason: 'too_large', unregistered: false, tooLarge: true };
+        return done({ ok: false, json: null, via: 'proxy', error: r.error, reason: 'too_large', unregistered: false, tooLarge: true });
       }
-      if (!r.noApi) return { ok: false, json: null, via: 'proxy', error: r.error, reason: r.reason || 'network', unregistered: false, tooLarge: false };
+      if (!r.noApi) return done({ ok: false, json: null, via: 'proxy', error: r.error, reason: r.reason || 'network', unregistered: false, tooLarge: false });
       /* r.noApi ＝ 呢個部署根本冇 /api（純靜態）→ 跌落入 ② */
     }
   }
@@ -183,25 +226,25 @@ export async function postBackend(payload, { unit, execUrl = '', apiKey = '', ti
   /* ---- ② 直接打旅團自己嘅 /exec（自助路線）---- */
   const url = normExecUrl(execUrl);
   if (!url) {
-    return {
+    return done({
       ok: false, json: null, via: 'none', unregistered,
       reason: unregistered ? 'not_registered' : 'not_configured',
       error: unregistered
         ? '平台伺服器端未登記呢個旅團嘅後端，而連結／設定亦冇帶後端網址'
         : '未設定後端網址'
-    };
+    }, { sent: false });
   }
   if (!isExecUrl(url)) {
-    return {
+    return done({
       ok: false, json: null, via: 'direct', unregistered, reason: 'bad_url',
       error: '後端網址唔係 Apps Script 正式部署網址（/exec）'
-    };
+    }, { sent: false });
   }
   const direct = { ...body0 };
   if (apiKey) { direct.apiKey = apiKey; direct.apikey = apiKey; }
   const d = await postJson(url, direct, timeoutMs, true);
-  if (d.json) return { ok: d.ok, json: d.json, via: 'direct', error: '', reason: '', unregistered };
-  return { ok: false, json: null, via: 'direct', error: d.error || '連唔到旅團後端', reason: d.reason || 'network', unregistered };
+  if (d.json) return done({ ok: d.ok, json: d.json, via: 'direct', error: '', reason: '', unregistered });
+  return done({ ok: false, json: null, via: 'direct', error: d.error || '連唔到旅團後端', reason: d.reason || 'network', unregistered });
 }
 
 /** 短網址（顯示用） */

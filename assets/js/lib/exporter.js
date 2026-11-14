@@ -4,13 +4,13 @@
    PDF ：用瀏覽器列印（可「另存為 PDF」），A4 排版
    ============================================================ */
 
-import { qrDataUrl, esc, qrSvg } from './util.js';
+import { qrDataUrl, esc, qrSvg, safeFilename } from './util.js';
 
 export function download(filename, content, type = 'application/octet-stream') {
   const blob = content instanceof Blob ? content : new Blob([content], { type });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = url; a.download = filename;
+  a.href = url; a.download = safeFilename(filename);
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
@@ -57,26 +57,39 @@ export function docCss({ fontFamily = `"Times New Roman", "PMingLiU", "Microsoft
   `;
 }
 
-function docShell(title, bodyHtml, { org = '', meta = '', css = '' } = {}) {
+const EXPORT_CSP = "default-src 'none'; script-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; style-src 'unsafe-inline'; img-src data: blob:";
+
+function requireTrustedHtml(value, field = 'trustedBodyHtml') {
+  if (typeof value !== 'string') throw new TypeError(`${field} must be an application-authored HTML string`);
+  return value;
+}
+
+/* trustedBodyHtml/trustedCss are deliberate raw-markup boundaries. Callers must
+   escape every imported or user-controlled fragment before constructing them. */
+function docShell(title, trustedBodyHtml, { org = '', trustedCss = '' } = {}) {
+  const body = requireTrustedHtml(trustedBodyHtml);
+  const css = requireTrustedHtml(trustedCss, 'trustedCss');
   return `<!doctype html><html lang="zh-Hant-HK"><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="${EXPORT_CSP}">
 <title>${esc(title)}</title>
 <style>${docCss()}${css}</style></head><body>
 ${org ? `<div class="doc-org">${esc(org)}</div>` : ''}
-${bodyHtml}
+${body}
 </body></html>`;
 }
 
 /* ---------------- Word (.doc) ---------------- */
-export function wordHtml({ title, org = '', bodyHtml, meta = '' }) {
+export function wordHtml({ title, org = '', trustedBodyHtml, meta = '' }) {
+  const body = requireTrustedHtml(trustedBodyHtml);
   return `<html xmlns:o="urn:schemas-microsoft-com:office:office"
   xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
-<head><meta charset="utf-8"><title>${esc(title)}</title>
+<head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${EXPORT_CSP}"><title>${esc(title)}</title>
 <!--[if gte mso 9]><xml><w:WordDocument><w:View>Print</w:View><w:Zoom>100</w:Zoom><w:DoNotOptimizeForBrowser/></w:WordDocument></xml><![endif]-->
 <style>${docCss()}</style></head>
-<body>${org ? `<div class="doc-org">${esc(org)}</div>` : ''}${bodyHtml}${meta ? `<div style="font-size:9pt;color:#666">${esc(meta)}</div>` : ''}</body></html>`;
+<body>${org ? `<div class="doc-org">${esc(org)}</div>` : ''}${body}${meta ? `<div style="font-size:9pt;color:#666">${esc(meta)}</div>` : ''}</body></html>`;
 }
-export function toWord({ filename, title, org = '', bodyHtml, meta = '' }) {
-  download(filename.endsWith('.doc') ? filename : filename + '.doc', '\ufeff' + wordHtml({ title, org, bodyHtml, meta }), 'application/msword');
+export function toWord({ filename, title, org = '', trustedBodyHtml, meta = '' }) {
+  download(filename.endsWith('.doc') ? filename : filename + '.doc', '\ufeff' + wordHtml({ title, org, trustedBodyHtml, meta }), 'application/msword');
   return true;
 }
 
@@ -88,7 +101,13 @@ export function toMarkdown({ filename, md }) {
 /* ---------------- CSV ---------------- */
 export function csvText({ rows, headers }) {
   const cell = v => {
-    const s = v === null || v === undefined ? '' : String(v);
+    let s = v === null || v === undefined ? '' : String(v);
+    /* CSV is often opened directly in Excel/Sheets. Imported names/notes beginning
+       with formula control characters must remain text, not execute as =HYPERLINK,
+       DDE, +cmd, etc. Preserve genuine signed numeric values as numbers. */
+    const lead = s.trimStart();
+    const numeric = /^[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?$/.test(lead);
+    if (!numeric && /^[=+\-@\t\r]/.test(lead)) s = "'" + s;
     return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
   };
   const lines = [];
@@ -101,21 +120,22 @@ export function toCSV({ filename, rows, headers }) {
 }
 
 /* ---------------- 單一 HTML（可離線／可上載，QR 目標） ---------------- */
-export function toStandaloneHtml({ filename, title, org = '', bodyHtml, meta = '', extraHead = '' }) {
-  const html = docShell(title, bodyHtml, { org, meta, css: `
+export function toStandaloneHtml({ filename, title, org = '', trustedBodyHtml, trustedExtraCss = '' }) {
+  const extraCss = requireTrustedHtml(trustedExtraCss, 'trustedExtraCss');
+  const html = docShell(title, trustedBodyHtml, { org, trustedCss: `
     body{max-width:820px;margin:0 auto;padding:24px 18px 60px;background:#fff}
     .toolbar{position:sticky;top:0;background:#fff;border-bottom:1px solid #e8dfe1;padding:8px 0 10px;margin-bottom:14px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
     .toolbar button{font:inherit;padding:7px 12px;border:1px solid #d9cdd0;border-radius:8px;background:#fff;cursor:pointer}
     .toolbar button.on{background:#7B2233;color:#fff;border-color:#7B2233}
     @media print{.toolbar{display:none}}
-    ${extraHead}` });
+    ${extraCss}` });
   download(filename.endsWith('.html') ? filename : filename + '.html', html, 'text/html;charset=utf-8');
   return html;
 }
 
 /* ---------------- PDF（用瀏覽器列印） ---------------- */
-export function printDoc({ title, org = '', bodyHtml, meta = '' }) {
-  const html = docShell(title, bodyHtml, { org, meta });
+export function printDoc({ title, org = '', trustedBodyHtml }) {
+  const html = docShell(title, trustedBodyHtml, { org });
   const iframe = document.createElement('iframe');
   iframe.setAttribute('aria-hidden', 'true');
   iframe.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden';

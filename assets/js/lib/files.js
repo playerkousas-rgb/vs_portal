@@ -4,6 +4,8 @@
    需要時可以匯出、或者跟「總表同步」送去 Google Sheet。
    ============================================================ */
 
+import { safeFilename, safeImageSrc } from './util.js';
+
 export const IMG_MAX = 1400;        // 最長邊（px）
 export const IMG_QUALITY = 0.72;    // JPEG 質素
 
@@ -111,17 +113,20 @@ export function photoStats(photos) {
 /* ---------------- 下載／匯出 ---------------- */
 
 export function downloadDataUrl(dataUrl, filename) {
+  const src = safeImageSrc(dataUrl);
+  if (!src) return false;
   const a = document.createElement('a');
-  a.href = dataUrl;
-  a.download = filename || 'photo.jpg';
+  a.href = src;
+  a.download = safeFilename(filename || 'photo.jpg', 'photo.jpg');
   document.body.appendChild(a);
   a.click();
   a.remove();
+  return true;
 }
 
 /** 匯出全部相片（逐張下載；瀏覽器限制冇 zip，所以隔開少少） */
 export function downloadPhotos(photos, prefix = 'receipt') {
-  const list = (photos || []).filter(p => p?.dataUrl);
+  const list = (photos || []).map(p => ({ ...p, dataUrl: safeImageSrc(p?.dataUrl) })).filter(p => p.dataUrl);
   list.forEach((p, i) => setTimeout(() => downloadDataUrl(p.dataUrl, `${prefix}-${i + 1}-${p.name || 'photo.jpg'}`), i * 350));
   return list.length;
 }

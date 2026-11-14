@@ -9,6 +9,7 @@ import path from 'path';
 
 // 已登記的 GAS /exec URL 白名單格式（只接受 HTTPS 正式部署 URL，不接受 /dev）
 const EXEC_URL_RE = /^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]{10,}\/exec\/?$/i;
+const UNIT_ID_RE = /^[0-9A-Za-z][0-9A-Za-z_-]{0,31}$/;
 
 // 正規化 origin：只接受 http/https，並用 URL.origin 統一
 export function normalizeOrigin(v) {
@@ -37,13 +38,15 @@ function readFileUnits() {
     path.join(process.cwd(), 'data', 'units.json'),
     path.join(process.cwd(), 'units.json')
   ];
-  const merged = {};
+  const merged = Object.create(null);
   for (const p of candidates) {
     try {
       if (fs.existsSync(p)) {
         const json = JSON.parse(fs.readFileSync(p, 'utf8'));
-        if (json && json.units && typeof json.units === 'object') {
-          Object.assign(merged, json.units);
+        if (json && json.units && typeof json.units === 'object' && !Array.isArray(json.units)) {
+          for (const [id, value] of Object.entries(json.units)) {
+            if (UNIT_ID_RE.test(id) && value && typeof value === 'object' && !Array.isArray(value)) merged[id] = value;
+          }
         }
       }
     } catch (e) {
@@ -175,12 +178,12 @@ function readJsonUnits() {
   if (!raw) return {};
   try {
     const parsed = JSON.parse(raw);
-    const units = parsed && typeof parsed === 'object'
-      ? (parsed.units && typeof parsed.units === 'object' ? parsed.units : parsed)
+    const units = parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed.units && typeof parsed.units === 'object' && !Array.isArray(parsed.units) ? parsed.units : parsed)
       : {};
-    const out = {};
+    const out = Object.create(null);
     for (const [id, v] of Object.entries(units)) {
-      if (!/^[0-9A-Za-z_-]{1,32}$/.test(id)) continue;
+      if (!UNIT_ID_RE.test(id)) continue;
       if (v && typeof v === 'object') out[id] = v;
       else if (typeof v === 'string') out[id] = { backend: v };
     }
@@ -203,7 +206,7 @@ export function getRegistry() {
   }
 
   const allIds = new Set([...Object.keys(fileUnits), ...idsFromEnv, ...Object.keys(envUnits)]);
-  const out = {};
+  const out = Object.create(null);
   for (const id of allIds) {
     const fileEntry = fileUnits[id] || {};
     const jsonEntry = envUnits[id] || {};
@@ -223,7 +226,8 @@ export function getRegistry() {
     const enabledModules = troopEnv(id, 'MODULES') || jsonEntry.modules || fileEntry.modules || '';
     const disabledModules = troopEnv(id, 'DISABLEDMODULES') || jsonEntry.disabledModules || fileEntry.disabledModules || '';
     const name = fileEntry.name || envName || `第 ${id} 旅`;
-    const code = fileEntry.code || jsonEntry.code || id;
+    const requestedCode = String(fileEntry.code || jsonEntry.code || id);
+    const code = UNIT_ID_RE.test(requestedCode) ? requestedCode : id;
 
     out[id] = {
       code,
@@ -301,7 +305,7 @@ export function registryDiagnostics() {
 
 // Proxy 專用：只回傳通過 URL 白名單驗證的旅團
 export function getTrustedUnit(id) {
-  if (typeof id !== 'string' || !/^[0-9A-Za-z_-]{1,32}$/.test(id)) return null;
+  if (typeof id !== 'string' || !UNIT_ID_RE.test(id)) return null;
   const reg = getRegistry();
   /* ★ 跨前導零解析：82／082／0082 一律搵到同一個旅團（見上面 unitIdVariants 註解） */
   const key = resolveUnitKey(id, reg);
@@ -327,7 +331,7 @@ export function getTrustedUnit(id) {
 // ============================================================
 export function getProgressRegistryEntry(id) {
   const out = { backend: '', apiKey: '' };
-  if (typeof id !== 'string' || !/^[0-9A-Za-z_-]{1,32}$/.test(id)) return out;
+  if (typeof id !== 'string' || !UNIT_ID_RE.test(id)) return out;
   const unit = getTrustedUnit(id);
   if (unit) {
     out.backend = unit.gasUrl;

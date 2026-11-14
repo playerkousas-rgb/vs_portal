@@ -3,11 +3,11 @@
    • 語言：中文 / English / 對照（分頁切換）
    • 編輯：序言、章節、條文、子項，可增刪
    • 發布：版本記錄、輸出 Word / PDF / Markdown / 單一 HTML / JSON
-   • QR Code：指向公開閱讀頁（constitution.html?u=編號）
+   • QR Code：指向已登入團員入口內的團章路線
    ============================================================ */
 
-import { load, commit, collection, add, update, remove, setSetting, audit } from '../lib/store.js';
-import { constitution, articleCount, profile, settings, memberName, isLegacyUrl } from '../lib/model.js';
+import { load, commit, collection, add, update, remove, audit } from '../lib/store.js';
+import { constitution, articleCount, profile, memberName, publicPageUrl } from '../lib/model.js';
 import { todayISO } from '../lib/dates.js';
 import {
   esc, icon, uid, modal, confirmDlg, toast, copyText, fmtDate, nf
@@ -15,7 +15,8 @@ import {
 import { toWord, printDoc, toMarkdown, qrSvg, downloadQrSvg, download as dlFile, stamp, docCss } from '../lib/exporter.js';
 import { go, parse } from '../lib/router.js';
 import { can, current, displayName, isSuper } from '../lib/auth.js';
-import { pageHead, tabs, empty, noteBox, kv } from './ui.js';
+import { pageHead, tabs, empty, noteBoxHtml, kvHtml } from './ui.js';
+import { confirmBulkOperation, createSafetySnapshot, undoable } from '../lib/guard.js';
 
 let lang = 'zh';          // zh | en | both
 let mode = 'view';        // view | edit
@@ -35,11 +36,11 @@ export function render(params) {
     sub: `${profile().name || ''} · 版本 ${c.version || '—'} · 更新 ${c.updated || '—'} · 共 ${c.chapters?.length || 0} 章 / ${articleCount(c)} 條`,
     actions: `
       <div class="seg" role="tablist">
-        ${LANG_TABS.map(([k, l]) => `<button role="tab" data-lang="${k}" aria-selected="${lang === k}">${l}</button>`).join('')}
+        ${LANG_TABS.map(([k, l]) => `<button role="tab" data-lang="${esc(k)}" aria-selected="${esc(lang === k)}">${l}</button>`).join('')}
       </div>
       <div class="seg" role="tablist">
-        <button role="tab" data-mode="view" aria-selected="${mode === 'view'}">${icon('eye', 15)} 閱讀</button>
-        <button role="tab" data-mode="edit" aria-selected="${mode === 'edit'}" ${can('constitution.edit') ? '' : 'disabled'}>${icon('edit', 15)} 編輯</button>
+        <button role="tab" data-mode="view" aria-selected="${esc(mode === 'view')}">${icon('eye', 15)} 閱讀</button>
+        <button role="tab" data-mode="edit" aria-selected="${esc(mode === 'edit')}" ${can('constitution.edit') ? '' : 'disabled'}>${icon('edit', 15)} 編輯</button>
       </div>
       <button class="btn btn-sm" data-act="export">${icon('download', 15)} 輸出</button>
       <button class="btn btn-sm" data-act="qr">${icon('qr', 15)} QR Code</button>
@@ -64,25 +65,21 @@ export function render(params) {
           <button class="btn btn-block" data-act="exp-md">${icon('download', 16)} Markdown</button>
           <button class="btn btn-block" data-act="exp-html">${icon('download', 16)} 單一 HTML（可離線／可上載）</button>
           <button class="btn btn-block" data-act="qr">${icon('qr', 16)} QR Code（畀團員掃）</button>
-          <button class="btn btn-block" data-act="copy-link">${icon('link', 16)} 複製公開連結</button>
+          <button class="btn btn-block" data-act="copy-link">${icon('link', 16)} 複製登入連結</button>
           ${can('constitution.publish') ? `<button class="btn btn-block" data-act="exp-json">${icon('save', 16)} 下載 JSON 備份（純備份用 —— 發布唔使上載任何檔案）</button>` : ''}
         </div>
       </div>
 
       <div class="card">
-        <div class="card-head"><div><div class="card-title">公開閱讀頁</div>
-          <div class="card-sub">QR Code 會指向呢個網址，團員免登入都睇到</div></div></div>
+        <div class="card-head"><div><div class="card-title">已登入閱讀</div>
+          <div class="card-sub">QR 只帶成員去團員入口；後端核實身份後先回已發布團章</div></div></div>
         <div style="padding:14px 16px">
-          <div class="field">
-            <label class="label">公開網址</label>
-            <input class="input" id="pubUrl" value="${esc(pubUrl)}">
-            ${isLegacyUrl(pubUrl) ? `<div class="xs mt-4" style="color:var(--danger)">⚠ 呢個網址指去舊系統（82venture.vercel.app）——去「<b>公開資料</b>」可以一鍵搬晒所有舊連結去而家呢個站，之後記得重新下載 QR。</div>` : ''}
-            <div class="hint mt-4">預設用本網站嘅 <code>constitution.html?u=${esc(load().unitCode)}</code>。如你放喺其他位置，可以改成自己嘅網址。</div>
-          </div>
-          <button class="btn btn-sm btn-block mt-12" data-act="save-url" ${can('constitution.publish') ? '' : 'disabled'}>${icon('save', 15)} 儲存網址</button>
+          <div class="field"><label class="label">團員入口內的團章路線</label>
+            <input class="input" id="pubUrl" value="${esc(pubUrl)}" readonly>
+            <div class="hint mt-4">未登入者只會見到登入畫面；QR 本身唔係閱讀憑證。</div></div>
           <div class="mt-12 center">
             <div class="qr-box" style="width:150px;margin:0 auto"><div id="pubQr">${qrSvg(pubUrl, 4, 1)}</div></div>
-            <div class="xs faint mt-8">掃描即睇團章（免登入）</div>
+            <div class="xs faint mt-8">掃描 → 登入 → 閱讀已發布團章</div>
           </div>
         </div>
       </div>
@@ -107,7 +104,7 @@ export function render(params) {
         <div style="padding:16px 18px" class="steps">
           <div class="step"><div><div class="sm semibold">編輯條文</div><div class="xs muted">切換到「編輯」改內容</div></div></div>
           <div class="step"><div><div class="sm semibold">發布新版本</div><div class="xs muted">輸入版本號同修改摘要</div></div></div>
-          <div class="step"><div><div class="sm semibold">等同步存到後端</div><div class="xs muted">右上角「已存到後端」之後，公開閱讀頁（constitution.html）即刻顯示新版 —— 唔使人手上載檔案</div></div></div>
+          <div class="step"><div><div class="sm semibold">等同步存到後端</div><div class="xs muted">右上角「已存到後端」之後，團員入口安全投影即刻顯示新版 —— 唔使人手上載檔案</div></div></div>
           <div class="step"><div><div class="sm semibold">派 QR Code</div><div class="xs muted">團員掃描即睇最新版</div></div></div>
         </div>
         <div style="padding:0 18px 16px"><div class="hint">${icon('info', 13)} 舊式做法（下載 constitution.json 叫管理員上載 <code>data/units/</code>）仍然支援，但已經唔需要 —— 只要後端 Apps Script 係 <b>v2.5.0</b> 或之後就得。</div></div>
@@ -135,20 +132,20 @@ function docBody(c, editing) {
         ${lang !== 'en' ? `<div>${esc(i.zh || '')}</div>` : ''}
         ${lang !== 'zh' ? `<div class="bi-en">${esc(i.en || '')}</div>` : ''}
         ${editing ? `<span class="no-print row gap-4" style="margin-left:6px">
-          <button class="btn btn-xs btn-ghost" data-edit-item="${a.id}" data-ch="${chId}" data-item="${i.id}">${icon('edit', 12)}</button>
-          <button class="btn btn-xs btn-ghost" data-del-item="${a.id}" data-ch="${chId}" data-item="${i.id}">${icon('trash', 12)}</button></span>` : ''}
+          <button class="btn btn-xs btn-ghost" data-edit-item="${esc(a.id)}" data-ch="${esc(chId)}" data-item="${esc(i.id)}">${icon('edit', 12)}</button>
+          <button class="btn btn-xs btn-ghost" data-del-item="${esc(a.id)}" data-ch="${esc(chId)}" data-item="${esc(i.id)}">${icon('trash', 12)}</button></span>` : ''}
       </div>`).join('')}</div>` : '');
 
-    return `<div class="art" id="${a.id}">
+    return `<div class="art" id="${esc(a.id)}">
       <div class="bi-pair ${lang === 'both' ? '' : 'single'}">
         ${lang !== 'en' ? `<div>${esc(zh)}</div>` : ''}
         ${lang !== 'zh' ? `<div class="bi-en">${esc(en)}</div>` : ''}
       </div>
       ${itemBlock}
       ${editing ? `<div class="row gap-4 no-print mt-4">
-        <button class="btn btn-xs" data-edit-art="${a.id}" data-ch="${chId}">${icon('edit', 12)} 改條文</button>
-        <button class="btn btn-xs" data-del-art="${a.id}" data-ch="${chId}">${icon('trash', 12)} 刪除</button>
-        <button class="btn btn-xs" data-add-item="${a.id}" data-ch="${chId}">${icon('plus', 12)} 加子項</button>
+        <button class="btn btn-xs" data-edit-art="${esc(a.id)}" data-ch="${esc(chId)}">${icon('edit', 12)} 改條文</button>
+        <button class="btn btn-xs" data-del-art="${esc(a.id)}" data-ch="${esc(chId)}">${icon('trash', 12)} 刪除</button>
+        <button class="btn btn-xs" data-add-item="${esc(a.id)}" data-ch="${esc(chId)}">${icon('plus', 12)} 加子項</button>
       </div>` : ''}
     </div>`;
   };
@@ -180,9 +177,9 @@ function docBody(c, editing) {
       <h2 style="display:flex;align-items:center;gap:8px">
         <span>${esc(lang === 'en' ? chEn : lang === 'both' && chEn && chEn !== chZh ? `${chZh} ／ ${chEn}` : chZh)}</span>
         ${editing ? `<span class="no-print row gap-4">
-          <button class="btn btn-xs btn-ghost" data-edit-ch="${ch.id}">${icon('edit', 12)}</button>
-          <button class="btn btn-xs btn-ghost" data-add-art="${ch.id}">${icon('plus', 12)} 加條文</button>
-          <button class="btn btn-xs btn-ghost" data-del-ch="${ch.id}">${icon('trash', 12)}</button>
+          <button class="btn btn-xs btn-ghost" data-edit-ch="${esc(ch.id)}">${icon('edit', 12)}</button>
+          <button class="btn btn-xs btn-ghost" data-add-art="${esc(ch.id)}">${icon('plus', 12)} 加條文</button>
+          <button class="btn btn-xs btn-ghost" data-del-ch="${esc(ch.id)}">${icon('trash', 12)}</button>
         </span>` : ''}
       </h2>
       <div>${(ch.articles || []).map(a => articleHtml(a, ch.id)).join('') || '<div class="faint sm">（本章暫無條文）</div>'}</div>
@@ -194,9 +191,9 @@ function docBody(c, editing) {
       <h2 style="display:flex;align-items:center;gap:8px">
         <span>${esc(lang === 'en' ? (ap.heading?.en || '') : (ap.heading?.zh || ''))}${lang === 'both' && ap.heading?.en ? ` ／ ${esc(ap.heading.en)}` : ''}</span>
         ${editing ? `<span class="no-print row gap-4">
-          <button class="btn btn-xs btn-ghost" data-edit-ch="${ap.id}">${icon('edit', 12)}</button>
-          <button class="btn btn-xs btn-ghost" data-add-block="${ap.id}">${icon('plus', 12)} 加段落</button>
-          <button class="btn btn-xs btn-ghost" data-del-ch="${ap.id}">${icon('trash', 12)}</button></span>` : ''}
+          <button class="btn btn-xs btn-ghost" data-edit-ch="${esc(ap.id)}">${icon('edit', 12)}</button>
+          <button class="btn btn-xs btn-ghost" data-add-block="${esc(ap.id)}">${icon('plus', 12)} 加段落</button>
+          <button class="btn btn-xs btn-ghost" data-del-ch="${esc(ap.id)}">${icon('trash', 12)}</button></span>` : ''}
       </h2>
       ${(ap.blocks || []).map(b => `<div class="art">
         <div class="bi-pair ${lang === 'both' ? '' : 'single'}">
@@ -204,8 +201,8 @@ function docBody(c, editing) {
           ${lang !== 'zh' ? `<div class="bi-en">${esc(b.en || '')}</div>` : ''}
         </div>
         ${editing ? `<div class="row gap-4 no-print mt-4">
-          <button class="btn btn-xs" data-edit-block="${ap.id}" data-block="${b.id}">${icon('edit', 12)}</button>
-          <button class="btn btn-xs" data-del-block="${ap.id}" data-block="${b.id}">${icon('trash', 12)}</button></div>` : ''}
+          <button class="btn btn-xs" data-edit-block="${esc(ap.id)}" data-block="${esc(b.id)}">${icon('edit', 12)}</button>
+          <button class="btn btn-xs" data-del-block="${esc(ap.id)}" data-block="${esc(b.id)}">${icon('trash', 12)}</button></div>` : ''}
       </div>`).join('')}
     </div>`).join('') : ''}
 
@@ -219,6 +216,7 @@ function docBody(c, editing) {
 function editorBar(c) {
   return `
   <div class="row gap-8 wrap mb-12 no-print">
+    <button class="btn btn-sm btn-primary" data-act="import-doc">${icon('upload', 15)} 由 Google Docs／Word 搬入</button>
     <button class="btn btn-sm" data-act="edit-meta">${icon('edit', 15)} 改標題 / 版本 / 序言</button>
     <button class="btn btn-sm" data-act="add-ch">${icon('plus', 15)} 新增章節</button>
     <button class="btn btn-sm" data-act="add-apx">${icon('plus', 15)} 新增附件</button>
@@ -237,7 +235,7 @@ async function editMeta() {
   const c = constitution();
   const r = await modal({
     title: '編輯團章基本資料', wide: true,
-    body: `<div class="grid g-2" style="gap:12px">
+    trustedBodyHtml: `<div class="grid g-2" style="gap:12px">
         <div class="field"><label class="label">標題（中）</label><input class="input" id="m-tzh" value="${esc(c.title?.zh || '')}"></div>
         <div class="field"><label class="label">標題（英）</label><input class="input" id="m-ten" value="${esc(c.title?.en || '')}"></div>
         <div class="field"><label class="label">版本</label><input class="input" id="m-ver" value="${esc(c.version || '')}"></div>
@@ -268,7 +266,7 @@ async function editChapter(id, isApx = false) {
   const ch = isApx ? appendixOf(id) : chapterOf(id);
   const r = await modal({
     title: isApx ? '編輯附件標題' : '編輯章節標題',
-    body: `<div class="field"><label class="label">標題（中）</label><input class="input" id="q-zh" value="${esc(ch?.heading?.zh || '')}"></div>
+    trustedBodyHtml: `<div class="field"><label class="label">標題（中）</label><input class="input" id="q-zh" value="${esc(ch?.heading?.zh || '')}"></div>
       <div class="field mt-12"><label class="label">標題（英）</label><input class="input" id="q-en" value="${esc(ch?.heading?.en || '')}"></div>`,
     actions: [{ label: '取消', class: 'btn', value: null },
       { label: '儲存', class: 'btn-primary', onClick: el => ({ zh: el.querySelector('#q-zh').value.trim(), en: el.querySelector('#q-en').value.trim() }) }]
@@ -286,7 +284,7 @@ async function editArticle(chId, artId, itemId) {
   const target = item || art;
   const r = await modal({
     title: item ? '編輯子項' : '編輯條文', wide: true,
-    body: `<div class="field"><label class="label">中文</label>
+    trustedBodyHtml: `<div class="field"><label class="label">中文</label>
         <textarea class="textarea" id="q-zh" style="min-height:90px">${esc(target?.zh || '')}</textarea></div>
       <div class="field mt-12"><label class="label">English</label>
         <textarea class="textarea" id="q-en" style="min-height:90px">${esc(target?.en || '')}</textarea></div>
@@ -312,7 +310,7 @@ async function editArticle(chId, artId, itemId) {
 async function addArticle(chId) {
   const r = await modal({
     title: '新增條文', wide: true,
-    body: `<div class="field"><label class="label">中文</label><textarea class="textarea" id="q-zh" style="min-height:80px"></textarea></div>
+    trustedBodyHtml: `<div class="field"><label class="label">中文</label><textarea class="textarea" id="q-zh" style="min-height:80px"></textarea></div>
       <div class="field mt-12"><label class="label">English</label><textarea class="textarea" id="q-en" style="min-height:80px"></textarea></div>`,
     actions: [{ label: '取消', class: 'btn', value: null },
       { label: '新增', class: 'btn-primary', onClick: el => ({ zh: el.querySelector('#q-zh').value, en: el.querySelector('#q-en').value }) }]
@@ -328,7 +326,7 @@ async function addArticle(chId) {
 async function addItem(chId, artId) {
   const r = await modal({
     title: '新增子項（例：甲 / 乙 / (i)）', wide: true,
-    body: `<div class="field"><label class="label">中文</label><textarea class="textarea" id="q-zh" style="min-height:70px"></textarea></div>
+    trustedBodyHtml: `<div class="field"><label class="label">中文</label><textarea class="textarea" id="q-zh" style="min-height:70px"></textarea></div>
       <div class="field mt-12"><label class="label">English</label><textarea class="textarea" id="q-en" style="min-height:70px"></textarea></div>`,
     actions: [{ label: '取消', class: 'btn', value: null },
       { label: '新增', class: 'btn-primary', onClick: el => ({ zh: el.querySelector('#q-zh').value, en: el.querySelector('#q-en').value }) }]
@@ -346,8 +344,8 @@ async function addChapter() {
   const n = (constitution().chapters || []).length + 1;
   const r = await modal({
     title: '新增章節',
-    body: `<div class="field"><label class="label">標題（中）</label><input class="input" id="q-zh" value="${n}. "></div>
-      <div class="field mt-12"><label class="label">標題（英）</label><input class="input" id="q-en" value="${n}. "></div>`,
+    trustedBodyHtml: `<div class="field"><label class="label">標題（中）</label><input class="input" id="q-zh" value="${esc(n)}. "></div>
+      <div class="field mt-12"><label class="label">標題（英）</label><input class="input" id="q-en" value="${esc(n)}. "></div>`,
     actions: [{ label: '取消', class: 'btn', value: null },
       { label: '新增', class: 'btn-primary', onClick: el => ({ zh: el.querySelector('#q-zh').value.trim(), en: el.querySelector('#q-en').value.trim() }) }]
   });
@@ -361,7 +359,7 @@ async function addChapter() {
 async function addAppendix() {
   const r = await modal({
     title: '新增附件',
-    body: `<div class="field"><label class="label">標題（中）</label><input class="input" id="q-zh" placeholder="附件 A"></div>
+    trustedBodyHtml: `<div class="field"><label class="label">標題（中）</label><input class="input" id="q-zh" placeholder="附件 A"></div>
       <div class="field mt-12"><label class="label">標題（英）</label><input class="input" id="q-en" placeholder="Appendix A"></div>`,
     actions: [{ label: '取消', class: 'btn', value: null },
       { label: '新增', class: 'btn-primary', onClick: el => ({ zh: el.querySelector('#q-zh').value.trim(), en: el.querySelector('#q-en').value.trim() }) }]
@@ -377,7 +375,7 @@ async function editBlock(apxId, blockId) {
   const b = (appendixOf(apxId)?.blocks || []).find(x => x.id === blockId);
   const r = await modal({
     title: '編輯段落', wide: true,
-    body: `<div class="field"><label class="label">中文</label><textarea class="textarea" id="q-zh" style="min-height:80px">${esc(b?.zh || '')}</textarea></div>
+    trustedBodyHtml: `<div class="field"><label class="label">中文</label><textarea class="textarea" id="q-zh" style="min-height:80px">${esc(b?.zh || '')}</textarea></div>
       <div class="field mt-12"><label class="label">English</label><textarea class="textarea" id="q-en" style="min-height:80px">${esc(b?.en || '')}</textarea></div>`,
     actions: [{ label: '取消', class: 'btn', value: null },
       { label: '儲存', class: 'btn-primary', onClick: el => ({ zh: el.querySelector('#q-zh').value, en: el.querySelector('#q-en').value }) }]
@@ -389,6 +387,157 @@ async function editBlock(apxId, blockId) {
   if (blk) { blk.zh = r.zh; blk.en = r.en; commit(); toast('已更新', 'ok'); refresh(); }
 }
 
+function countImported(c) {
+  const chapters = (c?.chapters || []).length;
+  const articles = (c?.chapters || []).reduce((n, ch) => n + (ch.articles || []).length, 0);
+  const items = (c?.chapters || []).reduce((n, ch) => n + (ch.articles || []).reduce((m, a) => m + (a.items || []).length, 0), 0);
+  const appendices = (c?.appendices || []).length;
+  return { chapters, articles, items, appendices };
+}
+
+function freshImportIds(parsed) {
+  const copy = JSON.parse(JSON.stringify(parsed));
+  (copy.chapters || []).forEach(ch => {
+    ch.id = uid('c');
+    (ch.articles || []).forEach(a => {
+      a.id = uid('a');
+      (a.items || []).forEach(i => { i.id = uid('i'); });
+    });
+  });
+  (copy.appendices || []).forEach(ap => {
+    ap.id = uid('apx');
+    (ap.blocks || []).forEach(b => { b.id = uid('b'); });
+  });
+  return copy;
+}
+
+async function importConstitutionDocument() {
+  const { readDocx, textToBlocks, classifyConstitutionBlock, parseConstitutionBlocks, applyConstitutionImport } = await import('../lib/doc-import.js');
+  const source = await modal({
+    title: '由 Google Docs／Word 搬入團章',
+    sub: 'Google Docs：檔案 → 下載 → Microsoft Word (.docx)；亦可以全選複製再貼文字',
+    wide: true,
+    trustedBodyHtml: `
+      <div class="migration-steps mb-12">
+        <div class="migration-step"><b>1. 本機讀文件</b><span class="xs muted">只讀文字同標題層級；唔執行巨集、圖片、公式或外部連結。</span></div>
+        <div class="migration-step"><b>2. 逐段分類</b><span class="xs muted">每段可以改做標題、章、條、子項、附件或略過。</span></div>
+        <div class="migration-step"><b>3. 預覽再合併</b><span class="xs muted">預設附加；取代會顯示詳細 diff、備份同二次確認。</span></div>
+      </div>
+      <div class="field"><label class="label">Word／文字檔</label>
+        <input class="input" type="file" id="doc-file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.txt,.md,text/plain,text/markdown"></div>
+      <div class="field mt-12"><label class="label">或者直接貼 Google Docs 文字／Markdown</label>
+        <textarea class="textarea" id="doc-text" style="min-height:150px" placeholder="# 團章\n## 第一章 總則\n第一條 …"></textarea></div>
+      <div class="grid g-2 mt-12" style="gap:12px">
+        <div class="field"><label class="label">來源語言</label><select class="select" id="doc-lang">
+          <option value="zh">主要中文</option><option value="en">Mainly English</option><option value="auto">中英混合（按每段字種）</option></select></div>
+        <div class="field"><label class="label">自動辨認方法</label><select class="select" id="doc-mode">
+          <option value="auto">自動（編號＋標題樣式）</option><option value="styles">優先用 Heading 樣式</option><option value="numbering">只按第 X 章／第 X 條編號</option></select></div>
+      </div>`,
+    actions: [{ label: '取消', class: 'btn', value: null }, { label: '讀取並逐段對應', class: 'btn-primary', onClick: el => {
+      const file = el.querySelector('#doc-file').files?.[0] || null;
+      const text = el.querySelector('#doc-text').value.trim();
+      if (!file && !text) { el.querySelector('#doc-text').focus(); return false; }
+      return { file, text, language: el.querySelector('#doc-lang').value, mode: el.querySelector('#doc-mode').value };
+    } }]
+  });
+  if (!source) return;
+  if (source.file && Number(source.file.size || 0) > 12 * 1024 * 1024) return toast('文件大過 12MB；請另存淨文字，或者分開匯入', 'err');
+
+  let blocks;
+  try {
+    if (source.file && /\.docx$/i.test(source.file.name || '')) blocks = (await readDocx(await source.file.arrayBuffer())).blocks;
+    else if (source.file) blocks = textToBlocks(await source.file.text());
+    else blocks = textToBlocks(source.text);
+  } catch (e) { toast(`讀取文件失敗：${e.message || e}`, 'err'); return; }
+  if (!blocks.length) return toast('文件入面搵唔到可讀文字', 'err');
+  if (blocks.length > 800) return toast(`文件有 ${blocks.length} 段，為免手機瀏覽器失去反應，請先分成每份 800 段以下再匯入`, 'err');
+
+  const roleLabels = [
+    ['title', '團章標題'], ['preamble-heading', '序言標題'], ['chapter', '章節標題'], ['article', '條文'],
+    ['item', '條文子項'], ['appendix', '附件標題'], ['paragraph', '普通段落（按上文保留）'], ['ignore', '略過呢段']
+  ];
+  const initialRoles = blocks.map(b => classifyConstitutionBlock(b, { mode: source.mode }));
+  const classified = await modal({
+    title: `逐段分類（${blocks.length} 段）`,
+    sub: '呢一步只係 mapping；請特別核對章／條／子項。所有未略過文字都會保留。',
+    wide: true,
+    trustedBodyHtml: `<div class="note-box info mb-12"><div>自動辨認只係建議。你可以逐段改；灰字會顯示 Word 樣式／標題層級。</div></div>
+      <div class="bulk-diff scroll-x">${blocks.map((b, i) => `<div class="source-map" style="padding:9px 11px">
+        <div class="sm"><b>${i + 1}. ${esc(String(b.text).slice(0, 180))}</b>
+          <div class="xs faint">${esc(b.style || '普通段落')}${b.level ? ` · Heading ${esc(b.level)}` : ''}${b.list ? ' · 清單' : ''}</div></div>
+        <select class="select" data-doc-role="${esc(i)}">${roleLabels.map(([key, label]) => `<option value="${esc(key)}" ${initialRoles[i] === key ? 'selected' : ''}>${esc(label)}</option>`).join('')}</select>
+      </div>`).join('')}</div>`,
+    actions: [{ label: '返回（唔改資料）', class: 'btn', value: null }, { label: '套用分類並預覽', class: 'btn-primary', onClick: el => ({
+      roles: [...el.querySelectorAll('[data-doc-role]')].map(s => s.value)
+    }) }]
+  });
+  if (!classified) return;
+
+  let parsed = parseConstitutionBlocks(blocks, { mode: source.mode, language: source.language, roles: classified.roles });
+  parsed = freshImportIds(parsed);
+  const incoming = countImported(parsed);
+  const currentCounts = countImported(constitution());
+  const preview = await modal({
+    title: '團章遷移預覽', sub: '仍然未改資料；預設「附加」最安全', wide: true,
+    trustedBodyHtml: `<div class="grid g-4">
+        <div class="stat"><div class="stat-label">章</div><div class="stat-value">${incoming.chapters}</div></div>
+        <div class="stat"><div class="stat-label">條</div><div class="stat-value">${incoming.articles}</div></div>
+        <div class="stat"><div class="stat-label">子項</div><div class="stat-value">${incoming.items}</div></div>
+        <div class="stat"><div class="stat-label">附件</div><div class="stat-value">${incoming.appendices}</div></div>
+      </div>
+      <div class="field mt-12"><label class="label">匯入策略</label><select class="select" id="doc-strategy">
+        <option value="append">附加到現有團章（預設；保留現有章節）</option>
+        <option value="replace">取代現有團章正文（會先建立完整安全快照）</option></select></div>
+      ${parsed.warnings.length ? `<div class="note-box warn mt-12"><div><b>要留意：</b><br>${parsed.warnings.slice(0, 20).map(esc).join('<br>')}</div></div>` : ''}
+      <div class="scroll-x bulk-diff mt-12"><table class="table table-compact"><thead><tr><th>層級</th><th>內容</th><th class="right">數量</th></tr></thead><tbody>
+        ${(parsed.chapters || []).map(ch => `<tr><td>章</td><td><b>${esc(ch.heading?.zh || ch.heading?.en || '（無標題）')}</b><div class="xs faint">${(ch.articles || []).slice(0, 3).map(a => esc(a.zh || a.en || '')).join(' ｜ ')}</div></td><td class="right">${(ch.articles || []).length} 條</td></tr>`).join('')}
+        ${(parsed.appendices || []).map(ap => `<tr><td>附件</td><td><b>${esc(ap.heading?.zh || ap.heading?.en || '（無標題）')}</b></td><td class="right">${(ap.blocks || []).length} 段</td></tr>`).join('')}
+      </tbody></table></div>`,
+    actions: [{ label: '取消（唔改資料）', class: 'btn', value: null }, { label: '進入最後確認', class: 'btn-primary', onClick: el => ({ strategy: el.querySelector('#doc-strategy').value }) }]
+  });
+  if (!preview) return;
+
+  const replace = preview.strategy === 'replace';
+  const afterCounts = replace ? incoming : {
+    chapters: currentCounts.chapters + incoming.chapters, articles: currentCounts.articles + incoming.articles,
+    items: currentCounts.items + incoming.items, appendices: currentCounts.appendices + incoming.appendices
+  };
+  const ok = await confirmBulkOperation({
+    title: `最後確認：${replace ? '取代' : '附加'}團章`, actionLabel: replace ? '確認取代正文' : '確認附加內容',
+    count: parsed.sourceCount, scope: `${profile().name || '現時旅團'}／團章／${replace ? '取代' : '附加'}`,
+    requireText: replace ? `取代 ${currentCounts.chapters}` : `確認 ${parsed.sourceCount}`, danger: replace,
+    changes: [
+      { label: '章', before: currentCounts.chapters, after: afterCounts.chapters },
+      { label: '條', before: currentCounts.articles, after: afterCounts.articles },
+      { label: '子項', before: currentCounts.items, after: afterCounts.items },
+      { label: '附件', before: currentCounts.appendices, after: afterCounts.appendices }
+    ],
+    preview: (parsed.chapters || []).map(ch => ({ label: ch.heading?.zh || ch.heading?.en || '無標題章節', before: replace ? '現有正文會被取代' : '（附加）', after: `${(ch.articles || []).length} 條` })),
+    warnings: replace ? ['取代會更換現有標題、序言、所有章節同附件；版本歷史及其他設定會保留。'] : [],
+    backupText: '會先保存完整現有團章（包括正文、附件、版本資料）本機快照。',
+    rollbackText: '完成後可即時還原到搬入前嘅完整團章。', readbackText: '會重新讀取章／條／子項／附件數量核對。'
+  });
+  if (!ok) return;
+
+  const before = JSON.parse(JSON.stringify(load().constitution || constitution()));
+  const snapshot = createSafetySnapshot('團章遷移前', before, { kind: 'constitution-import', strategy: preview.strategy, paragraphs: parsed.sourceCount });
+  if (!snapshot.ok) return toast(`${snapshot.error}；為安全起見已取消搬入`, 'err');
+  const db = load();
+  db.constitution = applyConstitutionImport(before, parsed, { strategy: preview.strategy });
+  commit();
+  const actual = countImported(constitution());
+  if (actual.chapters !== afterCounts.chapters || actual.articles !== afterCounts.articles || actual.appendices !== afterCounts.appendices) {
+    db.constitution = before; commit();
+    toast('搬入後核對唔一致，已自動還原；安全快照仍然保留', 'err'); return;
+  }
+  mode = 'edit';
+  await undoable(`已搬入並核對 ${parsed.sourceCount} 段（仍未儲存到後端）`, () => {
+    const currentDb = load(); currentDb.constitution = JSON.parse(JSON.stringify(before)); commit(); refresh();
+    toast('已還原搬入前團章', 'ok');
+  });
+  refresh();
+}
+
 /* ============================================================
    發布
    ============================================================ */
@@ -397,13 +546,13 @@ async function publish() {
   const guess = nextVersion(c.version);
   const r = await modal({
     title: '發布新版本', sub: '會記錄版本號、日期、修改人同摘要',
-    body: `<div class="grid g-2" style="gap:12px">
+    trustedBodyHtml: `<div class="grid g-2" style="gap:12px">
         <div class="field"><label class="label">版本號</label><input class="input" id="q-ver" value="${esc(guess)}"></div>
-        <div class="field"><label class="label">日期</label><input class="input" id="q-date" value="${todayISO()}"></div>
+        <div class="field"><label class="label">日期</label><input class="input" id="q-date" value="${esc(todayISO())}"></div>
       </div>
       <div class="field mt-12"><label class="label">修訂摘要</label>
         <input class="input" id="q-note" placeholder="例：修訂第 8 條團費金額、新增附件 B"></div>
-      <div class="hint mt-12">發布之後等右上角同步狀態變「已存到後端」，公開閱讀頁（constitution.html）同 QR Code 就會即刻顯示新版 —— 唔使再人手上載檔案（後端 Apps Script v2.5.0+）。</div>`,
+      <div class="hint mt-12">「發布」會先更新呢部機嘅版本資料，<b>唔會背景寫後端</b>。核對後請撳頂部「儲存到後端」；成功 readback 後，團員入口同 QR 路線先會顯示新版。</div>`,
     actions: [{ label: '取消', class: 'btn', value: null },
       { label: '發布', class: 'btn-primary', onClick: el => ({
         version: el.querySelector('#q-ver').value.trim(),
@@ -421,32 +570,9 @@ async function publish() {
   audit('發布團章', `v${r.version} ${r.note}`);
   refresh();
 
-  /* 2026-09-19 團長回報：「團章我都一直 POST 唔到出尼，我按出 JSON 佢會變
-     JSON 俾我，但要我再上傳番去唔知邊？唔係應該我按 PUSH ＝ 出番去公開
-     俾所有團員睇到？要我下載個檔再上傳？」
-
-     佢講得啱，舊流程係壞嘅，而且壞喺兩處：
-     ① 呢度 `setTimeout(() => exportJson(true), 400)` —— 發布完**自動彈一個
-        constitution.json 落載**。嗰個係 v2.5.0 之前「人手上載去公開頁」嘅遺物；
-        而家公開頁（constitution.html）係直接由後端讀，根本唔使上載任何檔案。
-        淨低個下載淨係令人以為「仲要做啲乜」—— 已經攞走。
-     ② 發布只係 commit() 去本機。手動同步之下，改動會一直留喺呢部機，
-        公開頁永遠睇唔到新版 —— 正正係「POST 唔到出尼」。
-        「發布」本身就係「我要而家出街」嘅明確指令，所以即刻寫後端。 */
-  /* 2026-09-20：發布 ＝ 行**同一條**儲存路（saveWithDialog：核對版本 → 三方比對 → 撞就問），
-     冇另一條「順便寫後端」嘅路。 */
-  const remote = await import('../lib/remote.js').catch(() => null);
-  if (remote?.remoteConfigured?.()) {
-    toast(`已發布 v${r.version} —— 正在儲存到後端…`, 'ok');
-    const { saveWithDialog } = await import('./syncdialog.js');
-    const res = await saveWithDialog({ silent: true, toastOk: false });
-    toast(res?.ok
-      ? `已發布 v${r.version} ✓ 公開閱讀頁同 QR Code 而家已經係新版`
-      : `已發布 v${r.version}，但暫時寫唔入後端（${res?.error || '未知'}）—— 撳頂部「儲存到後端」再試`,
-      res?.ok ? 'ok' : 'warn');
-  } else {
-    toast(`已發布 v${r.version}（呢部機未接後端 —— 公開頁要接咗後端先至睇到）`, 'warn');
-  }
+  /* 發布只係本機版本動作。後端寫入永遠由頂部「儲存到後端」明確觸發；
+     呢度唔會暗中 save、唔會因逾時自動重送，亦唔會再彈 JSON 叫人手上載。 */
+  toast(`已喺本機發布 v${r.version}；核對後請撳頂部「儲存到後端」，成功後團員入口先更新`, 'ok');
   refresh();
 }
 
@@ -493,14 +619,14 @@ function exportWord() {
     filename: `團章_v${c.version || ''}_${stamp()}.doc`,
     title: '團章',
     org: profile().name,
-    bodyHtml: htmlFor('both')
+    trustedBodyHtml: htmlFor('both')
   });
   toast('已輸出 Word（.doc）', 'ok');
 }
 function exportPdf() {
   const c = constitution();
   const body = htmlFor('both') + `<div class="foot"><span>${esc(profile().name || '')}</span><span>版本 v${esc(c.version || '')}</span><span>${todayISO()}</span></div>`;
-  printDoc({ title: '團章', org: profile().name, bodyHtml: body });
+  printDoc({ title: '團章', org: profile().name, trustedBodyHtml: body });
   toast('已開啟列印，可另存為 PDF', 'ok');
 }
 function exportMarkdown() {
@@ -526,10 +652,18 @@ function exportMarkdown() {
   toast('已輸出 Markdown', 'ok');
 }
 
-/** 單一 HTML：內建語言切換 + 列印，可離線睇、可上載做公開頁 */
+/** 單一 HTML：內建語言切換 + 列印，可離線睇、只供離線備份（唔應上載公開） */
+function standaloneNonce() {
+  const bytes = new Uint8Array(16);
+  if (globalThis.crypto?.getRandomValues) globalThis.crypto.getRandomValues(bytes);
+  else for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+  return Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+}
 function standaloneHtml(cIn = constitution()) {
   const c = cIn;
   const p = profile();
+  const nonce = standaloneNonce();
+  const csp = `default-src 'none'; script-src 'nonce-${nonce}'; object-src 'none'; base-uri 'none'; form-action 'none'; style-src 'unsafe-inline'; img-src data: blob:`;
   const chapterHtml = (c.chapters || []).map((ch, i) => `
     <section class="chapter">
       <h2 data-zh="${esc(ch.heading?.zh || '')}" data-en="${esc(ch.heading?.en || '')}">${esc(ch.heading?.zh || '')}</h2>
@@ -545,6 +679,7 @@ function standaloneHtml(cIn = constitution()) {
     </section>`).join('');
 
   return `<!doctype html><html lang="zh-Hant-HK"><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="${esc(csp)}">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>${esc(p.name || '')} 團章 v${esc(c.version || '')}</title>
 <style>${docCss()}
@@ -568,7 +703,7 @@ body.lang-both .zh{display:block} body.lang-both .en{display:block}
   <button data-lang="zh" class="on">中文</button>
   <button data-lang="en">English</button>
   <button data-lang="both">中英對照</button>
-  <button onclick="window.print()">列印 / 存 PDF</button>
+  <button data-print>列印 / 存 PDF</button>
   <span class="sp">版本 v${esc(c.version || '')} · 更新 ${esc(c.updated || '')}</span>
 </div>
 <div class="doc-head">
@@ -580,7 +715,8 @@ ${c.preamble?.zh ? `<p><b>序言 Preamble</b></p><p class="art"><span class="zh"
 ${chapterHtml}
 ${apxHtml}
 <div class="foot"><span>${esc(c.footer?.zh || '')}</span><span>${esc(c.footer?.en || '')}</span><span>v${esc(c.version || '')}</span></div>
-<script>
+<script nonce="${esc(nonce)}">
+document.querySelector('[data-print]').addEventListener('click',function(){window.print();});
 document.querySelectorAll('[data-lang]').forEach(function(b){
   b.addEventListener('click',function(){
     var l=b.dataset.lang;
@@ -606,18 +742,11 @@ function exportJson(auto = false) {
   const out = { ...c, unitCode: load().unitCode, exportedAt: new Date().toISOString() };
   const name = `constitution.json`;
   dlFile(name, JSON.stringify(out, null, 2), 'application/json');
-  toast(`已下載 ${name}（純備份。發布唔使上載任何檔案 —— 公開頁由後端自動讀最新版）`, 'ok');
+  toast(`已下載 ${name}（純備份。發布唔使上載任何檔案 —— 團員入口由後端安全投影讀最新版）`, 'ok');
 }
 
 function publicUrl() {
-  const s = settings();
-  if (s.publicBaseUrl) {
-    return s.publicBaseUrl.includes('{u}')
-      ? s.publicBaseUrl.replace('{u}', load().unitCode)
-      : s.publicBaseUrl;
-  }
-  const base = location.href.split('#')[0].replace(/index\.html$/, '');
-  return `${base}constitution.html?u=${encodeURIComponent(load().unitCode)}`;
+  return `${publicPageUrl('members.html', { u: load().unitCode })}#/constitution`;
 }
 
 /* ============================================================
@@ -640,26 +769,22 @@ export function mount(root) {
     if (act === 'exp-html') return exportStandalone();
     if (act === 'exp-json') return exportJson();
     if (act === 'publish') return publish();
-    if (act === 'save-url') {
-      setSetting({ publicBaseUrl: root.querySelector('#pubUrl').value.trim() });
-      toast('已儲存公開網址', 'ok'); refresh(); return;
-    }
     if (act === 'copy-link') {
-      if (await copyText(publicUrl())) toast('已複製公開連結', 'ok'); else toast('複製失敗', 'err');
+      if (await copyText(publicUrl())) toast('已複製登入連結', 'ok'); else toast('複製失敗', 'err');
       return;
     }
     if (act === 'qr') {
       const url = publicUrl();
       await modal({
-        title: '團章 QR Code', sub: '團員掃描即睇（免登入）',
-        body: `<div class="center">
+        title: '團章 QR Code', sub: '團員掃描後要登入',
+        trustedBodyHtml: `<div class="center">
             <div class="qr-box" style="width:280px"><div id="qrHost">${qrSvg(url, 7, 2)}</div></div>
             <div class="sm muted mt-12" style="word-break:break-all">${esc(url)}</div>
             <div class="row gap-8 mt-16" style="justify-content:center">
               <button class="btn btn-sm" data-dl-svg>${icon('download', 15)} 下載 SVG</button>
               <button class="btn btn-sm" data-dl-html>${icon('download', 15)} 下載單一 HTML</button>
             </div>
-            <div class="hint mt-12">如果 QR 想指向其他網址（例如你上載咗單一 HTML 去自己網站），可以喺右邊改「公開網址」。</div>
+            <div class="hint mt-12">QR 固定指向本團登入入口，唔可以改去匿名頁。</div>
           </div>`,
         actions: [{ label: '關閉', class: 'btn', value: null }],
         onMount: el => {
@@ -675,12 +800,12 @@ export function mount(root) {
     if (act === 'export') {
       await modal({
         title: '輸出團章',
-        body: `<div class="col gap-8">
+        trustedBodyHtml: `<div class="col gap-8">
           <button class="btn btn-block" data-exp="word">${icon('download', 16)} Word（.doc）</button>
           <button class="btn btn-block" data-exp="pdf">${icon('print', 16)} PDF / 列印</button>
           <button class="btn btn-block" data-exp="md">${icon('download', 16)} Markdown</button>
           <button class="btn btn-block" data-exp="html">${icon('download', 16)} 單一 HTML（可上載／離線）</button>
-          <button class="btn btn-block" data-exp="json">${icon('save', 16)} JSON 備份（唔使上載 —— 公開頁由後端自動讀）</button>
+          <button class="btn btn-block" data-exp="json">${icon('save', 16)} JSON 備份（唔使上載 —— 團員入口由後端安全投影讀）</button>
         </div>`,
         actions: [{ label: '關閉', class: 'btn', value: null }],
         onMount: el => {
@@ -699,6 +824,7 @@ export function mount(root) {
       return;
     }
 
+    if (act === 'import-doc') return importConstitutionDocument();
     if (act === 'edit-meta') return editMeta();
     if (act === 'add-ch') return addChapter();
     if (act === 'add-apx') return addAppendix();
@@ -712,38 +838,54 @@ export function mount(root) {
   root.querySelectorAll('[data-del-ch]').forEach(b => b.addEventListener('click', async () => {
     const id = b.dataset.delCh;
     const isApx = !!appendixOf(id);
-    if (await confirmDlg({ title: '刪除' + (isApx ? '附件' : '章節'), danger: true, okText: '確定刪除', message: '刪除後無法復原（可重新匯入發布檔）。' })) {
+    if (await confirmDlg({ title: '刪除' + (isApx ? '附件' : '章節'), danger: true, okText: '確定刪除',
+      message: `會刪除呢個${isApx ? '附件同全部段落' : '章節、條文同子項'}；系統會先建立安全快照，完成後可以即時還原。` })) {
       const db = load();
+      const before = JSON.parse(JSON.stringify(db.constitution));
+      const snapshot = createSafetySnapshot(`刪除團章${isApx ? '附件' : '章節'}前`, before, { kind: 'constitution-delete', id });
+      if (!snapshot.ok) { toast(`${snapshot.error}；已取消刪除`, 'err'); return; }
       if (isApx) db.constitution.appendices = db.constitution.appendices.filter(a => a.id !== id);
       else db.constitution.chapters = db.constitution.chapters.filter(c => c.id !== id);
-      commit(); toast('已刪除', 'ok'); refresh();
+      commit();
+      await undoable('已刪除；仍未儲存到後端', () => { const d = load(); d.constitution = JSON.parse(JSON.stringify(before)); commit(); refresh(); });
+      refresh();
     }
   }));
   root.querySelectorAll('[data-add-art]').forEach(b => b.addEventListener('click', () => addArticle(b.dataset.addArt)));
   root.querySelectorAll('[data-edit-art]').forEach(b => b.addEventListener('click', () => editArticle(b.dataset.ch, b.dataset.editArt)));
   root.querySelectorAll('[data-del-art]').forEach(b => b.addEventListener('click', async () => {
-    if (await confirmDlg({ title: '刪除條文', danger: true, okText: '確定刪除', message: '確定刪除此條文？' })) {
+    if (await confirmDlg({ title: '刪除條文', danger: true, okText: '確定刪除', message: '會連同子項刪除；完成後可以即時還原。' })) {
       const db = load();
+      const before = JSON.parse(JSON.stringify(db.constitution));
+      const snapshot = createSafetySnapshot('刪除團章條文前', before, { kind: 'constitution-delete-article', id: b.dataset.delArt });
+      if (!snapshot.ok) { toast(`${snapshot.error}；已取消刪除`, 'err'); return; }
       const ch = db.constitution.chapters.find(c => c.id === b.dataset.ch);
       if (ch) ch.articles = ch.articles.filter(a => a.id !== b.dataset.delArt);
-      commit(); toast('已刪除', 'ok'); refresh();
+      commit();
+      await undoable('已刪除條文；仍未儲存到後端', () => { const d = load(); d.constitution = JSON.parse(JSON.stringify(before)); commit(); refresh(); });
+      refresh();
     }
   }));
   root.querySelectorAll('[data-add-item]').forEach(b => b.addEventListener('click', () => addItem(b.dataset.ch, b.dataset.addItem)));
   root.querySelectorAll('[data-edit-item]').forEach(b => b.addEventListener('click', () => editArticle(b.dataset.ch, b.dataset.editItem, b.dataset.item)));
   root.querySelectorAll('[data-del-item]').forEach(b => b.addEventListener('click', async () => {
-    if (await confirmDlg({ title: '刪除子項', danger: true, okText: '確定刪除', message: '確定刪除此子項？' })) {
+    if (await confirmDlg({ title: '刪除子項', danger: true, okText: '確定刪除', message: '確定刪除此子項？完成後可以即時還原。' })) {
       const db = load();
+      const before = JSON.parse(JSON.stringify(db.constitution));
+      const snapshot = createSafetySnapshot('刪除團章子項前', before, { kind: 'constitution-delete-item', id: b.dataset.item });
+      if (!snapshot.ok) { toast(`${snapshot.error}；已取消刪除`, 'err'); return; }
       const ch = db.constitution.chapters.find(c => c.id === b.dataset.ch);
       const art = ch?.articles.find(a => a.id === b.dataset.editItem);
       if (art) art.items = (art.items || []).filter(i => i.id !== b.dataset.item);
-      commit(); toast('已刪除', 'ok'); refresh();
+      commit();
+      await undoable('已刪除子項；仍未儲存到後端', () => { const d = load(); d.constitution = JSON.parse(JSON.stringify(before)); commit(); refresh(); });
+      refresh();
     }
   }));
   root.querySelectorAll('[data-add-block]').forEach(b => b.addEventListener('click', async () => {
     const apxId = b.dataset.addBlock;
     const r = await modal({ title: '新增段落', wide: true,
-      body: `<div class="field"><label class="label">中文</label><textarea class="textarea" id="q-zh" style="min-height:80px"></textarea></div>
+      trustedBodyHtml: `<div class="field"><label class="label">中文</label><textarea class="textarea" id="q-zh" style="min-height:80px"></textarea></div>
         <div class="field mt-12"><label class="label">English</label><textarea class="textarea" id="q-en" style="min-height:80px"></textarea></div>`,
       actions: [{ label: '取消', class: 'btn', value: null },
         { label: '新增', class: 'btn-primary', onClick: el => ({ zh: el.querySelector('#q-zh').value, en: el.querySelector('#q-en').value }) }] });
@@ -756,16 +898,21 @@ export function mount(root) {
   }));
   root.querySelectorAll('[data-edit-block]').forEach(b => b.addEventListener('click', () => editBlock(b.dataset.editBlock, b.dataset.block)));
   root.querySelectorAll('[data-del-block]').forEach(b => b.addEventListener('click', async () => {
-    if (await confirmDlg({ title: '刪除段落', danger: true, okText: '確定刪除', message: '確定刪除此段落？' })) {
+    if (await confirmDlg({ title: '刪除段落', danger: true, okText: '確定刪除', message: '確定刪除此段落？完成後可以即時還原。' })) {
       const db = load();
+      const before = JSON.parse(JSON.stringify(db.constitution));
+      const snapshot = createSafetySnapshot('刪除團章段落前', before, { kind: 'constitution-delete-block', id: b.dataset.block });
+      if (!snapshot.ok) { toast(`${snapshot.error}；已取消刪除`, 'err'); return; }
       const apx = db.constitution.appendices.find(a => a.id === b.dataset.editBlock);
       if (apx) apx.blocks = (apx.blocks || []).filter(x => x.id !== b.dataset.block);
-      commit(); toast('已刪除', 'ok'); refresh();
+      commit();
+      await undoable('已刪除段落；仍未儲存到後端', () => { const d = load(); d.constitution = JSON.parse(JSON.stringify(before)); commit(); refresh(); });
+      refresh();
     }
   }));
 }
 
-/** 公開閱讀頁都係用同一個渲染器 */
+/** 管理介面文件渲染器 */
 export function renderStandalone(c) { return standaloneHtml(c); }
 
 export function refresh() { window.dispatchEvent(new CustomEvent('v82:refresh')); }

@@ -9,10 +9,10 @@
 ```text
 功能完整版支部前端（vs_portal：行政＋Progress 等完整模組）──┐
 BADGE 輕量前端（vsbadge：只呈現部分流程）───────────────────┼──▶ 同一完整 Unified GAS /exec ──▶ 同一旅團 Sheet
-公開通告／申報入口───────────────────────────────────────────┘
+已登入團員入口（members.html：本人通告／申報／進度）────────┘
 ```
 
-完整功能屬 Unified GS；「輕量」只描述 BADGE 的前端能力面，不代表後端缺少行政、身份、進度、獎章、履歷或申報功能。不同前端可以有不同 action allowlist，但 routing 與 server-to-server HMAC 根都使用該旅團同一 `API_KEY`。API Key 不等於用戶身份；每個非公開 action 仍由後端按 server-issued session、role 及 scope 授權。
+完整功能屬 Unified GS；「輕量」只描述 BADGE 的前端能力面，不代表後端缺少行政、身份、進度、獎章、履歷或申報功能。不同前端可以有不同 action allowlist，但 routing 與 server-to-server HMAC 根都使用該旅團同一 `API_KEY`。API Key 不等於用戶身份；所有內容 action 都由後端按 server-issued session、本支部身份、模組 grant 及 scope 授權。
 
 ## 2. 建立 Unified Sheet
 
@@ -69,17 +69,17 @@ API Key 只由 server Registry 注入，不能取代 session。browser 自報 ro
 - 未來旅系統單向讀取支部後端；Progress 不參與該 reader 契約。
 - BOOK 可讀取 BADGE 正式資料，也可提交匯入候選；候選先進待批，只有領袖確認後才寫入正式進度／履歷。
 
-## 6. 手機申報與通告
+## 6. 團員手機申報與通告
+
+所有流程由 `members.html?u=<ID>` 的本地身份登入開始。`entry.html`、`notice.html`、`borrow.html`、`constitution.html` 只保留舊網址轉向，不會匿名讀寫資料。
 
 ### 收支申報
 
-公開 `entry.html?u=<ID>` 可提供手機申報入口；後端 action 只可寫入指定待批資料，不得取得完整行政 DB。單據相片如啟用 Drive，DB 只保存 URL。
+已登入團員可在獲授權的入口提交本人待批申報。後端由 session 固定提交者；client 自報姓名、memberId 或角色不構成身份。單據相片如啟用 Drive，DB 只保存 URL。執委／領袖在管理系統批核後，才正式寫入帳目。
 
-執委／領袖在管理系統批核後，才正式寫入帳目。
+### 通告及回覆
 
-### 通告報名
-
-每張通告使用獨立 `notice.html?u=<ID>&n=<通告編號>`。公開回應只可寫入該通告的白名單欄位，不能讀取其他行政資料。
+通告正文及本人回覆經 authenticated hub projection／`hubNoticeSignup` 處理。後端只回該身份可見內容，並只接受該通告定義的白名單欄位；其他人的回覆及完整行政 DB 不會送到團員瀏覽器。
 
 ## 7. 多旅團隔離
 
@@ -98,7 +98,8 @@ API Key 只由 server Registry 注入，不能取代 session。browser 自報 ro
 - [ ] 同一 YMIS 在兩個前端對應同一人。
 - [ ] 兩個前端各自受 action allowlist 限制；browser 偽造 backend／apikey／role／YMIS 不可改路或升權。
 - [ ] member 只可本人；staff scope 正確。
-- [ ] 通告／申報只寫白名單欄位，不能讀完整 DB。
+- [ ] 未登入不能讀通告／團章或提交申報／借用；舊頁只轉向登入入口。
+- [ ] 已登入通告／申報只寫 session actor 的白名單欄位，不能讀完整 DB。
 - [ ] 重跑 `initializeSheets` 兩次，API Key、帳戶 hash、行政與進度資料不變。
 - [ ] 另一旅團 token／Key 全部拒絕。
 - [ ] 真 Apps Script staging 已測 Lock、Cache、Sheet、Drive、Mail 及並發。

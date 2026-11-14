@@ -53,45 +53,10 @@ if (!baseline.includes(`const VS_GS_VERSION = '${manifest.baseline.version}';`))
  * in the generated artifact so repository whitespace checks stay actionable. */
 baseline = baseline.replace(/[ \t]+$/gm, '');
 
-/* The pinned compatibility checkpoint still contains its historical Portal-token
- * verifier. Unified owns the only exchange route, so disable that unreachable
- * fallback in the composed artifact instead of retaining a second secret model. */
-portal = replaceOne(portal,
-  "PropertiesService.getScriptProperties().getProperty('PORTAL_SESSION_SECRET') || ''",
-  "'' /* legacy Portal verifier disabled; Unified exchange is authoritative */",
-  'legacy compatibility Portal secret');
-portal = replaceOne(portal,
-  '    /* ---- 進度追蹤：POST 讀（doGet ?action=load 之外，仲要 POST 版 ——\n       上游（旅系統）簽名讀進度嗰陣都係 POST；同一條 API Key 授權）---- */',
-  '    /* ---- 進度追蹤：POST 讀（供同源 server proxy 以用途分隔 HMAC\n       驗證同一個 load 業務 action）---- */',
-  'legacy Progress transport comment');
-portal = replaceOne(portal,
-  '    /* ↓↓↓ 同「進度前端」共用嘅分頁（一個後端、兩個前端）：欄位順序唔可以改 ↓↓↓ */',
-  '    /* ↓↓↓ 完整 Unified 後端的共用分頁（vs_portal 完整版＋vsbadge 輕量版前端）：欄位順序唔可以改 ↓↓↓ */',
-  'legacy shared-sheet comment');
-portal = replaceOne(portal,
-  '/** 收到 GET 時處理：?action=load 讀進度（兩個前端用同一份資料） */',
-  '/** 收到 GET 時處理：?action=load 讀進度（完整版與輕量版前端用同一份資料） */',
-  'legacy Progress GET comment');
-portal = replaceOne(portal,
-  '    // 兩個前端都會用同一條 key（大寫 apiKey / 細寫 apikey 都收）',
-  '    // 完整版與輕量版前端共用同一 Unified key（大寫 apiKey / 細寫 apikey 都收）',
-  'legacy shared-key comment');
-portal = replaceOne(portal,
-  ' * 兩個前端共用一個後端 —— 公開頁唔使等改 Git，同步完就見到新通告',
-  ' * 多個 client 共用一個後端 —— 公開頁唔使等改 Git，同步完就見到新通告',
-  'legacy shared-client comment');
-portal = replaceOne(portal,
-  '   一個後端、兩個前端：進度追蹤',
-  '   完整 Unified 後端、完整版與輕量版前端：Progress',
-  'legacy Progress heading');
-portal = replaceOne(portal,
-  '   呢個後端同時餵兩個前端：\n     ① 深資童軍管理系統（呢邊）   ② 進度追蹤前端（團員／領袖用）',
-  '   Unified GS 具備身份、行政、Progress、獎章、履歷及申報完整能力。vs_portal 係\n   功能完整版前端，vsbadge 係只呈現部分流程的輕量前端；唔存在另一支精簡 backend。',
-  'legacy two-client Progress description');
-portal = replaceOne(portal,
-  '   批准＝寫入「進度追蹤」（同一個後端、兩個前端都即刻見到）',
-  '   批准＝寫入「進度追蹤」（完整版與輕量版前端都即刻見到）',
-  'legacy Progress approval comment');
+/* This deliberately refreshed compatibility checkpoint is generated from the same
+ * hardened Portal source as apps-script/Code.gs. Branch projection, module ACLs and
+ * forged-write checks therefore stay identical before Unified adds its identity
+ * router; the source hash above prevents either artifact drifting silently. */
 
 // Keep all baseline helpers global, but hand the four public entry points to the
 // unified router.  Internal menu callbacks that call initializeSheets() now
@@ -134,7 +99,11 @@ const wrappedPortal = [
   '  doGet: doGet,',
   '  doPost: doPost,',
   '  loadDb: loadDb,',
-  '  loadTables: loadTables',
+  '  loadTables: loadTables,',
+  '  canAccountAdmin: staffCanAccountAdmin_,',
+  '  canonicalRole: branchCanonicalRole_,',
+  '  roleLevel: branchRoleLevel_,',
+  '  visibleRoles: BRANCH_VISIBLE_ROLES_.slice(),',
   '};',
   '})();',
   ''

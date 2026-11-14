@@ -13,21 +13,47 @@
    要到用家撳頂部「儲存到後端」先真正送出。
    ============================================================ */
 
+import { currentUnit } from './store.js';
+
 const DRAFT_KEY = 'venture82.drafts.v2';
 const CONFIRM_KEY = 'venture82.safeguard.v2';
+const SAFETY_KEY = 'venture82.safety-snapshots.v1';
+const MAX_SAFETY_SNAPSHOTS = 6; // five history slots plus one pre-restore rollback slot
 
-let memStore = {};   // localStorage 唔可用時嘅後備
-function lsGet(k) { try { return localStorage.getItem(k); } catch { return memStore[k] ?? null; } }
-function lsSet(k, v) { try { localStorage.setItem(k, v); } catch { memStore[k] = v; } }
+let memStore = {};   // localStorage 唔可用時嘅後備（只保住今次頁面）
+function lsGet(k) {
+  if (Object.prototype.hasOwnProperty.call(memStore, k)) return memStore[k];
+  try { return localStorage.getItem(k); }
+  catch { return null; }
+}
+function lsSet(k, v) {
+  try {
+    localStorage.setItem(k, v);
+    delete memStore[k];
+    return true;
+  } catch {
+    memStore[k] = v;
+    return false;
+  }
+}
+/* Drafts and safety snapshots can contain member/finance data. Keep them in the
+   active unit's storage namespace so switching troops in one browser cannot show
+   or restore another troop's unsaved content. Legacy unscoped keys are deliberately
+   not auto-migrated because they do not record which unit owned them. */
+function storageScope() {
+  const unit = String(currentUnit?.() || '').trim();
+  return /^[0-9A-Za-z][0-9A-Za-z_-]{0,31}$/.test(unit) ? unit : 'unselected';
+}
+function scopedKey(base) { return `${base}.${storageScope()}`; }
 
 /* ============================================================
    1) 草稿暫存（瀏覽器）
    ============================================================ */
 function readAll() {
-  try { return JSON.parse(lsGet(DRAFT_KEY) || '{}') || {}; } catch { return {}; }
+  try { return JSON.parse(lsGet(scopedKey(DRAFT_KEY)) || '{}') || {}; } catch { return {}; }
 }
 function writeAll(map) {
-  try { lsSet(DRAFT_KEY, JSON.stringify(map)); return true; } catch (e) { return false; }
+  try { return lsSet(scopedKey(DRAFT_KEY), JSON.stringify(map)); } catch (e) { return false; }
 }
 const keyOf = (section, id) => `${section}::${id || 'new'}`;
 
@@ -231,16 +257,20 @@ export function draftBanner(section, id, label = '草稿') {
  * 要求使用者打低指定文字先得撳「確定」。
  * @returns {Promise<boolean>}
  */
-export async function confirmDanger({ title = '確認', message = '', okText = '確定', requireText = '', danger = true }) {
+export async function confirmDanger({ title = '確認', message = '', trustedMessageHtml, okText = '確定', requireText = '', danger = true }) {
   const { modal, esc } = await import('./util.js');
+  if (trustedMessageHtml !== undefined && typeof trustedMessageHtml !== 'string') {
+    throw new TypeError('trustedMessageHtml must be an application-authored HTML string');
+  }
   if (!enabled().requireConfirm) {
     const { confirmDlg } = await import('./util.js');
-    return !!(await confirmDlg({ title, message, okText, danger }));
+    return !!(await confirmDlg({ title, message, trustedMessageHtml, okText, danger }));
   }
+  const renderedMessage = trustedMessageHtml === undefined ? esc(message) : trustedMessageHtml;
   const need = String(requireText || '').trim();
   const r = await modal({
     title,
-    body: `<p style="font-size:14.5px;line-height:1.7">${message}</p>
+    trustedBodyHtml: `<p style="font-size:14.5px;line-height:1.7">${renderedMessage}</p>
       ${need ? `
       <div class="field mt-12">
         <label class="label">請打低 <code>${esc(need)}</code> 以確認（防手誤）</label>
@@ -268,7 +298,124 @@ export async function confirmDanger({ title = '確認', message = '', okText = '
 }
 
 /* ============================================================
-   3) 可還原動作
+   3) 批量／危險操作：dry-run → 詳細 diff → 備份／回復 → 明確確認
+   ============================================================ */
+
+/**
+ * 全系統共用嘅批量確認。呢個畫面本身只做 dry-run，唔會改資料。
+ * caller 要喺回 true 之後先 createSafetySnapshot／真正寫入，再自行 readback。
+ */
+export async function confirmBulkOperation({
+  title = '確認批量操作', actionLabel = '確認執行', count = 0, scope = '',
+  changes = [], preview = [], warnings = [], requireText = '',
+  backupText = '執行前會自動建立本機安全快照。',
+  rollbackText = '如結果唔啱，可用安全快照還原。',
+  readbackText = '完成後系統會重新計數核對結果。', danger = false
+} = {}) {
+  const { modal, esc } = await import('./util.js');
+  const need = String(requireText || `確認 ${Number(count) || 0}`).trim();
+  const rows = (Array.isArray(preview) ? preview : []).map((row, i) => {
+    const r = row && typeof row === 'object' ? row : { label: String(row || '') };
+    return `<tr><td class="mono xs">${i + 1}</td><td class="sm"><b>${esc(r.label || r.name || r.id || '—')}</b>${r.detail ? `<div class="xs faint">${esc(r.detail)}</div>` : ''}</td>
+      <td class="sm">${esc(r.before ?? '—')}</td><td class="sm">${esc(r.after ?? '—')}</td></tr>`;
+  }).join('');
+  const r = await modal({
+    title,
+    sub: '呢一步只係預覽；未確認之前唔會改任何正式資料',
+    wide: true,
+    trustedBodyHtml: `
+      <div class="note-box info mb-12"><div><b>Dry-run：準備處理 ${Number(count) || 0} 項</b>
+        ${scope ? `<div class="xs mt-4">範圍：${esc(scope)}</div>` : ''}</div></div>
+      ${(Array.isArray(changes) ? changes : []).length ? `<div class="kv mb-12">${changes.map(c => `
+        <div class="kv-row sm"><span>${esc(c.label || '')}</span><span>${esc(c.before ?? '—')} → <b>${esc(c.after ?? '—')}</b>${c.detail ? `<div class="xs faint">${esc(c.detail)}</div>` : ''}</span></div>`).join('')}</div>` : ''}
+      ${rows ? `<div class="scroll-x bulk-diff"><table class="table table-compact">
+        <thead><tr><th>#</th><th>記錄</th><th>執行前</th><th>執行後</th></tr></thead><tbody>${rows}</tbody></table></div>` : ''}
+      ${warnings.map(w => `<div class="note-box warn mt-8"><div>${esc(w)}</div></div>`).join('')}
+      <div class="note-box mt-12"><div>
+        <b>備份：</b>${esc(backupText)}<br>
+        <b>回復：</b>${esc(rollbackText)}<br>
+        <b>核對：</b>${esc(readbackText)}
+      </div></div>
+      <div class="field mt-12"><label class="label">請打低 <code>${esc(need)}</code> 先可以執行（防手誤）</label>
+        <input class="input" id="bulk-confirm-text" autocomplete="off" inputmode="text" placeholder="${esc(need)}"></div>
+      <label class="check mt-12"><input type="checkbox" id="bulk-confirm-scope"> 我已核對上面嘅範圍、數量同變更方向</label>`,
+    actions: [
+      { label: '取消（唔改資料）', class: 'btn', value: false },
+      { label: actionLabel, class: danger ? 'btn-danger' : 'btn-primary', value: true, disabled: true }
+    ],
+    onMount: el => {
+      const input = el.querySelector('#bulk-confirm-text');
+      const tick = el.querySelector('#bulk-confirm-scope');
+      const btn = el.querySelector('[data-act="1"]');
+      const sync = () => { btn.disabled = String(input?.value || '').trim() !== need || !tick?.checked; };
+      input?.addEventListener('input', sync);
+      tick?.addEventListener('change', sync);
+      sync();
+    }
+  });
+  return !!r;
+}
+
+function safetyMap() {
+  try {
+    const parsed = JSON.parse(lsGet(scopedKey(SAFETY_KEY)) || '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch { return []; }
+}
+
+/** 建立可下載／可程式還原嘅本機安全快照；最多保留最近 6 份。 */
+export function createSafetySnapshot(label, data, meta = {}, { preserveId = '' } = {}) {
+  let json;
+  try { json = typeof data === 'string' ? data : JSON.stringify(data); }
+  catch (e) { return { ok: false, error: '快照序列化失敗：' + (e?.message || e) }; }
+  const rec = {
+    id: `safe-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    label: String(label || '批量操作前'), at: new Date().toISOString(), unit: storageScope(),
+    bytes: new Blob([json]).size, meta: meta && typeof meta === 'object' ? meta : {}, json
+  };
+  const existing = safetyMap();
+  const pinned = preserveId ? existing.find(x => x.id === preserveId) : null;
+  const list = [rec, ...(pinned ? [pinned] : []), ...existing.filter(x => !pinned || x.id !== pinned.id)]
+    .slice(0, MAX_SAFETY_SNAPSHOTS);
+  try {
+    /* A memory fallback is useful for drafts, but it is not a durable safety
+       backup: a refresh would erase it. Destructive/bulk work may proceed only
+       after localStorage confirms the snapshot was persisted and can be read. */
+    const key = scopedKey(SAFETY_KEY);
+    const persisted = lsSet(key, JSON.stringify(list));
+    if (!persisted) delete memStore[key];
+    const found = persisted && safetyMap().some(x => x.id === rec.id);
+    return found ? { ok: true, ...rec } : { ok: false, error: '瀏覽器儲存空間不足，未能建立安全快照' };
+  } catch (e) {
+    return { ok: false, error: '瀏覽器儲存空間不足，未能建立安全快照' };
+  }
+}
+
+export function listSafetySnapshots() {
+  return safetyMap().map(({ json, ...meta }) => meta);
+}
+export function readSafetySnapshot(id) {
+  const rec = safetyMap().find(x => x.id === id);
+  if (!rec) return null;
+  try { return { ...rec, data: JSON.parse(rec.json) }; }
+  catch { return { ...rec, data: rec.json }; }
+}
+export function dropSafetySnapshot(id) {
+  try { return lsSet(scopedKey(SAFETY_KEY), JSON.stringify(safetyMap().filter(x => x.id !== id))); }
+  catch { return false; }
+}
+
+/** 下載快照；wipe／整庫還原等不可逆動作用呢個，唔只靠 localStorage。 */
+export async function downloadSafetySnapshot(snapshot, filename = '') {
+  if (!snapshot?.json) return false;
+  const { download } = await import('./util.js');
+  const safe = String(filename || snapshot.label || '安全快照').replace(/[\\/:*?"<>|]+/g, '_');
+  download(`${safe}_${String(snapshot.at || '').slice(0, 19).replace(/[-:T]/g, '')}.json`, snapshot.json, 'application/json');
+  return true;
+}
+
+/* ============================================================
+   4) 可還原動作
    ============================================================ */
 /**
  * 執行一個動作，並喺 toast 提供「還原」。

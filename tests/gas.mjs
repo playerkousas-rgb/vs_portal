@@ -286,7 +286,35 @@ section('支部帳戶 PBKDF2 密碼基礎');
   const restoredLogin = g.post({ action: 'authLogin', unit: '0082', username: 'exco@example.com', password: '1234' });
   ok('復原帳戶使用 1234 並強制改密碼', restoredLogin.ok === true && restoredLogin.mustChangePw === true);
 
+  /* A projected collection may legitimately omit confidential peer/higher rows, but
+     merge restoration happens before row ACL validation.  A brand-new row is never
+     an omitted server row and must still pass its create permission. */
+  const beforeCreateAcl = g.serverPost({ action: 'loadDb', unit: '0082' });
+  const createDeniedDb = JSON.parse(JSON.stringify(beforeCreateAcl.db));
+  createDeniedDb.permOverrides = createDeniedDb.permOverrides || {};
+  createDeniedDb.permOverrides['member.create'] = {
+    ...(createDeniedDb.permOverrides['member.create'] || {}), member: 0, exco: 0
+  };
+  const createAclSaved = g.serverPost({ action: 'saveDb', unit: '0082', db: createDeniedDb,
+    baseVersion: beforeCreateAcl.version, refreshReports: false });
   const excoSnapshot = g.post({ action: 'loadDb', unit: '0082', sessionToken: restoredLogin.sessionToken });
+  const inventedMembers = JSON.parse(JSON.stringify(excoSnapshot.db.members));
+  inventedMembers.push({ id: 'forged-new-member', ymis: '1999999999', name: '偽造新成員', identity: 'member' });
+  const deniedProjectedMemberCreate = g.post({ action: 'saveTables', unit: '0082', tables: { members: inventedMembers },
+    baseVersion: excoSnapshot.version, refreshReports: false, sessionToken: restoredLogin.sessionToken });
+  ok('投影缺列補回不會放行真正新增列；member.create=deny 仍由 server 拒絕',
+    createAclSaved.ok === true && deniedProjectedMemberCreate.ok === false
+      && deniedProjectedMemberCreate.code === 'ACTION_SCOPE_DENIED', JSON.stringify(deniedProjectedMemberCreate));
+
+  const inventedAccounts = JSON.parse(JSON.stringify(excoSnapshot.db.accounts));
+  inventedAccounts.push({ id: 'forged-new-account', username: 'forged-new-account@example.com',
+    email: 'forged-new-account@example.com', role: 'member', active: true });
+  const deniedProjectedAccountCreate = g.post({ action: 'saveTables', unit: '0082', tables: { accounts: inventedAccounts },
+    baseVersion: excoSnapshot.version, refreshReports: false, sessionToken: restoredLogin.sessionToken });
+  ok('投影 accounts 不可利用缺列兼容路徑繞過 admin.accounts 建立新帳戶',
+    deniedProjectedAccountCreate.ok === false && deniedProjectedAccountCreate.code === 'PROTECTED_AUTH_FIELD',
+    JSON.stringify(deniedProjectedAccountCreate));
+
   const forgedMembers = JSON.parse(JSON.stringify(excoSnapshot.db.members));
   forgedMembers.find(m => m.id === 'm1').identity = 'leader';
   const forgedTableIdentity = g.post({ action: 'saveTables', unit: '0082', tables: { members: forgedMembers },
@@ -328,6 +356,85 @@ section('支部帳戶 PBKDF2 密碼基礎');
     baseVersion: excoSnapshot.version, refreshReports: false, sessionToken: login.sessionToken });
   ok('已驗領袖仍可按產品權限更改另一位非團長成員身份', allowedIdentity.ok === true,
     JSON.stringify(allowedIdentity));
+
+  /* 專用帳戶 action 唔經 saveDb dispatcher；仍必須同時受 members.edit 模組閘
+     同 admin.accounts 細項權限約束，唔可以只睇 role rank。 */
+  const fullBeforeAcl = g.serverPost({ action: 'loadDb', unit: '0082' });
+  const deniedByPermissionDb = JSON.parse(JSON.stringify(fullBeforeAcl.db));
+  deniedByPermissionDb.permOverrides = deniedByPermissionDb.permOverrides || {};
+  deniedByPermissionDb.permOverrides['admin.accounts'] = {
+    ...(deniedByPermissionDb.permOverrides['admin.accounts'] || {}), leader: 0
+  };
+  const denyPermissionSaved = g.serverPost({ action: 'saveDb', unit: '0082', db: deniedByPermissionDb,
+    baseVersion: fullBeforeAcl.version, refreshReports: false });
+  ok('platform super 可以設定本支部 admin.accounts 細項 ACL', denyPermissionSaved.ok === true,
+    JSON.stringify(denyPermissionSaved));
+  const deniedDedicated = [
+    g.post({ action: 'authResetPassword', unit: '0082', targetYmis: '1000000001', newPassword: '9999', sessionToken: login.sessionToken }),
+    g.post({ action: 'authDeleteAccount', unit: '0082', targetUsername: 'platform-member@example.com', sessionToken: login.sessionToken }),
+    g.post({ action: 'authRestoreAccount', unit: '0082', targetEmail: 'nobody@example.com', sessionToken: login.sessionToken }),
+    g.post({ action: 'authCreateAccount', unit: '0082', role: 'member', username: 'acl-denied@example.com',
+      memberId: 'm1', password: '1234', sessionToken: login.sessionToken })
+  ];
+  ok('admin.accounts=deny 會 server-side 拒絕 reset/delete/restore/create 四個專用 action',
+    deniedDedicated.every(result => result.ok === false && result.code === 'ACTION_SCOPE_DENIED'),
+    JSON.stringify(deniedDedicated));
+
+  const permissionDeniedSnapshot = g.serverPost({ action: 'loadDb', unit: '0082' });
+  const deniedByModuleDb = JSON.parse(JSON.stringify(permissionDeniedSnapshot.db));
+  deniedByModuleDb.permOverrides['admin.accounts'].leader = 1;
+  deniedByModuleDb.accessControl = deniedByModuleDb.accessControl || { modules: {} };
+  deniedByModuleDb.accessControl.modules = deniedByModuleDb.accessControl.modules || {};
+  deniedByModuleDb.accessControl.modules.members = {
+    member: { show: false, read: false, edit: false },
+    exco: { show: true, read: true, edit: false },
+    leader: { show: true, read: true, edit: false },
+    chief: { show: true, read: true, edit: true },
+    super: { show: true, read: true, edit: true }
+  };
+  const denyModuleSaved = g.serverPost({ action: 'saveDb', unit: '0082', db: deniedByModuleDb,
+    baseVersion: permissionDeniedSnapshot.version, refreshReports: false });
+  const moduleDeniedReset = g.post({ action: 'authResetPassword', unit: '0082', targetYmis: '1000000001',
+    newPassword: '9999', sessionToken: login.sessionToken });
+  ok('members.edit=deny 即使 admin.accounts=allow 仍會拒絕專用帳戶 action',
+    denyModuleSaved.ok === true && moduleDeniedReset.ok === false
+      && moduleDeniedReset.code === 'ACTION_SCOPE_DENIED', JSON.stringify({ denyModuleSaved, moduleDeniedReset }));
+}
+
+section('身份升級後提交舊投影仍保留當時不可見列');
+{
+  const g = makeGas();
+  g.sandbox.initializeSheets();
+  const password = g.sandbox.makePasswordRecord('projection-pass');
+  const seeded = {
+    schema: 2, unitCode: '0082',
+    accounts: [{ id: 'projection-actor', username: 'projection@example.com', email: 'projection@example.com',
+      role: 'exco', active: true, pw: password.pw, mustChangePw: false }],
+    members: [
+      { id: 'projection-lower', ymis: '2000000001', name: '較低身份', identity: 'member', status: 'active' },
+      { id: 'projection-peer', ymis: '2000000002', name: '同級保密身份', identity: 'exco', status: 'active' }
+    ]
+  };
+  g.post({ action: 'saveDb', unit: '0082', db: seeded });
+  const login = g.post({ action: 'authLogin', unit: '0082', username: 'projection@example.com', password: 'projection-pass' });
+  const oldProjection = g.post({ action: 'loadDb', unit: '0082', sessionToken: login.sessionToken });
+  ok('舊 exco 投影記錄 provenance，並隱藏同級身份', oldProjection.ok === true
+    && oldProjection.db.meta?.serverProjection?.role === 'exco'
+    && !oldProjection.db.members.some(member => member.id === 'projection-peer'));
+
+  const beforePromotion = g.serverPost({ action: 'loadDb', unit: '0082' });
+  const promotedDb = JSON.parse(JSON.stringify(beforePromotion.db));
+  promotedDb.accounts.find(account => account.id === 'projection-actor').role = 'leader';
+  const promoted = g.serverPost({ action: 'saveDb', unit: '0082', db: promotedDb,
+    baseVersion: beforePromotion.version, refreshReports: false });
+  const forced = g.post({ action: 'saveDbForce', unit: '0082', db: oldProjection.db,
+    sessionToken: login.sessionToken });
+  const after = g.serverPost({ action: 'loadDb', unit: '0082' });
+  ok('升為 leader 後強制提交舊 exco 投影，server 仍補回當時隱藏的同級列',
+    promoted.ok === true && forced.success === true
+      && after.db.members.some(member => member.id === 'projection-peer')
+      && after.db.accounts.find(account => account.id === 'projection-actor')?.role === 'leader',
+    JSON.stringify({ promoted, forced }));
 }
 
 section('團員入口安全投影＋本人 RSVP／答卷／請假');
@@ -868,7 +975,8 @@ section('v2.6.0 分段讀取：loadDbPart（大過 4.5MB 都讀得返）');
   /* 未知 action 嘅提示要講真話（以前手寫死，漏咗 constitution） */
   const unknown = g.post({ action: 'no_such_action', unit: '0082' });
   ok('未知 action 提示列出 loadDbPart', /loadDbPart/.test(String(unknown.hint || '')));
-  ok('未知 action 提示列出 constitution（以前漏咗）', /constitution/.test(String(unknown.hint || '')));
+  ok('未知 action 提示不再列出匿名 constitution／notices／claim／loan',
+    !/(constitution|notices|noticeSignup|claim|loan)/.test(String(unknown.hint || '')));
 }
 
 /* ============================================================
@@ -1005,11 +1113,15 @@ section('團員自助申報：addRequest / myRequests');
 section('體積治理：uploadPhotos 上 Drive／dbInfo 回體積');
 {
   const g = makeGas({ apiKey: 'test_key' });
-  /* 唔叫 initializeSheets（唔想生成 API Key 擋住 saveDb；呢個 section 只測體積契約） */
-  /* savePhotos 冇 DRIVE_FOLDER_ID 嗰陣會回空陣列 —— 契約唔可以爆 */
-  const up = g.post({ action: 'uploadPhotos', unit: '0082',
-    payload: { id: 'c_test1', photos: [{ name: 'a.jpg', type: 'image/jpeg', dataUrl: 'data:image/jpeg;base64,AAAA' }] } });
-  ok('uploadPhotos 免 key 都用到', up.ok === true, JSON.stringify(up).slice(0, 160));
+  /* fixture 會同產品一樣補 routing key ＋ server-issued setup session；savePhotos 冇
+     DRIVE_FOLDER_ID 嗰陣會回空陣列，但未登入 caller 必須先被拒。 */
+  const uploadPayload = { action: 'uploadPhotos', unit: '0082',
+    payload: { id: 'c_test1', photos: [{ name: 'a.jpg', type: 'image/jpeg', dataUrl: 'data:image/jpeg;base64,AAAA' }] } };
+  const unauthenticatedUpload = g.networkPost({ ...uploadPayload, apiKey: 'test_key' });
+  ok('uploadPhotos 有 routing key 但冇 staff session 仍 fail closed', unauthenticatedUpload.ok === false,
+    JSON.stringify(unauthenticatedUpload).slice(0, 160));
+  const up = g.post(uploadPayload);
+  ok('已驗 staff session 可以使用 uploadPhotos', up.ok === true, JSON.stringify(up).slice(0, 160));
   ok('uploadPhotos 回 links 陣列（冇 Folder 時係空）', Array.isArray(up.links) && up.saved === 0, JSON.stringify(up));
 
   /* dbInfo 回逐分頁體積 */
@@ -1086,81 +1198,45 @@ section('分件儲存：saveDbPart／saveDbCommit（長壽命架構）');
   /* receiptFolderId 三層：uploadPhotos 帶 folderId（folders/ URL 都收） */
   const upF = g.post({ action: 'uploadPhotos', unit: '0082', folderId: 'https://drive.google.com/drive/folders/ABC123',
     payload: { id: 'c_f1', photos: [{ name: 'b.jpg', type: 'image/jpeg', dataUrl: 'data:image/jpeg;base64,BBBB' }] } });
-  ok('uploadPhotos 帶 folderId 免 key 用到（契約唔爆）', upF.ok === true && Array.isArray(upF.links), JSON.stringify(upF).slice(0, 140));
+  ok('已驗 staff uploadPhotos 帶 folderId 可用（契約唔爆）', upF.ok === true && Array.isArray(upF.links), JSON.stringify(upF).slice(0, 140));
 }
 
 
 /* ============================================================
-   ⑨ v2.5.0 公開頁：團章／通告讀「資料庫」正本＋公開頁送出寫入資料庫
-   （團長回報：團章發布咗公開頁睇唔到、成員送出嘅嘢執委見唔到）
+   ⑨ 匿名公開 action 已退役：舊 request 必須拒絕且零副作用
    ============================================================ */
-section('v2.5.0：公開團章／通告讀正本、公開頁送出寫入資料庫');
+section('匿名團章／通告／收支／借用 action 已退役');
 {
   const g = makeGas({ apiKey: 'test_key' });
-  /* 種一份有已發布團章＋通告嘅資料庫 */
   const db = sampleDb();
   db.profile = { name: '第八十二旅深資童軍團' };
   db.constitution = { version: '3.1', status: 'published', chapters: [{ heading: { zh: '總則' }, articles: [] }] };
-  db.notices = [
-    { id: 'n1', title: { zh: '開放報名' }, status: 'published', needSignup: true, signups: [] },
-    { id: 'n2', title: { zh: '草稿' }, status: 'draft', signups: [] }
+  db.notices = [{ id: 'n1', title: { zh: '內部通告' }, status: 'published', needSignup: true, signups: [] }];
+  db.claims = [];
+  db.invLoans = [];
+  ok('先種行政正本', g.post({ action: 'saveDb', unit: '0082', db }).ok === true);
+
+  const attempts = [
+    ['constitution', {}],
+    ['notices', {}],
+    ['noticeSignup', { payload: { noticeId: 'n1', values: { name: '匿名人士' } } }],
+    ['claim', { payload: { id: 'cl_anon', amount: 100, item: '匿名申報' } }],
+    ['loan', { payload: { id: 'ln_anon', itemId: 'gi01', qty: 1 } }]
   ];
-  ok('種資料入後端', g.post({ action: 'saveDb', unit: '0082', db }).ok === true);
+  attempts.forEach(([action, extra]) => {
+    const result = g.post({ action, unit: '0082', ...extra });
+    ok(`舊匿名 ${action} action 明確拒絕`, result.ok === false && /未知 action/.test(String(result.error || '')), JSON.stringify(result));
+  });
 
-  const ping = g.post({ action: 'status' });
-  ok('status 回報 backendVersion（APP 可以驗後端係咪舊版）',
-    /^v2\./.test(String(ping.backendVersion || '')), JSON.stringify(ping.backendVersion));
-
-  const cons = g.post({ action: 'constitution', unit: '0082' });
-  ok('公開團章：免 key 讀到已發布版（發布＋同步即刻見到）',
-    cons.ok === true && cons.found === true && cons.constitution?.version === '3.1', JSON.stringify(cons).slice(0, 120));
-  ok('公開團章：有旅團名', cons.unitName === '第八十二旅深資童軍團', cons.unitName);
-  ok('公開團章：只回 constitution，唔會漏名冊／帳目',
-    !JSON.stringify(cons).includes('陳大文') && cons.db === undefined);
-
-  const nt = g.post({ action: 'notices', unit: '0082' });
-  ok('公開通告：由資料庫正本讀（淨係 published；唔使再手動「總表同步」）',
-    (nt.notices || []).length === 1 && nt.notices[0]?.id === 'n1',
-    JSON.stringify((nt.notices || []).map(n => n.id)));
-
-  /* 公開頁報名 → 寫入資料庫（同名防重複） */
-  const sg1 = g.post({ action: 'noticeSignup', unit: '0082', payload: { noticeId: 'n1', noticeTitle: '開放報名', values: { name: '陳大文', attend: '出席' } } });
-  ok('公開頁報名成功', sg1.ok === true && sg1.duplicate === false, JSON.stringify(sg1));
-  const sg2 = g.post({ action: 'noticeSignup', unit: '0082', payload: { noticeId: 'n1', values: { name: '陳大文', attend: '出席' } } });
-  ok('同一通告同名再報 → 防重複（換裝置重複提交都唔會重複入數）',
-    sg2.ok === true && sg2.duplicate === true, JSON.stringify(sg2));
-  const back1 = g.post({ action: 'loadDb', unit: '0082' });
-  const n1 = (back1.db?.notices || []).find(n => n.id === 'n1');
-  ok('報名寫入咗資料庫（執委部機開住 APP 就會拉到）',
-    (n1?.signups || []).length === 1 && n1.signups[0]?.name === '陳大文', JSON.stringify(n1?.signups));
-
-  /* 公開收支申報 → 寫入 db.claims（pending） */
-  const cl = g.post({ action: 'claim', unit: '0082', payload: { id: 'cl_x1', type: 'expense', amount: 100, date: '2026-09-18', item: '物資', byName: '陳大文', photos: [] } });
-  ok('公開收支申報送到', cl.ok === true, JSON.stringify(cl));
-  g.post({ action: 'claim', unit: '0082', payload: { id: 'cl_x1', type: 'expense', amount: 100, date: '2026-09-18', item: '物資', byName: '陳大文', photos: [] } });
-  const back2 = g.post({ action: 'loadDb', unit: '0082' });
-  const claims = back2.db?.claims || [];
-  const clRec = claims.find(c => c.id === 'cl_x1');
-  ok('收支申報寫入資料庫（APP「財務→收支申報」待批清單即刻見到）',
-    clRec?.status === 'pending' && clRec?.byName === '陳大文', JSON.stringify(clRec));
-  ok('重送同一筆申報唔會重複入數', claims.length === 1, String(claims.length));
-
-  /* 公開借用 → 寫入 db.invLoans（requested） */
-  const ln = g.post({ action: 'loan', unit: '0082', payload: { id: 'ln_x1', itemId: 'gi01', qty: 2, byName: '陳大文', fromDate: '2026-10-01', toDate: '2026-10-03', purpose: '露營', contact: '12345678' } });
-  ok('公開借用申請送到', ln.ok === true, JSON.stringify(ln));
-  const back3 = g.post({ action: 'loadDb', unit: '0082' });
-  const lnRec = (back3.db?.invLoans || []).find(l => l.id === 'ln_x1');
-  ok('借用寫入資料庫（APP「物資→借用與批核」即刻見到）',
-    lnRec?.status === 'requested' && lnRec?.qty === 2, JSON.stringify(lnRec));
-
-  /* 旅團隔離＋未發布團章 → found:false */
-  const db2 = sampleDb();
-  db2.constitution = { version: '0.1', status: 'draft', chapters: [] };
-  g.post({ action: 'saveDb', unit: '0099', db: db2 });
-  const cons99 = g.post({ action: 'constitution', unit: '0099' });
-  ok('未發布團章 → found:false（公開頁會用靜態檔後備）', cons99.ok === true && cons99.found === false, JSON.stringify(cons99).slice(0, 100));
-  const cons88 = g.post({ action: 'constitution', unit: '0088' });
-  ok('後端冇資料嘅旅團 → found:false（唔會撈錯隔籬旅）', cons88.ok === true && cons88.found === false);
+  const after = g.post({ action: 'loadDb', unit: '0082' }).db;
+  ok('被拒匿名通告報名沒有寫入', (after.notices?.[0]?.signups || []).length === 0);
+  ok('被拒匿名收支／借用沒有寫入',
+    !(after.claims || []).some(row => row.id === 'cl_anon')
+      && !(after.invLoans || []).some(row => row.id === 'ln_anon'));
+  const noSession = g.post({ action: 'hubLoad', unit: '0082' });
+  ok('替代 hubLoad 沒有 opaque session 仍 fail closed',
+    noSession.ok === false && noSession.code === 'SESSION_REQUIRED', JSON.stringify(noSession));
+  ok('status 繼續回報 backendVersion', /^v2\./.test(String(g.post({ action: 'status' }).backendVersion || '')));
 }
 
 
@@ -1169,7 +1245,7 @@ section('v2.5.0：公開團章／通告讀正本、公開頁送出寫入資料�
    兩個系統會唔會寫入衝突？密碼唔同、YMIS 一樣得唔得？」）
    答案嘅根據 —— 三條寫入路線各寫各嘅分頁：
      執委系統 saveDb →「資料庫」分頁（成個 app db）
-     進度前端 save →「進度追蹤」分頁（要 API Key＝執委身份）
+     同源進度 server bridge save →「進度追蹤」分頁（API Key 只作 routing，user session 先喺 API 邊界驗證）
      團員入口 → session bridge → addRequest「待批完成」分頁（server key、只可 append）
    模擬三邊輪流＋穿插咁寫，驗證冇任何一邊嘅資料被蓋走。
    ============================================================ */
@@ -1190,11 +1266,12 @@ section('寫入衝突模擬：執委 db ＋ 進度前端 ＋ 團員入口三路�
     a1.ok === true && a2.ok === true && a1.request_id !== a2.request_id,
     JSON.stringify([a1.request_id, a2.request_id]));
 
-  /* ③ 進度前端（執委身份）同時直接勾另一項 —— 要 key */
+  /* ③ 同源進度 server bridge 同時直接勾另一項；browser 身份已由 /api/progress
+     session gate 驗證，GAS 呢層嘅 key 只係 server routing credential。 */
   const s1 = g.post({ action: 'save', unit: '0082', apiKey: KEY, changes: [{ ymis: '2008-001', itemId: 'L1-SRV-01', date: '2026-08-30' }], confirmer: '陳領袖' });
-  ok('③ 進度前端直接勾項成功（API Key＝執委身份）', s1.ok === true && s1.processed === 1, JSON.stringify(s1));
+  ok('③ 已授權進度 server bridge 直接勾項成功', s1.ok === true && s1.processed === 1, JSON.stringify(s1));
   const sBad = g.post({ action: 'save', unit: '0082', apiKey: '錯key', changes: [{ ymis: '2008-001', itemId: 'X', date: '2026-08-30' }] });
-  ok('③ 冇 key／錯 key 想直接勾 → 拒（團員入口只能夠申報，等批）', sBad.ok === false);
+  ok('③ 錯 routing key 會被 GAS 拒絕（團員仍只可經本人 session 申報等批）', sBad.ok === false);
 
   /* ④ 執委再推新版成個資料庫（團員申報緊嘅時候） */
   const info1 = g.post({ action: 'dbInfo', unit: '0082', apiKey: KEY });

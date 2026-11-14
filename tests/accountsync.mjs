@@ -5,18 +5,18 @@
      「不同視窗開的又不同步，最簡單就是 1 邊能用 email 登入、1 邊不能，
        那＝用戶根本沒寫入後端，唯一能登入的是我的超管，因為不經後端。」
 
-   ★ 一般行政資料仍然只有頂部一個「儲存到後端」掣，冇背景 autosave。
-     但密碼／帳戶身份係安全憑證，唔可以先把 browser hash 留喺 pending 再等整庫同步：
-       ① 設密碼會先把新名冊 row 寫到後端，再走 server-issued session 固定操作者的
-          authResetPassword；成功後即時讀回版本，pendingAccounts 必須係 0
-       ② 其他普通資料（例如另一分頁新增的人）仍然等頂部掣先同步
-       ③ 全新裝置即時可用該 email 登入，證明憑證只存在 server authoritative copy
+   ★ 一般行政資料只有頂部一個「儲存到後端」掣，冇背景 autosave。
+     密碼／帳戶身份係安全憑證，亦唔可以藉「開戶」暗中代用戶寫 pending 名冊：
+       ① 名冊未明確儲存時，設密碼必須 fail closed，唔送 account mutation
+       ② 用戶先撳頂部掣完成 save + readback，之後才走 server-authoritative 開戶 action
+       ③ 開戶成功後 pendingAccounts 係 0；其他普通資料仍等頂部掣先同步
+       ④ 全新裝置可用該 email 登入，證明憑證只存在 server authoritative copy
    每個 process ＝ 一部全新嘅機，行真實 HTTP：
-     機 A（團長）：開一個領袖 ＋ 設密碼 → 驗證 dedicated action 已即時落後端
-                   → 另一分頁加普通資料 → 撳頂部「儲存到後端」
+     機 A（團長）：開一個領袖 → 驗證未儲存時開戶被擋 → 明確儲存名冊 → 設密碼
+                   → 另一分頁加普通資料 → 再撳頂部「儲存到後端」
      機 B（全新）：用嗰個 email 登入 —— 應該入到
      機 A        ：另一個分頁（同機同瀏覽器）開咗個人 —— 呢邊應該即刻見到
-   環境：假 GAS（tests/_fakegas.mjs）＋ dev-server（/api/proxy）
+   環境：真 UnifiedCode.gs VM（tests/_realgas.mjs）＋ dev-server（/api/proxy）
    用法：node tests/accountsync.mjs
    ============================================================ */
 
@@ -89,7 +89,8 @@ const YMIS = '2026000777';
 
 try {
   spawnBg([path.join(ROOT, 'tests', '_realgas.mjs'), String(GAS_PORT)], {
-    REALGAS_APIKEY: 'test_key_0082'
+    REALGAS_APIKEY: 'test_key_0082',
+    REALGAS_UNIFIED: '1'
   });
   spawnBg([path.join(ROOT, 'dev-server.mjs')], {
     TROOP_0082_BACKEND: FAKE_EXEC,
@@ -98,25 +99,44 @@ try {
     PORT: String(WEB_PORT),
     SUPER_KEY: TEST_SUPER_PASSWORD
   });
-  ok('真 Code.gs 後端＋dev-server 已啟動', (await waitPort(GAS_PORT)) && (await waitPort(WEB_PORT)));
+  ok('真 UnifiedCode.gs 後端＋dev-server 已啟動', (await waitPort(GAS_PORT)) && (await waitPort(WEB_PORT)));
 
   /* ============ 機 A：開人 → server 設密碼 → 普通資料仍由頂部掣同步 ============ */
   section('機 A（團長）：開領袖＋server 設密碼 → 普通資料再撳頂部掣');
   const A = await runDevice({ steps: [
     { op: 'wipe' },
     { op: 'load' },                                        // 真 app 開機一定先由後端載入（＝基準）
+    { op: 'login', login: 'admin@example.com', pw: 'changeme' }, // 帳戶管理必須用支部 Users 領袖身份
     { op: 'addStaff', name: '新領袖', email: EMAIL, ymis: YMIS, identity: 'leader' },
-    { op: 'setHubPw', id: '@last', pw: PW },
+    { op: 'setHubPw', id: '@last', pw: PW },               // ← pending 名冊未儲存，必須被擋
+    { op: 'backendHasLogin', login: EMAIL },               // ← 後端仍未有呢行
+    { op: 'login', login: EMAIL, pw: PW },                 // ← 未開戶，登入必須失敗
+    { op: 'syncNow' },                                     // ← 用戶明確儲存名冊＋readback
+    { op: 'setHubPw', id: '@last', pw: PW },               // ← 而家先 server-first 開戶
     { op: 'wait', ms: 3000 },                              // dedicated action 完成後唔應再有背景寫入
-    { op: 'backendHasLogin', login: EMAIL },               // ← 密碼 action 後、頂部掣前
+    { op: 'backendHasLogin', login: EMAIL },               // ← 安全投影有名冊，但絕不回傳 hash
+    { op: 'login', login: EMAIL, pw: PW },                 // ← 開戶後可由 Unified Users 登入
     { op: 'otherTabWrite', name: '另一分頁開嘅人' },
-    { op: 'syncNow' },                                     // ← 撳頂部「儲存到後端」（唯一寫入路）
+    { op: 'syncNow' },                                     // ← 普通資料再由頂部唯一寫入路儲存
     { op: 'backendHasLogin', login: EMAIL }                // ← 撳完
   ] });
   ok('機 A 全程冇爆', A.ok === true, A.error || '');
-  const pwStep = stepOf(A, 'setHubPw');
-  console.log('  · 設密碼：' + JSON.stringify(pwStep));
-  ok('設密碼成功', pwStep.ok === true, JSON.stringify(pwStep));
+  const blockedPw = stepOf(A, 'setHubPw', 0);
+  const pwStep = stepOf(A, 'setHubPw', 1);
+  console.log('  · 名冊未存時設密碼：' + JSON.stringify(blockedPw));
+  ok('★ 名冊未明確儲存時，開戶 fail closed（唔暗中代寫）',
+    blockedPw.ok === false && Number(blockedPw.pending || 0) > 0
+      && /先撳頂部「儲存到後端」/.test(blockedPw.msg || ''), JSON.stringify(blockedPw));
+  const beforeSaveLogin = stepOf(A, 'login', 1);
+  ok('★ 被擋後新帳戶仍登入唔到（證明冇隱藏 account write）', beforeSaveLogin.ok === false,
+    JSON.stringify(beforeSaveLogin));
+  const rosterSave = stepOf(A, 'syncNow', 0);
+  ok('★ 用戶明確撳頂部掣，名冊 save + readback 成功',
+    rosterSave.ok === true && rosterSave.pushed === true && Number(rosterSave.pending || 0) === 0,
+    JSON.stringify(rosterSave));
+
+  console.log('  · 明確儲存名冊後設密碼：' + JSON.stringify(pwStep));
+  ok('名冊已確認後，server-first 設密碼成功', pwStep.ok === true, JSON.stringify(pwStep));
 
   /* ---- ① 憑證唔留 browser pending：專用 action 完成就以後端為準 ---- */
   ok('★ server 密碼 action 完成後 pending 清零', Number(pwStep.pending || 0) === 0, JSON.stringify(pwStep));
@@ -126,10 +146,14 @@ try {
     pwStep.state === 'idle' && /後端/.test(pwStep.statusMsg || ''), pwStep.statusMsg);
 
   const bes = (A.steps || []).filter(x => x.op === 'backendHasLogin');
-  const [be0, be1] = [bes[0] || {}, bes[1] || {}];
-  console.log('  · 密碼 action 後、頂部掣前問後端：' + JSON.stringify(be0));
-  ok('★ 未撳頂部掣，專用 action 已令後端有呢個人＋PBKDF2 密碼',
-    be0.found === true && be0.withPw === true, JSON.stringify(be0));
+  const [beforeRoster, be0, be1] = [bes[0] || {}, bes[1] || {}, bes[2] || {}];
+  console.log('  · 明確儲存＋開戶後讀安全投影：' + JSON.stringify(be0));
+  ok('★ 開戶後安全投影見到名冊，但絕不把 Users 密碼 hash 傳回 browser',
+    beforeRoster.found === false && be0.found === true && be0.withPw === false,
+    JSON.stringify({ beforeRoster, afterAccount: be0 }));
+  const immediateLogin = stepOf(A, 'login', 2);
+  ok('★ 開戶後新領袖可用 Unified Users 憑證登入',
+    immediateLogin.ok === true && immediateLogin.role === 'leader', JSON.stringify(immediateLogin));
 
   const otherTab = stepOf(A, 'otherTabWrite');
   console.log('  · 另一分頁寫入：' + JSON.stringify(otherTab));
@@ -137,13 +161,13 @@ try {
     otherTab.seesName === true, JSON.stringify(otherTab));
 
   /* ---- ② 撳頂部掣：另一分頁的普通名冊改動先在此同步 ---- */
-  const sn = stepOf(A, 'syncNow');
-  console.log('  · 撳「儲存到後端」：' + JSON.stringify(sn));
+  const sn = stepOf(A, 'syncNow', 1);
+  console.log('  · 普通跨分頁改動再撳「儲存到後端」：' + JSON.stringify(sn));
   ok('★ 撳頂部「儲存到後端」成功', sn.ok === true && sn.pushed === true, JSON.stringify(sn));
   ok('★ 寫完 pending 清零', Number(sn.pending || 0) === 0, JSON.stringify(sn));
-  console.log('  · 撳完之後問後端：' + JSON.stringify(be1));
-  ok('★ 後端嗰份名冊已經有呢個人＋有密碼',
-    be1.found === true && be1.withPw === true, JSON.stringify(be1));
+  console.log('  · 撳完之後讀安全投影：' + JSON.stringify(be1));
+  ok('★ 後端名冊／帳戶仍在，而且行政資料同步不會洩漏密碼 hash',
+    be1.found === true && be1.withPw === false, JSON.stringify(be1));
 
   /* ============ 機 B（全新）：用嗰個 email 登入 ============ */
   section('機 B（全新裝置）：用啱啱開嘅 email 登入');

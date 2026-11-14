@@ -19,10 +19,12 @@ import { makeGas } from './_gasvm.mjs';
 
 const PORT = Number(process.argv[2] || 8798);
 const KEY = String(process.env.REALGAS_APIKEY || '');
+const SOURCE_FILE = process.env.REALGAS_UNIFIED === '1'
+  ? 'apps-script/UnifiedCode.gs' : 'apps-script/Code.gs';
 
 /* 一個 VM ＝ 一個 Script（Script Properties 同 Sheet 都住喺呢度，
    所以 process 唔熄，資料就一路喺度 —— 同真 Spreadsheet 一樣有狀態）。 */
-const gas = makeGas({ apiKey: KEY || null });
+const gas = makeGas({ apiKey: KEY || null, sourceFile: SOURCE_FILE });
 
 /* 真旅團張 Sheet 一定跑過 initializeSheets()（18 張分頁都建好）——
    模擬返呢個狀態，先至睇到「團長開張 Sheet 會見到乜」。
@@ -181,5 +183,5 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`[realgas] 真 Code.gs（vm）listen :${PORT}${KEY ? '（已設 API_KEY）' : '（未設 API_KEY）'}`);
+  console.log(`[realgas] 真 ${SOURCE_FILE}（vm）listen :${PORT}${KEY ? '（已設 API_KEY）' : '（未設 API_KEY）'}`);
 });

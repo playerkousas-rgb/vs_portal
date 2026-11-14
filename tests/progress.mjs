@@ -94,6 +94,12 @@ async function call(payload, method = 'POST') {
 
 /* ---------- 1. 基本規則 ---------- */
 ok('只接受 POST（GET 會 405）', (await call({ action: 'load' }, 'GET')).statusCode === 405);
+const beforeOversize = calls.length;
+const oversize = await call({ action: 'save', data: { padding: '界'.repeat(400000) } });
+ok('平台已 parse 成 object 嘅 UTF-8 超限 body 仍先擋住，唔會繞過 1MB 上限',
+  oversize.statusCode === 413 && oversize.body?.outcome === 'not_sent'
+    && oversize.body?.mayHaveApplied === false && calls.length === beforeOversize,
+  JSON.stringify(oversize.body));
 ok('未知 action 會 400', (await call({ action: 'deleteEverything' })).statusCode === 400);
 ok('舊嘅 items action 已經唔存在（唔再連去任何前端）', (await call({ action: 'items' })).statusCode === 400);
 ok('未登記旅團 fail closed',
@@ -224,6 +230,61 @@ ok('browser 亦不可把同一 GAS 改成 /dev',
   ok('回傳 processed 俾前端交代', r.body.data?.processed === 2);
 }
 
+/* ---------- 3b. 明確 operation outcome 優先過外層 envelope ---------- */
+{
+  const opId = 'save:test-explicit-outcome-001';
+  upstreamJson = { success: true, ok: true, outcome: 'unknown', mayHaveApplied: true,
+    operationId: opId, operation: { id: opId, state: 'unknown', outcome: 'unknown' } };
+  const unknown = await call({ action: 'save', operationId: opId,
+    data: { changes: [{ ymis: MEMBER_YMIS, itemId: 'X', date: '2026-11-12' }] } });
+  ok('write envelope ok:true 但 outcome:unknown → API 必須回 ok:false',
+    unknown.body?.ok === false && unknown.body?.outcome === 'unknown'
+      && unknown.body?.operationId === opId, JSON.stringify(unknown.body));
+
+  upstreamJson = { success: true, ok: true, outcome: 'not_applied', operationId: opId,
+    operation: { id: opId, state: 'not_applied', outcome: 'not_applied' } };
+  const rejected = await call({ action: 'save', operationId: opId,
+    data: { changes: [{ ymis: MEMBER_YMIS, itemId: 'X', date: '2026-11-12' }] } });
+  ok('write envelope ok:true 但 outcome:not_applied → API 必須回 ok:false',
+    rejected.body?.ok === false && rejected.body?.outcome === 'not_applied', JSON.stringify(rejected.body));
+
+  upstreamJson = { success: false, ok: false, outcome: 'applied', mayHaveApplied: true,
+    operationId: opId, operation: { id: opId, state: 'applied', outcome: 'applied' } };
+  const applied = await call({ action: 'save', operationId: opId,
+    data: { changes: [{ ymis: MEMBER_YMIS, itemId: 'X', date: '2026-11-12' }] } });
+  ok('write envelope success:false 但 outcome:applied → API 必須回 ok:true',
+    applied.body?.ok === true && applied.body?.outcome === 'applied', JSON.stringify(applied.body));
+
+  upstreamJson = {};
+  const emptyReceipt = await call({ action: 'save', operationId: opId,
+    data: { changes: [{ ymis: MEMBER_YMIS, itemId: 'X', date: '2026-11-12' }] } });
+  ok('2xx 空 JSON 冇明確 receipt → Progress 寫入只可標 unknown',
+    emptyReceipt.body?.ok === false && emptyReceipt.body?.outcome === 'unknown'
+      && emptyReceipt.body?.mayHaveApplied === true, JSON.stringify(emptyReceipt.body));
+
+  upstreamJson = { success: true };
+  upstreamStatus = 500;
+  const badHttp = await call({ action: 'save', operationId: opId,
+    data: { changes: [{ ymis: MEMBER_YMIS, itemId: 'X', date: '2026-11-12' }] } });
+  ok('HTTP 500 + success:true 冇 durable outcome → 仍係 unknown',
+    badHttp.body?.ok === false && badHttp.body?.outcome === 'unknown', JSON.stringify(badHttp.body));
+  upstreamJson = { success: true, outcome: 'applied', operationId: opId };
+  const durable = await call({ action: 'save', operationId: opId,
+    data: { changes: [{ ymis: MEMBER_YMIS, itemId: 'X', date: '2026-11-12' }] } });
+  ok('HTTP 500 但 durable outcome=applied → 可確認成功',
+    durable.body?.ok === true && durable.body?.outcome === 'applied', JSON.stringify(durable.body));
+  upstreamStatus = 200;
+
+  upstreamJson = { success: true, ok: true, found: true, outcome: 'unknown', operationId: opId,
+    operation: { id: opId, state: 'processing', outcome: 'unknown' } };
+  const status = await call({ action: 'operationStatus', data: { operationId: opId } });
+  const statusCall = calls[calls.length - 1];
+  ok('operationStatus 自己係成功讀取，即使原寫入 outcome:unknown 仍回 ok:true',
+    status.body?.ok === true && status.body?.outcome === 'unknown'
+      && statusCall.body?.action === 'operationStatus' && statusCall.body?.sessionToken === STAFF_TOKEN,
+    JSON.stringify(status.body));
+}
+
 /* ---------- 4. saveOtherBadge ---------- */
 {
   upstreamJson = { success: true };
@@ -248,10 +309,12 @@ ok('browser 亦不可把同一 GAS 改成 /dev',
   const r = await call({ action: 'reviewRequest', unit: '0082', backend: BACKEND, apikey: API_KEY,
     data: { request_id: 'RQ_1', decision: 'approved', review_note: '', reviewer: '陳團長', confirmed_date: '2026-09-16' } });
   const c = calls[calls.length - 1];
-  ok('reviewRequest 用 POST 送去後端（帶 request_id／decision／reviewer）',
+  ok('reviewRequest 用一個 server-signed POST 送去後端（帶 request_id／decision）',
     r.statusCode === 200 && c.method === 'POST' && c.body?.action === 'reviewRequest'
-    && c.body?.request_id === 'RQ_1' && c.body?.decision === 'approved' && c.body?.reviewer === '陳團長');
-  ok('reviewRequest 由 server 注入同一 API Key（身份仍由 session 決定）', c.body?.apikey === API_KEY);
+    && c.body?.request_id === 'RQ_1' && c.body?.decision === 'approved'
+    && c.target.includes('sig=') && c.target.includes('snonce='));
+  ok('reviewRequest 簽住 opaque session，由 Unified 再核對 reviewer；API Key 不會當用戶身份',
+    c.body?.sessionToken === STAFF_TOKEN && c.body?.apikey === undefined && c.body?.reviewer === undefined);
 
   upstreamJson = { success: true, message: '已批准並寫入活動履歷', record_id: 'LOG_X' };
   const r2 = await call({ action: 'reviewLogRequest', unit: '0082', backend: BACKEND, apikey: API_KEY,
@@ -262,13 +325,40 @@ ok('browser 亦不可把同一 GAS 改成 /dev',
 
   const forgedReviewRoute = await call({ action: 'reviewRequest', backend: 'https://evil.example.com/exec',
     apikey: 'attacker', data: { request_id: 'RQ-safe', decision: 'approved' } });
-  ok('審批同樣忽略 browser 後端／Key，只送 Registry Unified GAS',
-    forgedReviewRoute.body?.ok === true && calls[calls.length - 1].target === BACKEND
-      && calls[calls.length - 1].body?.apikey === API_KEY);
+  ok('審批同樣忽略 browser 後端／Key，只簽去 Registry Unified GAS',
+    forgedReviewRoute.body?.ok === true && calls[calls.length - 1].target.startsWith(BACKEND)
+      && calls[calls.length - 1].body?.apikey === undefined
+      && calls[calls.length - 1].body?.sessionToken === STAFF_TOKEN);
   upstreamJson = { success: false, error: '呢個申請已經處理過' };
   const r3 = await call({ action: 'reviewRequest', unit: '0082', backend: BACKEND, apikey: API_KEY, data: { request_id: 'RQ_1', decision: 'approved' } });
   ok('後端話已處理過 → 前端睇到錯誤（唔會當成功）',
     r3.body?.ok === false && /已經處理過/.test(r3.body?.error || ''), JSON.stringify(r3.body));
+
+  upstreamJson = { success: true, processed: 2, progressRequests: 1, logRequests: 1,
+    message: '已批量批准 2 項' };
+  const beforeBulk = calls.length;
+  const bulk = await call({ action: 'bulkReviewRequests', unit: '0082',
+    data: { requests: [
+      { kind: 'req', request_id: 'RQ_BULK_1', forged: 'drop-me' },
+      { kind: 'log', request_id: 'LR_BULK_1' }
+    ], decision: 'rejected', confirmed_date: '2026-09-18', reviewer: '冒認 reviewer' } });
+  const bulkCalls = calls.slice(beforeBulk);
+  const bulkWrites = bulkCalls.filter(x => x.body?.action === 'bulkReviewRequests');
+  ok('批量批准由 browser 一次 action 對應一個 Unified 審批 request（唔逐列寫）',
+    bulk.statusCode === 200 && bulk.body?.ok === true && bulkWrites.length === 1
+      && bulk.body?.data?.processed === 2, JSON.stringify(bulkCalls.map(x => x.body?.action)));
+  ok('批量 payload 只保留 kind/request_id、強制 approved，並簽住真實 session',
+    bulkWrites[0]?.body?.decision === 'approved'
+      && bulkWrites[0]?.body?.sessionToken === STAFF_TOKEN
+      && bulkWrites[0]?.body?.requests?.length === 2
+      && bulkWrites[0]?.body?.requests?.[0]?.forged === undefined
+      && bulkWrites[0]?.target.includes('sig='), JSON.stringify(bulkWrites[0]?.body));
+  const beforeEmptyBulk = calls.length;
+  const emptyBulk = await call({ action: 'bulkReviewRequests', unit: '0082', data: { requests: [] } });
+  ok('批量批准未選任何項目會在 proxy 防呆拒絕，不會送審批寫入',
+    emptyBulk.statusCode === 400 && emptyBulk.body?.reason === 'no_selection'
+      && !calls.slice(beforeEmptyBulk).some(x => x.body?.action === 'bulkReviewRequests'),
+    JSON.stringify(emptyBulk.body));
   upstreamJson = { success: true };
 }
 

@@ -216,81 +216,42 @@ section('⑤ 「後端資訊」自助路線照樣問得到後端');
     dc.ok === false && dc.reason === 'not_registered', JSON.stringify(dc));
 }
 
-/* ---- ⑥ 公開連結 ---- */
-section('⑥ 公開連結：自動附 ?be=，公開頁因此讀到後端正本');
+/* ---- ⑥ authenticated 團員入口 ---- */
+section('⑥ 團員登入連結：自助 routing 可附 ?be=，但絕不免登入');
 {
   const l = step(A, 'links');
-  ok('publicLinkRoute 認到行緊自助路線', l.route === 'direct' && l.routeOk === true, JSON.stringify({ route: l.route, label: l.label }));
+  ok('publicLinkRoute 認到行緊自助路線', l.route === 'direct' && l.routeOk === true,
+    JSON.stringify({ route: l.route, label: l.label }));
   ok('selfServeExec 回傳領袖貼嘅 /exec', l.selfServeExec === FAKE_EXEC.replace(/\/$/, ''), String(l.selfServeExec));
-  const cons = (l.urls || []).find(u => u.id === 'constitution');
-  const entry = (l.urls || []).find(u => u.id === 'entry');
-  ok('團章公開連結帶 ?be=', /be=/.test(String(cons?.url || '')), String(cons?.url));
-  ok('記帳公開連結帶 ?be=', /be=/.test(String(entry?.url || '')), String(entry?.url));
-  ok('連結仍然帶旅團編號 ?u=0082', /u=0082/.test(String(cons?.url || '')), String(cons?.url));
-}
+  const hub = (l.urls || []).find(u => u.id === 'hub');
+  ok('只派一條 members.html 團員登入入口',
+    (l.urls || []).length === 1 && /members\.html/.test(String(hub?.url || '')), JSON.stringify(l.urls));
+  ok('自助入口帶 ?be= 作 routing，同時保留旅團編號',
+    /[?&]be=/.test(String(hub?.url || '')) && /[?&]u=0082(?:&|$)/.test(String(hub?.url || '')),
+    String(hub?.url));
+  ok('入口網址不帶 API Key、role 或任何閱讀憑證',
+    !/(apiKey|apikey|[?&]key=|[?&]role=)/i.test(String(hub?.url || '')), String(hub?.url));
 
-/* 團章公開頁：proxy 404 都要靠 ?be= 讀到後端正本 */
-{
-  /* 先由裝置推一份已發布團章上後端。
-     注意要先 pull：呢部係全新裝置（baseVersion 空），而後端已經有版本 ——
-     唔拉就直接推會撞樂觀鎖，而合併規則係「物件欄位以後端為準」
-     （store.js mergeDbs），團章呢類物件會被後端蓋返。呢個係既定語意，
-     所以正確做法＝先對齊版本再改。 */
-  await runDevice({ steps: [
-    { op: 'setSync', url: FAKE_EXEC, apiKey: KEY },
-    { op: 'pull' },
-    { op: 'setConstitution', obj: { version: 'v9.9', status: 'published', title: { zh: '測試團章', en: 'Test' }, chapters: [{ id: 'c1', heading: { zh: '第一章', en: 'Ch.1' }, articles: [{ id: 'a1', zh: '測試条文', en: 'test article' }] }], appendices: [], history: [] } },
-    { op: 'put', coll: 'notices', rows: [{ id: 'nt-selfserve', type: 'notice', status: 'published', needSignup: false, publishAt: '2026-09-19', title: { zh: '自助路線通告' }, body: { zh: '內容。' } }] },
-    { op: 'push' }
-  ] });
-
-  const { JSDOM } = await import('jsdom');
-  const nodeFetch = globalThis.fetch;
-  const bootPublic = async (file, script, query) => {
-    const html = fs.readFileSync(path.join(ROOT, file), 'utf8');
-    const dom = new JSDOM(html, { url: `${BASE}/${file}${query}`, pretendToBeVisual: true });
-    const { window } = dom;
-    window.scrollTo = () => {};
-    for (const k of ['window', 'document', 'navigator', 'localStorage', 'location', 'HTMLElement',
-      'CustomEvent', 'Event', 'Node', 'getComputedStyle', 'URL', 'URLSearchParams', 'Blob']) {
-      if (window[k] === undefined) continue;
-      try { Object.defineProperty(globalThis, k, { value: window[k], configurable: true, writable: true }); } catch { /* ignore */ }
-    }
-    globalThis.window = window;
-    /* 相對路徑補返 BASE（＝真 HTTP，會真係撞 dev-server 嘅 /api/proxy 404） */
-    globalThis.fetch = async (u, init = {}) => {
-      let s = String(u);
-      if (!/^https?:\/\//.test(s)) s = `${BASE}/${s.replace(/^\.?\//, '')}`;
-      return nodeFetch(s, init);
-    };
-    await import(`../assets/js/${script}?case=${Math.random()}`);
-    await new Promise(r => setTimeout(r, 700));
-    const text = window.document.getElementById('app')?.textContent
-      || window.document.getElementById('paper')?.textContent || '';
-    try { dom.window.close(); } catch { /* ignore */ }
-    return text;
-  };
-
-  const beQ = `&be=${encodeURIComponent(FAKE_EXEC)}`;
-  const consText = await bootPublic('constitution.html', 'public.js', `?u=0082${beQ}`);
-  ok('★ 團章公開頁經 ?be= 讀到後端正本（proxy 404 都读到）',
-    /第一章/.test(consText) && /測試条文/.test(consText), consText.slice(0, 120));
-
-  const noticeText = await bootPublic('notice.html', 'public-notice.js', `?u=0082&n=nt-selfserve${beQ}`);
-  ok('★ 通告公開頁經 ?be= 讀到已發布通告',
-    /自助路線通告/.test(noticeText), noticeText.slice(0, 120));
-
-  const noBe = await bootPublic('constitution.html', 'public.js', '?u=0082');
-  ok('冇 ?be= 又冇平台登記 → 明確報原因（唔係白畫面）',
-    /讀唔到團章/.test(noBe) && /平台未登記|後端/.test(noBe), noBe.slice(0, 140));
-
-  globalThis.fetch = nodeFetch;
+  const redirectFiles = ['public.js', 'public-notice.js', 'public-entry.js', 'public-borrow.js'];
+  ok('四個舊 URL script 只保留 members.html 相容轉向並傳遞 be routing',
+    redirectFiles.every(file => {
+      const src = fs.readFileSync(path.join(ROOT, 'assets/js', file), 'utf8');
+      return src.includes("new URL('./members.html'") && src.includes('location.replace')
+        && src.includes("searchParams.set('be'") && !/\bfetch\s*\(/.test(src);
+    }));
+  const hubSource = fs.readFileSync(path.join(ROOT, 'assets/js', 'public-hub.js'), 'utf8');
+  ok('members.html 仍要 opaque session：先 loginMember／loadHubAuth，再 loadHubView',
+    /loginMember/.test(hubSource) && /loadHubAuth/.test(hubSource)
+      && /loadHubView/.test(hubSource) && /sessionToken/.test(hubSource));
+  ok('?be= 只係後端 routing，不會復活匿名團章／通告 renderer',
+    redirectFiles.every(file => !/loadPublic|noticeSignup|appendClaim|appendLoan/.test(
+      fs.readFileSync(path.join(ROOT, 'assets/js', file), 'utf8'))));
 }
 
 /* ============================================================
-   ⑦ 對照組：平台**已登記**（有 TROOP_0082_*）→ 行返 proxy，連結唔附 ?be=
+   ⑦ 對照組：平台**已登記**（有 TROOP_0082_*）→ 行返受保護 proxy
    ============================================================ */
-section('⑦ 對照：平台已登記 → 行返正路 proxy，連結唔會多餘附 ?be=');
+section('⑦ 對照：平台已登記 → 行返受保護 proxy');
 {
   procs.forEach(p => { try { p.kill('SIGKILL'); } catch { /* ignore */ } });
   procs.length = 0;

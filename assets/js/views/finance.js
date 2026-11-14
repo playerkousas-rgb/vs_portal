@@ -9,20 +9,23 @@ import {
   tx, claims, fees, budgets, categories, methods, money, sumBy, balance, balanceAt,
   feeSummary, overdueFees, pendingClaims, monthStats, allMonths, memberName, member,
   activeMembers, members, settings, profile, publicPageUrl, listYears, scoutFYRange, unitFYRange, unitFYOf,
-  summarize, openingBalance, currentBalance, balanceBreakdown, currency, agmIsDefault, setAgmDate, lastSaturdayOfAugust,
+  summarize, openingBalance, balanceBreakdown, currency, agmIsDefault, setAgmDate, lastSaturdayOfAugust,
   openingOf, openingBalances, legacyOpening, currentFY, currentFYRange, prevFYKey, yearRange, refYearKey, carriedForward,
   feePeriodOf, feePeriods, feeOf, feeGrid, feeStats, matchMemberByName,
   standardFee, overseasFee, defaultFeeDue, feeForYear,
   inRange, fyMonths, fyMonthStats, monthText, categoryBreakdown, feeExempt, feeExemptList, identityOf
 } from '../lib/model.js';
 import { todayISO, nowStamp } from '../lib/dates.js';
-import { esc, icon, fmtDate, modal, confirmDlg, toast, uid, nf, copyText, avatar, download, qrSvg } from '../lib/util.js';
+import { esc, icon, fmtDate, modal, confirmDlg, toast, uid, nf, copyText, avatar, download, qrSvg, safeHref } from '../lib/util.js';
 import { toCSV, toWord, printDoc, downloadQrSvg, download as dlFile, stamp } from '../lib/exporter.js';
 import { go, parse, setQuery } from '../lib/router.js';
 import { can, current } from '../lib/auth.js';
-import { pageHead, tabs, stat, empty, kv, chipbar, noteBox, photoPicker, photoStrip, bindPhotoPicker } from './ui.js';
+import { pageHead, tabs, stat, empty, kvHtml, chipbar, noteBoxHtml, photoPicker, photoStrip, bindPhotoPicker, boundedPercent } from './ui.js';
 import { compressImage, formatBytes, downloadPhotos } from '../lib/files.js';
-import { bindDraftAutosave, readDraft, applyDraft, saveDraft, clearDraft, draftBanner } from '../lib/guard.js';
+import {
+  bindDraftAutosave, readDraft, applyDraft, saveDraft, clearDraft, draftBanner,
+  confirmBulkOperation, createSafetySnapshot, undoable
+} from '../lib/guard.js';
 
 let tab = 'ledger';
 let fMonth = '';
@@ -54,9 +57,10 @@ export function render(params) {
   if (params.query?.period) feePeriod = params.query.period;
 
   const fy = currentFY();
+  const fySummary = balanceBreakdown();
   const header = pageHead({
     title: '財務',
-    sub: `${profile().name || ''} · ${fy} 年度 · 現在結餘 ${money(currentBalance())}（期初 ${money(openingBalance().amount)} ＋ 收入 ${money(sumBy(tx(), 'income'))} − 支出 ${money(sumBy(tx(), 'expense'))}）`,
+    sub: `${profile().name || ''} · ${fy} 年度 · 現在結餘 ${money(fySummary.now)}（期初 ${money(fySummary.opening)} ＋ 收入 ${money(fySummary.income)} − 支出 ${money(fySummary.expense)}）`,
     actions: `
       ${can('finance.create') ? `<button class="btn btn-sm btn-primary" data-act="add">${icon('plus', 15)} 新增收支</button>` : ''}
       <button class="btn btn-sm" data-go="#/finance/reports">${icon('chart', 15)} 年結報告</button>
@@ -112,11 +116,11 @@ function filterBar({ withMonth = false, monthValue = '', monthOptions = [], mont
   <div class="row-between wrap gap-12 mb-16 no-print">
     <div class="toolbar">
       ${withMode ? `<div class="seg" style="margin:0">
-        <button data-ledger-mode="overview" aria-selected="${ledgerMode === 'overview'}">總覽</button>
-        <button data-ledger-mode="month" aria-selected="${ledgerMode === 'month'}">按月</button>
+        <button data-ledger-mode="overview" aria-selected="${esc(ledgerMode === 'overview')}">總覽</button>
+        <button data-ledger-mode="month" aria-selected="${esc(ledgerMode === 'month')}">按月</button>
       </div>` : ''}
-      ${withMonth ? `<select class="select" id="${monthAttr === 'data-hist-month' ? 'histMonth' : 'fMonth'}" style="width:auto">
-        ${monthOptions.map(([v, label]) => `<option value="${v}" ${monthValue === v ? 'selected' : ''}>${esc(label)}</option>`).join('')}
+      ${withMonth ? `<select class="select" id="${esc(monthAttr === 'data-hist-month' ? 'histMonth' : 'fMonth')}" style="width:auto">
+        ${monthOptions.map(([v, label]) => `<option value="${esc(v)}" ${monthValue === v ? 'selected' : ''}>${esc(label)}</option>`).join('')}
       </select>` : ''}
       <select class="select" id="fType" style="width:auto">
         <option value="all">全部類型</option>
@@ -145,7 +149,7 @@ function ledgerTable(list) {
   return `<div class="scroll-x"><table class="table">
     <thead><tr><th style="width:96px">日期</th><th>項目</th><th>分類</th><th>方式 / 經手</th>
       <th class="right">收入</th><th class="right">支出</th><th></th></tr></thead>
-    <tbody>${list.map(t => `<tr data-open="${t.id}" style="cursor:pointer">
+    <tbody>${list.map(t => `<tr data-open="${esc(t.id)}" style="cursor:pointer">
       <td class="mono sm">${esc(String(t.date).slice(5))}</td>
       <td><div class="semibold">${esc(t.item)}</div>
         ${t.note || t.ref ? `<div class="xs faint">${esc(t.ref || '')}${t.ref && t.note ? ' · ' : ''}${esc(t.note || '')}</div>` : ''}</td>
@@ -155,8 +159,8 @@ function ledgerTable(list) {
       <td class="money income">${t.type === 'income' ? money(t.amount) : ''}</td>
       <td class="money expense">${t.type === 'expense' ? money(t.amount) : ''}</td>
       <td class="right"><div class="row-actions">
-        ${can('finance.edit', t) ? `<button class="btn btn-xs btn-ghost" data-edit="${t.id}">${icon('edit', 13)}</button>` : ''}
-        ${can('finance.delete') ? `<button class="btn btn-xs btn-ghost" data-del="${t.id}">${icon('trash', 13)}</button>` : ''}
+        ${can('finance.edit', t) ? `<button class="btn btn-xs btn-ghost" data-edit="${esc(t.id)}">${icon('edit', 13)}</button>` : ''}
+        ${can('finance.delete') ? `<button class="btn btn-xs btn-ghost" data-del="${esc(t.id)}">${icon('trash', 13)}</button>` : ''}
       </div></td></tr>`).join('')}</tbody>
     <tfoot><tr><td colspan="4" class="right">合計</td><td class="money income">${money(inc)}</td>
       <td class="money expense">${money(exp)}</td><td></td></tr>
@@ -167,6 +171,7 @@ function ledgerTable(list) {
 /** 12 個月一覽（包括冇紀錄嘅月份，每行都可以撳入去睇） */
 function monthOverview(yearKey, { attr = 'data-fy-month' } = {}) {
   const rows = fyMonthStats(yearKey);
+  const monthAttr = ['data-fy-month', 'data-hist-month'].includes(attr) ? attr : 'data-fy-month';
   const total = rows.reduce((a, r) => ({ income: a.income + r.income, expense: a.expense + r.expense, count: a.count + r.count }), { income: 0, expense: 0, count: 0 });
   return `<div class="scroll-x"><table class="table table-compact">
     <thead><tr><th>月份</th><th class="right">筆數</th><th class="right">收入</th><th class="right">支出</th><th class="right">淨額</th><th></th></tr></thead>
@@ -176,7 +181,7 @@ function monthOverview(yearKey, { attr = 'data-fy-month' } = {}) {
       <td class="money income">${r.income ? money(r.income) : ''}</td>
       <td class="money expense">${r.expense ? money(r.expense) : ''}</td>
       <td class="money" style="color:${r.net > 0 ? 'var(--ok)' : r.net < 0 ? 'var(--danger)' : 'inherit'}">${r.count ? money(r.net) : ''}</td>
-      <td class="right"><button class="btn btn-xs ${r.count ? '' : 'btn-ghost'}" ${attr}="${r.month}">${r.count ? '查看' : '冇紀錄'}</button></td>
+      <td class="right"><button class="btn btn-xs ${r.count ? '' : 'btn-ghost'}" ${monthAttr}="${esc(r.month)}">${r.count ? '查看' : '冇紀錄'}</button></td>
     </tr>`).join('')}</tbody>
     <tfoot><tr><td>全年合計</td><td class="right">${total.count} 筆</td>
       <td class="money income">${money(total.income)}</td><td class="money expense">${money(total.expense)}</td>
@@ -216,7 +221,7 @@ function ledgerView() {
 
   return `
   <div class="grid g-5 mb-16">
-    ${stat('期初結餘', money(opening.amount), `${esc(fy)} 年度開始時嘅結餘（上年度結轉，唔計入收入）`)}
+    ${stat('期初結餘', money(opening.amount), `${fy} 年度開始時嘅結餘（上年度結轉，唔計入收入）`)}
     ${stat(`${ledgerMode === 'month' ? monthText(fMonth) : fy + ' 年度'}收入`, money(inc), `${list.filter(t => t.type === 'income').length} 筆`, 'ok')}
     ${stat('支出', money(exp), `${list.filter(t => t.type === 'expense').length} 筆`, 'danger')}
     ${stat('淨額', money(inc - exp), '所選範圍', inc - exp >= 0 ? 'ok' : 'danger')}
@@ -293,7 +298,7 @@ function historyView() {
       </select>
       <select class="select" id="histMonth" style="width:auto">
         <option value="">全年度（12 個月）</option>
-        ${months.map(m => `<option value="${m}" ${histMonth === m ? 'selected' : ''}>${esc(monthText(m))}${monthKeys.has(m) ? `（${yearTx.filter(t => String(t.date).slice(0, 7) === m).length} 筆）` : '（冇紀錄）'}</option>`).join('')}
+        ${months.map(m => `<option value="${esc(m)}" ${histMonth === m ? 'selected' : ''}>${esc(monthText(m))}${monthKeys.has(m) ? `（${yearTx.filter(t => String(t.date).slice(0, 7) === m).length} 筆）` : '（冇紀錄）'}</option>`).join('')}
       </select>
       <button class="btn btn-sm" data-hist-jump="cur">${icon('refresh', 15)} 返本年度</button>
     </div>
@@ -330,6 +335,10 @@ function historyView() {
 /* ---------- 新增 / 編輯收支 ---------- */
 function txPage(id) {
   const t = id ? find('transactions', id) : null;
+  if (id && !t) return `<div class="card">${empty('wallet', '搵唔到呢筆帳目')}</div>`;
+  if (t ? !can('finance.edit', t) : !can('finance.create')) {
+    return `<div class="card">${empty('lock', '你冇權限' + (t ? '編輯呢筆帳目' : '新增帳目'))}</div>`;
+  }
   return `
   ${pageHead({ title: t ? '編輯帳目' : '新增收支', sub: t ? `${t.date} · ${t.item}` : '記一筆收入或支出',
     actions: `<button class="btn btn-sm" data-go="#/finance">${icon('chevronL', 15)} 返回</button>` })}
@@ -341,7 +350,7 @@ function txPage(id) {
           <option value="expense" ${t?.type === 'expense' ? 'selected' : ''}>支出</option>
         </select></div>
       <div class="field"><label class="label">金額 <span class="req">*</span></label>
-        <input class="input" id="t-amount" type="number" step="0.01" min="0" value="${t?.amount ?? ''}" placeholder="0.00"></div>
+        <input class="input" id="t-amount" type="number" step="0.01" min="0" value="${esc(t?.amount ?? '')}" placeholder="0.00"></div>
       <div class="field"><label class="label">日期 <span class="req">*</span></label>
         <input class="input" id="t-date" value="${esc(t?.date || todayISO())}"></div>
       <div class="field"><label class="label">分類</label>
@@ -355,7 +364,7 @@ function txPage(id) {
       <div class="field"><label class="label">相關團員 / 經手人</label>
         <select class="select" id="t-member">
           <option value="">—</option>
-          ${members().map(m => `<option value="${m.id}" ${t?.by === m.id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}
+          ${members().map(m => `<option value="${esc(m.id)}" ${t?.by === m.id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}
         </select></div>
       <div class="field"><label class="label">單據號碼</label>
         <input class="input" id="t-ref" value="${esc(t?.ref || '')}" placeholder="例：FPS-001"></div>
@@ -365,7 +374,7 @@ function txPage(id) {
         <input class="input" id="t-note" value="${esc(t?.note || '')}"></div>
     </div>
     <div id="t-err" class="err mt-8"></div>
-    <button class="btn btn-primary mt-16" data-act="save-tx" data-id="${id || ''}">${icon('save', 16)} ${t ? '儲存' : '新增帳目'}</button>
+    <button class="btn btn-primary mt-16" data-act="save-tx" data-id="${esc(id || '')}">${icon('save', 16)} ${t ? '儲存' : '新增帳目'}</button>
   </div></div>`;
 }
 
@@ -453,9 +462,9 @@ function reportsView() {
       <div class="card">
         <div class="card-head"><div class="card-title">設定</div></div>
         <div style="padding:16px 18px">
-          ${kv([
+          ${kvHtml([
             ['期初結餘', money(openingBalance().amount) + (openingBalance().date ? ` <span class="faint xs">(${esc(openingBalance().date)})</span>` : '')],
-            ['童軍年度', `${s.scoutFYStartMonth || 4} 月 ${s.scoutFYStartDay || 1} 日 開始`],
+            ['童軍年度', `${esc(s.scoutFYStartMonth || 4)} 月 ${esc(s.scoutFYStartDay || 1)} 日 開始`],
             ['AGM 日期', (s.agmDates || []).filter(a => a.date).map(a => `<span class="tag">${esc(a.date)}</span>`).join(' ') || '<span class="faint">未設定</span>']
           ])}
           ${can('finance.edit') ? `<button class="btn btn-sm btn-block mt-12" data-act="agm">${icon('calendar', 15)} 逐年輸入 AGM 日期</button>
@@ -468,13 +477,14 @@ function reportsView() {
 
 function reportBlock({ kind, range, sum, open, picker, pick, attr }) {
   const close = open + sum.net;
+  const pickerAttr = ['data-unit-year', 'data-scout-year'].includes(attr) ? attr : 'data-scout-year';
   return `
   <div class="card">
     <div class="card-head">
       <div><div class="card-title">${esc(kind)}</div>
         <div class="card-sub">${esc(range.title)} · ${esc(range.sub)}</div></div>
-      <select class="select" ${attr} style="width:auto">
-        ${picker.map(([k, label]) => `<option value="${k}" ${pick === k ? 'selected' : ''}>${esc(label)}</option>`).join('')}
+      <select class="select" ${pickerAttr} style="width:auto">
+        ${picker.map(([k, label]) => `<option value="${esc(k)}" ${pick === k ? 'selected' : ''}>${esc(label)}</option>`).join('')}
       </select>
     </div>
     <div style="padding:16px 18px">
@@ -525,7 +535,7 @@ function reportBlock({ kind, range, sum, open, picker, pick, attr }) {
 }
 
 function catRow(c, v, total, tone) {
-  const p = total ? Math.round(v / total * 100) : 0;
+  const p = boundedPercent(total ? Math.round(Number(v) / Number(total) * 100) : 0);
   return `<div style="margin-bottom:9px">
     <div class="row-between xs"><span>${esc(c)}</span><span class="mono">${money(v)} · ${p}%</span></div>
     <div class="bar ${tone === 'danger' ? 'danger' : ''}"><span style="width:${p}%"></span></div>
@@ -588,7 +598,7 @@ function feesView() {
             <div><div class="semibold sm">${esc(r.member.name)}</div>
             ${r.member.role ? `<div class="xs faint">${esc(r.member.role)}</div>` : ''}</div></div></td>
           <td class="money">${money(r.amount)}
-            ${can('fee.edit') ? `<button class="btn btn-xs btn-ghost" data-editfee="${r.member.id}" title="改金額">${icon('edit', 12)}</button>` : ''}</td>
+            ${can('fee.edit') ? `<button class="btn btn-xs btn-ghost" data-editfee="${esc(r.member.id)}" title="改金額">${icon('edit', 12)}</button>` : ''}</td>
           <td>${r.paid
             ? '<span class="badge b-ok"><span class="dot"></span>已收</span>'
             : (!r.exists ? '<span class="badge b-info"><span class="dot"></span>未建立紀錄</span>'
@@ -599,15 +609,15 @@ function feesView() {
           <td class="sm">${esc(r.ref || '')}</td>
           <td class="sm">${r.paid
             ? (linked ? `<span class="xs" style="color:var(--ok)">✓ 已入帳</span>`
-              : `<button class="btn btn-xs" data-link-fee="${r.id}">補入帳</button>`)
+              : `<button class="btn btn-xs" data-link-fee="${esc(r.id)}">補入帳</button>`)
             : (linked ? '<span class="xs faint">已入帳但未標記</span>' : '')}</td>
           <td class="right"><div class="row-actions">
-            ${!r.exists && can('fee.edit') ? `<button class="btn btn-xs" data-new-fee="${r.member.id}">建立紀錄</button>` : ''}
+            ${!r.exists && can('fee.edit') ? `<button class="btn btn-xs" data-new-fee="${esc(r.member.id)}">建立紀錄</button>` : ''}
             ${r.exists && can('fee.mark') ? (r.paid
-              ? `<button class="btn btn-xs" data-unmark="${r.id}">取消收款</button>`
-              : `<button class="btn btn-xs btn-primary" data-mark="${r.id}">標記已收</button>`) : ''}
-            ${r.exists ? `<button class="btn btn-xs btn-ghost" data-receipt="${r.id}" title="收據">${icon('print', 13)}</button>` : ''}
-            ${r.exists && can('fee.edit') ? `<button class="btn btn-xs btn-ghost" data-delfee="${r.id}" title="刪除">${icon('trash', 13)}</button>` : ''}
+              ? `<button class="btn btn-xs" data-unmark="${esc(r.id)}">取消收款</button>`
+              : `<button class="btn btn-xs btn-primary" data-mark="${esc(r.id)}">標記已收</button>`) : ''}
+            ${r.exists ? `<button class="btn btn-xs btn-ghost" data-receipt="${esc(r.id)}" title="收據">${icon('print', 13)}</button>` : ''}
+            ${r.exists && can('fee.edit') ? `<button class="btn btn-xs btn-ghost" data-delfee="${esc(r.id)}" title="刪除">${icon('trash', 13)}</button>` : ''}
           </div></td></tr>`;
       }).join('')}</tbody>
       <tfoot><tr><td class="right">合計（${st.total} 人）</td><td class="money">${money(st.expected)}</td>
@@ -679,9 +689,9 @@ function claimsView() {
           : '<span class="badge b-warn"><span class="dot"></span>待批核</span>'}</td>
         <td class="right"><div class="row-actions">
           ${(c.status || 'pending') === 'pending' && can('claim.review') ? `
-            <button class="btn btn-xs btn-primary" data-claim="approve" data-id="${c.id}">批准並入帳</button>
-            <button class="btn btn-xs" data-claim="reject" data-id="${c.id}">拒絕</button>` : ''}
-          ${(c.status || 'pending') === 'pending' && c.requestedBy === current()?.username ? `<button class="btn btn-xs btn-ghost" data-claim="del" data-id="${c.id}">${icon('trash', 13)}</button>` : ''}
+            <button class="btn btn-xs btn-primary" data-claim="approve" data-id="${esc(c.id)}">批准並入帳</button>
+            <button class="btn btn-xs" data-claim="reject" data-id="${esc(c.id)}">拒絕</button>` : ''}
+          ${(c.status || 'pending') === 'pending' && c.requestedBy === current()?.username ? `<button class="btn btn-xs btn-ghost" data-claim="del" data-id="${esc(c.id)}">${icon('trash', 13)}</button>` : ''}
         </div></td></tr>`).join('')}</tbody>
     </table></div>` : empty('note', '冇申報紀錄')}
   </div>`;
@@ -710,8 +720,8 @@ function budgetsView() {
             <div class="card-sub">${esc(b.date || '')} ${b.note ? `· ${esc(b.note)}` : ''}</div></div>
           <div class="row gap-8">
             <span class="badge ${net >= 0 ? 'b-ok' : 'b-danger'}">${net >= 0 ? '盈餘' : '虧損'} ${money(Math.abs(net))}</span>
-            ${can('finance.edit') ? `<button class="btn btn-xs" data-editbudget="${b.id}">${icon('edit', 13)}</button>
-            <button class="btn btn-xs btn-ghost" data-delbudget="${b.id}">${icon('trash', 13)}</button>` : ''}
+            ${can('finance.edit') ? `<button class="btn btn-xs" data-editbudget="${esc(b.id)}">${icon('edit', 13)}</button>
+            <button class="btn btn-xs btn-ghost" data-delbudget="${esc(b.id)}">${icon('trash', 13)}</button>` : ''}
           </div>
         </div>
         <div class="scroll-x"><table class="table table-compact">
@@ -781,6 +791,23 @@ function openingYearList() {
 function settingsView() {
   const s = settings();
   const bal = balanceBreakdown();
+  /* finance.edit 對執委係 own；年度／團費／Drive 設定唔屬於任何一筆
+     個人紀錄，所以一定要用無 ctx 嘅全域權限。唯讀身份仍可喺下面匯入帳目。 */
+  if (!can('finance.edit')) {
+    return `
+    <div class="note-box warn mb-16">${icon('lock', 15)}<div>
+      <b>財務設定係全團設定，只限團長／領袖修改。</b><br>
+      你仍然可以查看摘要；如果有新增帳目權限，亦可以用下面嘅匯入工具，
+      但唔會改期初結餘、年度起點、團費預設或單據 Drive。</div></div>
+    <div class="card"><div class="card-head"><div class="card-title">設定摘要（唯讀）</div></div>
+      <div style="padding:16px 18px">${kvHtml([
+        [`${bal.year} 期初結餘`, money(bal.opening)],
+        ['年度起點', `${esc(s.scoutFYStartMonth || 4)} 月 ${esc(s.scoutFYStartDay || 1)} 日`],
+        ['標準團費', money(standardFee())],
+        ['海外／優惠團費', money(overseasFee())],
+        ['單據 Drive', s.receiptDrive ? '已設定' : '未設定']
+      ])}</div></div>`;
+  }
   /* 逐年團費（v2.4.0）：feePerYearMap；draft 恢復；留空顯示「同上年」 */
   const feeMap = s.feePerYearMap || {};
   const rec2 = readDraft('fin-settings', load().unitCode);
@@ -808,7 +835,7 @@ function settingsView() {
     if (m) collected[m[1]] = rec.data[k];
   });
   return `
-  ${bal.now < 0 ? noteBox(
+  ${bal.now < 0 ? noteBoxHtml(
     `<b>而家結餘係負數（${money(bal.now)}）。</b>最常見原因：<b>期初結餘未填</b>。${
       bal.referenceOpening ? `你嘅舊帳顯示上年度結餘 <b>${money(bal.referenceOpening)}</b>，填入去就會返正數。` : '請喺下面填返旅團嘅底數。'
     }`, 'warn') + '<div class="mb-16"></div>' : ''}
@@ -837,7 +864,7 @@ function settingsView() {
               <div style="min-width:150px">
                 <label class="label">期初結餘（HK$）</label>
                 <input class="input" type="number" step="0.01" data-open-year="${esc(y)}" data-draft="open:${esc(y)}"
-                  value="${esc(filled)}" placeholder="${carry ? String(carry) : '0'}">
+                  value="${esc(filled)}" placeholder="${esc(carry ? String(carry) : '0')}">
                 <div class="hint">${o.explicit
                   ? '已明確設定'
                   : (carry ? `未填 → 自動結轉 <b>${money(carry)}</b>` : '未填 → 當 0')}</div>
@@ -864,7 +891,7 @@ function settingsView() {
               <input class="input" id="set-opendate" data-draft="openingBalanceDate" value="${esc(s.openingBalanceDate || '')}" placeholder="${esc(bal.openingDate || 'YYYY-MM-DD')}">
               <div class="hint">留空就用年度第一日（${esc(bal.openingDate)}）</div></div>
             <div class="field"><label class="label">起始底數（第一筆帳目之前）</label>
-              <input class="input" id="set-open-legacy" type="number" step="0.01" data-draft="openingBalance" value="${s.openingBalance || 0}">
+              <input class="input" id="set-open-legacy" type="number" step="0.01" data-draft="openingBalance" value="${esc(s.openingBalance || 0)}">
               <div class="hint">只有喺最早一筆帳目<b>之前</b>先有底數時先要填（例：旅團開戶餘額）。<b>唔好</b>把上年度結餘填喺度。</div></div>
           </div>
           <div class="row gap-8 wrap mt-12">
@@ -873,7 +900,7 @@ function settingsView() {
             <button class="btn btn-sm" data-act="carry-all">${icon('refresh', 15)} 全部由上年度期末自動結轉</button>
             <button class="btn btn-sm" data-go="#/finance/import">${icon('upload', 15)} 匯入舊帳（會一併設定期初）</button>
           </div>
-          ${bal.openingMismatch ? noteBox(
+          ${bal.openingMismatch ? noteBoxHtml(
             `<b>${esc(bal.year)} 期初（${money(bal.opening)}）同上年度期末（${money(bal.prevClosing)}）唔吻合。</b>
              正常情況本年度期初應該等於上年度期末；如果上年有帳目未入，請先補返。`, 'warn') : ''}
           <div class="hint mt-8" data-draft-stamp></div>
@@ -887,9 +914,9 @@ function settingsView() {
         <div style="padding:18px 20px">
           <div class="grid g-2" style="gap:12px">
             <div class="field"><label class="label">童軍年度起始月</label>
-              <input class="input" id="set-fym" type="number" min="1" max="12" data-draft="scoutFYStartMonth" value="${s.scoutFYStartMonth || 4}"></div>
+              <input class="input" id="set-fym" type="number" min="1" max="12" data-draft="scoutFYStartMonth" value="${esc(s.scoutFYStartMonth || 4)}"></div>
             <div class="field"><label class="label">童軍年度起始日</label>
-              <input class="input" id="set-fyd" type="number" min="1" max="31" data-draft="scoutFYStartDay" value="${s.scoutFYStartDay || 1}"></div>
+              <input class="input" id="set-fyd" type="number" min="1" max="31" data-draft="scoutFYStartDay" value="${esc(s.scoutFYStartDay || 1)}"></div>
           </div>
           <div class="hint">已設定嘅 AGM 日期：${(s.agmDates || []).filter(a => a.date).map(a => `<span class="tag">${esc(String(a.year))} · ${esc(a.date)}${agmIsDefault(a.year, s.agmDates) ? '（未確認）' : ''}</span>`).join(' ') || '<span class="faint">未設定</span>'}</div>
         </div>
@@ -901,9 +928,9 @@ function settingsView() {
         <div style="padding:18px 20px">
           <div class="grid g-2" style="gap:12px">
             <div class="field"><label class="label">標準團費（本年度）</label>
-              <input class="input" id="set-fee" type="number" step="0.01" data-draft="feePerYear" value="${standardFee()}"></div>
+              <input class="input" id="set-fee" type="number" step="0.01" data-draft="feePerYear" value="${esc(standardFee())}"></div>
             <div class="field"><label class="label">海外／優惠團費</label>
-              <input class="input" id="set-feeovs" type="number" step="0.01" data-draft="feeOverseas" value="${overseasFee()}"></div>
+              <input class="input" id="set-feeovs" type="number" step="0.01" data-draft="feeOverseas" value="${esc(overseasFee())}"></div>
           </div>
           <div class="hint mt-8">每年幾多錢喺<b>上面「期初結餘」同一張表嘅「團費（該年度）」欄</b>逐年度填；留空＝自動同上一個年度一樣。</div>
         </div>
@@ -930,15 +957,15 @@ function settingsView() {
       <div class="card">
         <div class="card-head"><div class="card-title">結餘點計？</div></div>
         <div style="padding:16px 18px">
-          ${kv([
-            [`${esc(bal.year)} 期初結餘`, money(bal.opening) + (bal.openingExplicit ? '' : ' <span class="faint xs">(自動結轉)</span>')],
-            [`＋ ${esc(bal.year)} 收入`, money(bal.income)],
-            [`− ${esc(bal.year)} 支出`, money(bal.expense)],
+          ${kvHtml([
+            [`${bal.year} 期初結餘`, money(bal.opening) + (bal.openingExplicit ? '' : ' <span class="faint xs">(自動結轉)</span>')],
+            [`＋ ${bal.year} 收入`, money(bal.income)],
+            [`− ${bal.year} 支出`, money(bal.expense)],
             ['＝ 現在結餘', `<b style="color:${bal.now < 0 ? 'var(--danger)' : 'var(--brand-700)'}">${money(bal.now)}</b>`]
           ])}
-          ${bal.prevYear ? kv([
-            [`${esc(bal.prevYear)} 期初`, money(bal.prevOpening)],
-            [`${esc(bal.prevYear)} 期末`, money(bal.prevClosing)]
+          ${bal.prevYear ? kvHtml([
+            [`${bal.prevYear} 期初`, money(bal.prevOpening)],
+            [`${bal.prevYear} 期末`, money(bal.prevClosing)]
           ]) : ''}
           <div class="hint mt-12">「現在結餘」只計<b>本年度</b>（${esc(bal.year)}）嘅帳目，同儀表板一樣。財政年度報告會再按期間（AGM 旅年度 / 童軍年度）拆開計。</div>
         </div>
@@ -967,13 +994,21 @@ function importSection() {
 
 function importView() {
   const ref = load().reference || {};
+  if (!can('finance.create')) {
+    return `<div class="note-box warn">${icon('lock', 15)}<div>你可以查看財務設定，但冇新增帳目權限，所以匯入工具已停用。</div></div>`;
+  }
   return `
   <div class="grid g-2-1">
     <div class="col gap-16">
       <div class="card">
-        <div class="card-head"><div><div class="card-title">由舊 Google Sheet 貼上匯入</div>
-          <div class="card-sub">複製儲存格，直接貼落下面就得（支援 Tab / 逗號分隔）</div></div></div>
+        <div class="card-head"><div><div class="card-title">搬入原有財務 Excel／Google Sheet</div>
+          <div class="card-sub">每團原表可以唔同：先讀來源 → 對應欄位 → dry-run 對數 → 先確認匯入</div></div></div>
         <div style="padding:16px 18px">
+          <div class="migration-steps mb-12">
+            <div class="migration-step"><b>1. 選來源</b><span class="xs muted">原生 .xlsx、CSV／TSV，或者直接由 Google Sheet 複製。</span></div>
+            <div class="migration-step"><b>2. 對應欄位</b><span class="xs muted">揀工作表、標題行，再話畀系統「你嗰欄」等於「本系統邊欄」。</span></div>
+            <div class="migration-step"><b>3. 對數先寫</b><span class="xs muted">預覽收入／支出／期初／重複記錄；打字確認後先留喺本機。</span></div>
+          </div>
           <div class="field"><label class="label">貼上資料</label>
             <textarea class="textarea" id="imp-text" style="min-height:160px;font-family:var(--mono);font-size:12.5px"
               placeholder="日期&#9;類型&#9;項目&#9;金額&#9;負責人&#10;2025-12-07&#9;收入&#9;12/7 partyroom event&#9;190&#9;嘉詠"></textarea>
@@ -981,13 +1016,13 @@ function importView() {
               冇日期就當今日；「團費」欄打 ✓（或寫團員名）就會<b>順便喺團費收款表標記已收</b>。</div></div>
           <div class="row gap-8 mt-12 wrap">
             <button class="btn btn-primary" data-act="do-import">${icon('upload', 16)} 匯入（會顯示預覽）</button>
-            <label class="btn" style="cursor:pointer">${icon('download', 16)} 上載 CSV 檔
-              <input type="file" id="imp-file" accept=".csv,.tsv,.txt,text/csv" style="display:none">
+            <label class="btn" style="cursor:pointer">${icon('download', 16)} 上載 Excel／CSV
+              <input type="file" id="imp-file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.csv,.tsv,.txt,text/csv" style="display:none">
             </label>
             ${can('finance.export') ? `<button class="btn" data-act="exp-template">${icon('download', 16)} 下載空白範本 CSV</button>` : ''}
           </div>
-          <div class="hint mt-8">Google Sheet：<b>檔案 → 下載 → 逗號分隔值 (.csv)</b>，再用上面嘅「上載 CSV 檔」，
-            或者喺 Sheet 選取範圍複製再貼落上面個格。</div>
+          <div class="hint mt-8"><b>Excel：</b>可以直接上載 <code>.xlsx</code>，系統會列出工作表同欄位對應；唔會執行公式、巨集或外部連結。<br>
+            <b>Google Sheet：</b>可以選取範圍複製再貼；亦可「檔案 → 下載 → Microsoft Excel (.xlsx)／CSV」再上載。</div>
           <div id="imp-open-wrap" class="mt-12"></div>
           <div id="imp-preview" class="mt-8"></div>
         </div>
@@ -1014,7 +1049,8 @@ function importView() {
             ${ref.openingBalance ? `<span>期初 <b>${money(ref.openingBalance)}</b></span>` : ''}
           </div>
           ${ref.check ? `<div class="xs faint mt-6">對數：期初 ＋ 收入 − 支出 = <b>${money(ref.check.closing)}</b>（同原表總結一致）</div>` : ''}
-          ${ref.source ? `<a class="xs" href="${esc(ref.source)}" target="_blank" rel="noopener">開啟原表 ↗</a>` : ''}
+          ${ref.source && safeHref(ref.source, { allowRelative: false, allowContact: false }) !== '#'
+            ? `<a class="xs" href="${esc(safeHref(ref.source, { allowRelative: false, allowContact: false }))}" target="_blank" rel="noopener noreferrer">開啟原表 ↗</a>` : ''}
         </div>` : ''}
         <div>
           ${(ref.transactions || []).length ? ref.transactions.slice(0, 8).map(t => `
@@ -1036,10 +1072,11 @@ function importView() {
         <div class="card-head"><div class="card-title">匯入貼士</div></div>
         <div style="padding:16px 18px">
           <ul class="sm muted" style="padding-left:18px;line-height:1.9">
-            <li>先喺 Google Sheet 選取範圍 → Ctrl/Cmd + C → 貼落左邊格</li>
-            <li>第一行可以係標題（會自動辨認）</li>
-            <li>金額唔要加 <code>HK$</code> 都可以（會自動清除）</li>
-            <li>匯入後可以去「帳目」逐筆核對，再刪走唔要嘅</li>
+            <li><b>唔使改到同其他團一樣：</b>Excel 上載後逐欄對應；未對應嘅欄唔會亂入。</li>
+            <li>第一行可以係標題（會自動辨認）；多工作表會先畀你揀。</li>
+            <li>金額有 <code>HK$</code>／逗號都得；常見 Excel 日期會轉成 YYYY-MM-DD。</li>
+            <li>真正寫入前會顯示 dry-run、總額、重複項同逐筆變更，並建立安全快照。</li>
+            <li>匯入只先留喺呢部機；核對完成後仍要撳頂部「儲存到後端」。</li>
           </ul>
         </div>
       </div>
@@ -1049,13 +1086,123 @@ function importView() {
 
 /** 解析貼上嘅表格 */
 /** 由檔案讀入（CSV / TSV / TXT） */
+const MAX_FINANCE_IMPORT_BYTES = 12 * 1024 * 1024;
+const MAX_FINANCE_IMPORT_ROWS = 100000;
 export function readImportFile(file) {
   return new Promise((resolve, reject) => {
+    if (Number(file?.size || 0) > MAX_FINANCE_IMPORT_BYTES) {
+      reject(new Error('匯入檔案大過 12MB；請先只保留要搬入嘅帳目，或者分開匯入'));
+      return;
+    }
     const fr = new FileReader();
     fr.onerror = () => reject(new Error('讀取檔案失敗'));
-    fr.onload = () => resolve(String(fr.result || '').replace(/^\ufeff/, ''));
+    fr.onload = () => {
+      const text = String(fr.result || '').replace(/^\ufeff/, '');
+      if (new Blob([text]).size > MAX_FINANCE_IMPORT_BYTES) {
+        reject(new Error('匯入文字大過 12MB；請分開匯入'));
+        return;
+      }
+      resolve(text);
+    };
     fr.readAsText(file, 'UTF-8');
   });
+}
+
+const FINANCE_IMPORT_FIELDS = [
+  ['', '— 唔匯入 —'], ['日期', '日期'], ['類型', '類型（收入／支出）'], ['項目', '項目'], ['金額', '金額'],
+  ['分類', '分類'], ['方式', '收付方式'], ['經手人', '經手／付款人'], ['備註', '備註'], ['年度', '年度'],
+  ['團費', '團費標記／團員名'], ['收入項目', '收入項目（分欄表）'], ['支出項目', '支出項目（分欄表）'],
+  ['收入', '收入金額（分欄表）'], ['支出', '支出金額（分欄表）'], ['結餘', '結餘'], ['單據', '單據／收據連結']
+];
+
+export function autoMapFinanceHeaders(headers) {
+  const tests = [
+    ['日期', /日期|交易日|收款日|付款日|date|時間戳|timestamp/i], ['團費', /團費/], ['收入項目', /收入\s*(?:項目|內容|名稱)/i],
+    ['支出項目', /支出\s*(?:項目|內容|名稱)/i], ['收入', /^(?:收入|income)(?:金額)?$/i],
+    ['支出', /^(?:支出|expense)(?:金額)?$/i], ['結餘', /結餘|balance/i], ['單據', /單據|收據|receipt|證明|上載/i],
+    ['類型', /類型|type|收支|收入或支出/i], ['項目', /項目|item|名稱|name|內容/i],
+    ['金額', /金額|amount|銀碼|價錢/i], ['分類', /分類|category|類別/i], ['方式', /方式|method|付款方式|收付/i],
+    ['經手人', /經手|負責|付款人|申報人|姓名|by/i], ['備註', /備註|note|remark|說明/i], ['年度', /年度|期數|period|year/i]
+  ];
+  const used = new Set();
+  return (headers || []).map(header => {
+    const text = String(header || '').trim();
+    for (const [key, re] of tests) {
+      if (!used.has(key) && re.test(text)) { used.add(key); return key; }
+    }
+    return '';
+  });
+}
+
+/** 按 Excel 欄位對應砌返標準 TSV，之後沿用同一個財務 parser／dry-run。 */
+export function mappedFinanceTsv(rows, { headerRow = 0, mapping = [] } = {}) {
+  const start = Math.max(0, Number(headerRow) || 0);
+  const selected = mapping.map((key, index) => ({ key: String(key || ''), index })).filter(x => x.key);
+  if (!selected.length) return '';
+  const clean = value => String(value ?? '').replace(/[\t\r\n]+/g, ' ').trim();
+  return [selected.map(x => x.key), ...(rows || []).slice(start + 1).map(row => selected.map(x => clean(row?.[x.index])))]
+    .filter((row, i) => i === 0 || row.some(Boolean)).map(row => row.join('\t')).join('\n');
+}
+
+async function importExcelWorkbook(root, file) {
+  if (Number(file?.size || 0) > 12 * 1024 * 1024) throw new Error('Excel 檔案大過 12MB；請先只保留要搬入嘅工作表，或者另存 CSV');
+  const { readXlsx, detectHeaderRow } = await import('../lib/xlsx.js');
+  const workbook = await readXlsx(await file.arrayBuffer());
+  const result = await modal({
+    title: `Excel 欄位對應：${file.name}`,
+    sub: '原表唔使改格式；揀工作表同標題行，再逐欄對應本系統欄位',
+    wide: true,
+    trustedBodyHtml: `
+      <div class="grid g-2" style="gap:12px">
+        <div class="field"><label class="label">工作表</label><select class="select" id="xlsx-sheet">
+          ${workbook.sheets.map((s, i) => `<option value="${esc(i)}">${esc(s.name)}（${s.rows.length} 行）</option>`).join('')}</select></div>
+        <div class="field"><label class="label">標題行</label><select class="select" id="xlsx-header"></select></div>
+      </div>
+      ${workbook.warnings.length ? `<div class="note-box warn mt-12"><div>${workbook.warnings.map(esc).join('<br>')}</div></div>` : ''}
+      <div id="xlsx-map" class="mt-12"></div>`,
+    actions: [
+      { label: '取消', class: 'btn', value: null },
+      { label: '套用對應並預覽', class: 'btn-primary', onClick: el => {
+        const sheet = workbook.sheets[Number(el.querySelector('#xlsx-sheet').value) || 0];
+        const headerRow = Number(el.querySelector('#xlsx-header').value) || 0;
+        const mapping = [...el.querySelectorAll('[data-xlsx-map]')].map(s => s.value);
+        const text = mappedFinanceTsv(sheet.rows, { headerRow, mapping });
+        if (!text) return false;
+        return { text, sheet: sheet.name, headerRow, mapping };
+      } }
+    ],
+    onMount: el => {
+      const sheetSel = el.querySelector('#xlsx-sheet');
+      const headerSel = el.querySelector('#xlsx-header');
+      const host = el.querySelector('#xlsx-map');
+      const paintMap = () => {
+        const sheet = workbook.sheets[Number(sheetSel.value) || 0];
+        const hr = Number(headerSel.value) || 0;
+        const headers = sheet.rows[hr] || [];
+        const mapping = autoMapFinanceHeaders(headers);
+        host.innerHTML = `<div class="note-box info mb-8"><div>來源有 <b>${sheet.rows.length}</b> 行、<b>${sheet.maxColumns}</b> 欄。左邊係原表欄名／例子；右邊係本系統欄位。</div></div>
+          <div>${Array.from({ length: sheet.maxColumns }, (_, i) => `
+            <div class="source-map"><div class="sm"><b>${esc(headers[i] || `第 ${i + 1} 欄`)}</b>
+              <div class="xs faint">例：${esc(String(sheet.rows[hr + 1]?.[i] || '').slice(0, 60))}</div></div>
+              <select class="select" data-xlsx-map="${esc(i)}">${FINANCE_IMPORT_FIELDS.map(([key, label]) =>
+                `<option value="${esc(key)}" ${mapping[i] === key ? 'selected' : ''}>${esc(label)}</option>`).join('')}</select></div>`).join('')}</div>`;
+      };
+      const paintHeaders = () => {
+        const sheet = workbook.sheets[Number(sheetSel.value) || 0];
+        const detected = detectHeaderRow(sheet.rows);
+        headerSel.innerHTML = sheet.rows.slice(0, 12).map((row, i) => `<option value="${esc(i)}" ${i === detected ? 'selected' : ''}>第 ${i + 1} 行：${esc(row.filter(Boolean).slice(0, 4).join('｜').slice(0, 80) || '（空白）')}</option>`).join('');
+        paintMap();
+      };
+      sheetSel.addEventListener('change', paintHeaders);
+      headerSel.addEventListener('change', paintMap);
+      paintHeaders();
+    }
+  });
+  if (!result) return false;
+  root.querySelector('#imp-text').value = result.text;
+  toast(`已套用「${result.sheet}」欄位對應；而家先睇 dry-run，未寫入任何帳目`, 'ok');
+  showImportPreview(root);
+  return true;
 }
 
 /** 真正 CSV 解析（RFC4180：支援引號欄位、欄位內嘅逗號／換行） */
@@ -1085,11 +1232,15 @@ export function splitCsv(text, sep = ',') {
 export function parsePasted(text) {
   const raw = String(text || '');
   if (!raw.trim()) return [];
+  if (raw.length > MAX_FINANCE_IMPORT_BYTES || new TextEncoder().encode(raw).byteLength > MAX_FINANCE_IMPORT_BYTES) {
+    throw new Error('匯入文字大過 12MB；請分開匯入');
+  }
   const isTab = (raw.split(/\r?\n/)[0] || '').includes('\t');
   const table = isTab
     ? raw.split(/\r?\n/).filter(l => l.trim()).map(l => l.split('\t'))
     : splitCsv(raw, ',');
   const lines = table.map(r => r.map(c => String(c ?? '').trim())).filter(r => r.some(c => c !== ''));
+  if (lines.length > MAX_FINANCE_IMPORT_ROWS) throw new Error('匯入帳目超過 100,000 行；請分開匯入');
   if (!lines.length) return [];
   const split = r => r;
   const head = split(lines[0]).map(s => s.trim());
@@ -1133,14 +1284,23 @@ export function parsePasted(text) {
     return '';
   };
   const out = [];
+  const matchName = value => { try { return matchMemberByName(value); } catch { return null; } };
   let openingBalance = null;
   let sheetBalance = null;
   let summary = null;
   rows.forEach(r => {
     const rawType = get(r, idx.type);
     const amtRaw = get(r, idx.amount), amtIn = get(r, idx.amountIn), amtOut = get(r, idx.amountOut);
-    const num = v => { const n = Number(String(v).replace(/[^0-9.\-]/g, '')); return Number.isFinite(n) ? Math.abs(n) : 0; };
-    let amount = num(amtRaw), side = '';
+    const signedNum = v => {
+      const source = String(v || '').trim();
+      const accountingNegative = /^\(.*\)$/.test(source);
+      const n = Number(source.replace(/[^0-9.\-]/g, ''));
+      if (!Number.isFinite(n)) return 0;
+      return accountingNegative ? -Math.abs(n) : n;
+    };
+    const num = v => Math.abs(signedNum(v));
+    const signedAmount = signedNum(amtRaw);
+    let amount = Math.abs(signedAmount), side = signedAmount < 0 ? 'expense' : '';
     if (!amount && amtIn && num(amtIn)) { amount = num(amtIn); side = 'income'; }
     if (!amount && amtOut && num(amtOut)) { amount = num(amtOut); side = 'expense'; }
     const itemRaw = get(r, idx.itemIn) || get(r, idx.itemOut) || get(r, idx.item);
@@ -1175,14 +1335,16 @@ export function parsePasted(text) {
     // 「團費」欄：打勾 或 寫住團員名（例：曉莉）
     const feeRaw = idx.fee >= 0 ? get(r, idx.fee) : '';
     const feeName = feeRaw && !isTicked(feeRaw) ? feeRaw : '';
-    const feePaid = !!feeRaw && (isTicked(feeRaw) || !!matchMemberByName(feeRaw) || /團費/.test(item));
+    const feePaid = !!feeRaw && (isTicked(feeRaw) || !!matchName(feeRaw) || /團費/.test(item));
     const who = get(r, idx.byName) || feeName;
-    const m = matchMemberByName(who) || matchMemberByName(item) || null;
-    const receiptLink = idx.receipt >= 0 ? get(r, idx.receipt) : '';
+    const m = matchName(who) || matchName(item) || null;
+    const receiptRaw = idx.receipt >= 0 ? get(r, idx.receipt) : '';
+    const safeReceipt = safeHref(receiptRaw, { allowRelative: false, allowContact: false });
+    const receiptLink = safeReceipt === '#' ? '' : safeReceipt;
     out.push({
       date: normDate(get(r, idx.date)) || todayISO(),
       type, item, amount: Math.abs(amount),
-      receiptLink: /^https?:/i.test(receiptLink) ? receiptLink : '',
+      receiptLink,
       receipt: !!receiptLink,
       category: get(r, idx.category) || (type === 'income' ? '其他收入' : '雜項'),
       method: get(r, idx.method) || '現金',
@@ -1203,6 +1365,7 @@ export function parsePasted(text) {
    AGM 日期逐年輸入（旅財政年度起點）
    ============================================================ */
 async function agmDialog() {
+  if (!can('finance.edit')) { toast('你冇修改 AGM 日期權限', 'err'); return; }
   const s = settings();
   const curYear = new Date().getFullYear();
   const years = [];
@@ -1213,15 +1376,15 @@ async function agmDialog() {
     const isDef = agmIsDefault(y, s.agmDates);
     return `<tr>
       <td class="semibold">${y}</td>
-      <td><input class="input" type="date" data-year="${y}" data-def="${def}" data-touched="0" value="${esc(hit?.date || '')}"></td>
-      <td class="xs faint">預設 ${def}<button class="btn btn-xs ml-8" type="button" data-usdef="${y}">用預設</button></td>
+      <td><input class="input" type="date" data-year="${esc(y)}" data-def="${esc(def)}" data-touched="0" value="${esc(hit?.date || '')}"></td>
+      <td class="xs faint">預設 ${esc(def)}<button class="btn btn-xs ml-8" type="button" data-usdef="${esc(y)}">用預設</button></td>
       <td>${!hit ? '<span class="badge b-warn">未填</span>' : (isDef ? '<span class="badge b-warn">未確認</span>' : '<span class="badge b-ok">已確認</span>')}</td>
     </tr>`;
   };
   const r = await modal({
     title: '逐年輸入 AGM 日期',
     sub: '旅財政年度由每年 AGM 起計 —— 每年日期都唔同，請逐格填實際日期',
-    body: `
+    trustedBodyHtml: `
       <div class="note-box info mb-12">${icon('calendar', 15)}<div>唔記得實際日期？可以按「用預設」用<b>8 月最後一個星期六</b>，
         之後再改。填過嘅年份會標示「已確認」，報告亦會有提示。</div></div>
       <div class="scroll-x"><table class="table table-compact">
@@ -1250,22 +1413,65 @@ async function agmDialog() {
     }
   });
   if (!r) return;
+  if (!can('finance.edit')) { toast('權限已變更，AGM 日期冇寫入', 'err'); return; }
   const db = load();
   db.settings = { ...db.settings, ...r };
   commit(); toast('已更新 AGM 日期', 'ok'); refresh();
 }
 
-/** 匯入預覽（貼上或上載 CSV 都用呢個） */
+export function financeImportKey(row) {
+  const amount = Math.round(Number(row?.amount || 0) * 100) / 100;
+  return [row?.date, row?.type, String(row?.item || '').trim().toLowerCase(), amount.toFixed(2),
+    String(row?.byName || '').trim().toLowerCase(), String(row?.note || '').trim().toLowerCase()].join('|');
+}
+
+export function partitionFinanceImport(rows, existing = []) {
+  const seen = new Set((existing || []).map(financeImportKey));
+  const accepted = [], duplicates = [];
+  (rows || []).forEach((row, index) => {
+    const key = financeImportKey(row);
+    if (seen.has(key)) duplicates.push({ row, index, key });
+    else { seen.add(key); accepted.push(row); }
+  });
+  return { accepted, duplicates };
+}
+
+/** A source opening balance belongs to the earliest imported fiscal year, not
+ * the obsolete global opening field. Prefer an explicit valid period, then
+ * derive the period from the transaction date. */
+export function financeImportOpeningYear(rows, fallback = '') {
+  const years = (rows || []).map(row => {
+    const explicit = String(row?.period || '').trim();
+    if (/^\d{4}-\d{2}$/.test(explicit)) return explicit;
+    return row?.date ? feePeriodOf(row.date) : '';
+  }).filter(year => /^\d{4}-\d{2}$/.test(year)).sort();
+  return years[0] || fallback || currentFY();
+}
+
+/** 匯入預覽（貼上／CSV／原生 XLSX 全部行同一個 dry-run） */
 function showImportPreview(root) {
-  const rows = parsePasted(root.querySelector('#imp-text').value);
   const box = root.querySelector('#imp-preview');
+  if (!can('finance.create')) {
+    box.innerHTML = '<div class="note-box danger">你冇新增財務帳目權限，唔可以執行匯入。</div>';
+    return;
+  }
+  let rows;
+  try { rows = parsePasted(root.querySelector('#imp-text').value); }
+  catch (e) {
+    box.innerHTML = `<div class="note-box danger">${esc(e?.message || '匯入資料格式不正確')}</div>`;
+    return;
+  }
   if (!rows.length) { box.innerHTML = `<div class="note-box danger">讀唔到任何資料，請檢查格式（需要日期／類型／項目／金額）。</div>`; return; }
-  const inc = rows.filter(r => r.type === 'income').reduce((s, r) => s + r.amount, 0);
-  const exp = rows.filter(r => r.type === 'expense').reduce((s, r) => s + r.amount, 0);
-  const feeRows = rows.filter(r => r.feePaid && r.memberId && r.type === 'income');
+  const partition = partitionFinanceImport(rows, tx());
+  const importRows = partition.accepted;
+  const inc = importRows.filter(r => r.type === 'income').reduce((s, r) => s + r.amount, 0);
+  const exp = importRows.filter(r => r.type === 'expense').reduce((s, r) => s + r.amount, 0);
+  const feeRows = importRows.filter(r => r.feePaid && r.memberId && r.type === 'income');
   const openBal = rows.openingBalance ?? null;
+  const openingYear = financeImportOpeningYear(importRows);
+  const maySetOpening = can('finance.edit');
   const sheetBal = rows.sheetBalance ?? null;
-  const withReceipt = rows.filter(r => r.receiptLink).length;
+  const withReceipt = importRows.filter(r => r.receiptLink).length;
   const sum = rows.summary || null;
   const computed = (Number(openBal) || 0) + inc - exp;
   let diff = null, diffVs = '';
@@ -1280,28 +1486,63 @@ function showImportPreview(root) {
   const sumLine = sum
     ? `<br>對數（同原表總結比較）：收入 ${money(inc)}${sum.income ? ` / 表 ${money(sum.income)}` : ''}、支出 ${money(exp)}${sum.expense ? ` / 表 ${money(sum.expense)}` : ''}、期末 ${money(computed)}${sum.closing ? ` / 表 ${money(sum.closing)}` : ''}`
     : '';
-  box.innerHTML = `<div class="note-box info"><div>讀到 <b>${rows.length}</b> 筆：收入 ${money(inc)}、支出 ${money(exp)}${withReceipt ? `、有單據連結 ${withReceipt} 筆` : ''}。
-    ${feeRows.length ? `<br>其中 <b>${feeRows.length}</b> 筆認得出係團費（團員：${[...new Set(feeRows.map(r => matchMemberByName(r.byName || r.item)?.name).filter(Boolean))].join('、')}）
+  box.innerHTML = `<div class="note-box info"><div><b>Dry-run（未改資料）</b>：來源讀到 <b>${rows.length}</b> 筆；準備新增 <b>${importRows.length}</b> 筆，
+    ${partition.duplicates.length ? `<b>${partition.duplicates.length}</b> 筆同現有／來源內重複，預設跳過；` : ''}收入 ${money(inc)}、支出 ${money(exp)}${withReceipt ? `、有單據連結 ${withReceipt} 筆` : ''}。
+    ${feeRows.length ? `<br>其中 <b>${feeRows.length}</b> 筆認得出係團費（團員：${[...new Set(feeRows.map(r => matchMemberByName(r.byName || r.item)?.name).filter(Boolean))].map(esc).join('、')}）
       —— 確認匯入時會<b>順便喺「團費」收款表標記已收</b>。` : ''}
-    ${openBal !== null ? `<br>期初結餘：<b>${money(openBal)}</b>（表內「年度結餘」行，可以一併寫入「年度設定」）` : ''}
+    ${openBal !== null ? `<br>期初結餘：<b>${money(openBal)}</b>（屬於 <b>${esc(openingYear)}</b> 年度${maySetOpening ? '，可以一併寫入「年度設定」' : '；你冇修改年度設定權限，所以只會匯入帳目'}）` : ''}
     ${(sum || sheetBal !== null) ? `${sumLine}${sum ? '' : `<br>對數：期初 ＋ 收入 − 支出 = <b>${money(computed)}</b>；${diffVs} <b>${money(sheetBal)}</b>`}
       ${diff !== null && Math.abs(diff) < 0.01 ? ' <span class="badge b-ok">✓ 對得啱</span>' : diff !== null ? ` <span class="badge b-warn">相差 ${money(diff)}</span>` : ''}` : ''}
-    <br>按下面確認就會寫入帳目（之後可以逐筆核對或刪除）。</div></div>
+    <br>撳下面只會再開一次詳細 diff 同安全快照確認，未確認之前唔會寫入。</div></div>
     <div class="scroll-x mt-12"><table class="table table-compact"><thead><tr><th>日期</th><th>類型</th><th>項目</th><th class="right">金額</th></tr></thead>
-    <tbody>${rows.slice(0, 40).map(r => `<tr><td class="mono sm">${esc(r.date)}</td>
+    <tbody>${importRows.slice(0, 40).map(r => `<tr><td class="mono sm">${esc(r.date)}</td>
       <td><span class="badge ${r.type === 'income' ? 'b-ok' : 'b-danger'}">${r.type === 'income' ? '收入' : '支出'}</span></td>
       <td class="sm">${esc(r.item)}</td><td class="money">${money(r.amount)}</td></tr>`).join('')}</tbody></table></div>
-    ${rows.length > 40 ? `<div class="hint mt-8">（只顯示頭 40 筆，全部會匯入）</div>` : ''}
-    <button class="btn btn-primary mt-12" data-confirm-import>${icon('check', 16)} 確認匯入 ${rows.length} 筆</button>`;
+    ${importRows.length > 40 ? `<div class="hint mt-8">（只顯示頭 40 筆；確認畫面會列明總數）</div>` : ''}
+    <button class="btn btn-primary mt-12" data-confirm-import ${importRows.length ? '' : 'disabled'}>${icon('check', 16)} 詳細核對並匯入 ${importRows.length} 筆</button>`;
   const openWrap = document.getElementById('imp-open-wrap');
-  if (openWrap) openWrap.innerHTML = openBal !== null
-    ? `<label class="check mb-8"><input type="checkbox" id="imp-open" checked> 同時將期初結餘設為 ${money(openBal)}</label>` : '';
-  box.querySelector('[data-confirm-import]').addEventListener('click', () => {
+  if (openWrap) openWrap.innerHTML = openBal !== null && maySetOpening
+    ? `<label class="check mb-8"><input type="checkbox" id="imp-open" checked> 同時將 ${esc(openingYear)} 年度期初結餘設為 ${money(openBal)}</label>` : '';
+  box.querySelector('[data-confirm-import]').addEventListener('click', async () => {
+    if (!can('finance.create')) { toast('你冇新增財務帳目權限', 'err'); return; }
+    const openBox = document.getElementById('imp-open');
+    const setOpening = maySetOpening && can('finance.edit') && !!openBox?.checked && openBal !== null;
+    const confirmed = await confirmBulkOperation({
+      title: '最後核對：匯入財務帳目', actionLabel: `確認匯入 ${importRows.length} 筆`, count: importRows.length,
+      scope: `${profile().name || '現時旅團'}；只新增，不覆蓋現有帳目`, requireText: `確認 ${importRows.length}`,
+      changes: [
+        { label: '帳目筆數', before: tx().length, after: tx().length + importRows.length },
+        { label: '匯入收入', before: money(0), after: money(inc) },
+        { label: '匯入支出', before: money(0), after: money(exp) },
+        { label: '重複項', before: partition.duplicates.length, after: '跳過' },
+        ...(setOpening ? [{ label: `${openingYear} 年度期初結餘`, before: money(openingOf(openingYear).amount), after: money(openBal) }] : [])
+      ],
+      preview: importRows.slice(0, 80).map(r => ({ label: `${r.date} · ${r.item}`, before: '（新增）', after: `${r.type === 'income' ? '收入' : '支出'} ${money(r.amount)}` })),
+      warnings: [
+        ...(partition.duplicates.length ? [`有 ${partition.duplicates.length} 筆重複資料唔會匯入。`] : []),
+        ...(diff !== null && Math.abs(diff) >= 0.01 ? [`同原表對數相差 ${money(diff)}；請先確認係咪應該繼續。`] : [])
+      ],
+      backupText: '會先保存匯入前嘅帳目、團費同期初設定；匯入後亦可即時「還原」。',
+      rollbackText: '還原會刪除今次新增嘅帳目／團費改動，並回復原本期初設定。',
+      readbackText: '完成後會按新增記錄 ID 重新計數，確定本機工作副本寫齊。'
+    });
+    if (!confirmed) return;
+    if (!can('finance.create')) { toast('權限已變更，匯入冇寫入', 'err'); return; }
+    const writeOpening = setOpening && can('finance.edit');
+    const db = load();
+    const before = {
+      transactions: structuredClone(db.transactions || []), fees: structuredClone(db.fees || []),
+      settings: structuredClone(db.settings || {})
+    };
+    const snapshot = createSafetySnapshot('財務匯入前', before, { kind: 'finance-import', count: importRows.length });
+    if (!snapshot.ok) { toast(`${snapshot.error}；為安全起見已取消匯入`, 'err'); return; }
     let feeN = 0;
-    rows.forEach(r => {
+    const addedIds = [];
+    importRows.forEach(r => {
       const payload = { ...r };
       delete payload.feePaid; delete payload.memberId;
       const t = add('transactions', { id: uid('t'), ...payload, createdBy: current()?.username || '', imported: true });
+      if (t?.id) addedIds.push(t.id);
       // 團費：同步喺收款表標記（唔會重複建立）
       if (r.feePaid && r.memberId) {
         const period = r.period || feePeriodOf(r.date);
@@ -1318,13 +1559,29 @@ function showImportPreview(root) {
         }
       }
     });
-    const openBox = document.getElementById('imp-open');
-    if (openBox?.checked && openBal !== null) {
-      const db = load();
-      db.settings = { ...db.settings, openingBalance: Number(openBal), openingBalanceDate: '' };
+    if (writeOpening) {
+      const currentDb = load();
+      const openingMap = { ...(currentDb.settings?.openingBalances || {}) };
+      openingMap[openingYear] = Number(openBal);
+      currentDb.settings = { ...currentDb.settings, openingBalances: openingMap };
       commit();
     }
-    toast(`已匯入 ${rows.length} 筆帳目${feeN ? `，並標記 ${feeN} 人團費已收` : ''}${openBox?.checked && openBal !== null ? '，期初結餘已更新' : ''}`, 'ok');
+    const readback = new Set(tx().map(t => t.id));
+    const written = addedIds.filter(id => readback.has(id)).length;
+    if (written !== addedIds.length) {
+      toast(`核對只搵到 ${written}/${addedIds.length} 筆，已保留安全快照；請先唔好儲存到後端`, 'err');
+      return;
+    }
+    await undoable(`已匯入並核對 ${written} 筆（仍未儲存到後端）`, () => {
+      const currentDb = load();
+      currentDb.transactions = structuredClone(before.transactions);
+      currentDb.fees = structuredClone(before.fees);
+      currentDb.settings = structuredClone(before.settings);
+      commit();
+      toast('已還原匯入前嘅財務資料', 'ok');
+      go('#/finance');
+    });
+    toast(`已匯入 ${written} 筆帳目${feeN ? `，並標記 ${feeN} 人團費已收` : ''}${writeOpening ? `，${openingYear} 年度期初結餘已更新` : ''}；請核對後撳頂部儲存`, 'ok');
     go('#/finance');
   });
 }
@@ -1400,7 +1657,7 @@ function exportReportWord(both = true, which = 'unit') {
     (both || which === 'scout' ? reportHtml(`二、${r.scout.title}（旅團／童軍年度：4 月 1 日至 3 月 31 日）`, r.scout, r.sSum, r.sOpen) : '') +
     `<p class="note">備註：本團為自務自治深資童軍團，旅財政年度由每年 AGM 起計；童軍總會財政年度則為每年 4 月 1 日至 3 月 31 日。兩段期間可能重疊，屬正常情況。</p>
      <div class="foot"><span>${esc(profile().name || '')}</span><span>司庫簽署：________________</span><span>${todayISO()}</span></div>`;
-  toWord({ filename: `財務報告_${both ? '雙年度' : which}_${stamp()}.doc`, title: '財務報告', org: profile().name, bodyHtml: body });
+  toWord({ filename: `財務報告_${both ? '雙年度' : which}_${stamp()}.doc`, title: '財務報告', org: profile().name, trustedBodyHtml: body });
 }
 
 function exportReportPdf(both = true, which = 'unit') {
@@ -1410,7 +1667,7 @@ function exportReportPdf(both = true, which = 'unit') {
     (both || which === 'unit' ? reportHtml(`一、${r.unit.title}`, r.unit, r.uSum, r.uOpen) : '') +
     (both || which === 'scout' ? reportHtml(`二、${r.scout.title}`, r.scout, r.sSum, r.sOpen) : '') +
     `<div class="foot"><span>司庫簽署：____________</span><span>主席簽署：____________</span><span>${todayISO()}</span></div>`;
-  printDoc({ title: '財務報告', org: profile().name, bodyHtml: body });
+  printDoc({ title: '財務報告', org: profile().name, trustedBodyHtml: body });
 }
 
 /** 而家睇緊嘅範圍（帳目 / 過往紀錄 兩個分頁都用同一個匯出） */
@@ -1488,14 +1745,17 @@ export function mount(root, params) {
     ledgerMode = 'overview'; histMonth = ''; tab = 'ledger'; go('#/finance/ledger'); refresh();
   });
 
-  /* 年度設定頁：輸入先暫存喺瀏覽器，撳「儲存」先寫入（防呆） */
-  if (tab === 'settings') {
+  /* 年度設定頁：輸入先暫存喺瀏覽器，撳「儲存」先寫入（防呆）。
+     own 權限唔適用於全團設定，無 ctx 檢查會令執委 fail closed。 */
+  if (tab === 'settings' && can('finance.edit')) {
     const autosave = bindDraftAutosave(root, 'fin-settings', load().unitCode);
     const rec = readDraft('fin-settings', load().unitCode);
     if (rec) {
       applyDraft(root, 'fin-settings', load().unitCode);
       autosave.markDirty();   // 回填入版前舊草稿＝有內容，唔係「一隻未掂過嘅分頁」
     }
+    const openingInput = year => [...root.querySelectorAll('[data-open-year]')]
+      .find(input => input.dataset.openYear === String(year));
     /* 用舊帳嘅數字填返**對應年度**：8,803.28 係 2025-26 嘅期初，
        佢嘅期末 7,846.64 先係 2026-27 嘅期初 —— 唔會再填錯年度 */
     root.querySelector('[data-act="use-ref-opening"]')?.addEventListener('click', () => {
@@ -1508,8 +1768,8 @@ export function mount(root, params) {
       const close0 = bal.referenceClosing;
       const y = Number(refY.split('-')[0]) + 1;
       const nextY = `${y}-${String(y + 1).slice(-2)}`;
-      const a = root.querySelector(`[data-open-year="${refY}"]`);
-      const b = root.querySelector(`[data-open-year="${nextY}"]`);
+      const a = openingInput(refY);
+      const b = openingInput(nextY);
       if (!a && !b) { toast(`搵唔到 ${refY} / ${nextY} 嘅欄位`, 'err'); return; }
       if (a) a.value = String(open0);
       if (b) b.value = String(Math.round(close0 * 100) / 100);
@@ -1523,7 +1783,7 @@ export function mount(root, params) {
       const pr = yearRange(prev);
       const prevRows = tx().filter(t => inRange(t.date, pr.start, pr.end));
       const val = Math.round((openingOf(prev, pr).amount + balance(prevRows)) * 100) / 100;
-      const el = root.querySelector(`[data-open-year="${yearKey}"]`);
+      const el = openingInput(yearKey);
       if (!el) return null;
       el.value = String(val);
       return val;
@@ -1563,11 +1823,17 @@ export function mount(root, params) {
   root.querySelectorAll('[data-unit-year]').forEach(s => s.addEventListener('change', () => { unitPick = s.value; refresh(); }));
   root.querySelectorAll('[data-scout-year]').forEach(s => s.addEventListener('change', () => { scoutPick = s.value; refresh(); }));
 
-  root.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', e => { e.stopPropagation(); go('#/finance/edit/' + b.dataset.edit); }));
+  root.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', e => {
+    e.stopPropagation();
+    const t = find('transactions', b.dataset.edit);
+    if (!t || !can('finance.edit', t)) { toast('你冇編輯呢筆帳目權限', 'err'); return; }
+    go('#/finance/edit/' + b.dataset.edit);
+  }));
   root.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', async e => {
     e.stopPropagation();
     const t = find('transactions', b.dataset.del);
-    if (await confirmDlg({ title: '刪除帳目', danger: true, okText: '確定刪除', message: `確定刪除「${esc(t?.item || '')}」${money(t?.amount)}？` })) {
+    if (!t || !can('finance.delete', t)) { toast('你冇刪除呢筆帳目權限', 'err'); return; }
+    if (await confirmDlg({ title: '刪除帳目', danger: true, okText: '確定刪除', message: `確定刪除「${t.item || ''}」${money(t.amount)}？` })) {
       remove('transactions', b.dataset.del); toast('已刪除', 'ok'); refresh();
     }
   }));
@@ -1576,6 +1842,7 @@ export function mount(root, params) {
   root.querySelectorAll('[data-unmark]').forEach(b => b.addEventListener('click', () => markFee(b.dataset.unmark, false)));
   // 即場為單一團員建立本年度團費（金額跟標準設定）
   root.querySelectorAll('[data-new-fee]').forEach(b => b.addEventListener('click', () => {
+    if (!can('fee.edit')) { toast('你冇建立團費紀錄權限', 'err'); return; }
     const period = feePeriod || feePeriodOf(todayISO());
     add('fees', {
       id: uid('f'), memberId: b.dataset.newFee, period, label: `${period} 團費`,
@@ -1600,14 +1867,21 @@ export function mount(root, params) {
   }));
   root.querySelectorAll('[data-receipt]').forEach(b => b.addEventListener('click', () => feeReceipt(b.dataset.receipt)));
   root.querySelectorAll('[data-delfee]').forEach(b => b.addEventListener('click', async () => {
+    if (!can('fee.edit')) { toast('你冇刪除收費項目權限', 'err'); return; }
     if (await confirmDlg({ title: '刪除收費項目', danger: true, okText: '確定刪除', message: '確定刪除此收費項目？' })) {
+      if (!can('fee.edit')) { toast('權限已變更，收費項目冇刪除', 'err'); return; }
       remove('fees', b.dataset.delfee); toast('已刪除', 'ok'); refresh();
     }
   }));
 
-  root.querySelectorAll('[data-editbudget]').forEach(b => b.addEventListener('click', () => budgetForm(find('budgets', b.dataset.editbudget))));
+  root.querySelectorAll('[data-editbudget]').forEach(b => b.addEventListener('click', () => {
+    if (!can('finance.edit')) { toast('你冇修改活動預算權限', 'err'); return; }
+    budgetForm(find('budgets', b.dataset.editbudget));
+  }));
   root.querySelectorAll('[data-delbudget]').forEach(b => b.addEventListener('click', async () => {
+    if (!can('finance.edit')) { toast('你冇刪除活動預算權限', 'err'); return; }
     if (await confirmDlg({ title: '刪除預算', danger: true, okText: '確定刪除', message: '確定刪除此活動預算？' })) {
+      if (!can('finance.edit')) { toast('權限已變更，活動預算冇刪除', 'err'); return; }
       remove('budgets', b.dataset.delbudget); toast('已刪除', 'ok'); refresh();
     }
   }));
@@ -1626,10 +1900,14 @@ export function mount(root, params) {
     const f = impFile.files && impFile.files[0];
     if (!f) return;
     try {
-      const text = await readImportFile(f);
-      root.querySelector('#imp-text').value = text;
-      toast(`已讀取 ${f.name}（${text.split(/\r?\n/).length} 行）`, 'ok');
-      showImportPreview(root);
+      if (/\.xlsx$/i.test(f.name || '') || /spreadsheetml/i.test(f.type || '')) {
+        await importExcelWorkbook(root, f);
+      } else {
+        const text = await readImportFile(f);
+        root.querySelector('#imp-text').value = text;
+        toast(`已讀取 ${f.name}（${text.split(/\r?\n/).length} 行）；而家先睇 dry-run`, 'ok');
+        showImportPreview(root);
+      }
     } catch (e) { toast(e.message || '讀取失敗', 'err'); }
     impFile.value = '';
   });
@@ -1637,7 +1915,10 @@ export function mount(root, params) {
   root.querySelectorAll('[data-act]').forEach(b => b.addEventListener('click', async () => {
     const act = b.dataset.act;
 
-    if (act === 'add') return go('#/finance/new');
+    if (act === 'add') {
+      if (!can('finance.create')) { toast('你冇新增財務帳目權限', 'err'); return; }
+      return go('#/finance/new');
+    }
     if (act === 'exp-csv') { const s = currentSelection(); exportLedgerCsv(s); toast(`已匯出 CSV（${s.label}）`, 'ok'); }
     if (act === 'exp-all-csv') { exportLedgerCsv({ list: applyFilters(tx()), label: '全部帳目', year: '', month: '', opening: null }); toast('已匯出全部帳目 CSV', 'ok'); }
     if (act === 'exp-word') { const s = currentSelection(); exportRangeWord(s); toast(`已輸出 Word（${s.label}）`, 'ok'); }
@@ -1649,6 +1930,11 @@ export function mount(root, params) {
     if (act === 'exp-report-csv') { exportLedgerCsv(); toast('已匯出逐筆帳目 CSV', 'ok'); }
 
     if (act === 'save-tx') {
+      const existing = b.dataset.id ? find('transactions', b.dataset.id) : null;
+      if (b.dataset.id ? (!existing || !can('finance.edit', existing)) : !can('finance.create')) {
+        toast('你冇權限' + (b.dataset.id ? '編輯呢筆帳目' : '新增帳目'), 'err');
+        return;
+      }
       const v = k => root.querySelector(k)?.value.trim() || '';
       const amount = Number(v('#t-amount'));
       const err = root.querySelector('#t-err');
@@ -1660,7 +1946,7 @@ export function mount(root, params) {
         amount, date: v('#t-date') || todayISO(),
         category: root.querySelector('#t-cat').value,
         item: v('#t-item'), method: root.querySelector('#t-method').value,
-        by: memberId, byName: memberId ? memberName(memberId) : (find('transactions', b.dataset.id)?.byName || ''),
+        by: memberId, byName: memberId ? memberName(memberId) : (existing?.byName || ''),
         ref: v('#t-ref'), receipt: root.querySelector('#t-receipt').checked, note: v('#t-note')
       };
       if (b.dataset.id) { update('transactions', b.dataset.id, patch); toast('已更新帳目', 'ok'); }
@@ -1669,21 +1955,23 @@ export function mount(root, params) {
     }
 
     if (act === 'save-settings-page') {
+      if (!can('finance.edit')) { toast('你冇修改全團財務設定權限', 'err'); return; }
       const patch = collectSettings(root);
       const negY = Object.keys(patch.openingBalances).find(y => patch.openingBalances[y] < 0);
       if (negY) {
         if (!(await confirmDlg({
           title: '期初結餘係負數？', okText: '確定用負數',
-          message: `你把 <b>${esc(negY)} 年度</b>嘅期初結餘填咗 <b>${money(patch.openingBalances[negY])}</b>。如果旅團本身有底數，通常應該填正數（＝上年度期末）。`
+          trustedMessageHtml: `你把 <b>${esc(negY)} 年度</b>嘅期初結餘填咗 <b>${esc(money(patch.openingBalances[negY]))}</b>。如果旅團本身有底數，通常應該填正數（＝上年度期末）。`
         }))) return;
       }
       const curY = currentFY();
       if (patch.openingBalances[curY] === undefined && !Object.keys(patch.openingBalances).length) {
         if (!(await confirmDlg({
           title: '全部年度嘅期初都留空？', okText: '確定留空',
-          message: `留空即係由系統自動結轉（${esc(curY)} 年度會用 ${esc(prevFYKey(curY))} 嘅期末）。如果上年度帳目未入齊，結餘會唔準。`
+          message: `留空即係由系統自動結轉（${curY} 年度會用 ${prevFYKey(curY)} 嘅期末）。如果上年度帳目未入齊，結餘會唔準。`
         }))) return;
       }
+      if (!can('finance.edit')) { toast('權限已變更，財務設定冇寫入', 'err'); return; }
       const db = load();
       db.settings = { ...db.settings, ...patch };
       commit();
@@ -1694,23 +1982,24 @@ export function mount(root, params) {
     }
 
     if (act === 'settings') {
+      if (!can('finance.edit')) { toast('你冇修改全團財務設定權限', 'err'); return; }
       const s = settings();
       const r = await modal({
         title: '設定', sub: '期初結餘、AGM 日期、收費預設',
-        body: `
+        trustedBodyHtml: `
           <div class="grid g-2" style="gap:12px">
             <div class="field"><label class="label">期初結餘</label>
-              <input class="input" id="s-open" type="number" value="${s.openingBalance || 0}"></div>
+              <input class="input" id="s-open" type="number" value="${esc(s.openingBalance || 0)}"></div>
             <div class="field"><label class="label">期初日期</label>
               <input class="input" id="s-opendate" value="${esc(s.openingBalanceDate || '')}" placeholder="YYYY-MM-DD"></div>
             <div class="field"><label class="label">童軍年度起始月</label>
-              <input class="input" id="s-fym" type="number" min="1" max="12" value="${s.scoutFYStartMonth || 4}"></div>
+              <input class="input" id="s-fym" type="number" min="1" max="12" value="${esc(s.scoutFYStartMonth || 4)}"></div>
             <div class="field"><label class="label">童軍年度起始日</label>
-              <input class="input" id="s-fyd" type="number" min="1" max="31" value="${s.scoutFYStartDay || 1}"></div>
+              <input class="input" id="s-fyd" type="number" min="1" max="31" value="${esc(s.scoutFYStartDay || 1)}"></div>
             <div class="field"><label class="label">團費（每位每年）</label>
-              <input class="input" id="s-fee" type="number" step="0.01" value="${standardFee()}"></div>
+              <input class="input" id="s-fee" type="number" step="0.01" value="${esc(standardFee())}"></div>
             <div class="field"><label class="label">海外／優惠團費</label>
-              <input class="input" id="s-feeovs" type="number" step="0.01" value="${overseasFee()}"></div>
+              <input class="input" id="s-feeovs" type="number" step="0.01" value="${esc(overseasFee())}"></div>
           </div>
           <div class="field mt-12"><label class="label">AGM 日期（每年唔同）</label>
             <div class="card" style="padding:10px 12px">
@@ -1729,13 +2018,17 @@ export function mount(root, params) {
           }) }]
       });
       if (r) {
+        if (!can('finance.edit')) { toast('權限已變更，財務設定冇寫入', 'err'); return; }
         const db = load();
         db.settings = { ...db.settings, ...r };
         commit(); toast('已儲存設定', 'ok'); refresh();
       }
     }
 
-    if (act === 'agm') return agmDialog();
+    if (act === 'agm') {
+      if (!can('finance.edit')) { toast('你冇修改 AGM 日期權限', 'err'); return; }
+      return agmDialog();
+    }
 
     if (act === 'fee-settings') return feeSettings();
     if (act === 'gen-fees') return genFees();
@@ -1751,13 +2044,32 @@ export function mount(root, params) {
       if (await copyText(text)) toast('已複製催繳名單', 'ok'); else toast('複製失敗', 'err');
     }
     if (act === 'mark-all-paid') {
+      if (!can('fee.mark')) { toast('你冇標記團費收款權限', 'err'); return; }
       const period = feePeriod || feePeriodOf(todayISO());
       const rows = feeStats(period).rows.filter(r => !r.paid);
       if (!rows.length) { toast('全部都已收', 'ok'); return; }
-      if (!(await confirmDlg({ title: '一鍵全部標記已收', danger: true, okText: '確定',
-        message: `會將 <b>${esc(period)}</b> 年度未收嘅 <b>${rows.length}</b> 位團員全部標記為今日已收，
-          並自動入帳合計 <b>${money(rows.reduce((a, r) => a + r.amount, 0))}</b>。` }))) return;
+      const total = rows.reduce((a, r) => a + r.amount, 0);
+      const ok = await confirmBulkOperation({
+        title: 'Dry-run：一鍵全部標記已收', actionLabel: `確認標記 ${rows.length} 人`, count: rows.length,
+        scope: `${period} 年度；所有目前未收團費`, requireText: `確認 ${rows.length}`, danger: true,
+        changes: [
+          { label: '未收人數', before: rows.length, after: 0 },
+          { label: '新增收入帳目', before: 0, after: rows.length },
+          { label: '新增收入總額', before: money(0), after: money(total) }
+        ],
+        preview: rows.slice(0, 100).map(r => ({ label: r.member.name, before: `未收 ${money(r.amount)}`, after: `今日已收；新增收入 ${money(r.amount)}` })),
+        warnings: ['呢個操作會同時改團費狀態同新增財務帳目；請確認人數及金額。'],
+        backupText: '會先保存現時帳目同團費收款表。', rollbackText: '完成後可即時還原成操作前狀態。',
+        readbackText: '會按新增帳目 ID 同已收狀態重新核對。'
+      });
+      if (!ok) return;
+      if (!can('fee.mark')) { toast('權限已變更，團費收款冇修改', 'err'); return; }
+      const db = load();
+      const before = { transactions: structuredClone(db.transactions || []), fees: structuredClone(db.fees || []) };
+      const snap = createSafetySnapshot(`${period} 團費全部已收前`, before, { kind: 'fee-mark-all', count: rows.length });
+      if (!snap.ok) { toast(`${snap.error}；為安全起見已取消`, 'err'); return; }
       let n = 0;
+      const addedIds = [];
       rows.forEach(r => {
         let id = r.id;
         if (!id) {
@@ -1772,10 +2084,22 @@ export function mount(root, params) {
           method: '現金', by: r.member.id, byName: r.member.name,
           note: '由「團費」收款表一鍵入帳', feeId: id, createdBy: current()?.username || ''
         }) : null;
+        if (t?.id) addedIds.push(t.id);
         update('fees', id, { paid: true, paidDate: todayISO(), method: '現金', txId: t?.id || '' });
         n++;
       });
-      toast(`已標記 ${n} 人已收並入帳`, 'ok'); refresh();
+      const found = new Set(tx().map(t => t.id));
+      const paidReadback = feeStats(period).rows.filter(r => r.paid).length;
+      if (addedIds.some(id => !found.has(id))) {
+        toast('完成後帳目核對唔一致；已保留安全快照，請先唔好儲存到後端', 'err'); return;
+      }
+      await undoable(`已標記 ${n} 人已收並入帳；已重新核對 ${paidReadback} 人`, () => {
+        const currentDb = load();
+        currentDb.transactions = structuredClone(before.transactions);
+        currentDb.fees = structuredClone(before.fees);
+        commit(); refresh(); toast('已還原全部標記前狀態', 'ok');
+      });
+      refresh();
     }
     if (act === 'exp-fee-word') { exportFeesWord(); toast('已輸出 Word', 'ok'); }
     if (act === 'exp-fee-csv') {
@@ -1790,14 +2114,22 @@ export function mount(root, params) {
       toast('已匯出團費收款表 CSV', 'ok');
     }
 
-    if (act === 'new-claim') return claimForm();
-    if (act === 'new-budget') return budgetForm(null);
+    if (act === 'new-claim') {
+      if (!can('claim.submit')) { toast('你冇提交收支申報權限', 'err'); return; }
+      return claimForm();
+    }
+    if (act === 'new-budget') {
+      if (!can('finance.edit')) { toast('你冇新增活動預算權限', 'err'); return; }
+      return budgetForm(null);
+    }
 
     if (act === 'do-import') {
       showImportPreview(root);
     }
 
     if (act === 'import-ref') {
+      if (!can('finance.create')) { toast('你冇新增財務帳目權限', 'err'); return; }
+      const maySetOpening = can('finance.edit');
       const ref = load().reference || {};
       if (!(ref.transactions || []).length) return;
       const feeRows = ref.transactions.filter(t => t.type === 'income' && /團費/.test(t.item || '') && matchMemberByName(t.byName || ''));
@@ -1812,8 +2144,8 @@ export function mount(root, params) {
         return `${y}-${String(y + 1).slice(-2)}`;      // 2026-27
       })();
       const r = await modal({
-        title: '匯入舊帳（參考資料）', sub: esc(ref.sheetLabel || 'Google Sheet'),
-        body: `
+        title: '匯入舊帳（參考資料）', sub: ref.sheetLabel || 'Google Sheet',
+        trustedBodyHtml: `
           <div class="kpi">
             <div><div class="k">帳目</div><div class="v">${ref.transactions.length} 筆</div></div>
             <div><div class="k">收入</div><div class="v">${money(inc)}</div></div>
@@ -1824,23 +2156,26 @@ export function mount(root, params) {
             呢張分頁係 <b>${esc(refYear)} 年度</b>（帳目由 ${esc(String((ref.transactions.map(t => t.date).sort()[0] || '').slice(0, 10)))} 至 ${esc(String((ref.transactions.map(t => t.date).sort().slice(-1)[0] || '').slice(0, 10)))}）。<br>
             <b>${money(ref.openingBalance || 0)}</b> 係 <b>${esc(refYear)}</b> 嘅<b>期初</b>；
             <b>${money(refClose)}</b> 係 ${esc(refYear)} 嘅<b>期末</b>，會結轉做 <b>${esc(nextYear)}</b> 嘅期初。</div></div>` : ''}
-          <label class="check mt-12"><input type="checkbox" id="ir-open" ${ref.openingBalance ? 'checked' : ''}>
+          ${maySetOpening ? `<label class="check mt-12"><input type="checkbox" id="ir-open" ${ref.openingBalance ? 'checked' : ''}>
             <b>${esc(refYear || '該年度')}</b> 期初結餘設為 <b>${money(ref.openingBalance || 0)}</b>（原表「上年度結餘」）</label>
           <label class="check mt-8"><input type="checkbox" id="ir-carry" ${nextYear ? 'checked' : ''} ${nextYear ? '' : 'disabled'}>
-            <b>${esc(nextYear)}</b> 期初結餘設為 <b>${money(refClose)}</b>（＝${esc(refYear || '上年度')} 期末，自動結轉）</label>
+            <b>${esc(nextYear)}</b> 期初結餘設為 <b>${money(refClose)}</b>（＝${esc(refYear || '上年度')} 期末，自動結轉）</label>`
+            : `<div class="note-box warn mt-12">你冇修改全團財務設定權限；今次只會匯入帳目，唔會改任何年度期初結餘。</div>`}
           <label class="check mt-8"><input type="checkbox" id="ir-fee" ${feeRows.length ? 'checked' : ''} ${feeRows.length ? '' : 'disabled'}>
             順便喺團費收款表標記已收（認得出 ${feeRows.length} 筆）</label>
           <label class="check mt-8"><input type="checkbox" id="ir-receipt" checked>保留單據連結（Google Drive）</label>
           <div class="hint mt-8">唔會刪除現有資料；匯入後可以逐筆核對、修改或刪除。</div>`,
         actions: [{ label: '取消', class: 'btn', value: null },
           { label: '確認匯入', class: 'btn-primary', onClick: el => ({
-            open: el.querySelector('#ir-open').checked,
-            carry: el.querySelector('#ir-carry').checked,
-            fee: el.querySelector('#ir-fee').checked,
-            receipt: el.querySelector('#ir-receipt').checked
+            open: maySetOpening && !!el.querySelector('#ir-open')?.checked,
+            carry: maySetOpening && !!el.querySelector('#ir-carry')?.checked,
+            fee: !!el.querySelector('#ir-fee')?.checked,
+            receipt: !!el.querySelector('#ir-receipt')?.checked
           }) }]
       });
       if (!r) return;
+      if (!can('finance.create')) { toast('權限已變更，匯入冇寫入', 'err'); return; }
+      const writeOpening = r.open && maySetOpening && can('finance.edit');
 
       let feeN = 0;
       ref.transactions.forEach(t => {
@@ -1866,7 +2201,7 @@ export function mount(root, params) {
       });
       /* 期初結餘要**逐年**寫入：呢張分頁嘅年度用原表「上年度結餘」，
          下一個年度用「期末」結轉過去（例：2025-26 期初 8,803.28 → 期末 7,846.64 → 2026-27 期初 7,846.64） */
-      if (r.open && ref.openingBalance && refYear) {
+      if (writeOpening && ref.openingBalance && refYear) {
         const db = load();
         const map = { ...(db.settings.openingBalances || {}) };
         map[refYear] = Number(ref.openingBalance);
@@ -1875,7 +2210,7 @@ export function mount(root, params) {
         commit();
       }
       toast(`已匯入 ${ref.transactions.length} 筆${feeN ? `，並標記 ${feeN} 人團費已收` : ''}${
-        r.open && refYear ? `，${refYear} 期初 ${money(ref.openingBalance || 0)}${r.carry && nextYear ? ` → ${nextYear} 期初 ${money(refClose)}` : ''}` : ''}`, 'ok');
+        writeOpening && refYear ? `，${refYear} 期初 ${money(ref.openingBalance || 0)}${r.carry && nextYear ? ` → ${nextYear} 期初 ${money(refClose)}` : ''}` : ''}`, 'ok');
       refresh();
     }
 
@@ -1897,14 +2232,16 @@ export function mount(root, params) {
 /* ---------- 動作 ---------- */
 /** 標記收款（順便自動入帳，唔使再入一次） */
 async function markFee(id, paid) {
+  if (!can('fee.mark')) { toast('你冇標記團費收款權限', 'err'); return; }
   const f = find('fees', id);
   if (!f) return;
   if (!paid) {
     // 取消收款：連相關入帳一齊撤銷（如果未刪）
     const linked = f.txId ? find('transactions', f.txId) : null;
     if (linked && !(await confirmDlg({ title: '取消收款', danger: true, okText: '確定取消',
-      message: `會將 <b>${esc(memberName(f.memberId))}</b> 嘅 ${esc(f.period || '')} 團費改回「未收」，
-        並撤銷相關帳目（${esc(linked.item)} ${money(linked.amount)}）。` }))) return;
+      trustedMessageHtml: `會將 <b>${esc(memberName(f.memberId))}</b> 嘅 ${esc(f.period || '')} 團費改回「未收」，
+        並撤銷相關帳目（${esc(linked.item)} ${esc(money(linked.amount))}）。` }))) return;
+    if (!can('fee.mark')) { toast('權限已變更，團費收款冇修改', 'err'); return; }
     update('fees', id, { paid: false, paidDate: '', method: '' });
     if (linked) { remove('transactions', linked.id); }
     update('fees', id, { txId: '' });
@@ -1915,12 +2252,12 @@ async function markFee(id, paid) {
 
   const r = await modal({
     title: '標記團費已收', sub: `${memberName(f.memberId)} · ${f.period || ''}`,
-    body: `
+    trustedBodyHtml: `
       <div class="grid g-2" style="gap:12px">
         <div class="field"><label class="label">收到金額</label>
-          <input class="input" id="m-amount" type="number" step="0.01" value="${Number(f.amount) || 0}"></div>
+          <input class="input" id="m-amount" type="number" step="0.01" value="${esc(Number(f.amount) || 0)}"></div>
         <div class="field"><label class="label">收款日期</label>
-          <input class="input" id="m-date" type="date" value="${todayISO()}"></div>
+          <input class="input" id="m-date" type="date" value="${esc(todayISO())}"></div>
         <div class="field"><label class="label">方式</label>
           <select class="select" id="m-method">${methods().map(m => `<option ${m === (f.method || '現金') ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select></div>
         <div class="field"><label class="label">收據 / 單號</label>
@@ -1942,6 +2279,7 @@ async function markFee(id, paid) {
       }) }]
   });
   if (!r) return;
+  if (!can('fee.mark')) { toast('權限已變更，團費收款冇修改', 'err'); return; }
 
   let txId = f.txId || '';
   const existing = txId ? find('transactions', txId) : null;
@@ -1965,6 +2303,7 @@ async function markFee(id, paid) {
 }
 
 async function genFees() {
+  if (!can('fee.edit')) { toast('你冇建立年度團費權限', 'err'); return; }
   const s = settings();
   const period = feePeriod || feePeriodOf(todayISO());
   const std = standardFee();
@@ -1974,7 +2313,7 @@ async function genFees() {
   const list = members().filter(m => m.status !== 'alumni' && !feeExempt(m)).sort((a, b) => String(a.name).localeCompare(String(b.name), 'zh-Hant'));
   const r = await modal({
     title: '開新年度團費', sub: '每人金額可以逐個改（新入團按月、海外團員 1/4 …）', wide: true,
-    body: `
+    trustedBodyHtml: `
       <div class="grid g-3" style="gap:12px">
         <div class="field"><label class="label">期數標籤</label>
           <input class="input" id="g-period" value="${esc(period)}"></div>
@@ -1982,8 +2321,8 @@ async function genFees() {
           <input class="input" id="g-due" type="date" value="${esc(defaultFeeDue(period))}"></div>
         <div class="field"><label class="label">快速套用</label>
           <div class="row gap-6">
-            <button class="btn btn-sm" type="button" data-fill="${std}">全部 ${money(std)}</button>
-            <button class="btn btn-sm" type="button" data-fill="${ovs}">全部 ${money(ovs)}</button>
+            <button class="btn btn-sm" type="button" data-fill="${esc(std)}">全部 ${money(std)}</button>
+            <button class="btn btn-sm" type="button" data-fill="${esc(ovs)}">全部 ${money(ovs)}</button>
           </div></div>
       </div>
       <div class="hint mt-8">金額之後都可以喺收款表逐個再改。已經有紀錄嘅團員會顯示「已建立」。</div>
@@ -1992,8 +2331,8 @@ async function genFees() {
         <tbody>${list.map(m => {
           const has = fees().some(f => f.memberId === m.id && f.period === period);
           return `<tr>
-            <td><label class="check" style="font-weight:400"><input type="checkbox" data-m="${m.id}" ${has ? 'disabled' : 'checked'}> ${esc(m.name)}</label></td>
-            <td><input class="input" type="number" data-amt="${m.id}" value="${std}" ${has ? 'disabled' : ''}></td>
+            <td><label class="check" style="font-weight:400"><input type="checkbox" data-m="${esc(m.id)}" ${has ? 'disabled' : 'checked'}> ${esc(m.name)}</label></td>
+            <td><input class="input" type="number" data-amt="${esc(m.id)}" value="${esc(std)}" ${has ? 'disabled' : ''}></td>
             <td class="xs">${has ? '<span class="badge b-ok">已建立</span>' : '<span class="badge b-warn">未建立</span>'}</td>
           </tr>`;
         }).join('')}</tbody></table></div>`,
@@ -2004,7 +2343,9 @@ async function genFees() {
         const items = [];
         el.querySelectorAll('input[data-m]').forEach(cb => {
           if (!cb.checked || cb.disabled) return;
-          const amt = Number(el.querySelector(`input[data-amt="${cb.dataset.m}"]`).value) || 0;
+          const amountInput = [...el.querySelectorAll('input[data-amt]')]
+            .find(input => input.dataset.amt === cb.dataset.m);
+          const amt = Number(amountInput?.value) || 0;
           items.push({ memberId: cb.dataset.m, amount: amt });
         });
         return { period: period2, due, items };
@@ -2016,6 +2357,7 @@ async function genFees() {
     }
   });
   if (!r) return;
+  if (!can('fee.edit')) { toast('權限已變更，年度團費冇建立', 'err'); return; }
   let n = 0;
   r.items.forEach(it => {
     if (fees().some(f => f.memberId === it.memberId && f.period === r.period)) return;
@@ -2033,15 +2375,16 @@ async function genFees() {
 
 /* ---------- 團費金額設定（唔係寫死） ---------- */
 async function feeSettings() {
+  if (!can('fee.edit')) { toast('你冇修改團費設定權限', 'err'); return; }
   const s = settings();
   const r = await modal({
     title: '團費金額設定', sub: '改完之後，新建立嘅紀錄、未建立嘅團員都會用新金額（舊紀錄唔會自動改）',
-    body: `
+    trustedBodyHtml: `
       <div class="grid g-2" style="gap:12px">
         <div class="field"><label class="label">標準團費（每位團員每年）</label>
-          <input class="input" id="f-std" type="number" step="0.01" value="${standardFee(feePeriod)}"></div>
+          <input class="input" id="f-std" type="number" step="0.01" value="${esc(standardFee(feePeriod))}"></div>
         <div class="field"><label class="label">海外／優惠團費</label>
-          <input class="input" id="f-ovs" type="number" step="0.01" value="${overseasFee()}"></div>
+          <input class="input" id="f-ovs" type="number" step="0.01" value="${esc(overseasFee())}"></div>
         <div class="field"><label class="label">預設到期日</label>
           <input class="input" id="f-due" value="${esc(s.feeDueTemplate || '{y}-09-30')}" placeholder="{y}-09-30"></div>
         <div class="field"><label class="label">年度標籤（顯示用）</label>
@@ -2060,6 +2403,7 @@ async function feeSettings() {
       }) }]
   });
   if (!r) return;
+  if (!can('fee.edit')) { toast('權限已變更，團費設定冇寫入', 'err'); return; }
   const { apply, ...settingsPatch } = r;
   const db = load();
   db.settings = { ...db.settings, ...settingsPatch };
@@ -2083,22 +2427,23 @@ async function feeSettings() {
 
 /** 改單一團員嘅團費金額（未建立 → 即場建立；已收 → 連帳目一齊更新） */
 async function editFeeAmount(memberId) {
+  if (!can('fee.edit')) { toast('你冇修改團費金額權限', 'err'); return; }
   const period = feePeriod || feePeriodOf(todayISO());
   const f = feeOf(memberId, period);
   const m = member(memberId) || {};
   const std = standardFee(), ovs = overseasFee();
   const r = await modal({
     title: '團費金額', sub: `${m.name || ''} · ${period}`,
-    body: `
+    trustedBodyHtml: `
       <div class="row gap-6 wrap mb-12">
-        <button class="btn btn-sm" type="button" data-quick="${std}">標準 ${money(std)}</button>
-        ${ovs !== std ? `<button class="btn btn-sm" type="button" data-quick="${ovs}">海外 ${money(ovs)}</button>` : ''}
-        <button class="btn btn-sm" type="button" data-quick="${Math.round(std / 12)}">按月 ${money(Math.round(std / 12))}</button>
-        <button class="btn btn-sm" type="button" data-quick="${Math.round(std / 2)}">半年 ${money(Math.round(std / 2))}</button>
+        <button class="btn btn-sm" type="button" data-quick="${esc(std)}">標準 ${money(std)}</button>
+        ${ovs !== std ? `<button class="btn btn-sm" type="button" data-quick="${esc(ovs)}">海外 ${money(ovs)}</button>` : ''}
+        <button class="btn btn-sm" type="button" data-quick="${esc(Math.round(std / 12))}">按月 ${money(Math.round(std / 12))}</button>
+        <button class="btn btn-sm" type="button" data-quick="${esc(Math.round(std / 2))}">半年 ${money(Math.round(std / 2))}</button>
       </div>
       <div class="grid g-2" style="gap:12px">
         <div class="field"><label class="label">金額</label>
-          <input class="input" id="ef-amt" type="number" step="0.01" value="${f ? f.amount : std}"></div>
+          <input class="input" id="ef-amt" type="number" step="0.01" value="${esc(f ? f.amount : std)}"></div>
         <div class="field"><label class="label">到期日</label>
           <input class="input" id="ef-due" type="date" value="${esc(f?.due || defaultFeeDue(period))}"></div>
       </div>
@@ -2115,6 +2460,7 @@ async function editFeeAmount(memberId) {
       b.addEventListener('click', () => { el.querySelector('#ef-amt').value = b.dataset.quick; }))
   });
   if (!r) return;
+  if (!can('fee.edit')) { toast('權限已變更，團費金額冇寫入', 'err'); return; }
   let id = f?.id;
   if (!id) {
     const created = add('fees', {
@@ -2136,15 +2482,16 @@ async function editFeeAmount(memberId) {
 }
 
 async function addFee() {
+  if (!can('fee.edit')) { toast('你冇新增收費項目權限', 'err'); return; }
   const r = await modal({
     title: '新增收費項目',
-    body: `<div class="field"><label class="label">團員</label><select class="select" id="a-member">
-        ${members().map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select></div>
+    trustedBodyHtml: `<div class="field"><label class="label">團員</label><select class="select" id="a-member">
+        ${members().map(m => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join('')}</select></div>
       <div class="grid g-2 mt-12" style="gap:12px">
         <div class="field"><label class="label">項目名稱</label><input class="input" id="a-label" value="${esc(feePeriodOf(todayISO()))} 團費" placeholder="例：2026-27 團費"></div>
-        <div class="field"><label class="label">金額</label><input class="input" id="a-amount" type="number" value="${settings().feePerYear || 360}"></div>
+        <div class="field"><label class="label">金額</label><input class="input" id="a-amount" type="number" value="${esc(settings().feePerYear || 360)}"></div>
         <div class="field"><label class="label">期數</label><input class="input" id="a-period" value="${esc(feePeriodOf(todayISO()))}" placeholder="2026-27"></div>
-        <div class="field"><label class="label">到期日</label><input class="input" id="a-due" value="${todayISO()}"></div>
+        <div class="field"><label class="label">到期日</label><input class="input" id="a-due" value="${esc(todayISO())}"></div>
       </div>`,
     actions: [{ label: '取消', class: 'btn', value: null },
       { label: '新增', class: 'btn-primary', onClick: el => ({
@@ -2155,74 +2502,53 @@ async function addFee() {
         due: el.querySelector('#a-due').value
       }) }]
   });
-  if (r) { add('fees', { id: uid('f'), ...r, paid: false }); toast('已新增收費項目', 'ok'); refresh(); }
+  if (r) {
+    if (!can('fee.edit')) { toast('權限已變更，收費項目冇新增', 'err'); return; }
+    add('fees', { id: uid('f'), ...r, paid: false }); toast('已新增收費項目', 'ok'); refresh();
+  }
 }
 
-/** 手機快速記帳：公開收集頁連結 + QR + 送出網址設定 */
+/** 已登入團員入口 QR。舊匿名手機記帳 endpoint 已刪除。 */
 export async function entryShareDialog() {
-  const db = load();
-  const code = db.unitCode;
-  const cur = db.settings?.publicEntry?.submitUrl || db.sync?.url || '';
+  const code = load().unitCode;
   const url = publicPageUrl('members.html', { u: code });
-
-  const r = await modal({
-    title: '團員入口（掃一次齊晒）',
-    sub: '請只派呢一條。入去可以影單據、借物資、睇通告／行事曆／試卷',
-    wide: true,
-    body: `
-      <div class="grid g-2" style="gap:16px">
-        <div class="center">
-          <div class="qr-box" style="width:210px;margin:0 auto">${qrSvg(url, 5, 2)}</div>
-          <div class="xs faint mt-8">印出嚟貼喺團址／WhatsApp 群，成員掃 QR 就填得</div>
-        </div>
-        <div class="col gap-10">
-          <div class="field"><label class="label">公開收集頁網址</label>
-            <input class="input" id="es-url" value="${esc(url)}" readonly></div>
-          <button class="btn btn-sm btn-block" data-es="copy">${icon('copy', 15)} 複製網址</button>
-          <button class="btn btn-sm btn-block" data-es="svg">${icon('download', 15)} 下載 QR Code（SVG）</button>
-          <button class="btn btn-sm btn-block" data-es="print">${icon('print', 15)} 列印 QR 海報</button>
-          <div class="divider"></div>
-          <div class="field"><label class="label">送出目的地（Apps Script /exec 網址，可留空）</label>
-            <input class="input" id="es-submit" value="${esc(cur)}" placeholder="https://script.google.com/macros/s/…/exec">
-            <div class="hint">填咗：成員一送出就直接寫入你嘅總 Sheet（「待批申報」分頁）。
-              留空：紀錄只會存喺成員自己部手機，要佢按「複製內容」傳送畀司庫。</div></div>
-          <label class="check sm"><input type="checkbox" id="es-samelink" checked> 同「總表同步」共用同一個 Apps Script</label>
-        </div>
-      </div>`,
-    actions: [{ label: '關閉', class: 'btn', value: null },
-      { label: '儲存設定', class: 'btn-primary', onClick: el => ({ submit: el.querySelector('#es-submit').value.trim(), same: el.querySelector('#es-samelink').checked }) }],
+  await modal({
+    title: '團員登入入口',
+    sub: 'QR 只帶成員去登入；未登入者唔會收到財務、通告或其他支部資料',
+    trustedBodyHtml: `<div class="center">
+      <div class="qr-box" style="width:220px;margin:0 auto">${qrSvg(url, 5, 2)}</div>
+      <div class="xs faint mt-8">掃描後仍要用個人 YMIS／電郵同密碼登入</div>
+      <div class="field mt-16"><label class="label">登入網址</label><input class="input" value="${esc(url)}" readonly></div>
+      <div class="row gap-8 wrap mt-12" style="justify-content:center">
+        <button class="btn btn-sm" data-es="copy">${icon('copy', 15)} 複製網址</button>
+        <button class="btn btn-sm" data-es="svg">${icon('download', 15)} 下載 QR</button>
+        <button class="btn btn-sm" data-es="print">${icon('print', 15)} 列印</button>
+      </div>
+      <div class="note-box info mt-16"><div class="sm">舊 <code>entry.html</code> 匿名收支申報已停用。收支申報目前只可在已登入行政介面提交；日後團員個人申報會使用綁定 session 的專用 action。</div></div>
+    </div>`,
+    actions: [{ label: '關閉', class: 'btn', value: null }],
     onMount: el => {
-      el.querySelectorAll('[data-es]').forEach(b => b.addEventListener('click', async () => {
-        const a = b.dataset.es;
-        if (a === 'copy') { if (await copyText(url)) toast('已複製網址', 'ok'); }
-        if (a === 'svg') { downloadQrSvg(url, `手機記一筆QR_${code}.svg`); toast('已下載 QR Code', 'ok'); }
-        if (a === 'print') {
-          printDoc({
-            title: '手機記一筆', org: profile().name,
-            bodyHtml: `<div class="doc-head"><div class="doc-title">用手機記一筆</div>
-              <div class="doc-sub">${esc(profile().name || '')}</div></div>
-              <div class="center" style="margin:18px 0">${qrSvg(url, 6, 3)}</div>
-              <p class="center">用手機相機掃上面嘅 QR Code，就可以影低單據、揀欄目，直接交畀司庫。</p>
-              <p class="center xs">${esc(url)}</p>`
-          });
-        }
+      el.querySelectorAll('[data-es]').forEach(button => button.addEventListener('click', async () => {
+        const action = button.dataset.es;
+        if (action === 'copy' && await copyText(url)) toast('已複製登入網址', 'ok');
+        if (action === 'svg') { downloadQrSvg(url, `團員登入QR_${code}.svg`); toast('已下載 QR Code', 'ok'); }
+        if (action === 'print') printDoc({
+          title: '團員登入入口', org: profile().name,
+          trustedBodyHtml: `<div class="doc-head"><div class="doc-title">團員登入入口</div><div class="doc-sub">${esc(profile().name || '')}</div></div>
+            <div class="center" style="margin:18px 0">${qrSvg(url, 6, 3)}</div>
+            <p class="center">掃描後請用個人身份登入；QR 本身唔係資料閱讀憑證。</p><p class="center xs">${esc(url)}</p>`
+        });
       }));
     }
   });
-  if (!r) return;
-  const d2 = load();
-  d2.settings = { ...(d2.settings || {}), publicEntry: { ...(d2.settings?.publicEntry || {}), submitUrl: r.submit } };
-  if (r.same && r.submit) d2.sync = { ...(d2.sync || {}), url: r.submit };
-  commit();
-  toast('已儲存公開收集設定', 'ok');
-  refresh();
 }
 
 export async function claimForm(preset = null) {
+  if (!can('claim.submit')) { toast('你冇提交收支申報權限', 'err'); return; }
   const state = { photos: [] };
   const r = await modal({
     title: '收支申報', sub: '取代 Google Form：影低單據、揀欄目就交得，等批核自動入帳', wide: true,
-    body: `<div class="grid g-2" style="gap:12px">
+    trustedBodyHtml: `<div class="grid g-2" style="gap:12px">
         <div class="field" style="grid-column:1/-1">
           ${photoPicker('c-photos', { label: '單據相片（手機可以直接影相）', hint: '相片會自動壓縮（最長邊 1400px）。可以影多張：收據正本、單據、付款截圖都得。' })}
         </div>
@@ -2230,14 +2556,14 @@ export async function claimForm(preset = null) {
           <select class="select" id="c-type"><option value="expense">支出（我墊支 / 已付）</option><option value="income">收入（代收 / 賣物）</option></select></div>
         <div class="field"><label class="label">金額 <span class="req">*</span></label>
           <input class="input" id="c-amount" type="number" step="0.01" placeholder="0.00"></div>
-        <div class="field"><label class="label">日期</label><input class="input" id="c-date" value="${todayISO()}"></div>
+        <div class="field"><label class="label">日期</label><input class="input" id="c-date" value="${esc(todayISO())}"></div>
         <div class="field"><label class="label">分類</label><select class="select" id="c-cat">
           ${categories('expense').map(c => `<option>${esc(c)}</option>`).join('')}</select></div>
         <div class="field" style="grid-column:1/-1"><label class="label">項目 <span class="req">*</span></label>
           <input class="input" id="c-item" placeholder="例：團購物資運輸費"></div>
         <div class="field"><label class="label">申報人</label>
           <select class="select" id="c-member"><option value="">— 我（${esc(current()?.name || '')}）—</option>
-            ${members().map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join('')}</select></div>
+            ${members().map(m => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join('')}</select></div>
         <div class="field"><label class="label">單據</label>
           <label class="check" style="height:38px"><input type="checkbox" id="c-receipt"> 我有收據（會後補交）</label></div>
         <div class="field" style="grid-column:1/-1"><label class="label">備註</label><input class="input" id="c-note"></div>
@@ -2263,6 +2589,7 @@ export async function claimForm(preset = null) {
     onMount: el => bindPhotoPicker(el, 'c-photos', state, { max: 6 })
   });
   if (!r) return;
+  if (!can('claim.submit')) { toast('權限已變更，收支申報冇提交', 'err'); return; }
   /* 相片唔好入 db JSON（v2.3.0 體積治理）：第一時間經後端上 Drive，
      db 入面淨係留連結。以前 dataURL（每張可達 300KB+）會將「資料庫」
      分頁撐爆 9MB，成個同步寫唔入。
@@ -2283,6 +2610,7 @@ export async function claimForm(preset = null) {
       }
     } catch { /* 本地存做後備 */ }
   }
+  if (!can('claim.submit')) { toast('權限已變更，收支申報冇提交', 'err'); return; }
   add('claims', {
     id: cid, ...r, photos,
     photosOnDrive,
@@ -2297,8 +2625,16 @@ export async function claimForm(preset = null) {
 async function claimAction(action, id) {
   const c = find('claims', id);
   if (!c) return;
+  if (['approve', 'reject', 'del'].includes(action) && (c.status || 'pending') !== 'pending') {
+    toast('呢份申報已經處理，唔可以再修改', 'err'); return;
+  }
+  if ((action === 'approve' || action === 'reject') && !can('claim.review')) {
+    toast('你冇批核權限', 'err'); return;
+  }
+  if (action === 'del' && (!can('claim.submit') || c.requestedBy !== current()?.username)) {
+    toast('你只可以刪除自己仍待批嘅申報', 'err'); return;
+  }
   if (action === 'approve') {
-    if (!can('claim.review')) { toast('你冇批核權限', 'err'); return; }
     add('transactions', {
       id: uid('t'), date: c.date, type: c.type, category: c.category || '其他', item: c.item,
       amount: c.amount, method: c.method || '現金', by: c.memberId, byName: c.byName,
@@ -2309,33 +2645,42 @@ async function claimAction(action, id) {
     toast('已批核並自動入帳', 'ok'); refresh();
   }
   if (action === 'reject') {
-    const r = await modal({ title: '拒絕申報', body: `<div class="field"><label class="label">原因</label>
+    const r = await modal({ title: '拒絕申報', trustedBodyHtml: `<div class="field"><label class="label">原因</label>
       <input class="input" id="q-note" placeholder="例：單據不足"></div>`,
       actions: [{ label: '取消', class: 'btn', value: null }, { label: '確定拒絕', class: 'btn-danger', onClick: el => el.querySelector('#q-note').value }] });
     if (r !== null && r !== undefined) {
+      if (!can('claim.review')) { toast('權限已變更，申報冇拒絕', 'err'); return; }
+      const latest = find('claims', id);
+      if (!latest || (latest.status || 'pending') !== 'pending') { toast('呢份申報已經處理', 'err'); return; }
       update('claims', id, { status: 'rejected', note: (c.note ? c.note + ' · ' : '') + (r || '已拒絕'), reviewedBy: current()?.username || '', reviewedAt: nowStamp() });
       toast('已拒絕', 'ok'); refresh();
     }
   }
   if (action === 'del') {
     if (await confirmDlg({ title: '刪除申報', danger: true, okText: '確定刪除', message: '確定刪除此申報？' })) {
+      const latest = find('claims', id);
+      if (!latest || !can('claim.submit') || latest.requestedBy !== current()?.username
+          || (latest.status || 'pending') !== 'pending') {
+        toast('權限或申報狀態已變更，冇刪除', 'err'); return;
+      }
       remove('claims', id); toast('已刪除', 'ok'); refresh();
     }
   }
 }
 
 async function budgetForm(b) {
+  if (!can('finance.edit')) { toast(`你冇${b ? '修改' : '新增'}活動預算權限`, 'err'); return; }
   const r = await modal({
     title: b ? '編輯活動預算' : '新增活動預算', wide: true,
-    body: `<div class="grid g-2" style="gap:12px">
+    trustedBodyHtml: `<div class="grid g-2" style="gap:12px">
         <div class="field"><label class="label">活動名稱 <span class="req">*</span></label>
           <input class="input" id="b-activity" value="${esc(b?.activity || '')}"></div>
         <div class="field"><label class="label">活動日期</label><input class="input" id="b-date" value="${esc(b?.date || '')}"></div>
-        <div class="field"><label class="label">預計收入</label><input class="input" id="b-income" type="number" value="${b?.incomePlanned ?? 0}"></div>
+        <div class="field"><label class="label">預計收入</label><input class="input" id="b-income" type="number" value="${esc(b?.incomePlanned ?? 0)}"></div>
         <div class="field"><label class="label">備註</label><input class="input" id="b-note" value="${esc(b?.note || '')}"></div>
       </div>
       <div class="field mt-12"><label class="label">支出項目（每行：名稱, 預算, 實際）</label>
-        <textarea class="textarea" id="b-items" style="font-family:var(--mono);font-size:12.5px">${(b?.items || []).map(i => `${i.name}, ${i.planned}, ${i.actual}`).join('\n') || '營地費用, 1800, 0\n交通, 600, 0\n膳食, 1500, 0'}</textarea></div>`,
+        <textarea class="textarea" id="b-items" style="font-family:var(--mono);font-size:12.5px">${esc((b?.items || []).map(i => `${i.name}, ${i.planned}, ${i.actual}`).join('\n') || '營地費用, 1800, 0\n交通, 600, 0\n膳食, 1500, 0')}</textarea></div>`,
     actions: [{ label: '取消', class: 'btn', value: null },
       { label: '儲存', class: 'btn-primary', onClick: el => {
         if (!el.querySelector('#b-activity').value.trim()) return false;
@@ -2350,6 +2695,7 @@ async function budgetForm(b) {
       } }]
   });
   if (!r) return;
+  if (!can('finance.edit')) { toast('權限已變更，活動預算冇寫入', 'err'); return; }
   if (b) update('budgets', b.id, r); else add('budgets', { id: uid('b'), ...r });
   toast('已儲存預算', 'ok'); refresh();
 }
@@ -2363,7 +2709,7 @@ function exportFeesWord() {
     <td>${esc(r.method || '')}</td><td>${esc(r.ref || '')}</td></tr>`).join('');
   toWord({
     filename: `團費收款表_${period}_${stamp()}.doc`, title: `團費收款表 ${period}`, org: profile().name,
-    bodyHtml: `<div class="doc-head"><div class="doc-title">團費收款表</div>
+    trustedBodyHtml: `<div class="doc-head"><div class="doc-title">團費收款表</div>
       <div class="doc-sub">${esc(profile().name || '')} · ${esc(period)} 年度 · 每人 ${nf(standardFee(period), 2)} 元 · 列印日期 ${esc(todayISO())}</div></div>
       <div class="kpi">
         <div><div class="k">應收</div><div class="v">${nf(g.expected, 2)}</div></div>
@@ -2384,7 +2730,7 @@ function feeReceipt(id) {
   const p = profile();
   printDoc({
     title: `團費收據 ${m.name || ''}`, org: p.name || '',
-    bodyHtml: `
+    trustedBodyHtml: `
       <div class="doc-head"><div class="doc-org">${esc(p.name || '')}</div>
         <div class="doc-title">團費收據</div>
         <div class="doc-sub">Receipt for Membership Fee</div></div>
@@ -2429,8 +2775,8 @@ function ledgerDocBody(sel, { withMethod = true } = {}) {
     head, acc, inc, exp, count: list.length,
     body: `${head}${acc}<table>
       <thead><tr><th>日期</th><th>項目</th><th>分類</th>${withMethod ? '<th>方式</th><th>經手人</th>' : ''}<th class="num">收入</th><th class="num">支出</th></tr></thead>
-      <tbody>${rows || `<tr><td colspan="${withMethod ? 7 : 5}">（此期間冇帳目）</td></tr>`}</tbody>
-      <tfoot><tr><td colspan="${withMethod ? 5 : 3}">合計</td><td class="num">${nf(inc, 2)}</td><td class="num">${nf(exp, 2)}</td></tr></tfoot></table>`
+      <tbody>${rows || `<tr><td colspan="${esc(withMethod ? 7 : 5)}">（此期間冇帳目）</td></tr>`}</tbody>
+      <tfoot><tr><td colspan="${esc(withMethod ? 5 : 3)}">合計</td><td class="num">${nf(inc, 2)}</td><td class="num">${nf(exp, 2)}</td></tr></tfoot></table>`
   };
 }
 
@@ -2438,14 +2784,14 @@ function exportRangeWord(sel = currentSelection()) {
   const d = ledgerDocBody(sel);
   toWord({
     filename: `帳目_${sel.label.replace(/\s/g, '')}_${stamp()}.doc`, title: '帳目紀錄', org: profile().name,
-    bodyHtml: d.body
+    trustedBodyHtml: d.body
   });
 }
 function exportRangePdf(sel = currentSelection()) {
   const d = ledgerDocBody(sel, { withMethod: false });
   printDoc({
     title: '帳目紀錄', org: profile().name,
-    bodyHtml: d.body + `<div class="foot"><span>司庫簽署：____________</span><span>${todayISO()}</span></div>`
+    trustedBodyHtml: d.body + `<div class="foot"><span>司庫簽署：____________</span><span>${todayISO()}</span></div>`
   });
 }
 

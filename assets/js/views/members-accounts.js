@@ -21,7 +21,8 @@ import { load } from '../lib/store.js';
 import {
   ROLES, accounts, accountById, can, canChangePasswordOf, canManageRole,
   createAccountServer, changeOwnPassword, changeUsername, setAccountActive,
-  deleteAccountServer, resetAccountPasswordServer,
+  deleteAccountServer, resetAccountPasswordServer, restoreAccountServer,
+  openMemberAccount, accountForMember,
   current, currentRole, isMe, displayName, RESERVED_USERNAMES, TEMP_PASSWORD,
   setMemberIdentity, setMemberHubPassword, canClaimChief
 } from '../lib/auth.js';
@@ -30,7 +31,8 @@ import {
 } from '../lib/model.js';
 import { esc, icon, modal, confirmDlg, toast } from '../lib/util.js';
 import { go } from '../lib/router.js';
-import { pageHead, tabs, empty, stat, noteBox } from './ui.js';
+import { pageHead, tabs, empty, stat, noteBoxHtml } from './ui.js';
+import { rolesAscending } from '../lib/branch-config.js';
 
 /* 「用戶與身份」四個分頁 —— 名冊／身份與帳號／權限總表／生日表。
    由 members.js 同呢度共用（tabs() 掣由 main.js 全域綁去 #/members/<tab>）。 */
@@ -55,11 +57,11 @@ const PASSWORD_RULES = [
    身份與帳號
    ============================================================ */
 export function identityTabView() {
-  const list = accounts();                     // 舊版個人帳戶（向下兼容）
+  const list = accounts().filter(a => a.source !== 'unified-users'); // 真正舊版本機帳戶先放兼容區
   const all = activeMembers();
   const cnt = k => all.filter(m => identityOf(m) === k).length;
   const c = chief();
-  const rows = ['chief', 'leader', 'exco', 'member'].map(k => `
+  const rows = rolesAscending({ includeHidden: false }).slice().reverse().map(({ id: k }) => `
       <div class="card">
         <div class="card-head">
           <div class="row gap-10">
@@ -90,12 +92,12 @@ export function identityTabView() {
     ${stat('團員', String(cnt('member')), '入團員入口')}
   </div>
 
-  ${noteBox(`<b>身份即帳號（2026-09-24 定案）：</b>唔會再有「領袖共用帳戶」或者「執行委員會帳號」——
+  ${noteBoxHtml(`<b>身份即帳號（2026-09-24 定案）：</b>唔會再有「領袖共用帳戶」或者「執行委員會帳號」——
     每個人都係名冊入面嘅<b>一條紀錄</b>，登入代號係佢自己嘅<b>電郵 / 自訂帳號 / YMIS</b>，
     密碼就係佢自己嗰個。要換權限＝喺「用戶名冊」改<b>身份</b>（換屆唔使開新帳戶、唔使夾密碼）。
     <br>團長：每個旅團<b>永遠只有一位</b>，最高權限，可以轉移。
-    <div class="xs mt-8 faint">⚠ 呢度<b>改密碼／改身份</b>之後，一定要撳頂部「<b>儲存到後端</b>」——
-    未寫入後端之前，對方喺第二部機（甚至第二個視窗）都<b>登唔到</b>。</div>`, 'brand')}
+    <div class="xs mt-8 faint">開戶／重設密碼／停用／復原會直接寫入同一 Unified Sheet 的 <b>Users</b>；
+    唔會先留一份只在呢部機可用嘅帳戶。</div>`, 'brand')}
   <div class="mt-16"></div>
 
   ${!c && canClaimChief() ? `<div class="note-box warn mb-16">${icon('alert', 15)}<div>
@@ -129,8 +131,11 @@ export function identityTabView() {
 function personRow(m) {
   const ident = identityOf(m);
   const accId = 'member:' + m.id;
-  const editable = canChangePasswordOf(accId);
-  const me = current()?.memberId === m.id;
+  const account = accountForMember(m);
+  const opened = !!account;
+  const active = opened && account.active !== false;
+  const editable = active && canChangePasswordOf(accId);
+  const me = current()?.memberId === m.id || (current()?.ymis && String(current().ymis) === String(m.ymis || ''));
   const login = loginIdOf(m);
   return `
   <div class="list-item">
@@ -138,13 +143,18 @@ function personRow(m) {
     <div class="li-main">
       <div class="li-t">${esc(m.name)} ${me ? '<span class="tag">你</span>' : ''}${m.role ? ` <span class="xs faint">${esc(m.role)}</span>` : ''}</div>
       <div class="li-s">登入 <b class="mono">${esc(login || '（未設定 —— 去「編輯」填電郵／YMIS）')}</b>
-        ${m.hubPw?.hash || m.hubPassword ? '' : ' · <span class="tag">未設密碼（首次 1234）</span>'}
-        ${m.hubPwUpdatedAt ? ` · ${esc(m.hubPwUpdatedAt)} 改過密碼` : ''}</div>
+        ${!opened ? ' · <span class="tag">未開戶</span>' : active
+          ? ' · <span class="tag" style="color:var(--ok)">Unified Users 已開戶</span>'
+          : ' · <span class="tag" style="background:var(--danger-bg);color:var(--danger)">已停用</span>'}</div>
     </div>
     <div class="row gap-4">
-      ${editable ? `<button class="btn btn-xs" data-mpw="${m.id}">${icon('key', 13)} 密碼</button>` : ''}
-      ${can('member.edit') ? `<button class="btn btn-xs btn-ghost" data-medit="${m.id}" title="編輯 / 改身份">${icon('edit', 13)}</button>` : ''}
-      ${can('admin.chief') && ident !== 'chief' ? `<button class="btn btn-xs btn-ghost" data-mchief="${m.id}" title="設為團長（轉移）">${icon('sparkle', 13)}</button>` : ''}
+      ${!opened && can('admin.accounts')
+        ? `<button class="btn btn-xs btn-primary" data-mopen="${esc(m.id)}">${icon('key', 13)} 直接開戶</button>` : ''}
+      ${opened && !active && can('admin.accounts')
+        ? `<button class="btn btn-xs" data-mrestore="${esc(m.id)}">${icon('refresh', 13)} 復原</button>` : ''}
+      ${editable ? `<button class="btn btn-xs" data-mpw="${esc(m.id)}">${icon('key', 13)} 重設密碼</button>` : ''}
+      ${can('member.edit') ? `<button class="btn btn-xs btn-ghost" data-medit="${esc(m.id)}" title="編輯 / 改身份">${icon('edit', 13)}</button>` : ''}
+      ${can('admin.chief') && ident !== 'chief' ? `<button class="btn btn-xs btn-ghost" data-mchief="${esc(m.id)}" title="設為團長（轉移）">${icon('sparkle', 13)}</button>` : ''}
     </div>
   </div>`;
 }
@@ -161,11 +171,11 @@ function accountRow(a) {
         ${a.mustChangePw || a.defaultPw ? ` · <span class="tag">要改密碼</span>` : ''}${a.pwUpdatedAt ? ` · ${esc(a.pwUpdatedAt)} 改過密碼` : ''}</div>
     </div>
     <div class="row gap-4">
-      ${editable ? `<button class="btn btn-xs" data-pw="${a.id}">${icon('key', 13)} 密碼</button>
-        <button class="btn btn-xs btn-ghost" data-uname="${a.id}">${icon('user', 13)}</button>` : `<span class="xs faint">冇權限</span>`}
+      ${editable ? `<button class="btn btn-xs" data-pw="${esc(a.id)}">${icon('key', 13)} 密碼</button>
+        <button class="btn btn-xs btn-ghost" data-uname="${esc(a.id)}">${icon('user', 13)}</button>` : `<span class="xs faint">冇權限</span>`}
       ${canManageRole(a.role) && !me ? `
-        <button class="btn btn-xs btn-ghost" data-toggle="${a.id}">${a.active === false ? '啟用' : '停用'}</button>
-        <button class="btn btn-xs btn-ghost" data-del="${a.id}">${icon('trash', 13)}</button>` : ''}
+        <button class="btn btn-xs btn-ghost" data-toggle="${esc(a.id)}">${a.active === false ? '啟用' : '停用'}</button>
+        <button class="btn btn-xs btn-ghost" data-del="${esc(a.id)}">${icon('trash', 13)}</button>` : ''}
     </div>
   </div>`;
 }
@@ -176,13 +186,32 @@ function accountRow(a) {
 export function mountAccountsTab(root, refresh) {
   root.querySelectorAll('[data-go]').forEach(el => el.addEventListener('click', () => go(el.dataset.go)));
 
-  /* 名冊個人操作（身份與帳號分頁）：密碼 / 編輯 / 設為團長 */
+  /* 名冊個人操作（身份與帳號分頁）：直接寫同一 Unified Users。 */
+  root.querySelectorAll('[data-mopen]').forEach(b => b.addEventListener('click', async () => {
+    const m = members().find(x => x.id === b.dataset.mopen);
+    if (!m) return;
+    if (!(await confirmDlg({ title: `為 ${esc(m.name)} 開戶？`, okText: '確定開戶',
+      trustedMessageHtml: `會直接寫入同一 Unified Sheet 的 <b>Users</b>；首次密碼係 <b>${esc(TEMP_PASSWORD)}</b>，登入後必須更改。` }))) return;
+    const result = await openMemberAccount(m.id);
+    toast(result.ok ? `已開戶：首次密碼 ${TEMP_PASSWORD}` : result.msg, result.ok ? 'ok' : 'err');
+    refresh();
+  }));
+  root.querySelectorAll('[data-mrestore]').forEach(b => b.addEventListener('click', async () => {
+    const m = members().find(x => x.id === b.dataset.mrestore);
+    const account = m && accountForMember(m);
+    if (!m || !account) return;
+    if (!(await confirmDlg({ title: `復原 ${esc(m.name)} 的帳戶？`, okText: '確定復原',
+      trustedMessageHtml: `會重新啟用 Unified Users 帳戶，並把首次密碼重設為 <b>${esc(TEMP_PASSWORD)}</b>。` }))) return;
+    const result = await restoreAccountServer(account, TEMP_PASSWORD);
+    toast(result.ok ? '帳戶已復原，首次登入要改密碼' : result.msg, result.ok ? 'ok' : 'err');
+    refresh();
+  }));
   root.querySelectorAll('[data-mpw]').forEach(b => b.addEventListener('click', async () => {
     const m = members().find(x => x.id === b.dataset.mpw);
     if (!m) return;
     const r = await modal({
       title: `設定密碼：${m.name}`, sub: '設定之後即刻生效',
-      body: `<div class="field"><label class="label">新密碼（最少 4 個字）</label>
+      trustedBodyHtml: `<div class="field"><label class="label">新密碼（最少 4 個字）</label>
           <input class="input" id="sp1" type="password" autocomplete="new-password"></div>
         <div class="field mt-12"><label class="label">再輸入一次</label>
           <input class="input" id="sp2" type="password" autocomplete="new-password"></div>
@@ -198,7 +227,7 @@ export function mountAccountsTab(root, refresh) {
     });
     if (!r) return;
     const res = await setMemberHubPassword(m.id, r);
-    toast(res.ok ? '密碼已設定 —— 記得撳頂部「儲存到後端」，否則第二部機登唔到' : res.msg, res.ok ? 'ok' : 'err');
+    toast(res.ok ? '密碼已直接重設到 Unified Users；對方首次登入要改密碼' : res.msg, res.ok ? 'ok' : 'err');
     refresh();
   }));
   root.querySelectorAll('[data-medit]').forEach(b => b.addEventListener('click', () => go('#/members/edit/' + b.dataset.medit)));
@@ -208,7 +237,7 @@ export function mountAccountsTab(root, refresh) {
     const cur = chief();
     if (!(await confirmDlg({
       title: '轉移團長身份', okText: '確定轉移',
-      message: `將團長身份轉移畀 <b>${esc(m.name)}</b>？` + (cur ? `<br>${esc(cur.name)} 會變返「領袖」。` : '')
+      trustedMessageHtml: `將團長身份轉移畀 <b>${esc(m.name)}</b>？` + (cur ? `<br>${esc(cur.name)} 會變返「領袖」。` : '')
     }))) return;
     const res = await setMemberIdentity(m.id, 'chief');
     toast(res.ok ? `已將團長身份轉移畀 ${m.name}` : res.msg, res.ok ? 'ok' : 'err');
@@ -234,7 +263,7 @@ export function mountAccountsTab(root, refresh) {
     const acc = accountById(b.dataset.del);
     if (await confirmDlg({
       title: '刪除帳戶', danger: true, okText: '確定刪除',
-      message: `確定刪除 <b>${esc(acc?.name || '')}</b>（${esc(acc?.username || '')}）？佢將唔可以再登入。`
+      trustedMessageHtml: `確定刪除 <b>${esc(acc?.name || '')}</b>（${esc(acc?.username || '')}）？佢將唔可以再登入。`
     })) {
       const serverResult = await deleteAccountServer(acc);
       if (!serverResult.ok) return toast(serverResult.msg, 'err');
@@ -250,21 +279,21 @@ async function addAccountForm(role, refresh) {
   const list = members().filter(m => m.status !== 'alumni' && String(m.identity || 'member') === String(role));
   const r = await modal({
     title: `新增${ROLES[role].name}帳戶`, sub: '登入頁只可以揀「領袖」或「執委」身份',
-    body: `<div class="grid g-2" style="gap:12px">
+    trustedBodyHtml: `<div class="grid g-2" style="gap:12px">
         <div class="field"><label class="label">姓名 / 顯示名 <span class="req">*</span></label>
           <input class="input" id="q-name" placeholder="例：陳大文"></div>
         <div class="field"><label class="label">職位</label>
           <input class="input" id="q-title" placeholder="例：司庫"></div>
         <div class="field"><label class="label">${role === 'leader' ? '電郵（登入用）' : '電郵／帳號'} <span class="req">*</span></label>
-          <input class="input" id="q-user" placeholder="${role === 'leader' ? '例：scouter@example.com' : '電郵或帳號'}"></div>
-        <div class="field"><label class="label">密碼（留空＝${TEMP_PASSWORD}）</label>
-          <input class="input" id="q-pass" placeholder="留空＝首次 ${TEMP_PASSWORD}，要改"></div>
+          <input class="input" id="q-user" placeholder="${esc(role === 'leader' ? '例：scouter@example.com' : '電郵或帳號')}"></div>
+        <div class="field"><label class="label">密碼（留空＝${esc(TEMP_PASSWORD)}）</label>
+          <input class="input" id="q-pass" placeholder="留空＝首次 ${esc(TEMP_PASSWORD)}，要改"></div>
         <div class="field" style="grid-column:1/-1"><label class="label">對應名冊成員 <span class="req">*</span></label>
           <select class="select" id="q-member"><option value="">— 請先選擇已設為${esc(ROLES[role].name)}的成員 —</option>
-            ${list.map(m => `<option value="${m.id}">${esc(m.name)}${m.role ? `（${esc(m.role)}）` : ''}</option>`).join('')}</select></div>
+            ${list.map(m => `<option value="${esc(m.id)}">${esc(m.name)}${m.role ? `（${esc(m.role)}）` : ''}</option>`).join('')}</select></div>
       </div>
       <div id="q-err" class="err mt-8"></div>
-      <div class="hint mt-8">帳號唔可以用 <code>${RESERVED_USERNAMES.join(' / ')}</code>。</div>`,
+      <div class="hint mt-8">帳號唔可以用 <code>${esc(RESERVED_USERNAMES.join(' / '))}</code>。</div>`,
     actions: [{ label: '取消', class: 'btn', value: null },
       { label: '新增帳戶', class: 'btn-primary', onClick: el => {
         const name = el.querySelector('#q-name').value.trim();
@@ -273,12 +302,15 @@ async function addAccountForm(role, refresh) {
         const memberId = el.querySelector('#q-member').value;
         if (!name) { el.querySelector('#q-err').textContent = '請填姓名'; el.querySelector('#q-err').style.display = 'block'; return false; }
         if (!memberId) { el.querySelector('#q-err').textContent = `請先在用戶頁把成員身份設為「${ROLES[role].name}」，再選擇該成員`; el.querySelector('#q-err').style.display = 'block'; return false; }
-        return { name, username, password, title: el.querySelector('#q-title').value.trim(), memberId };
+        const picked = list.find(m => String(m.id) === String(memberId));
+        return { name, username, email: picked?.email || username,
+          targetYmis: picked?.ymis || '', ymis: picked?.ymis || '',
+          password, title: el.querySelector('#q-title').value.trim(), memberId };
       } }]
   });
   if (!r) return;
   const res = await createAccountServer({ role, ...r });
-  if (!res.ok) return (await modal({ title: '新增失敗', body: `<p class="sm">${esc(res.msg)}</p>`, actions: [{ label: '關閉', class: 'btn-primary', value: null }] }));
+  if (!res.ok) return (await modal({ title: '新增失敗', trustedBodyHtml: `<p class="sm">${esc(res.msg)}</p>`, actions: [{ label: '關閉', class: 'btn-primary', value: null }] }));
   toast(res.refreshed ? '已新增帳戶' : '已新增帳戶；請重新載入以更新本機列表', res.refreshed ? 'ok' : 'warn');
   refresh();
 }
@@ -289,8 +321,8 @@ async function passwordForm(id, refresh) {
   const me = isMe(id);
   const r = await modal({
     title: me ? '更改我嘅密碼' : '更改密碼',
-    sub: `${ROLES[acc.role].name} · ${esc(acc.name)}（${esc(acc.username)}）`,
-    body: `${me ? `<div class="field"><label class="label">目前密碼 <span class="req">*</span></label>
+    sub: `${ROLES[acc.role].name} · ${acc.name}（${acc.username}）`,
+    trustedBodyHtml: `${me ? `<div class="field"><label class="label">目前密碼 <span class="req">*</span></label>
         <input class="input" id="q-old" type="password" autocomplete="current-password"></div>` : ''}
       <div class="field ${me ? 'mt-12' : ''}"><label class="label">新密碼 <span class="req">*</span></label>
         <input class="input" id="q-p1" type="password" autocomplete="new-password" placeholder="至少 4 個字元"></div>
@@ -325,8 +357,8 @@ async function usernameForm(id, refresh) {
   const acc = accountById(id);
   if (!acc) return;
   const r = await modal({
-    title: '更改登入帳號', sub: `${ROLES[acc.role].name} · ${esc(acc.name)}`,
-    body: `<div class="field"><label class="label">新帳號</label>
+    title: '更改登入帳號', sub: `${ROLES[acc.role].name} · ${acc.name}`,
+    trustedBodyHtml: `<div class="field"><label class="label">新帳號</label>
         <input class="input" id="q-user" value="${esc(acc.username)}"></div>
       <div class="hint mt-8">只改登入名稱，密碼維持不變。</div>`,
     actions: [{ label: '取消', class: 'btn', value: null },

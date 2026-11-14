@@ -33,12 +33,11 @@ var UNIFIED_PORTAL_CENTRAL_SOURCE = 'central-travel-system';
 var UNIFIED_ADMIN_SIGNED_MAX_BYTES = 4 * 1024 * 1024;
 
 var UNIFIED_PUBLIC_PORTAL_ACTIONS = {
-  ping: 1, test: 1, status: 1, notices: 1, constitution: 1,
-  noticeSignup: 1, loan: 1, claim: 1
+  ping: 1, test: 1, status: 1
 };
 var UNIFIED_ADMIN_READ_ACTIONS = {
   dbInfo: 1, loadDb: 1, loadDbPart: 1, loadTables: 1, loadTablesPart: 1,
-  syncCheck: 1
+  syncCheck: 1, operationStatus: 1
 };
 var UNIFIED_ADMIN_WRITE_ACTIONS = {
   saveDb: 1, saveDbPart: 1, saveDbCommit: 1, saveTables: 1, sync: 1,
@@ -50,17 +49,42 @@ var UNIFIED_ADMIN_DANGEROUS_ACTIONS = {
 var UNIFIED_PORTAL_AUTH_ACTIONS = {
   authLogin: 1, authWhoAmI: 1, authPortalExchange: 1, authChangePassword: 1,
   authResetPassword: 1, authDeleteAccount: 1, authRestoreAccount: 1,
-  authCreateAccount: 1, authForgotPassword: 1, authCompletePasswordReset: 1
+  authCreateAccount: 1, authOpenAccounts: 1, authForgotPassword: 1, authCompletePasswordReset: 1
 };
 var UNIFIED_ACCOUNT_ADMIN_ACTIONS = {
-  authResetPassword: 1, authDeleteAccount: 1, authRestoreAccount: 1, authCreateAccount: 1
+  authResetPassword: 1, authDeleteAccount: 1, authRestoreAccount: 1,
+  authCreateAccount: 1, authOpenAccounts: 1
 };
 var UNIFIED_PERSONAL_PROGRESS_ACTIONS = {
   loadMine: 1, myRequests: 1, addRequest: 1
 };
-var UNIFIED_MEMBER_HUB_ACTIONS = {
-  hubLoad: 1, hubRsvp: 1, hubQuiz: 1, hubAbsence: 1
+/* The full branch frontend reviews the same pinned BADGE request rows.  These
+   actions require both the same-origin HMAC transport and a real branch session;
+   neither API_KEY nor the browser's claimed role is accepted as the reviewer. */
+var UNIFIED_STAFF_PROGRESS_ACTIONS = {
+  reviewRequest: 1, reviewLogRequest: 1, bulkReviewRequests: 1
 };
+var UNIFIED_MEMBER_HUB_ACTIONS = {
+  hubLoad: 1, hubRsvp: 1, hubQuiz: 1, hubAbsence: 1, hubNoticeSignup: 1
+};
+
+/* Durable operation journal. A transport timeout is never proof of failure: every
+   important write is registered before dispatch and finalized after its own handler
+   returns. Duplicate IDs are never executed twice. A hard GAS termination can leave
+   an entry processing/unknown; operationStatus reports that honestly instead of
+   inviting an automatic retry. */
+var UNIFIED_OPERATION_WRITE_ACTIONS = {
+  saveDb: 1, saveDbPart: 1, saveDbCommit: 1, saveTables: 1, sync: 1, uploadPhotos: 1,
+  repairDb: 1, saveDbForce: 1,
+  authChangePassword: 1, authResetPassword: 1, authDeleteAccount: 1, authRestoreAccount: 1,
+  authCreateAccount: 1, authOpenAccounts: 1, authForgotPassword: 1, authCompletePasswordReset: 1,
+  hubRsvp: 1, hubQuiz: 1, hubAbsence: 1, hubNoticeSignup: 1,
+  addRequest: 1, reviewRequest: 1, reviewLogRequest: 1, bulkReviewRequests: 1,
+  save: 1, saveOtherBadge: 1
+};
+var UNIFIED_OPERATION_SHEET = '_Operations';
+var UNIFIED_OPERATION_HEADERS = ['operation_id', 'action', 'unit', 'state', 'outcome', 'started_at', 'updated_at', 'result_json', 'error'];
+var UNIFIED_OPERATION_ID_RE = /^[A-Za-z0-9_.:-]{12,120}$/;
 
 function unifiedJson_(obj) { return jsonResponse(obj); }
 
@@ -81,31 +105,210 @@ function unifiedOutput_(obj) {
   return unifiedJson_(obj || { success: false, ok: false, error: '後端回應格式異常' });
 }
 
+function unifiedOperationSheet_() {
+  var book = getSheet();
+  var sheet = book.getSheetByName(UNIFIED_OPERATION_SHEET);
+  if (!sheet) {
+    sheet = book.insertSheet(UNIFIED_OPERATION_SHEET);
+    sheet.getRange(1, 1, 1, UNIFIED_OPERATION_HEADERS.length).setValues([UNIFIED_OPERATION_HEADERS]);
+    sheet.setFrozenRows(1);
+    try { sheet.hideSheet(); } catch (ignore) {}
+  }
+  return sheet;
+}
+
+function unifiedOperationId_(body, action) {
+  var id = String(body.operationId || body.operation_id || '').trim();
+  if (!id) id = String(action || 'write') + ':' + Date.now().toString(36) + ':' + Utilities.getUuid().replace(/-/g, '').slice(0, 24);
+  return UNIFIED_OPERATION_ID_RE.test(id) ? id : '';
+}
+
+function unifiedFindOperation_(id) {
+  if (!UNIFIED_OPERATION_ID_RE.test(String(id || ''))) return null;
+  var sheet = unifiedOperationSheet_();
+  var last = sheet.getLastRow();
+  if (last < 2) return null;
+  var ids = sheet.getRange(2, 1, last - 1, 1).getValues();
+  var rowNumber = 0;
+  for (var i = ids.length - 1; i >= 0; i--) {
+    if (String(ids[i][0] || '') === String(id)) { rowNumber = i + 2; break; }
+  }
+  if (!rowNumber) return null;
+  var row = sheet.getRange(rowNumber, 1, 1, UNIFIED_OPERATION_HEADERS.length).getValues()[0];
+  return {
+    row: rowNumber, id: String(row[0] || ''), action: String(row[1] || ''), unit: String(row[2] || ''),
+    state: String(row[3] || 'unknown'), outcome: String(row[4] || 'unknown'),
+    startedAt: row[5] instanceof Date ? row[5].toISOString() : String(row[5] || ''),
+    updatedAt: row[6] instanceof Date ? row[6].toISOString() : String(row[6] || ''),
+    resultJson: String(row[7] || ''), error: String(row[8] || '')
+  };
+}
+
+function unifiedOperationPublic_(rec) {
+  if (!rec) return null;
+  var state = rec.state;
+  var outcome = rec.outcome;
+  /* A processing row older than the normal Apps Script execution window is no
+     longer evidence that work is still running. It stays durable but is reported
+     as unknown — never as failed. */
+  var age = Date.now() - Date.parse(rec.updatedAt || rec.startedAt || '');
+  if (state === 'processing' && isFinite(age) && age > 10 * 60 * 1000) state = 'unknown';
+  if (state === 'unknown' || state === 'processing') outcome = 'unknown';
+  return { id: rec.id, action: rec.action, unit: rec.unit, state: state, outcome: outcome,
+    startedAt: rec.startedAt, updatedAt: rec.updatedAt, error: rec.error || '' };
+}
+
+function unifiedBeginOperation_(body, action) {
+  if (!UNIFIED_OPERATION_WRITE_ACTIONS[action]) return { enabled: false };
+  var supplied = String(body.operationId || body.operation_id || '').trim();
+  var id = unifiedOperationId_(body, action);
+  if (!id) return { enabled: true, invalid: true };
+  body.operationId = id;
+  body.operation_id = id;
+  var lock = LockService.getScriptLock();
+  try {
+    if (!lock.tryLock(10000)) return { enabled: true, busy: true, id: id };
+    var found = unifiedFindOperation_(id);
+    /* Legacy clients do not supply an ID. In that compatibility case a deterministic
+       test UUID / same-millisecond request must still get a fresh journal row; only a
+       caller-supplied ID has idempotency semantics. */
+    if (found && !supplied) {
+      var base = id;
+      var suffix = 1;
+      while (found && suffix < 1000) {
+        id = (base + ':' + suffix).slice(0, 120);
+        found = unifiedFindOperation_(id);
+        suffix++;
+      }
+      body.operationId = id;
+      body.operation_id = id;
+    }
+    if (found && (String(found.action || '') !== String(action || '')
+        || String(found.unit || '') !== String(body.unit || ''))) {
+      return { enabled: true, mismatch: true, id: id, record: found };
+    }
+    if (found) return { enabled: true, duplicate: true, id: id, record: found };
+    var sheet = unifiedOperationSheet_();
+    var now = new Date();
+    sheet.appendRow([id, action, String(body.unit || ''), 'processing', 'unknown', now, now, '', '']);
+    if (sheet.getLastRow() > 1001) sheet.deleteRows(2, Math.min(200, sheet.getLastRow() - 801));
+    return { enabled: true, id: id, record: unifiedFindOperation_(id) };
+  } finally {
+    try { lock.releaseLock(); } catch (ignore) {}
+  }
+}
+
+function unifiedFinishOperation_(started, outcome, result, error) {
+  if (!started || !started.enabled || !started.id) return null;
+  var lock = LockService.getScriptLock();
+  try {
+    if (!lock.tryLock(20000)) return started.record || null;
+    var rec = unifiedFindOperation_(started.id);
+    if (!rec) return null;
+    var state = outcome === 'applied' ? 'applied' : outcome === 'not_applied' ? 'not_applied' : 'unknown';
+    var resultText = '';
+    try { resultText = JSON.stringify(result || {}); } catch (ignoreJson) {}
+    if (resultText.length > 40000) resultText = JSON.stringify({ success: result && result.success === true,
+      ok: result && result.ok === true, version: String(result && result.version || '') });
+    var sheet = unifiedOperationSheet_();
+    sheet.getRange(rec.row, 4, 1, 6).setValues([[
+      state, outcome, rec.startedAt ? new Date(rec.startedAt) : new Date(), new Date(), resultText,
+      String(error || result && result.error || '').slice(0, 500)
+    ]]);
+    return unifiedFindOperation_(started.id);
+  } finally {
+    try { lock.releaseLock(); } catch (ignore) {}
+  }
+}
+
+function unifiedOperationStatus_(id) {
+  var rec = unifiedFindOperation_(String(id || ''));
+  if (!rec) return unifiedJson_({ success: true, ok: true, found: false,
+    operationId: String(id || ''), outcome: 'unknown', operation: null });
+  var op = unifiedOperationPublic_(rec);
+  return unifiedJson_({ success: true, ok: true, found: true, operationId: rec.id,
+    outcome: op.outcome, mayHaveApplied: op.outcome === 'unknown' || op.outcome === 'applied', operation: op });
+}
+
+function unifiedOperationWrap_(body, action, run) {
+  var started = unifiedBeginOperation_(body, action);
+  if (!started.enabled) return run();
+  if (started.invalid) return unifiedJson_({ success: false, ok: false, reason: 'invalid_operation_id',
+    outcome: 'not_applied', error: '操作編號格式錯誤' });
+  if (started.busy) return unifiedJson_({ success: false, ok: false, reason: 'operation_journal_busy',
+    operationId: started.id, outcome: 'not_applied', mayHaveApplied: false,
+    operation: { id: started.id, state: 'not_applied', outcome: 'not_applied' }, error: '操作日誌繁忙，請稍後再試' });
+  if (started.mismatch) return unifiedJson_({ success: false, ok: false, reason: 'operation_id_reused',
+    operationId: started.id, outcome: 'not_applied', mayHaveApplied: false,
+    operation: unifiedOperationPublic_(started.record), error: '操作編號已用於另一個操作或旅團；後端冇執行今次請求' });
+  if (started.duplicate) {
+    var old = started.record;
+    var oldPublic = unifiedOperationPublic_(old);
+    if ((oldPublic.outcome === 'applied' || oldPublic.outcome === 'not_applied') && old.resultJson) {
+      try {
+        var replay = JSON.parse(old.resultJson);
+        replay.operationId = old.id; replay.operation_id = old.id; replay.outcome = oldPublic.outcome;
+        replay.operation = oldPublic; replay.deduplicated = true;
+        return unifiedJson_(replay);
+      } catch (ignoreReplay) {}
+    }
+    return unifiedJson_({ success: false, ok: false, reason: 'operation_in_progress',
+      operationId: old.id, outcome: 'unknown', mayHaveApplied: true, operation: oldPublic,
+      error: '同一操作編號已經處理過或仍在處理；為免重複，後端冇再次執行' });
+  }
+  try {
+    var out = run();
+    var parsed = unifiedOutputObject_(out);
+    if (!parsed) {
+      var unknownRec = unifiedFinishOperation_(started, 'unknown', {}, '後端回應格式異常');
+      return unifiedJson_({ success: false, ok: false, operationId: started.id, outcome: 'unknown',
+        mayHaveApplied: true, operation: unifiedOperationPublic_(unknownRec), error: '後端回應格式異常；結果未知' });
+    }
+    var applied = parsed.success === true || parsed.ok === true;
+    var outcome = applied ? 'applied' : 'not_applied';
+    var finished = unifiedFinishOperation_(started, outcome, parsed, parsed.error || '');
+    parsed.operationId = started.id;
+    parsed.operation_id = started.id;
+    parsed.outcome = outcome;
+    parsed.mayHaveApplied = applied;
+    parsed.operation = unifiedOperationPublic_(finished || started.record) || { id: started.id, state: outcome, outcome: outcome };
+    return unifiedJson_(parsed);
+  } catch (err) {
+    var failed = unifiedFinishOperation_(started, 'unknown', {}, String(err && err.message || err));
+    return unifiedJson_({ success: false, ok: false, operationId: started.id, outcome: 'unknown',
+      mayHaveApplied: true, operation: unifiedOperationPublic_(failed),
+      error: '操作中斷；可能未寫，亦可能已經寫入：' + String(err && err.message || err) });
+  }
+}
+
+/* Unified adapters consume the exact Portal compatibility branch schema. Legacy
+   BADGE spellings are adapters only; an unknown backend/platform role fails closed
+   instead of silently becoming member. */
 function unifiedRoleFromBackend_(role) {
-  var r = String(role || '').toLowerCase();
-  if (r === 'super_admin') return 'super';
-  if (r === 'admin' || r === 'group_leader') return 'chief';
-  if (r === 'branch_leader') return 'leader';
-  if (r === 'exec_committee') return 'exco';
-  return 'member';
+  return String(PortalAdminCompat_.canonicalRole(role) || '');
 }
 
 function unifiedRoleToBackend_(role) {
-  var r = String(role || '').toLowerCase();
-  if (r === 'super') return 'admin';
-  if (r === 'chief' || r === 'admin' || r === 'group_leader') return 'group_leader';
-  if (r === 'leader' || r === 'branch_leader') return 'branch_leader';
-  if (r === 'exco' || r === 'exec_committee') return 'exec_committee';
-  return 'member';
+  var canonical = unifiedRoleFromBackend_(role);
+  if (canonical === 'super') return 'admin';
+  if (canonical === 'chief') return 'group_leader';
+  if (canonical === 'leader') return 'branch_leader';
+  if (canonical === 'exco') return 'exec_committee';
+  if (canonical === 'member') return 'member';
+  return '';
 }
 
 function unifiedRoleRank_(role) {
-  var r = String(role || '').toLowerCase();
-  return { member: 0, exco: 20, exec_committee: 20, leader: 40, branch_leader: 40,
-    chief: 60, group_leader: 60, admin: 80, super: 100, super_admin: 100 }[r] || 0;
+  return Number(PortalAdminCompat_.roleLevel(role) || 0);
+}
+
+function unifiedRoleAllowedAssertion_(role) {
+  var canonical = unifiedRoleFromBackend_(role);
+  return !!canonical && PortalAdminCompat_.visibleRoles.indexOf(canonical) >= 0;
 }
 
 function unifiedScopesForRole_(role) {
+  if (!unifiedRoleFromBackend_(role)) return [];
   var scopes = ['identity:read', 'branch:read', 'progress:self'];
   if (unifiedRoleRank_(role) >= unifiedRoleRank_('exco')) scopes.push('branch:write', 'progress:manage');
   if (unifiedRoleRank_(role) >= unifiedRoleRank_('leader')) scopes.push('identity:manage', 'branch:repair');
@@ -120,8 +323,8 @@ function unifiedEffectiveScopes_(role, assertedScopes) {
 
 function unifiedEffectiveRole_(localBackendRole, assertedPortalRole) {
   var localPortal = unifiedRoleFromBackend_(localBackendRole);
-  var asserted = String(assertedPortalRole || '').toLowerCase();
-  if (['member', 'exco', 'leader', 'chief', 'admin', 'super'].indexOf(asserted) < 0) asserted = 'member';
+  var asserted = unifiedRoleFromBackend_(assertedPortalRole);
+  if (!localPortal || !unifiedRoleAllowedAssertion_(asserted)) return '';
   // The isolated auth fixture proves identity and membership, while the branch Users
   // row remains the action-scope ceiling. A stale/forged high role can never elevate.
   return unifiedRoleRank_(localPortal) <= unifiedRoleRank_(asserted) ? localPortal : asserted;
@@ -172,8 +375,8 @@ function unifiedVerifyPortalToken_(token, unit) {
     return { ok: false, code: 'SSO_TOKEN_INVALID', error: '隔離 auth fixture 票據用途不正確' };
   }
   var subject = String(payload.sub || '').trim();
-  var role = String(payload.role || '').trim().toLowerCase();
-  if (!subject || subject.length > 160 || ['member', 'exco', 'leader', 'chief', 'admin'].indexOf(role) < 0) {
+  var role = unifiedRoleFromBackend_(payload.role);
+  if (!subject || subject.length > 160 || !unifiedRoleAllowedAssertion_(role)) {
     return { ok: false, code: 'SSO_TOKEN_INVALID', error: '隔離 auth fixture 身份資料不完整' };
   }
   var jti = String(payload.jti || '').trim();
@@ -327,6 +530,9 @@ function unifiedResolvePortalIdentity_(verified) {
       error: '隔離 auth fixture 身份未對應此支部名冊' };
   }
   var effectiveRole = unifiedEffectiveRole_(user.role, verified.role);
+  if (!effectiveRole) {
+    return { ok: false, code: 'ROLE_NOT_ALLOWED', error: '支部帳戶身份不屬於目前 branch schema' };
+  }
   return { ok: true, ymis: String(user.ymis || ''), user: user, member: member,
     role: effectiveRole, assertedRole: verified.role,
     scopes: unifiedEffectiveScopes_(effectiveRole, verified.scopes) };
@@ -412,7 +618,8 @@ function unifiedResolveActor_(body, allowPortalExchangeToken) {
     return { ok: false, code: 'CENTRAL_SSO_REQUIRED',
       error: '隔離 fixture 的 legacy 入口旗標已關閉；正式支部請重新執行 initializeSheets()' };
   }
-  var role = meta && meta.role ? String(meta.role) : unifiedRoleFromBackend_(user.role);
+  var role = unifiedRoleFromBackend_(meta && meta.role ? meta.role : user.role);
+  if (!role) return { ok: false, code: 'ROLE_NOT_ALLOWED', error: '支部帳戶身份不屬於目前 branch schema' };
   return { ok: true, ymis: String(user.ymis || ymis), user: user,
     member: unifiedFindMemberBySubject_(user.ymis), role: role,
     scopes: meta && meta.scopes && meta.scopes.length ? meta.scopes : unifiedScopesForRole_(role),
@@ -433,13 +640,138 @@ function unifiedLocalLogin_(body) {
     error: (out && out.error) || '帳號或密碼不正確' });
   var user = out.user || {};
   var role = unifiedRoleFromBackend_(user.role);
+  if (!role) return unifiedJson_({ ok: false, success: false, code: 'ROLE_NOT_ALLOWED',
+    error: '支部帳戶身份不屬於目前 branch schema' });
   return unifiedJson_({ ok: true, success: true, sessionToken: out.token,
     sessionExpiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000,
     account: unifiedAccountPayload_({ user: user, ymis: user.ymis, role: role }),
     mustChangePw: !!out.force_change_password, localLogin: true, unifiedGsVersion: UNIFIED_GS_VERSION });
 }
 
-function unifiedAuthAlias_(action, body) {
+function unifiedAccountManager_(actor) {
+  if (actor && actor.source === 'server-super') {
+    return { ymis: 'sheep', name: '系統管理員', role: 'super_admin' };
+  }
+  var user = actor && actor.user || {};
+  return {
+    ymis: String(actor && actor.ymis || user.ymis || ''),
+    name: String(user.name || actor && actor.member && actor.member.name || ''),
+    role: String(user.role || unifiedRoleToBackend_(actor && actor.role || 'member'))
+  };
+}
+
+function unifiedCanManageAccounts_(actor, unit) {
+  if (!actor || !actor.ok) return false;
+  if (actor.source === 'server-super') return true;
+  var scopes = Array.isArray(actor.scopes) ? actor.scopes : unifiedScopesForRole_(actor.role);
+  if (unifiedRoleRank_(actor.role) < unifiedRoleRank_('leader') || scopes.indexOf('identity:manage') < 0) return false;
+  /* 帳戶 action 唔經行政 saveDb dispatcher，所以要在這裏獨立套用同一份
+     members.edit module gate ＋ admin.accounts 細項權限。 */
+  var loaded = PortalAdminCompat_.loadDb(String(unit || ''));
+  /* A brand-new Unified Sheet has no Portal DB yet.  Keep the pinned baseline's
+     leader bootstrap path; once a branch DB exists its local ACL is authoritative. */
+  if (loaded && loaded.success === true && loaded.found === false) return true;
+  if (!loaded || loaded.success !== true || !loaded.db) return false;
+  return PortalAdminCompat_.canAccountAdmin(loaded.db, {
+    ok: true, role: actor.role, member: actor.member || null,
+    record: actor.user || actor.member || null
+  });
+}
+
+function unifiedAccountTargetYmis_(body) {
+  body = body || {};
+  var direct = String(body.targetYmis || body.target_ymis || body.ymis || '').trim();
+  if (direct && findUserRecord(direct)) return direct;
+  var wanted = String(body.targetEmail || body.targetUsername || body.email || body.username || direct || '')
+    .trim().toLowerCase();
+  if (!wanted) return direct;
+  var users = getAllUsers();
+  for (var i = 0; i < users.length; i++) {
+    var user = users[i] || {};
+    if (user.has_account === false) continue;
+    if (String(user.ymis || '').trim().toLowerCase() === wanted
+        || String(user.email || '').trim().toLowerCase() === wanted) {
+      return String(user.ymis || '');
+    }
+  }
+  return direct;
+}
+
+function unifiedOpenAccountRows_(body, actor, single) {
+  var raw = Array.isArray(body.users) ? body.users : [body];
+  if (!raw.length) return unifiedJson_({ ok: false, success: false, code: 'NO_ACCOUNTS', error: '沒有開戶資料' });
+  if (raw.length > 200) return unifiedJson_({ ok: false, success: false, code: 'TOO_MANY_ACCOUNTS', error: '每批最多 200 個帳戶' });
+  var users = raw.map(function (item) {
+    item = item || {};
+    return {
+      ymis: String(item.targetYmis || item.ymis || '').trim(),
+      name: safeSheetText(item.name, 100),
+      email: String(item.email || item.username || '').trim().substring(0, 160),
+      branch: safeSheetText(item.branch, 100),
+      role: unifiedRoleToBackend_(item.role || 'member'),
+      can_tick: item.can_tick === undefined
+        ? unifiedRoleRank_(item.role || 'member') >= unifiedRoleRank_('exco')
+        : item.can_tick === true,
+      password: String(item.password || DEFAULT_TEMP_PASSWORD)
+    };
+  });
+  var result = unifiedOutputObject_(handleBulkAddUsers(users, unifiedAccountManager_(actor)))
+    || { success: false, created: 0, failed: users.length, error: '開戶失敗' };
+  result.created = Number(result.created || 0);
+  result.failed = Number(result.failed || 0);
+  if (single && result.created !== 1) {
+    return unifiedJson_({ ok: false, success: false, code: 'ACCOUNT_CREATE_FAILED',
+      error: result.error || result.results && result.results[0] && result.results[0].error || '建立帳戶失敗',
+      created: result.created, failed: result.failed, results: result.results || [] });
+  }
+  result.success = result.success === true && (result.created > 0 || result.failed === 0);
+  result.ok = result.success;
+  result.message = result.message || ('已開立 ' + result.created + ' 個帳戶'
+    + (result.failed ? '；' + result.failed + ' 個未能開立' : ''));
+  result.unifiedGsVersion = UNIFIED_GS_VERSION;
+  return unifiedJson_(result);
+}
+
+function unifiedAccountAdmin_(action, body, actor) {
+  if (!unifiedCanManageAccounts_(actor, body && body.unit)) {
+    return unifiedJson_({ ok: false, success: false, code: 'ACTION_SCOPE_DENIED',
+      error: '只有團長／領袖可以管理支部帳戶' });
+  }
+  if (action === 'authOpenAccounts') return unifiedOpenAccountRows_(body, actor, false);
+  if (action === 'authCreateAccount') return unifiedOpenAccountRows_(body, actor, true);
+
+  var targetYmis = unifiedAccountTargetYmis_(body);
+  var rec = targetYmis ? findUserRecord(targetYmis) : null;
+  if (!rec) return unifiedJson_({ ok: false, success: false, code: 'ACCOUNT_NOT_FOUND', error: '搵唔到支部帳戶' });
+  var manager = unifiedAccountManager_(actor);
+  if (action === 'authResetPassword') {
+    return handleResetPassword(targetYmis, String(body.newPassword || body.password || ''), manager);
+  }
+  if (action === 'authDeleteAccount') {
+    /* The full frontend's “delete account” means revoke login, not erase the roster
+       or Progress history.  Pinned Users remains authoritative and keeps the row. */
+    return handleSetUserStatus(targetYmis, 'inactive', manager);
+  }
+  if (action === 'authRestoreAccount') {
+    if (!canManageUser(manager, rec.user.role)) {
+      return unifiedJson_({ ok: false, success: false, code: 'ACTION_SCOPE_DENIED', error: '權限不足，不能復原此帳戶' });
+    }
+    var restored = unifiedOutputObject_(handleSetUserStatus(targetYmis, 'active', manager)) || {};
+    if (restored.success !== true) return unifiedJson_(restored);
+    var reset = unifiedOutputObject_(handleResetPassword(targetYmis,
+      String(body.newPassword || DEFAULT_TEMP_PASSWORD), manager)) || {};
+    if (reset.success !== true) {
+      reset.accountRestored = true;
+      reset.warning = '帳戶已復原，但臨時密碼未能重設';
+      return unifiedJson_(reset);
+    }
+    return unifiedJson_({ ok: true, success: true, message: '帳戶已復原，首次登入必須更改密碼',
+      unifiedGsVersion: UNIFIED_GS_VERSION });
+  }
+  return unifiedJson_({ ok: false, success: false, error: 'Unknown account action' });
+}
+
+function unifiedAuthAlias_(action, body, signedActor) {
   if (action === 'authPortalExchange') return unifiedPortalExchange_(body);
   if (action === 'authWhoAmI') return unifiedWhoAmI_(body);
   if (action === 'authLogin') return unifiedLocalLogin_(body);
@@ -459,7 +791,7 @@ function unifiedAuthAlias_(action, body) {
     completed.ok = completed.success === true;
     return unifiedJson_(completed);
   }
-  var actor = unifiedResolveActor_(body, false);
+  var actor = signedActor || unifiedResolveActor_(body, false);
   if (!actor.ok) return unifiedJson_({ ok: false, success: false, code: actor.code || 'SESSION_REQUIRED', error: actor.error });
   if (actor.source === 'central-sso') {
     return unifiedJson_({ ok: false, success: false, code: 'CENTRAL_IDENTITY_MANAGED',
@@ -477,11 +809,10 @@ function unifiedAuthAlias_(action, body) {
     }
     return unifiedJson_(changed);
   }
-  // Account creation/deletion/reset through the old Portal aliases would create
-  // a second identity source. Branch accounts are managed by the pinned BADGE Users
-  // actions; these legacy aliases therefore remain disabled.
-  return unifiedJson_({ ok: false, success: false, code: 'BRANCH_IDENTITY_MANAGED',
-    error: '支部帳戶由 BADGE Users 管理；請使用支部帳戶管理功能' });
+  /* These frontend aliases do not create a Portal identity table.  They are a thin
+     adapter onto the pinned BADGE Users handlers in this same Unified Sheet. */
+  if (UNIFIED_ACCOUNT_ADMIN_ACTIONS[action]) return unifiedAccountAdmin_(action, body, actor);
+  return unifiedJson_({ ok: false, success: false, error: 'Unknown auth action' });
 }
 
 function unifiedActorCan_(actor, action) {
@@ -526,6 +857,8 @@ function unifiedCanonicalMembers_(existing) {
     merged.phone = safeSheetText(prior.phone, 80)
       || (isEmail(rows[i][4]) ? '' : String(rows[i][4] || ''));
     merged.identity = unifiedRoleFromBackend_(user.role || 'member');
+    merged.hasAccount = user.has_account === true;
+    merged.accountStatus = merged.hasAccount ? String(user.status || 'active') : 'not_open';
     merged.status = user.status === 'inactive' ? 'inactive' : (prior.status || 'active');
     delete merged.pw; delete merged.hubPw; delete merged.password; delete merged.hubPassword;
     out.push(merged); seen[key] = true;
@@ -545,6 +878,8 @@ function unifiedCanonicalMembers_(existing) {
     /* A newly submitted roster row has no Users authority yet and therefore
        starts as member. Role changes only arrive through authoritative branch Users data. */
     kept.identity = users[key] ? unifiedRoleFromBackend_(users[key].role || 'member') : 'member';
+    kept.hasAccount = !!(users[key] && users[key].has_account === true);
+    kept.accountStatus = kept.hasAccount ? String(users[key].status || 'active') : 'not_open';
     delete kept.pw; delete kept.hubPw; delete kept.password; delete kept.hubPassword;
     out.push(kept); seen[key] = true;
   });
@@ -563,12 +898,16 @@ function unifiedAuthoritativeIdentityMap_() {
 function unifiedAccountProjection_(members) {
   var memberByYmis = {};
   (members || []).forEach(function (m) { memberByYmis[String(m.ymis || '').trim().toLowerCase()] = m; });
-  return getAllUsers().filter(function (u) { return u && u.status !== 'deleted' && !isSuperAdminId(u.ymis); }).map(function (u) {
+  return getAllUsers().filter(function (u) {
+    return u && u.has_account !== false && u.status !== 'deleted' && !isSuperAdminId(u.ymis);
+  }).map(function (u) {
     var member = memberByYmis[String(u.ymis || '').trim().toLowerCase()] || {};
     return {
-      id: 'central:' + String(u.ymis || ''), memberId: String(member.id || u.ymis || ''),
-      username: String(u.email || u.ymis || ''), email: String(u.email || ''), name: String(u.name || member.name || ''),
-      role: unifiedRoleFromBackend_(u.role), active: u.status === 'active', source: 'central-or-rescue'
+      id: 'unified:' + String(u.ymis || ''), memberId: String(member.id || u.ymis || ''),
+      ymis: String(u.ymis || ''), username: String(u.email || u.ymis || ''),
+      email: String(u.email || ''), name: String(u.name || member.name || ''),
+      role: unifiedRoleFromBackend_(u.role), active: u.status === 'active',
+      status: String(u.status || 'active'), source: 'unified-users'
     };
   });
 }
@@ -628,6 +967,11 @@ function unifiedPortalAdmin_(e, body, signedActor) {
   if (UNIFIED_PUBLIC_PORTAL_ACTIONS[action]) {
     return PortalAdminCompat_.dispatchBody(e, body);
   }
+  /* Operation IDs contain at least 96 unpredictable bits and act as read-only
+     capability receipts. Status exposes metadata only (never result_json/data), so
+     the originating public/member client can resolve a timeout without a staff
+     session and, crucially, without resending the mutation. */
+  if (action === 'operationStatus') return unifiedOperationStatus_(body.operationId || body.operation_id);
   var actor = signedActor || unifiedResolveActor_(body, false);
   if (!actor.ok) return unifiedJson_({ ok: false, success: false, code: actor.code || 'SESSION_REQUIRED', error: actor.error });
   if (!unifiedActorCan_(actor, action)) {
@@ -639,9 +983,16 @@ function unifiedPortalAdmin_(e, body, signedActor) {
   body.apiKey = getApiKey();
   delete body.apikey;
   body.__serverSigned = true;
-  /* Compatibility 仍要逐欄核對普通 exco／leader 的 identity 寫入。marker 只在
-     unified router 驗完 opaque actor 後記憶體注入；platform-super 保留完整 bypass。 */
-  if (actor.source !== 'server-super') {
+  /* Pinned baseline admin is an authenticated branch owner but is deliberately not
+     projected into the ordinary roster. Treat that one server-resolved account like
+     the platform owner at the compatibility boundary; otherwise an existing DB can
+     never bind it as an actor and direct account opening deadlocks. Ordinary
+     exco/leader writes remain delegated and go through per-field identity checks. */
+  var branchOwnerRole = String(actor.user && actor.user.role || '').toLowerCase();
+  var branchOwner = actor.source !== 'server-super' && actor.user
+    && (branchOwnerRole === 'admin' || branchOwnerRole === 'super_admin')
+    && String(actor.ymis || actor.user.ymis || '').trim() === String(ADMIN_YMIS).trim();
+  if (actor.source !== 'server-super' && !branchOwner) {
     body.__serverActorRole = String(actor.role || 'member');
     body.__serverActorSubject = String(actor.ymis || '');
   }
@@ -662,7 +1013,7 @@ function unifiedPortalAdmin_(e, body, signedActor) {
       body.tables.accounts = unifiedAccountProjection_(unifiedCanonicalMembers_(body.tables.members || []));
     }
   }
-  if (actor.source !== 'server-super') body.__serverIdentityMap = unifiedAuthoritativeIdentityMap_();
+  if (actor.source !== 'server-super' && !branchOwner) body.__serverIdentityMap = unifiedAuthoritativeIdentityMap_();
   var out = PortalAdminCompat_.dispatchBody(unifiedPortalEvent_(e, body), body);
   var parsed = unifiedOutputObject_(out);
   if (!parsed) return out;
@@ -683,15 +1034,33 @@ function unifiedPortalAdmin_(e, body, signedActor) {
       }
     }
   }
-  if (parsed.db && (action === 'loadDb' || action === 'loadTables')) {
-    parsed.db = unifiedPrepareAdminDb_(parsed.db);
-  }
-  if (action === 'loadTablesPart' && parsed.found) {
-    if (parsed.name === 'members') parsed.value = unifiedCanonicalMembers_(parsed.value || []);
-    if (parsed.name === 'accounts') parsed.value = unifiedAccountProjection_(unifiedCanonicalMembers_([]));
-  }
+  /* Portal compatibility layer has already applied the actor-specific projection.
+     Never re-expand members/accounts here: doing so would put higher identities back
+     into a lower actor's response after authorization. */
   parsed.unifiedGsVersion = UNIFIED_GS_VERSION;
   return unifiedOutput_(parsed);
+}
+
+function unifiedMemberProgressRequests_(ymis) {
+  var wanted = String(ymis || '').trim();
+  var sheet = getSheet().getSheetByName('待批完成');
+  var out = [];
+  if (!wanted || !sheet) return out;
+  var data = sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][1] || '').trim() !== wanted) continue;
+    var status = String(data[i][7] || 'pending').trim().toLowerCase();
+    if (status !== 'pending' && status !== 'approved' && status !== 'rejected') continue;
+    out.push({
+      request_id: String(data[i][0] || ''), ymis: wanted,
+      name: String(data[i][2] || ''), item_id: String(data[i][3] || ''), item_name: String(data[i][4] || ''),
+      requested_date: data[i][5] ? formatDate(data[i][5]) : '', evidence: String(data[i][6] || ''),
+      status: status, created_at: data[i][8] ? formatDate(data[i][8]) : '',
+      reviewed_at: data[i][10] ? formatDate(data[i][10]) : '', review_note: String(data[i][11] || ''),
+      confirmed_date: data[i][12] ? formatDate(data[i][12]) : ''
+    });
+  }
+  return out;
 }
 
 function unifiedLoadMine_(ymis) {
@@ -708,8 +1077,152 @@ function unifiedLoadMine_(ymis) {
     progress: progress, flatProgress: flat, otherBadges: other,
     logs: (all.logs || []).filter(function (r) { return String(r.ymis || '') === String(ymis || ''); }),
     logRequests: (all.logRequests || []).filter(function (r) { return String(r.ymis || '') === String(ymis || ''); }),
-    requests: (all.pendingRequests || []).filter(function (r) { return String(r.ymis || '') === String(ymis || ''); }),
+    /* Baseline handleLoad only exposes pending rows.  A member's own safe history must
+       keep approved/rejected rows too, otherwise the UI says the application vanished. */
+    requests: unifiedMemberProgressRequests_(ymis),
     unifiedGsVersion: UNIFIED_GS_VERSION };
+}
+
+function unifiedProgressActorCanManage_(actor) {
+  if (!actor || !actor.ok) return false;
+  var scopes = Array.isArray(actor.scopes) ? actor.scopes : unifiedScopesForRole_(actor.role);
+  return unifiedRoleRank_(actor.role) >= unifiedRoleRank_('exco')
+    && scopes.indexOf('progress:manage') >= 0;
+}
+
+function unifiedBulkReviewRequests_(body, actor) {
+  var input = Array.isArray(body.requests) ? body.requests : [];
+  if (!input.length) return unifiedJson_({ ok: false, success: false, code: 'NO_SELECTION', error: '請先選擇要批准的申請' });
+  if (input.length > 100) return unifiedJson_({ ok: false, success: false, code: 'TOO_MANY_REQUESTS', error: '每次最多批准 100 項' });
+  if (String(body.decision || 'approved') !== 'approved') {
+    return unifiedJson_({ ok: false, success: false, code: 'BULK_APPROVE_ONLY', error: '批量操作只支援批准' });
+  }
+  var confirmedDate = String(body.confirmed_date || '').trim();
+  if (confirmedDate && !/^\d{4}-\d{2}-\d{2}$/.test(confirmedDate)) {
+    return unifiedJson_({ ok: false, success: false, code: 'INVALID_DATE', error: '確認日期格式不正確' });
+  }
+  var selected = [];
+  var seen = {};
+  for (var i = 0; i < input.length; i++) {
+    var item = input[i] || {};
+    var kind = String(item.kind || '');
+    var requestId = String(item.request_id || item.id || '').trim();
+    if ((kind !== 'req' && kind !== 'log') || !requestId || requestId.length > 160) {
+      return unifiedJson_({ ok: false, success: false, code: 'INVALID_SELECTION', error: '第 ' + (i + 1) + ' 項選擇格式不正確' });
+    }
+    var key = kind + ':' + requestId;
+    if (seen[key]) return unifiedJson_({ ok: false, success: false, code: 'DUPLICATE_SELECTION', error: '選擇中有重複申請' });
+    seen[key] = true;
+    selected.push({ kind: kind, request_id: requestId });
+  }
+
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(10000)) {
+    return unifiedJson_({ ok: false, success: false, code: 'REVIEW_BUSY', error: '系統正處理另一批審批，請稍後重試' });
+  }
+  try {
+    var reqSheet = getSheet().getSheetByName('待批完成');
+    var logReqSheet = getSheet().getSheetByName(LOG_REQ_SHEET_NAME);
+    var reqRows = reqSheet ? reqSheet.getDataRange().getValues() : [];
+    var logReqRows = logReqSheet ? logReqSheet.getDataRange().getValues() : [];
+    var logSheet = getSheet().getSheetByName(LOG_SHEET_NAME);
+    var logRows = logSheet ? logSheet.getDataRange().getValues() : [];
+
+    /* Validate the whole selection before the first mutation.  Google Sheets has no
+       transaction primitive, so this fail-before-write pass is what prevents an
+       invalid last row from leaving a surprising half-approved batch. */
+    for (var s = 0; s < selected.length; s++) {
+      var chosen = selected[s];
+      var rows = chosen.kind === 'req' ? reqRows : logReqRows;
+      var statusColumn = chosen.kind === 'req' ? 7 : 12;
+      var found = null;
+      for (var r = 1; r < rows.length; r++) {
+        if (String(rows[r][0] || '') === chosen.request_id) { found = rows[r]; break; }
+      }
+      if (!found || String(found[statusColumn] || '') !== 'pending') {
+        return unifiedJson_({ ok: false, success: false, code: 'REQUEST_NOT_PENDING',
+          error: '申請 ' + chosen.request_id + ' 已被處理或不存在；請重新讀取' });
+      }
+      if (chosen.kind === 'req') {
+        var itemId = String(found[3] || '');
+        var destination = itemId.indexOf('OT-') === 0 ? '其他獎章' : '進度追蹤';
+        if (!getSheet().getSheetByName(destination)) {
+          return unifiedJson_({ ok: false, success: false, code: 'DESTINATION_MISSING',
+            error: '「' + destination + '」工作表不存在，請先執行 initializeSheets()' });
+        }
+      } else {
+        if (!logSheet) return unifiedJson_({ ok: false, success: false, code: 'DESTINATION_MISSING',
+          error: '「' + LOG_SHEET_NAME + '」工作表不存在，請先執行 initializeSheets()' });
+        if (String(found[1] || 'new') === 'edit') {
+          var targetId = String(found[2] || '');
+          var targetFound = false;
+          for (var l = 1; l < logRows.length; l++) {
+            if (String(logRows[l][0] || '') === targetId) { targetFound = true; break; }
+          }
+          if (!targetFound) return unifiedJson_({ ok: false, success: false, code: 'LOG_TARGET_MISSING',
+            error: '履歷申請 ' + chosen.request_id + ' 的原紀錄已不存在；請先處理該項' });
+        }
+      }
+    }
+
+    var reviewer = actor.source === 'server-super'
+      ? { ymis: 'sheep', name: '系統管理員', role: 'super_admin' }
+      : actor.user;
+    var results = [];
+    var reqCount = 0;
+    var logCount = 0;
+    for (var a = 0; a < selected.length; a++) {
+      var selectedItem = selected[a];
+      var output = selectedItem.kind === 'log'
+        ? handleReviewLogRequest(selectedItem.request_id, 'approved', safeSheetText(body.review_note, 500), reviewer)
+        : handleReviewRequest(selectedItem.request_id, 'approved', safeSheetText(body.review_note, 500),
+          actor.ymis, confirmedDate);
+      var parsed = unifiedOutputObject_(output) || { success: false, error: '後端回應格式異常' };
+      results.push({ kind: selectedItem.kind, request_id: selectedItem.request_id,
+        success: parsed.success === true, error: parsed.error || '' });
+      if (parsed.success !== true) {
+        return unifiedJson_({ ok: false, success: false, code: 'BULK_REVIEW_PARTIAL',
+          error: parsed.error || '批量審批未能完成', processed: a, results: results });
+      }
+      if (selectedItem.kind === 'log') logCount++; else reqCount++;
+    }
+    return unifiedJson_({ ok: true, success: true, processed: selected.length,
+      progressRequests: reqCount, logRequests: logCount, results: results,
+      message: '已批量批准 ' + selected.length + ' 項（進度 ' + reqCount + '、履歷 ' + logCount + '）',
+      unifiedGsVersion: UNIFIED_GS_VERSION });
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function unifiedStaffProgress_(e, body, raw) {
+  var action = String(body.action || '');
+  if (!unifiedVerifyLinkSig_(e, body, raw, UNIFIED_STAFF_PROGRESS_ACTIONS)) {
+    return unifiedJson_({ ok: false, success: false, code: 'SIGNATURE_REQUIRED', error: '審批請求簽名無效' });
+  }
+  var actor = null;
+  if (body.unified_super === true && String(body.on_behalf || '') === 'sheep') {
+    actor = { ok: true, ymis: 'sheep', role: 'super', source: 'server-super',
+      scopes: unifiedScopesForRole_('super'), user: { ymis: 'sheep', name: '系統管理員', role: 'super_admin' } };
+  } else {
+    actor = unifiedResolveActor_(body, false);
+  }
+  if (!actor.ok) return unifiedJson_({ ok: false, success: false, code: actor.code || 'SESSION_REQUIRED', error: actor.error });
+  if (!unifiedProgressActorCanManage_(actor)) {
+    return unifiedJson_({ ok: false, success: false, code: 'ACTION_SCOPE_DENIED', error: '你的身份不可以審批進度' });
+  }
+  if (action === 'bulkReviewRequests') return unifiedBulkReviewRequests_(body, actor);
+
+  var requestId = String(body.request_id || '').trim();
+  var decision = String(body.decision || '');
+  if (!requestId || (decision !== 'approved' && decision !== 'rejected')) {
+    return unifiedJson_({ ok: false, success: false, code: 'INVALID_REVIEW', error: '審批資料不完整' });
+  }
+  if (action === 'reviewLogRequest') {
+    return handleReviewLogRequest(requestId, decision, safeSheetText(body.review_note, 500), actor.user);
+  }
+  return handleReviewRequest(requestId, decision, safeSheetText(body.review_note, 500),
+    actor.ymis, String(body.confirmed_date || ''));
 }
 
 function unifiedPersonalProgress_(e, body, raw) {
@@ -724,10 +1237,8 @@ function unifiedPersonalProgress_(e, body, raw) {
   if (!ymis) return unifiedJson_({ success: false, ok: false, error: '登入帳戶未綁定 YMIS' });
   if (action === 'loadMine') return unifiedJson_(unifiedLoadMine_(ymis));
   if (action === 'myRequests') {
-    var all = unifiedOutputObject_(handleGetPendingRequests()) || {};
     return unifiedJson_({ success: true, ok: true,
-      requests: (all.requests || []).filter(function (r) { return String(r.ymis || '') === ymis; }),
-      unifiedGsVersion: UNIFIED_GS_VERSION });
+      requests: unifiedMemberProgressRequests_(ymis), unifiedGsVersion: UNIFIED_GS_VERSION });
   }
   if (action === 'addRequest') {
     var result = handleRequestComplete({
@@ -788,14 +1299,32 @@ function unifiedHubQuiz_(row, memberId) {
     at: String(mine && mine.at || ''), answers: unifiedHubAnswers_(mine && mine.answers, questions) };
   return out;
 }
-function unifiedHubNotice_(row) {
+function unifiedHubNotice_(row, memberId, ymis) {
   row = row || {};
   var title = row.title && typeof row.title === 'object'
     ? { zh: String(row.title.zh || ''), en: String(row.title.en || '') }
     : { zh: String(row.title || ''), en: '' };
-  return { id: String(row.id || ''), title: title, status: String(row.status || ''), vis: String(row.vis || ''),
-    type: String(row.type || ''), eventDate: String(row.eventDate || ''), deadline: String(row.deadline || ''),
-    needSignup: !!row.needSignup, publishAt: String(row.publishAt || '') };
+  var body = row.body && typeof row.body === 'object'
+    ? { zh: String(row.body.zh || ''), en: String(row.body.en || '') }
+    : { zh: String(row.body || ''), en: '' };
+  var fields = (Array.isArray(row.fields) ? row.fields : []).map(function (field) {
+    return { key: String(field && field.key || ''), label: String(field && field.label || ''),
+      type: String(field && field.type || 'text'), required: !!(field && field.required),
+      options: (Array.isArray(field && field.options) ? field.options : []).map(String) };
+  });
+  var mySignup = null;
+  (Array.isArray(row.signups) ? row.signups : []).some(function (signup) {
+    if (signup && ((memberId && String(signup.memberId || '') === String(memberId))
+        || (ymis && String(signup.ymis || '') === String(ymis)))) { mySignup = signup; return true; }
+    return false;
+  });
+  return { id: String(row.id || ''), title: title, body: body, status: String(row.status || ''), vis: String(row.vis || ''),
+    type: String(row.type || ''), eventDate: String(row.eventDate || ''), deadline: String(row.deadline || ''), venue: String(row.venue || ''),
+    assemblyTime: String(row.assemblyTime || ''), dismissTime: String(row.dismissTime || ''), assemblyPlace: String(row.assemblyPlace || ''),
+    dismissPlace: String(row.dismissPlace || ''), fee: String(row.fee || ''), uniform: String(row.uniform || ''),
+    bring: String(row.bring || ''), contact: String(row.contact || ''), needSignup: !!row.needSignup,
+    fields: fields, publishAt: String(row.publishAt || ''),
+    mySignup: mySignup ? { id: String(mySignup.id || ''), at: String(mySignup.at || ''), answers: unifiedHubClone_(mySignup.answers || {}) } : null };
 }
 function unifiedHubAbsence_(row) {
   row = row || {};
@@ -807,17 +1336,18 @@ function unifiedHubAbsence_(row) {
 }
 function unifiedHubRank_(role) {
   var r = String(role || '').toLowerCase();
-  if (r === 'super' || r === 'chief' || r === 'admin' || r === 'group_leader' || r === 'super_admin') return 5;
+  if (r === 'super' || r === 'super_admin') return 6;
+  if (r === 'chief' || r === 'admin' || r === 'group_leader') return 5;
   if (r === 'leader' || r === 'branch_leader') return 4;
   if (r === 'exco' || r === 'exec_committee') return 3;
   return r === 'member' ? 2 : 0;
 }
 function unifiedHubVisRank_(vis, fallback) {
   var v = String(vis || fallback || 'member').toLowerCase();
-  return v === 'other' ? 1 : v === 'member' ? 2 : v === 'exco' ? 3 : v === 'leader' ? 4 : v === 'chief' ? 5 : 2;
+  return v === 'other' ? 2 : v === 'member' ? 2 : v === 'exco' ? 3 : v === 'leader' ? 4 : v === 'chief' ? 5 : 2;
 }
 function unifiedHubVisible_(record, kind, role) {
-  var fallback = kind === 'notice' ? 'other' : 'member';
+  var fallback = 'member';
   if (kind === 'event' && record && record.visibility === 'exco') fallback = 'exco';
   return unifiedHubVisRank_(record && record.vis, fallback) <= unifiedHubRank_(role);
 }
@@ -833,27 +1363,6 @@ function unifiedHubContext_(loaded, actor) {
   });
   if (!member) return { ok: false, code: 'SESSION_ACCOUNT_MISSING', error: '登入帳戶未綁定有效名冊成員' };
   return { ok: true, db: db, member: member, role: actor.role, version: loaded.version || '', at: loaded.at || '' };
-}
-function unifiedHubPublic_(profile, role) {
-  var src = profile && typeof profile === 'object' ? profile : {};
-  var socials = Array.isArray(src.socials) ? src.socials : [];
-  var albums = Array.isArray(src.albums) ? src.albums : [];
-  var links = Array.isArray(src.links) ? src.links : [];
-  var managed = {};
-  socials.forEach(function (item) {
-    var kind = String(item && item.kind || '').toLowerCase();
-    if (item && item.url && (kind === 'instagram' || kind === 'facebook' || kind === 'whatsapp')) managed[kind] = true;
-  });
-  if (albums.some(function (item) { return !!(item && item.url); })) managed.album = true;
-  if (src.site && src.site.url) managed.website = true;
-  function list(rows) {
-    return rows.filter(function (item) { return item && item.url && unifiedHubVisible_(item, 'profile', role); })
-      .map(unifiedHubClone_);
-  }
-  return { socials: list(socials), albums: list(albums), links: list(links),
-    site: src.site && src.site.url && unifiedHubVisible_(src.site, 'profile', role) ? unifiedHubClone_(src.site) : { url: '', vis: 'member' },
-    about: src.about && src.about.text && unifiedHubVisible_(src.about, 'profile', role) ? unifiedHubClone_(src.about) : { text: '', vis: 'member' },
-    managedSlots: Object.keys(managed) };
 }
 function unifiedHubProjection_(ctx) {
   var db = ctx.db;
@@ -871,14 +1380,12 @@ function unifiedHubProjection_(ctx) {
   }).map(function (row) { return unifiedHubQuiz_(row, memberId); });
   var notices = (db.notices || []).filter(function (row) {
     return row && row.status === 'published' && unifiedHubVisible_(row, 'notice', role);
-  }).map(unifiedHubNotice_);
+  }).map(function (notice) { return unifiedHubNotice_(notice, memberId, ymis); });
   return { schema: db.schema || 2, kind: 'real', unitCode: String(db.unitCode || ''),
     unit: { code: String(unit.code || db.unitCode || ''), name: String(unit.name || ''), nameEn: String(unit.nameEn || ''), short: String(unit.short || ''), theme: unifiedHubClone_(unit.theme || {}) },
     profile: { code: String(profile.code || db.unitCode || ''), name: String(profile.name || unit.name || ''), nameEn: String(profile.nameEn || unit.nameEn || ''), short: String(profile.short || unit.short || ''), theme: unifiedHubClone_(profile.theme || unit.theme || {}) },
-    settings: { troopLinks: unifiedHubClone_(db.settings && db.settings.troopLinks || {}),
-      publicLinks: unifiedHubClone_(db.settings && db.settings.publicLinks || {}),
-      publicBaseUrl: String(db.settings && db.settings.publicBaseUrl || '') },
-    publicProfile: unifiedHubPublic_(db.publicProfile, role),
+    settings: { troopLinks: unifiedHubClone_(db.settings && db.settings.troopLinks || {}) },
+    constitution: db.constitution && db.constitution.status === 'published' ? unifiedHubClone_(db.constitution) : null,
     members: [{ id: memberId, ymis: ymis, name: String(member.name || ''), email: String(member.email || ''),
       identity: String(role || 'member'), status: String(member.status || 'active') }], accounts: [],
     events: events, quizzes: quizzes, notices: notices,
@@ -934,6 +1441,38 @@ function unifiedHubMutate_(ctx, body) {
     quiz.responses = quiz.responses && typeof quiz.responses === 'object' ? quiz.responses : {};
     quiz.responses[memberId] = { name: String(member.name || ''), at: new Date().toISOString().slice(0, 10), answers: answers };
     return { ok: true };
+  }
+  if (action === 'hubNoticeSignup') {
+    var notice = (db.notices || []).filter(function (row) { return row && String(row.id || '') === String(body.noticeId || ''); })[0];
+    if (!notice || notice.status !== 'published' || !notice.needSignup || !unifiedHubVisible_(notice, 'notice', ctx.role)) {
+      return { ok: false, error: '搵唔到可回覆嘅通告' };
+    }
+    var today = new Date().toISOString().slice(0, 10);
+    if (String(notice.deadline || '').slice(0, 10) && String(notice.deadline || '').slice(0, 10) < today) return { ok: false, error: '通告報名已截止' };
+    var supplied = body.answers && typeof body.answers === 'object' && !Array.isArray(body.answers) ? body.answers : {};
+    var answers = {}, invalid = '';
+    (Array.isArray(notice.fields) ? notice.fields : []).some(function (field) {
+      var key = String(field && field.key || '').slice(0, 80); if (!key) return false;
+      var value = supplied[key];
+      if (Array.isArray(value)) value = value.slice(0, 30).map(function (item) { return String(item == null ? '' : item).slice(0, 500); });
+      else value = String(value == null ? '' : value).slice(0, 2000);
+      if (field.required && unifiedHubEmpty_(value)) { invalid = String(field.label || key); return true; }
+      answers[key] = value; return false;
+    });
+    if (invalid) return { ok: false, error: '請填：' + invalid };
+    notice.signups = Array.isArray(notice.signups) ? notice.signups : [];
+    var existing = -1;
+    for (var si = 0; si < notice.signups.length; si++) {
+      var signup = notice.signups[si];
+      if (signup && ((memberId && String(signup.memberId || '') === memberId)
+          || (String(member.ymis || '') && String(signup.ymis || '') === String(member.ymis || '')))) { existing = si; break; }
+    }
+    var signupId = existing >= 0 ? String(notice.signups[existing].id || '')
+      : 'hsg_' + Utilities.getUuid().replace(/-/g, '').slice(0, 16);
+    var savedSignup = { id: signupId, memberId: memberId, ymis: String(member.ymis || ''), name: String(member.name || ''),
+      at: new Date().toISOString(), answers: answers, source: 'authenticated-hub' };
+    if (existing >= 0) notice.signups[existing] = savedSignup; else notice.signups.push(savedSignup);
+    return { ok: true, id: signupId };
   }
   if (action === 'hubAbsence') {
     db.absences = Array.isArray(db.absences) ? db.absences : [];
@@ -1052,8 +1591,11 @@ function onOpen() {
 
 function doGet(e) {
   var action = String((e && e.parameter && e.parameter.action) || '');
-  if (action === 'notices' || action === 'constitution' || action === 'status' || action === 'ping' || action === 'test') {
+  if (action === 'status' || action === 'ping' || action === 'test') {
     return PortalAdminCompat_.doGet(e);
+  }
+  if (action === 'notices' || action === 'constitution') {
+    return unifiedJson_({ ok: false, success: false, code: 'SESSION_REQUIRED', error: '內容只限已登入支部成員' });
   }
   return badgeDoGet_(e);
 }
@@ -1095,10 +1637,18 @@ function doPost(e) {
             error: '支部帳戶由 BADGE Users 管理；請使用支部帳戶管理功能' });
         }
       }
-      return unifiedAuthAlias_(action, body);
+      return unifiedOperationWrap_(body, action, function () { return unifiedAuthAlias_(action, body); });
     }
-    if (UNIFIED_PERSONAL_PROGRESS_ACTIONS[action]) return unifiedPersonalProgress_(e, body, parsed.raw);
-    if (UNIFIED_MEMBER_HUB_ACTIONS[action]) return unifiedMemberHub_(body);
+    if (UNIFIED_STAFF_PROGRESS_ACTIONS[action]
+        && (action === 'bulkReviewRequests' || body.sig || (e && e.parameter && e.parameter.sig))) {
+      return unifiedOperationWrap_(body, action, function () { return unifiedStaffProgress_(e, body, parsed.raw); });
+    }
+    if (UNIFIED_PERSONAL_PROGRESS_ACTIONS[action]) {
+      return unifiedOperationWrap_(body, action, function () { return unifiedPersonalProgress_(e, body, parsed.raw); });
+    }
+    if (UNIFIED_MEMBER_HUB_ACTIONS[action]) {
+      return unifiedOperationWrap_(body, action, function () { return unifiedMemberHub_(body); });
+    }
     if (UNIFIED_PUBLIC_PORTAL_ACTIONS[action] || UNIFIED_ADMIN_READ_ACTIONS[action] ||
         UNIFIED_ADMIN_WRITE_ACTIONS[action] || UNIFIED_ADMIN_DANGEROUS_ACTIONS[action]) {
       var signedActor = null;
@@ -1116,9 +1666,9 @@ function doPost(e) {
           scopes: unifiedScopesForRole_('super'),
           user: { ymis: 'sheep', name: '系統管理員', role: 'super_admin' } };
       }
-      return unifiedPortalAdmin_(e, body, signedActor);
+      return unifiedOperationWrap_(body, action, function () { return unifiedPortalAdmin_(e, body, signedActor); });
     }
-    return badgeDoPost_(e);
+    return unifiedOperationWrap_(body, action, function () { return badgeDoPost_(e); });
   } catch (err) {
     return unifiedJson_({ success: false, ok: false, error: String(err && err.message || err),
       unifiedGsVersion: UNIFIED_GS_VERSION });

@@ -26,6 +26,7 @@
 import crypto from 'node:crypto';
 import { isTrustedExecUrl, getProgressRegistryEntry, getTrustedUnit } from './_registry.js';
 import { verifySuperSession } from './_super-session.js';
+import { canonicalRole, roleLevel } from '../assets/js/lib/branch-config.js';
 
 export const config = { maxDuration: 60 };
 
@@ -74,11 +75,16 @@ const UPSTREAM_TIMEOUT_MS = (() => {
   return Math.max(1000, Math.min(55000, v));
 })();
 const MAX_DATA_BYTES = 1024 * 1024;        // 前端送上去嘅資料上限 1MB
+const BODY_TOO_LARGE = Symbol('BODY_TOO_LARGE');
 
 // Progress 業務 action；旅系統、登入閘門及其他整合不屬於呢個 API。
 const ACTIONS = new Set(['load', 'save', 'saveOtherBadge', 'reviewRequest', 'reviewLogRequest',
+  /* 一次 browser request、一個 Unified handler；絕不由 browser 逐列 loop 寫入。 */
+  'bulkReviewRequests', 'operationStatus',
   /* 團員入口只可走個人 bridge：由 server session 對出 YMIS，再叫後端只回／寫本人。 */
   'myProgress', 'addRequest', 'myRequests']);
+const WRITE_ACTIONS = new Set(['save', 'saveOtherBadge', 'reviewRequest', 'reviewLogRequest', 'bulkReviewRequests', 'addRequest']);
+const OPERATION_ID_RE = /^[A-Za-z0-9_.:-]{12,120}$/;
 
 function sendJson(res, status, obj) {
   res.setHeader('Cache-Control', 'no-store');
@@ -118,13 +124,21 @@ function progressBusinessData(value) {
 }
 
 async function readRawBody(req) {
-  if (req.body && typeof req.body === 'object') return req.body;
-  if (typeof req.body === 'string') { try { return JSON.parse(req.body); } catch (e) { return null; } }
+  const declared = Number(req.headers?.['content-length'] || 0);
+  if (Number.isFinite(declared) && declared > MAX_DATA_BYTES) return BODY_TOO_LARGE;
+  if (req.body && typeof req.body === 'object') {
+    try { return Buffer.byteLength(JSON.stringify(req.body), 'utf8') > MAX_DATA_BYTES ? BODY_TOO_LARGE : req.body; }
+    catch { return null; }
+  }
+  if (typeof req.body === 'string') {
+    if (Buffer.byteLength(req.body, 'utf8') > MAX_DATA_BYTES) return BODY_TOO_LARGE;
+    try { return JSON.parse(req.body); } catch (e) { return null; }
+  }
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > MAX_DATA_BYTES + 1024) return null;
+    if (size > MAX_DATA_BYTES) return BODY_TOO_LARGE;
     chunks.push(chunk);
   }
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch (e) { return null; }
@@ -149,14 +163,16 @@ async function signedUpstream(url, action, payload, key) {
   const inner = makeLinkSig(action, JSON.stringify(bodyOnly), key);
   const outgoing = { ...bodyOnly, sig: inner.sig, sig_ts: inner.ts, sig_nonce: inner.nonce };
   const raw = JSON.stringify(outgoing);
-  if (raw.length > LINK_SIG_MAX_BODY) return { tooBig: raw.length };
+  const rawBytes = Buffer.byteLength(raw, 'utf8');
+  if (rawBytes > LINK_SIG_MAX_BODY) return { tooBig: rawBytes };
   const outer = makeLinkSig(action, raw, key);
   const qs = new URLSearchParams({ sig: outer.sig, sts: outer.ts, snonce: outer.nonce });
   return { resp: await upstream(url + (url.includes('?') ? '&' : '?') + qs, { method: 'POST', payload: outgoing }) };
 }
 
-const STAFF_ROLES = new Set(['chief', 'leader', 'admin', 'exco', 'super']);
+const STAFF_LEVEL = roleLevel('exco');
 const PERSONAL_ACTIONS = new Set(['myProgress', 'addRequest', 'myRequests']);
+const SIGNED_REVIEW_ACTIONS = new Set(['reviewRequest', 'reviewLogRequest', 'bulkReviewRequests']);
 
 /**
  * 將瀏覽器交來嘅 opaque session 對返旅團後端身份。
@@ -185,13 +201,16 @@ async function authenticate(unitCode, body) {
     if (signed.tooBig) return { ok: false, status: 413, reason: 'auth_request_too_big', error: '登入核對請求太大' };
     check = signed.resp;
   }
+  if (check.status < 200 || check.status >= 300) {
+    return { ok: false, status: 502, reason: 'auth_unavailable', error: '支部登入核對回應異常' };
+  }
   const account = check.json?.account;
   if (!check.json?.ok || !account) {
     return { ok: false, status: 401, reason: 'session_invalid', error: '登入狀態已失效，請重新登入' };
   }
   return {
     ok: true,
-    role: String(account.role || 'member').toLowerCase(),
+    role: canonicalRole(account.role || 'member'),
     subject: String(account.memberId || account.id || ''),
     ymis: String(account.ymis || '').trim(),
     name: String(account.name || '').trim()
@@ -207,6 +226,10 @@ export default async function handler(req, res) {
   }
 
   const body = await readRawBody(req);
+  if (body === BODY_TOO_LARGE) {
+    return sendJson(res, 413, { ok: false, reason: 'request_too_large', outcome: 'not_sent',
+      mayHaveApplied: false, error: '進度請求內容超出 1MB 安全上限' });
+  }
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     return sendJson(res, 400, { ok: false, error: '請求格式錯誤' });
   }
@@ -219,7 +242,7 @@ export default async function handler(req, res) {
     safeLog({ result: 'bad_action', action: action.slice(0, 40), ms: Date.now() - t0 });
     return sendJson(res, 400, { ok: false, error: '不支援的操作' });
   }
-  if (unit && !/^[0-9A-Za-z_-]{1,32}$/.test(unit)) {
+  if (unit && !/^[0-9A-Za-z][0-9A-Za-z_-]{0,31}$/.test(unit)) {
     return sendJson(res, 400, { ok: false, error: '旅團編號格式不正確' });
   }
 
@@ -232,9 +255,12 @@ export default async function handler(req, res) {
     return sendJson(res, timeout ? 504 : 502, { ok: false, reason: 'auth_unavailable', error: timeout ? '登入核對逾時' : '暫時無法核對登入狀態' });
   }
   if (!actor.ok) return sendJson(res, actor.status || 401, { ok: false, reason: actor.reason, error: actor.error });
+  if (!roleLevel(actor.role)) {
+    return sendJson(res, 403, { ok: false, reason: 'branch_identity_required', error: '登入帳戶不屬於本支部身份 schema' });
+  }
   if (PERSONAL_ACTIONS.has(action)) {
     if (!actor.ymis) return sendJson(res, 403, { ok: false, reason: 'member_ymis_missing', error: '登入帳戶未綁定 YMIS，無法讀取個人進度' });
-  } else if (!STAFF_ROLES.has(actor.role)) {
+  } else if (roleLevel(actor.role) < STAFF_LEVEL) {
     return sendJson(res, 403, { ok: false, reason: 'staff_required', error: '你沒有權限管理進度' });
   }
 
@@ -262,6 +288,19 @@ export default async function handler(req, res) {
       error: '後端網址格式唔正確（要係 https://script.google.com/macros/s/…/exec）' });
   }
 
+  let operationId = '';
+  if (WRITE_ACTIONS.has(action)) {
+    const supplied = String(body.operationId || body.operation_id || '').trim();
+    if (supplied && !OPERATION_ID_RE.test(supplied)) {
+      return sendJson(res, 400, { ok: false, reason: 'invalid_operation_id', outcome: 'not_applied', error: '操作編號格式錯誤' });
+    }
+    operationId = supplied || `${action}:${Date.now().toString(36)}:${crypto.randomUUID().replace(/-/g, '').slice(0, 24)}`;
+  } else if (action === 'operationStatus') {
+    operationId = String(data.operationId || data.operation_id || body.operationId || '').trim();
+    if (!OPERATION_ID_RE.test(operationId)) {
+      return sendJson(res, 400, { ok: false, reason: 'invalid_operation_id', error: '操作編號格式錯誤' });
+    }
+  }
 
   try {
     let up;
@@ -271,6 +310,8 @@ export default async function handler(req, res) {
     if (action === 'myProgress') {
       targetAction = 'loadMine';
       safeData = { ymis: actor.ymis };
+    } else if (action === 'operationStatus') {
+      safeData = { operationId, operation_id: operationId, unit: reg.unit || unit };
     } else if (action === 'myRequests') {
       safeData = { ymis: actor.ymis };
     } else if (action === 'addRequest') {
@@ -282,6 +323,47 @@ export default async function handler(req, res) {
         requested_date: String(data.requested_date || '').slice(0, 20),
         evidence: String(data.evidence || '').slice(0, 2000)
       };
+    } else if (action === 'bulkReviewRequests') {
+      const selected = Array.isArray(data.requests) ? data.requests : [];
+      if (!selected.length) {
+        return sendJson(res, 400, { ok: false, reason: 'no_selection', error: '請先選擇要批准的申請' });
+      }
+      if (selected.length > 100) {
+        return sendJson(res, 400, { ok: false, reason: 'too_many_requests', error: '每次最多批准 100 項' });
+      }
+      const seen = new Set();
+      const requests = [];
+      for (const row of selected) {
+        const kind = String(row?.kind || '');
+        const requestId = String(row?.request_id || row?.id || '').trim();
+        const key = `${kind}:${requestId}`;
+        if (!['req', 'log'].includes(kind) || !requestId || requestId.length > 160 || seen.has(key)) {
+          return sendJson(res, 400, { ok: false, reason: 'invalid_selection', error: '選取項目格式不正確或有重複' });
+        }
+        seen.add(key);
+        requests.push({ kind, request_id: requestId });
+      }
+      const confirmedDate = String(data.confirmed_date || '').trim();
+      if (confirmedDate && !/^\d{4}-\d{2}-\d{2}$/.test(confirmedDate)) {
+        return sendJson(res, 400, { ok: false, reason: 'invalid_date', error: '確認日期格式不正確' });
+      }
+      safeData = { requests, decision: 'approved', confirmed_date: confirmedDate,
+        review_note: String(data.review_note || '').slice(0, 500) };
+    } else if (SIGNED_REVIEW_ACTIONS.has(action)) {
+      const requestId = String(data.request_id || '').trim();
+      const decision = String(data.decision || '');
+      if (!requestId || requestId.length > 160 || !['approved', 'rejected'].includes(decision)) {
+        return sendJson(res, 400, { ok: false, reason: 'invalid_review', error: '審批資料不完整' });
+      }
+      const confirmedDate = String(data.confirmed_date || '').trim();
+      if (confirmedDate && !/^\d{4}-\d{2}-\d{2}$/.test(confirmedDate)) {
+        return sendJson(res, 400, { ok: false, reason: 'invalid_date', error: '確認日期格式不正確' });
+      }
+      safeData = { request_id: requestId, decision,
+        review_note: String(data.review_note || '').slice(0, 500), confirmed_date: confirmedDate };
+    }
+    if (WRITE_ACTIONS.has(action)) {
+      safeData = { ...safeData, operationId, operation_id: operationId };
     }
     /* Server-signed POST：同一 action、同一 /exec，只改用用途分隔 HMAC 驗證。
        body 同 query 各有一組簽名，兼容 GAS 302 redirect；兩粒 nonce 都由 GAS 消耗。 */
@@ -294,10 +376,11 @@ export default async function handler(req, res) {
       const inner = makeLinkSig(signedAction, rows, apiKey);
       const out = { ...bodyOnly, sig: inner.sig, sig_ts: inner.ts, sig_nonce: inner.nonce };
       const rawOutgoing = JSON.stringify(out);
-      /* vsbadge 驗 rawBody 長度（連 sig 欄位）, 照樣以最終 body 為準 */
-      if (rawOutgoing.length > LINK_SIG_MAX_BODY) {
-        safeLog({ result: 'sig_body_too_big', action: signedAction, bytes: rawOutgoing.length, ms: Date.now() - t0 });
-        return { tooBig: rawOutgoing.length };
+      const outgoingBytes = Buffer.byteLength(rawOutgoing, 'utf8');
+      /* vsbadge 驗 rawBody 長度（連 sig 欄位）, 照樣以最終 UTF-8 bytes 為準 */
+      if (outgoingBytes > LINK_SIG_MAX_BODY) {
+        safeLog({ result: 'sig_body_too_big', action: signedAction, bytes: outgoingBytes, ms: Date.now() - t0 });
+        return { tooBig: outgoingBytes };
       }
       const outer = makeLinkSig(signedAction, rawOutgoing, apiKey);
       const q = new URLSearchParams({ sig: outer.sig, sts: outer.ts, snonce: outer.nonce });
@@ -328,6 +411,21 @@ export default async function handler(req, res) {
         return sendJson(res, 413, { ok: false, reason: 'sig_body_too_big', error: '個人進度請求太大' });
       }
       up = signed.resp; usedSignature = true;
+    } else if (SIGNED_REVIEW_ACTIONS.has(action) || action === 'operationStatus') {
+      /* Review/status is never authorised by API Key alone.  The HMAC protects this exact
+         request in transit, while Unified independently resolves the opaque user
+         session and checks progress:manage before touching any row. */
+      if (!signReady) {
+        return sendJson(res, 503, { ok: false, reason: 'no_sign_key', error: '伺服器未設定支部簽名 Key' });
+      }
+      const reviewerAuth = actor.super
+        ? { unified_super: true, on_behalf: 'sheep' }
+        : { sessionToken: firstStr(body.sessionToken) };
+      const signed = await signedPost(targetAction, { ...safeData, ...reviewerAuth });
+      if (signed.tooBig) {
+        return sendJson(res, 413, { ok: false, reason: 'sig_body_too_big', error: '審批請求太大' });
+      }
+      up = signed.resp; usedSignature = true;
     } else {
       const payload = { ...safeData, action: targetAction };
       if (apiKey) payload.apikey = apiKey;
@@ -346,20 +444,57 @@ export default async function handler(req, res) {
       const hint = up.status >= 400
         ? `進度系統後端暫時無法使用（HTTP ${up.status}）`
         : '進度系統後端回應格式異常 —— 請確認 /exec 網址係「任何人可存取」嘅正式部署';
-      return sendJson(res, 502, { ok: false, reason: 'upstream_bad_response', error: hint });
+      return sendJson(res, 502, { ok: false, reason: 'upstream_bad_response', error: hint,
+        ...(WRITE_ACTIONS.has(action) ? {
+          operationId, outcome: 'unknown', mayHaveApplied: true,
+          operation: { id: operationId, state: 'unknown', outcome: 'unknown' }
+        } : {}) });
     }
 
-    // GAS 業務錯誤（success:false）要照樣俾前端睇到；空集合仍然係 success:true。
+    // GAS 業務錯誤（success:false）要照樣俾前端睇到；寫入必須有明確 receipt。
     const signatureRequired = up.json.upstream_only === true;
-    const ok = !signatureRequired && up.json.success !== false;
-    safeLog({ result: ok ? 'ok' : (signatureRequired ? 'signature_required' : 'gas_error'),
+    const explicitOutcome = String(up.json.outcome || up.json.operation?.outcome || up.json.operation?.state || '').toLowerCase();
+    const upstreamOk = up.status >= 200 && up.status < 300;
+    const positive = up.json.success === true || up.json.ok === true || up.json.status === 'success';
+    const negative = up.json.success === false || up.json.ok === false || up.json.status === 'error';
+    let ok = false;
+    let outcome = '';
+    let mayHaveApplied = false;
+    if (WRITE_ACTIONS.has(action)) {
+      if (explicitOutcome === 'applied' || explicitOutcome === 'completed') {
+        ok = true; outcome = 'applied'; mayHaveApplied = true;
+      } else if (explicitOutcome === 'unknown' || explicitOutcome === 'processing') {
+        outcome = 'unknown'; mayHaveApplied = true;
+      } else if (explicitOutcome === 'not_sent' || explicitOutcome === 'not_applied'
+          || explicitOutcome === 'failed' || explicitOutcome === 'rejected' || negative) {
+        outcome = explicitOutcome === 'not_sent' ? 'not_sent' : 'not_applied';
+      } else if (upstreamOk && positive && !signatureRequired) {
+        ok = true; outcome = 'applied'; mayHaveApplied = true;
+      } else {
+        outcome = 'unknown'; mayHaveApplied = true;
+      }
+    } else {
+      /* operationStatus is a read: its outcome describes the original write, not
+         whether this status request itself succeeded. */
+      ok = upstreamOk && positive && !signatureRequired;
+      outcome = String(up.json.outcome || '');
+      mayHaveApplied = up.json.mayHaveApplied === true;
+    }
+    const receiptMissing = WRITE_ACTIONS.has(action) && outcome === 'unknown'
+      && !['unknown', 'processing'].includes(explicitOutcome);
+    safeLog({ result: ok ? 'ok' : (signatureRequired ? 'signature_required' : receiptMissing ? 'receipt_missing' : 'gas_error'),
       action, signed: usedSignature, status: up.status, ms: Date.now() - t0 });
     return sendJson(res, 200, {
       ok,
       action,
+      operationId: String(up.json.operationId || operationId || ''),
+      outcome,
+      mayHaveApplied,
+      operation: progressBusinessData(up.json.operation || null),
       error: ok ? undefined : (signatureRequired
         ? 'Unified GAS 拒絕咗呢個 Progress action；請管理員核對 Registry APIKEY 同正式 deployment。'
-        : (up.json.error || 'Unified GAS 拒絕咗呢個 Progress action')),
+        : receiptMissing ? `Unified GAS 冇提供明確寫入結果（HTTP ${up.status}）；系統冇重送`
+          : (up.json.error || 'Unified GAS 拒絕咗呢個 Progress action')),
       data: progressBusinessData(up.json)
     });
   } catch (e) {
@@ -367,7 +502,12 @@ export default async function handler(req, res) {
     safeLog({ result: timeout ? 'upstream_timeout' : 'upstream_fetch_error', action, ms: Date.now() - t0 });
     return sendJson(res, timeout ? 504 : 502, {
       ok: false,
-      error: timeout ? '進度系統後端回應逾時' : '無法連接進度系統後端，請稍後重試'
+      reason: timeout ? 'upstream_timeout' : 'network',
+      error: timeout ? '進度系統後端回應逾時；唔代表寫入失敗' : '同進度後端斷線；未能確定寫入結果',
+      ...(WRITE_ACTIONS.has(action) ? {
+        operationId, outcome: 'unknown', mayHaveApplied: true,
+        operation: { id: operationId, state: 'unknown', outcome: 'unknown' }
+      } : {})
     });
   }
 }

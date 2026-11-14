@@ -12,7 +12,8 @@
 
 import {
   bindDraftAutosave, stashActiveDrafts, activeDrafts, clearActiveDrafts,
-  saveDraft, readDraft, clearDraft, dropAllDrafts, applyDraft
+  saveDraft, readDraft, clearDraft, dropAllDrafts, applyDraft,
+  createSafetySnapshot, listSafetySnapshots
 } from '../assets/js/lib/guard.js';
 
 let pass = 0, fail = 0, t = 0;
@@ -29,6 +30,9 @@ globalThis.localStorage = {
   setItem: (k, v) => { ls.set(k, String(v)); },
   removeItem: k => { ls.delete(k); }
 };
+globalThis.fetch = async () => ({ ok: false, status: 404, json: async () => ({}), text: async () => '' });
+const store = await import('../assets/js/lib/store.js');
+await store.init({ mode: 'real', unit: '0082' });
 
 /* ---------- 最細 DOM 元素 shim ---------- */
 function mkFields(values) {
@@ -162,6 +166,41 @@ section('⑥ 回填咗舊草稿但**冇** markDirty → 唔會冤枉（欄位同
   ok('回填值同入版一樣 → 0 份草稿', n === 0, `n=${n}`);
 
   a.stop(); clearDraft('fin-settings', '0082');
+}
+
+section('⑦ 草稿按旅團隔離（同一瀏覽器切換旅團都唔會串資料）');
+{
+  dropAllDrafts();
+  saveDraft('member', 'new', { name: '0082 私人草稿' });
+  createSafetySnapshot('0082 快照', { members: [{ name: '0082' }] }, { kind: 'test' });
+  await store.init({ mode: 'real', unit: '0099' });
+  ok('另一旅團睇唔到 0082 草稿', readDraft('member', 'new') === null);
+  ok('另一旅團睇唔到 0082 安全快照', listSafetySnapshots().length === 0);
+  saveDraft('member', 'new', { name: '0099 私人草稿' });
+  createSafetySnapshot('0099 快照', { members: [{ name: '0099' }] }, { kind: 'test' });
+  await store.init({ mode: 'real', unit: '0082' });
+  ok('切返 0082 仍只見返自己草稿', readDraft('member', 'new')?.data?.name === '0082 私人草稿');
+  ok('切返 0082 仍只見返自己安全快照',
+    listSafetySnapshots().length === 1 && listSafetySnapshots()[0].label === '0082 快照');
+  ok('localStorage 使用兩個旅團 namespace',
+    ls.has('venture82.drafts.v2.0082') && ls.has('venture82.drafts.v2.0099')
+      && ls.has('venture82.safety-snapshots.v1.0082') && ls.has('venture82.safety-snapshots.v1.0099'));
+  dropAllDrafts();
+}
+
+section('⑧ localStorage 寫滿：唔可以把記憶體後備扮成持久安全快照');
+{
+  const before = listSafetySnapshots().length;
+  const realSetItem = localStorage.setItem;
+  localStorage.setItem = () => { throw new Error('QuotaExceededError'); };
+  const snapshot = createSafetySnapshot('唔持久快照', { members: [{ name: '只喺記憶體' }] }, { kind: 'test' });
+  ok('安全快照寫唔入 localStorage 會明確失敗', snapshot.ok === false, JSON.stringify(snapshot));
+  ok('失敗快照唔會以今次頁面記憶體後備冒充可還原快照', listSafetySnapshots().length === before);
+  const draftSaved = saveDraft('member', 'quota-test', { name: '記憶體後備草稿' });
+  ok('草稿可以留喺今次頁面，但如實回報未持久保存', draftSaved === false);
+  ok('今次頁面仍可讀返草稿後備', readDraft('member', 'quota-test')?.data?.name === '記憶體後備草稿');
+  localStorage.setItem = realSetItem;
+  clearDraft('member', 'quota-test');
 }
 
 /* ============================================================ */

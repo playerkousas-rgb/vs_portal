@@ -3,6 +3,7 @@
    ============================================================ */
 
 import { collection, find, add, update, remove, commit, load, newSystemId } from '../lib/store.js';
+import { rolesDescending } from '../lib/branch-config.js';
 import {
   members, member, memberName, attendanceStats, fees, memberStatus, memberBirthdayText,
   birthdayList, birthdaysThisMonth, birthdaysWithin, birthdaySummary, money, settings, profile,
@@ -10,7 +11,8 @@ import {
   feeExempt, feeExemptList, chief
 } from '../lib/model.js';
 import {
-  bindDraftAutosave, readDraft, applyDraft, clearDraft, draftBanner, confirmDanger, undoable
+  bindDraftAutosave, readDraft, applyDraft, clearDraft, draftBanner, confirmDanger, undoable,
+  confirmBulkOperation
 } from '../lib/guard.js';
 import { parseBirthday, ageFrom, daysUntilBirthday, turningAge, todayISO, isValidBirthday } from '../lib/dates.js';
 import {
@@ -19,13 +21,18 @@ import {
 import { toCSV, toWord, printDoc, download as dlFile, stamp } from '../lib/exporter.js';
 import { go, parse } from '../lib/router.js';
 import {
-  can, setMemberHubPassword, TEMP_PASSWORD, openMemberAccount, reviewAccountApp,
+  can, setMemberHubPassword, TEMP_PASSWORD, openMemberAccount, openMemberAccounts,
+  memberHasAccount, reviewAccountApp,
   setMemberIdentity, canClaimChief, claimChief, canChangePasswordOf,
   displayName, current,
-  ROLES, PERMS, PERM_GROUPS, permValue, permIsCustom, permCycle, setPerm, resetPerms, canEditPerms,
-  currentRole, isSuper
+  ROLES, PERM_GROUPS, permValue, permIsCustom, permCycle, setPerm, resetPerms, canEditPerms,
+  canManagePermRole, currentRole
 } from '../lib/auth.js';
-import { pageHead, tabs, empty, kv, chipbar, progressBar, noteBox } from './ui.js';
+import {
+  SIDEBAR_MODULES, moduleGrant, visibleAccessRoles, canManageAccessRole,
+  setModuleGrant, resetModuleGrants
+} from '../lib/access.js';
+import { pageHead, tabs, empty, kvHtml, chipbar, progressBar, noteBoxHtml } from './ui.js';
 import { memberTabs, identityTabView, mountAccountsTab } from './members-accounts.js';
 
 let kw = '';
@@ -86,19 +93,21 @@ function listView() {
   }
   const b = birthdaySummary();
   const cnt = k => all.filter(m => identityOf(m) === k).length;
+  const identityRoles = rolesDescending({ includeHidden: false });
+  const roleSummary = identityRoles.map(role => `${role.name} ${cnt(role.id)}`).join(' · ');
 
   return `
   ${pageHead({
     title: '用戶',
-    sub: `${all.length} 位 · 團長 ${cnt('chief')} · 領袖 ${cnt('leader')} · 執委 ${cnt('exco')} · 團員 ${cnt('member')}`,
+    sub: `${all.length} 位 · ${roleSummary}`,
     actions: `
       ${can('member.export') ? `<button class="btn btn-sm" data-act="exp-csv">${icon('download', 15)} CSV</button>
       <button class="btn btn-sm" data-act="exp-word">${icon('download', 15)} Word</button>
       <button class="btn btn-sm" data-act="exp-bday">${icon('sparkle', 15)} 生日表</button>` : ''}
       <button class="btn btn-sm" data-fields="members" title="改名／加欄位（例：小隊、收據編號）">${icon('table', 15)} 欄位</button>
       <button class="btn btn-sm" data-go="#/members/perms" title="邊個身份做得到邊樣嘢（可改）">${icon('shield', 15)} 權限總表</button>
-      ${can('member.create') ? `<button class="btn btn-sm" data-act="bulk-open">${icon('users', 15)} 批量開戶</button>
-      <button class="btn btn-sm btn-primary" data-act="new">${icon('plus', 15)} 新增用戶</button>` : ''}`
+      ${can('admin.accounts') ? `<button class="btn btn-sm" data-act="bulk-open">${icon('users', 15)} 批量開戶</button>` : ''}
+      ${can('member.create') ? `<button class="btn btn-sm btn-primary" data-act="new">${icon('plus', 15)} 新增用戶</button>` : ''}`
   })}
   ${memberTabs('list')}
 
@@ -116,8 +125,8 @@ function listView() {
       ${apps.map(a => `<div class="list-item">
         <div class="li-main"><div class="li-t">${esc(a.name)} · ${esc(a.ymis)}</div>
           <div class="li-s">${esc(a.rosterName ? '名冊：' + a.rosterName : '名冊未有此人')}${a.email ? ' · ' + esc(a.email) : ''}</div></div>
-        <button class="btn btn-xs btn-primary" data-act="approve-app" data-id="${a.id}">批准（密碼 ${TEMP_PASSWORD}）</button>
-        <button class="btn btn-xs" data-act="reject-app" data-id="${a.id}">拒絕</button>
+        <button class="btn btn-xs btn-primary" data-act="approve-app" data-id="${esc(a.id)}">批准（密碼 ${TEMP_PASSWORD}）</button>
+        <button class="btn btn-xs" data-act="reject-app" data-id="${esc(a.id)}">拒絕</button>
       </div>`).join('')}</div>`;
   })()}
 
@@ -161,7 +170,7 @@ function listView() {
 
   <div class="row-between mb-16 wrap gap-12 no-print">
     <div class="col gap-8" style="min-width:0">
-      ${chipbar([['all', '全部身份', all.length], ['chief', '團長', cnt('chief')], ['leader', '領袖', cnt('leader')], ['exco', '執委', cnt('exco')], ['member', '團員', cnt('member')]], idFilter, 'data-ident')}
+      ${chipbar([['all', '全部身份', all.length], ...identityRoles.map(role => [role.id, role.name, cnt(role.id)])], idFilter, 'data-ident')}
       ${chipbar([['all', '全部狀態', all.length], ['active', '現役', all.filter(m => m.status === 'active').length],
         ['leave', '休假', all.filter(m => m.status === 'leave').length], ['alumni', '舊團員', all.filter(m => m.status === 'alumni').length]], statusFilter, 'data-status')}
     </div>
@@ -183,7 +192,7 @@ function listView() {
         const unpaid = mf.filter(f => !f.paid);
         const p = parseBirthday(m.birthday);
         const dLeft = daysUntilBirthday(m.birthday);
-        return `<tr style="cursor:pointer" data-open="${m.id}">
+        return `<tr style="cursor:pointer" data-open="${esc(m.id)}">
           <td><div class="row gap-10">${avatar(m.name)}
             <div><div class="semibold">${esc(m.name)}</div><div class="xs faint">${esc(m.eng || '')}</div></div></div></td>
           <td><span class="badge ${IDENTITIES[identityOf(m)].c}"><span class="dot"></span>${esc(identityLabel(m))}</span></td>
@@ -202,9 +211,9 @@ function listView() {
             : (mf.length ? (unpaid.length
               ? `<span class="badge b-danger">欠 ${unpaid.length} 筆</span>`
               : `<span class="badge b-ok"><span class="dot"></span>已清</span>`) : '<span class="faint xs">—</span>')}</td>
-          <td><span class="badge ${S[m.status]?.c || 'b-grey'}"><span class="dot"></span>${S[m.status]?.l || m.status}</span></td>
+          <td><span class="badge ${S[m.status]?.c || 'b-grey'}"><span class="dot"></span>${esc(S[m.status]?.l || m.status || '—')}</span></td>
           <td class="right">${can('member.edit')
-            ? `<button class="btn btn-xs" data-edit="${m.id}">${icon('edit', 13)} 編輯</button>`
+            ? `<button class="btn btn-xs" data-edit="${esc(m.id)}">${icon('edit', 13)} 編輯</button>`
             : icon('chevronR', 15)}</td>
         </tr>`;
       }).join('')}</tbody>
@@ -234,7 +243,7 @@ function birthdayView() {
   })}
   ${memberTabs('birthdays')}
 
-  ${next7.length ? `<div class="card mb-16">${noteBox(`<b>${next7.length} 位</b>團員生日快到：` +
+  ${next7.length ? `<div class="card mb-16">${noteBoxHtml(`<b>${next7.length} 位</b>團員生日快到：` +
     next7.map(x => `${esc(x.name)}（${x.days === 0 ? '今日' : x.days + ' 日後'}，${Number(x.md.slice(0, 2))} 月 ${Number(x.md.slice(3))} 日${x.turning ? ` 將滿 ${x.turning} 歲` : ''}）`).join('、'), 'warn')}</div>` : ''}
 
   ${chipbar(monthNames.map((n, i) => [String(i + 1), n, birthdaysThisMonth(i + 1, opts).length]),
@@ -248,7 +257,7 @@ function birthdayView() {
     <div>
       ${list.length ? list.map(x => {
         const m = x.member;
-        return `<div class="bday ${x.days === 0 ? 'today' : ''}" style="cursor:pointer" data-open="${m.id}">
+        return `<div class="bday ${x.days === 0 ? 'today' : ''}" style="cursor:pointer" data-open="${esc(m.id)}">
           <span class="cake">${icon('sparkle', 16)}</span>
           <div class="grow">
             <div class="semibold sm">${esc(m.name)} <span class="faint xs">${esc(m.role || '')}</span></div>
@@ -302,15 +311,15 @@ function detail(id) {
     sub: `${identityLabel(m)}${m.role ? ' · ' + m.role : ''}${m.eng ? ' · ' + m.eng : ''} · ${memberStatus()[m.status]?.l || ''}`,
     actions: `
       <button class="btn btn-sm" data-go="#/members">${icon('chevronL', 15)} 返回名冊</button>
-      ${identityOf(m) === 'member'
-        ? (can('member.edit') ? `<button class="btn btn-sm" data-act="open-hub" data-id="${m.id}">${icon('key', 15)} 開戶（首次密碼 ${TEMP_PASSWORD}）</button>` : '')
-        : (canChangePasswordOf('member:' + m.id) ? `<button class="btn btn-sm" data-act="set-pw" data-id="${m.id}">${icon('key', 15)} 設定密碼</button>` : '')}
-      ${can('member.edit') ? `<button class="btn btn-sm btn-primary" data-act="edit" data-id="${m.id}">${icon('edit', 15)} 編輯</button>` : ''}
+      ${!memberHasAccount(m)
+        ? (can('admin.accounts') ? `<button class="btn btn-sm" data-act="open-hub" data-id="${esc(m.id)}">${icon('key', 15)} 直接開戶（首次密碼 ${TEMP_PASSWORD}）</button>` : '')
+        : (canChangePasswordOf('member:' + m.id) ? `<button class="btn btn-sm" data-act="set-pw" data-id="${esc(m.id)}">${icon('key', 15)} 重設密碼</button>` : '')}
+      ${can('member.edit') ? `<button class="btn btn-sm btn-primary" data-act="edit" data-id="${esc(m.id)}">${icon('edit', 15)} 編輯</button>` : ''}
       ${can('admin.chief') && identityOf(m) !== 'chief'
-        ? `<button class="btn btn-sm" data-act="make-chief" data-id="${m.id}">${icon('sparkle', 15)} 設為團長（轉移）</button>` : ''}`
+        ? `<button class="btn btn-sm" data-act="make-chief" data-id="${esc(m.id)}">${icon('sparkle', 15)} 設為團長（轉移）</button>` : ''}`
   })}
 
-  ${dLeft !== null && dLeft <= (settings().birthday?.remindDaysBefore || 7) ? noteBox(
+  ${dLeft !== null && dLeft <= (settings().birthday?.remindDaysBefore || 7) ? noteBoxHtml(
     dLeft === 0 ? `🎂 今日係 ${esc(m.name)} 生日！` : `🎂 ${esc(m.name)} ${dLeft} 日後生日（${memberBirthdayText(m)}${turningAge(m.birthday) ? `，將滿 ${turningAge(m.birthday)} 歲` : ''}）`, 'warn') + '<div class="mb-16"></div>' : ''}
 
   <div class="grid g-2-1">
@@ -318,7 +327,7 @@ function detail(id) {
       <div class="card">
         <div class="card-head"><div class="card-title">基本資料</div></div>
         <div style="padding:18px">
-          ${kv([
+          ${kvHtml([
             ['姓名', `<b>${esc(m.name)}</b>`],
             ['身份', `<span class="badge ${IDENTITIES[identityOf(m)].c}"><span class="dot"></span>${esc(identityLabel(m))}</span>`],
             ['英文名', esc(m.eng || '—')],
@@ -334,7 +343,7 @@ function detail(id) {
             ['電郵', esc(m.email || '—')],
             ['入團日期', esc(m.join || '—')],
             ['標籤', (m.tags || []).map(t => `<span class="tag">${esc(t)}</span>`).join(' ') || '—'],
-            ['狀態', `<span class="badge ${memberStatus()[m.status]?.c || 'b-grey'}">${memberStatus()[m.status]?.l || m.status}</span>`],
+            ['狀態', `<span class="badge ${memberStatus()[m.status]?.c || 'b-grey'}">${esc(memberStatus()[m.status]?.l || m.status || '—')}</span>`],
             ['團費', feeExempt(m)
               ? `<span class="badge b-grey">免收團費</span> <span class="xs faint">${identityOf(m) === 'leader' ? '（領袖唔收團費）' : '（已設定免收）'}</span>`
               : '<span class="sm">需繳交</span>'],
@@ -351,7 +360,7 @@ function detail(id) {
           ${doneMeetings.length ? doneMeetings.map(mt => {
             const a = (mt.attendance || {})[id];
             const label = { present: ['出席', 'b-ok'], late: ['遲到', 'b-warn'], apology: ['請假', 'b-info'], absent: ['缺席', 'b-danger'] }[a] || ['未記錄', 'b-grey'];
-            return `<div class="list-item" data-go="#/meetings/${mt.id}">
+            return `<div class="list-item" data-go="#/meetings/${esc(mt.id)}">
               <div class="li-main"><div class="li-t">${esc(mt.title)}</div>
                 <div class="li-s mono">${esc(mt.date)}</div></div>
               <span class="badge ${label[1]}">${label[0]}</span></div>`;
@@ -369,7 +378,7 @@ function detail(id) {
             <div class="li-main"><div class="li-t">${esc(f.label || f.period || '團費')}</div>
               <div class="li-s">${money(f.amount)}${f.due ? ` · 到期 ${esc(f.due)}` : ''}${f.paidDate ? ` · 已收 ${esc(f.paidDate)}` : ''}</div></div>
             ${f.paid ? `<span class="badge b-ok"><span class="dot"></span>已收</span>`
-              : can('fee.mark') ? `<button class="btn btn-xs" data-act="mark-fee" data-id="${f.id}">標記已收</button>`
+              : can('fee.mark') ? `<button class="btn btn-xs" data-act="mark-fee" data-id="${esc(f.id)}">標記已收</button>`
               : `<span class="badge b-danger">未收</span>`}
           </div>`).join('') : empty('wallet', '暫無收費紀錄')}
         </div>
@@ -391,11 +400,11 @@ function detail(id) {
         <div class="card-head"><div class="card-title">領袖備註</div></div>
         <div style="padding:16px 18px">
           <textarea class="textarea" id="noteBox" placeholder="例：本年負責先鋒工程訓練，10 月需覆誓…">${esc(m.note || '')}</textarea>
-          <button class="btn btn-sm btn-primary btn-block mt-12" data-act="save-note" data-id="${m.id}">${icon('save', 15)} 儲存備註</button>
+          <button class="btn btn-sm btn-primary btn-block mt-12" data-act="save-note" data-id="${esc(m.id)}">${icon('save', 15)} 儲存備註</button>
         </div>
       </div>` : ''}
 
-      ${can('member.delete') ? `<button class="btn btn-danger btn-block" data-act="del" data-id="${m.id}">${icon('trash', 15)} 刪除此用戶</button>` : ''}
+      ${can('member.delete') ? `<button class="btn btn-danger btn-block" data-act="del" data-id="${esc(m.id)}">${icon('trash', 15)} 刪除此用戶</button>` : ''}
     </div>
   </div>`;
 }
@@ -418,7 +427,7 @@ function editor(id) {
           <input class="input" id="f-name" data-draft="name" value="${esc(m?.name || '')}" placeholder="例：陳大文"></div>
         <div class="field"><label class="label">身份 <span class="req">*</span></label>
           ${can('member.identity') ? `<select class="select" id="f-identity" data-draft="identity" ${ident === 'chief' ? 'disabled' : ''}>
-            ${Object.entries(IDENTITIES).map(([k, v]) => (k === 'chief' && !can('admin.chief') ? '' : `<option value="${k}" ${ident === k ? 'selected' : ''}>${v.l}</option>`)).join('')}
+            ${Object.entries(IDENTITIES).map(([k, v]) => (k === 'chief' && !can('admin.chief') ? '' : `<option value="${esc(k)}" ${ident === k ? 'selected' : ''}>${v.l}</option>`)).join('')}
           </select>` : `<input class="input" value="${esc(identityLabel(m || { identity: 'member' }))}" readonly style="background:var(--bg-2)">`}
           <div class="hint">${ident === 'chief'
             ? '團長身份唔可以用下拉改 —— 要交棒：去下一位嘅用戶頁撳「設為團長（轉移）」。'
@@ -452,7 +461,7 @@ function editor(id) {
           <input class="input" id="f-join" data-draft="join" value="${esc(m?.join || '')}" placeholder="YYYY-MM-DD"></div>
         <div class="field"><label class="label">狀態</label>
           <select class="select" id="f-status" data-draft="status">
-            ${Object.entries(memberStatus()).map(([k, v]) => `<option value="${k}" ${m?.status === k ? 'selected' : ''}>${v.l}</option>`).join('')}
+            ${Object.entries(memberStatus()).map(([k, v]) => `<option value="${esc(k)}" ${m?.status === k ? 'selected' : ''}>${v.l}</option>`).join('')}
           </select></div>
         <div class="field"><label class="label">標籤（用逗號分隔）</label>
           <input class="input" id="f-tags" data-draft="tags" value="${esc((m?.tags || []).join(', '))}" placeholder="執委會, 小隊"></div>
@@ -469,7 +478,7 @@ function editor(id) {
       <div id="f-err" class="err mt-8"></div>
       <div class="hint mb-8" data-draft-stamp></div>
       <div class="row gap-8 wrap">
-        <button class="btn btn-primary" data-act="save" data-id="${id || ''}">${icon('save', 16)} ${m ? '儲存' : '新增用戶'}</button>
+        <button class="btn btn-primary" data-act="save" data-id="${esc(id || '')}">${icon('save', 16)} ${m ? '儲存' : '新增用戶'}</button>
         <button class="btn" data-act="cancel">${icon('x', 16)} 取消</button>
       </div>
       <div class="hint mt-8">未撳「儲存」之前，改動只係暫存喺呢部裝置（瀏覽器），唔會寫入資料庫，更唔會送去總表。</div>
@@ -502,7 +511,7 @@ function rosterWord() {
     filename: `用戶名冊_${stamp()}.doc`,
     title: '用戶名冊',
     org: profile().name,
-    bodyHtml: `<div class="doc-head"><div class="doc-title">用戶名冊</div>
+    trustedBodyHtml: `<div class="doc-head"><div class="doc-title">用戶名冊</div>
       <div class="doc-sub">${esc(profile().name || '')} · 共 ${all.length} 位（團長 ${cnt('chief')} · 領袖 ${cnt('leader')} · 執委 ${cnt('exco')} · 團員 ${cnt('member')}）· 列印日期 ${todayISO()}</div></div>
       <table><thead><tr><th>姓名</th><th>身份</th><th>職位</th><th>出生日期</th><th class="num">年齡</th><th>電話</th><th>入團</th><th>狀態</th></tr></thead>
       <tbody>${rows}</tbody></table>`
@@ -512,6 +521,7 @@ function rosterWord() {
 function birthdayTableHtml(title = '團員生日表') {
   const monthNames = ['一月', '二月', '三月', '四月', '五月', '六月', '七月', '八月', '九月', '十月', '十一月', '十二月'];
   const all = birthdayList();
+  const remindDays = Math.max(0, Math.min(365, Math.round(Number(settings().birthday?.remindDaysBefore) || 7)));
   return `
   <div class="doc-head"><div class="doc-title">${esc(title)}</div>
     <div class="doc-sub">${esc(profile().name || '')} · 更新日期 ${todayISO()}</div></div>
@@ -528,14 +538,14 @@ function birthdayTableHtml(title = '團員生日表') {
       }).join('')}
     </tbody>
   </table>
-  <p class="note">提示：生日前 ${settings().birthday?.remindDaysBefore || 7} 日系統會自動提醒。${all.filter(x => !parseBirthday(x.member.birthday)?.hasYear).length ? '部分團員未填出生年份，年齡欄以「—」顯示。' : ''}</p>`;
+  <p class="note">提示：生日前 ${remindDays} 日系統會自動提醒。${all.filter(x => !parseBirthday(x.member.birthday)?.hasYear).length ? '部分團員未填出生年份，年齡欄以「—」顯示。' : ''}</p>`;
 }
 
 function exportBirthdayWord() {
-  toWord({ filename: `團員生日表_${stamp()}.doc`, title: '團員生日表', org: profile().name, bodyHtml: birthdayTableHtml() });
+  toWord({ filename: `團員生日表_${stamp()}.doc`, title: '團員生日表', org: profile().name, trustedBodyHtml: birthdayTableHtml() });
 }
 function exportBirthdayPdf() {
-  printDoc({ title: '團員生日表', org: profile().name, bodyHtml: birthdayTableHtml() });
+  printDoc({ title: '團員生日表', org: profile().name, trustedBodyHtml: birthdayTableHtml() });
 }
 function exportBirthdayCSV() {
   toCSV({
@@ -547,6 +557,15 @@ function exportBirthdayCSV() {
     ])
   });
 }
+/** RFC 5545 text escaping also prevents imported names from injecting new calendar fields. */
+export function icsText(value) {
+  return String(value ?? '')
+    .replace(/\\/g, '\\\\')
+    .replace(/\r\n|\r|\n/g, '\\n')
+    .replace(/;/g, '\\;')
+    .replace(/,/g, '\\,');
+}
+
 /** 匯出 .ics（可加入 Google Calendar / iPhone 日曆，每年重複） */
 function exportBirthdayIcs() {
   const y = new Date().getFullYear();
@@ -556,14 +575,15 @@ function exportBirthdayIcs() {
   birthdayList().forEach(x => {
     const p = parseBirthday(x.birthday);
     const start = `${y}${String(p.m).padStart(2, '0')}${String(p.d).padStart(2, '0')}`;
+    const safeId = String(x.id || 'member').replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 96) || 'member';
     lines.push('BEGIN:VEVENT',
-      `UID:${x.id}-birthday@82venture`,
+      `UID:${safeId}-birthday@82venture`,
       `DTSTAMP:${new Date().toISOString().replace(/[-:.]/g, '').slice(0, 15)}Z`,
       `DTSTART;VALUE=DATE:${start}`,
       'DURATION:P1D',
       'RRULE:FREQ=YEARLY',
-      `SUMMARY:${x.name} 生日 🎂`,
-      `DESCRIPTION:${profile().name || ''} 團員生日`,
+      `SUMMARY:${icsText(x.name)} 生日 🎂`,
+      `DESCRIPTION:${icsText(profile().name || '')} 團員生日`,
       'TRANSP:TRANSPARENT',
       'END:VEVENT');
   });
@@ -589,55 +609,98 @@ function permCellText(v) {
   if (v === 'own') return '<span class="badge b-info">自己建立</span>';
   return '<span class="perm-no">✗</span>';
 }
-function permsView() {
-  const editable = canEditPerms();
-  /* 睇緊嘅身份欄：團長睇晒；其他身份只睇到自己同以下 */
-  const mine = currentRole();
-  const lvl = ROLES[mine]?.level || 0;
-  const cols = isSuper() ? ['chief', 'leader', 'exco', 'member']
-    : ['chief', 'leader', 'exco', 'member'].filter(r => (ROLES[r]?.level || 9) >= lvl);
+
+const ACCESS_LABEL = { show: '顯示', read: '閱讀', edit: '編輯' };
+function accessSwitch(moduleId, role, dimension, enabled, editable) {
+  const label = ACCESS_LABEL[dimension];
+  return `<button type="button" role="switch" aria-checked="${enabled ? 'true' : 'false'}"
+    class="access-switch${enabled ? ' is-on' : ''}${editable ? '' : ' is-readonly'}"
+    ${editable ? `data-access-toggle data-module="${esc(moduleId)}" data-role="${esc(role)}" data-dimension="${esc(dimension)}"` : 'disabled'}
+    title="${esc(editable ? `切換${ROLES[role]?.name || role}的${label}權限` : `${ROLES[role]?.name || role}的${label}權限（自己一欄只供檢視）`)}">
+    <span>${esc(label)}</span><b>${enabled ? '開' : '關'}</b></button>`;
+}
+
+function sidebarAccessTable(cols) {
+  return `
+    <div class="scroll-x">
+      <table class="table table-compact access-table">
+        <thead><tr><th style="min-width:170px">側欄項目</th>
+          ${cols.map(role => `<th class="center" style="min-width:210px">${esc(role.name)}${role.id === currentRole() ? '<div class="xs faint">你目前身份 · 只讀</div>' : ''}</th>`).join('')}</tr></thead>
+        <tbody>${SIDEBAR_MODULES.map(module => `<tr>
+          <td><b>${icon(module.icon, 15)} ${esc(module.label)}</b><div class="xs faint mono">${esc(module.id)}</div></td>
+          ${cols.map(role => {
+            const grant = moduleGrant(module.id, role.id);
+            const editable = canManageAccessRole(role.id);
+            return `<td><div class="access-switches">
+              ${accessSwitch(module.id, role.id, 'show', grant.show, editable)}
+              ${accessSwitch(module.id, role.id, 'read', grant.read, editable)}
+              ${accessSwitch(module.id, role.id, 'edit', grant.edit, editable)}
+            </div></td>`;
+          }).join('')}
+        </tr>`).join('')}</tbody>
+      </table>
+    </div>`;
+}
+
+function detailedPermissionTable(cols) {
   let custom = 0;
-  const rows = PERM_GROUPS.map(g => `
-    <tr><td colspan="${cols.length + 1}" style="background:#FBF6F7;font-weight:700;font-size:12px;letter-spacing:.04em;color:var(--faint);padding:8px 14px">${esc(g.title)}</td></tr>
-    ${g.items.map(([k, label]) => `<tr>
-      <td>${esc(label)}<div class="xs faint mono">${k}</div></td>
+  const rows = PERM_GROUPS.map(group => `
+    <tr><td colspan="${esc(cols.length + 1)}" class="perm-group-title">${esc(group.title)}</td></tr>
+    ${group.items.map(([permission, label]) => `<tr>
+      <td>${esc(label)}<div class="xs faint mono">${esc(permission)}</div></td>
       ${cols.map(role => {
-        const v = permValue(k, role);
-        const isCustom = permIsCustom(k, role);
+        const value = permValue(permission, role.id);
+        const isCustom = permIsCustom(permission, role.id);
         if (isCustom) custom++;
-        const cycle = permCycle(k);
+        const editable = canManagePermRole(role.id);
         return `<td class="perm-cell${editable ? ' perm-editable' : ''}"${editable
-          ? ` data-perm-toggle data-perm="${esc(k)}" data-role="${role}" title="撳一下換狀態（而家：${v === 1 ? '可以' : v === 0 ? '不可以' : v}）"` : ''}>
-          ${permCellText(v)}${isCustom ? '<span class="perm-dot" title="已自訂（唔同出廠預設）">●</span>' : ''}</td>`;
+          ? ` data-perm-toggle data-perm="${esc(permission)}" data-role="${esc(role.id)}" title="撳一下換狀態（而家：${esc(value === 1 ? '可以' : value === 0 ? '不可以' : value)}）"` : ''}>
+          ${permCellText(value)}${isCustom ? '<span class="perm-dot" title="已自訂（唔同出廠預設）">●</span>' : ''}</td>`;
       }).join('')}
     </tr>`).join('')}`).join('');
+  return { rows, custom };
+}
+
+function permsView() {
+  /* 正確方向：只顯示自己與較低身份。較高身份的權限欄不渲染、不提供 DOM。 */
+  const cols = visibleAccessRoles();
+  const editable = canEditPerms();
+  const details = detailedPermissionTable(cols);
 
   return `
   ${pageHead({
     title: '權限總表',
-    sub: '邊個身份做得到邊樣嘢' + (editable ? '（撳格子就可以改）' : '（只有團長可以改）'),
+    sub: '側欄顯示、內容閱讀、內容編輯分開控制；高身份自動包含低身份權限',
     actions: `<button class="btn btn-sm" data-go="#/members">${icon('chevronL', 15)} 返回用戶</button>
-      ${editable ? `<button class="btn btn-sm" data-act="perm-reset">${icon('undo', 15)} 還原預設</button>` : ''}`
+      ${editable ? `<button class="btn btn-sm" data-act="access-reset">${icon('undo', 15)} 還原可管理身份預設</button>` : ''}`
   })}
   ${memberTabs('perms')}
+
+  ${noteBoxHtml(`<b>層級規則已鎖定：</b>你只會見到<b>自己及較低身份</b>；只可修改比自己低的身份。
+    較低身份有的每一項權限，高身份都會自動包含。開啟低身份會向上繼承；關閉某身份會一併關閉更低身份，唔會出現「低有、高冇」。`, 'brand')}
+
+  <div class="card mb-16">
+    <div class="card-head"><div><div class="card-title">側欄權限</div>
+      <div class="card-sub">每個側欄項目三個獨立開關：顯示欄目／閱讀內容／編輯內容。編輯必定包含閱讀；顯示可以獨立收起。</div></div></div>
+    ${sidebarAccessTable(cols)}
+  </div>
+
   <div class="card">
-    <div class="card-head"><div><div class="card-title">權限總表</div>
-      <div class="card-sub">${editable
-        ? `<b>撳格子</b>就會換：${icon('check', 13)} 可以 → 自己 → ✗ 不可以 → 返返 ${icon('check', 13)}${custom ? ` · 已有 <b>${custom}</b> 格改過（<span class="perm-dot">●</span>）` : ''}`
-        : `✓ 可以　<span class="faint">自己</span> 只限自己　✗ 不可以${isSuper() ? '' : '（只顯示你可見嘅身份）'}`}</div></div></div>
+    <div class="card-head"><div><div class="card-title">進階功能權限</div>
+      <div class="card-sub">側欄 edit 係外層硬閘；下面再收窄刪除、批核、只限自己等細項。${details.custom ? ` 已有 ${details.custom} 格自訂。` : ''}</div></div></div>
     <div class="scroll-x">
       <table class="table table-compact">
         <thead><tr><th style="min-width:200px">功能</th>
-          ${cols.map(c => `<th class="center" style="width:120px">${ROLES[c].name}</th>`).join('')}</tr></thead>
-        <tbody>${rows}</tbody>
+          ${cols.map(role => `<th class="center" style="width:120px">${esc(role.name)}${role.id === currentRole() ? '<div class="xs faint">只讀</div>' : ''}</th>`).join('')}</tr></thead>
+        <tbody>${details.rows}</tbody>
       </table>
     </div>
   </div>
-  ${noteBox(`<b>改咗會點？</b>
+  ${noteBoxHtml(`<b>實際執行：</b>
     <ul style="margin:8px 0 0;padding-left:18px;line-height:1.9">
-      <li>改動<b>即刻生效</b>（呢部機），並跟旅團資料庫一齊<b>同步去其他裝置</b>。</li>
-      <li>出廠預設唔會被改走 —— 撳「還原預設」就全部返晒去原本。</li>
-      <li>「自己」＝只限自己嗰份（例如自己開嘅帳目）；「自己建立」＝只限自己建立嘅。</li>
+      <li>側欄「顯示」只控制入口；「閱讀」同時用於直接網址及後端資料投影；「編輯」同時限制畫面操作及後端寫入。</li>
+      <li>進階功能仍可再設「自己／自己建立」，但同樣受向上繼承及較高身份保密規則約束。</li>
+      <li>改動先暫存呢部機；撳頂部「儲存到後端」後先同步去其他裝置。</li>
     </ul>`, 'info')}`;
 }
 
@@ -649,7 +712,15 @@ export function mount(root, params = {}) {
      mountAccountsTab 自己會 querySelectorAll 呢個 root，所以直接交畀佢。 */
   if (params.id === 'accounts') mountAccountsTab(root, () => refresh());
 
-  /* 權限總表：撳格子換狀態 */
+  /* 側欄權限：三個 switch 分開；access.js 負責向上繼承及向下收窄。 */
+  root.querySelectorAll('[data-access-toggle]').forEach(button => button.addEventListener('click', () => {
+    const currentValue = button.getAttribute('aria-checked') === 'true';
+    const result = setModuleGrant(button.dataset.module, button.dataset.role, button.dataset.dimension, !currentValue);
+    if (!result.ok) { toast(result.msg || '改唔到', 'err'); return; }
+    refresh();
+  }));
+
+  /* 進階細項權限：撳格子換狀態。自己／較高身份冇 data attribute，唔可改。 */
   root.querySelectorAll('[data-perm-toggle]').forEach(td => td.addEventListener('click', () => {
     const k = td.dataset.perm, role = td.dataset.role;
     const cycle = permCycle(k);
@@ -660,12 +731,18 @@ export function mount(root, params = {}) {
     if (!r.ok) { toast(r.msg || '改唔到', 'err'); return; }
     refresh();
   }));
-  root.querySelector('[data-act="perm-reset"]')?.addEventListener('click', async () => {
+  root.querySelector('[data-act="access-reset"]')?.addEventListener('click', async () => {
     const { confirmDlg } = await import('../lib/util.js');
-    if (!(await confirmDlg({ title: '還原權限總表', okText: '確定還原', danger: true, message: '會把<b>所有自訂權限</b>還原成出廠預設。' }))) return;
-    const r = resetPerms();
-    if (!r.ok) { toast(r.msg || '還原唔到', 'err'); return; }
-    toast(`已還原（清走 ${r.cleared} 項自訂）`, 'ok');
+    if (!(await confirmDlg({
+      title: '還原較低身份權限', okText: '確定還原', danger: true,
+      trustedMessageHtml: '只會還原你有權管理的<b>較低身份</b>；你自己及更高身份不會被改動。'
+    }))) return;
+    const accessResult = resetModuleGrants();
+    const detailResult = resetPerms();
+    if (!accessResult.ok || !detailResult.ok) {
+      toast(accessResult.msg || detailResult.msg || '還原唔到', 'err'); return;
+    }
+    toast(`已還原較低身份權限（清走 ${detailResult.cleared} 格進階自訂）`, 'ok');
     refresh();
   });
 
@@ -753,7 +830,7 @@ export function mount(root, params = {}) {
       const dup = members().find(m => m.id !== id && String(m.name).trim() === name);
       if (dup && !(await confirmDlg({
         title: '已經有同名用戶', okText: '照樣儲存',
-        message: `名冊入面已經有 <b>${esc(name)}</b>（${esc(identityLabel(dup))}）。如果係同一個人，請返回改用「編輯」。`
+        trustedMessageHtml: `名冊入面已經有 <b>${esc(name)}</b>（${esc(identityLabel(dup))}）。如果係同一個人，請返回改用「編輯」。`
       }))) return;
 
       if (id) {
@@ -804,7 +881,7 @@ export function mount(root, params = {}) {
       const r = await modal({
         title: '認領團長身份',
         sub: '每個旅團永遠只有一位團長（最高權限，可以轉移）',
-        body: me
+        trustedBodyHtml: me
           ? `<p class="sm">你係 <b>${esc(me.name)}</b>。確定之後你就係團長。</p>`
           : `<div class="field"><label class="label">姓名</label><input class="input" id="ccName"></div>
              <div class="field mt-12"><label class="label">電郵（之後用呢個登入）</label><input class="input" id="ccEmail" type="email"></div>`,
@@ -833,7 +910,7 @@ export function mount(root, params = {}) {
       const cur = chief();
       const okGo = await confirmDlg({
         title: '轉移團長身份', okText: '確定轉移',
-        message: `將團長身份轉移畀 <b>${esc(m.name)}</b>？` +
+        trustedMessageHtml: `將團長身份轉移畀 <b>${esc(m.name)}</b>？` +
           (cur ? `<br>${esc(cur.name)} 會變返「領袖」。` : '') +
           '<br><span class="xs faint">團長係最高權限（可以改任何身份、改任何密碼）。轉移之後你嘅身份即刻改變。</span>'
       });
@@ -850,8 +927,8 @@ export function mount(root, params = {}) {
       if (!m) return;
       const r = await modal({
         title: `設定密碼：${m.name}`,
-        sub: '設定之後即刻生效，並會自動寫入後端（另一部機都用得）',
-        body: `<div class="field"><label class="label">新密碼（最少 4 個字）</label>
+        sub: '設定後先留喺呢部機；再撳頂部「儲存到後端」，另一部機先會用到',
+        trustedBodyHtml: `<div class="field"><label class="label">新密碼（最少 4 個字）</label>
             <input class="input" id="sp1" type="password" autocomplete="new-password"></div>
           <div class="field mt-12"><label class="label">再輸入一次</label>
             <input class="input" id="sp2" type="password" autocomplete="new-password"></div>
@@ -884,16 +961,31 @@ export function mount(root, params = {}) {
     }
 
     if (act === 'bulk-open') {
-      const list = members().filter(m => m.status !== 'alumni' && !m.hubPw?.hash && !m.hubPassword);
+      if (!can('admin.accounts')) { toast('只有團長／領袖可以開戶', 'err'); return; }
+      const list = members().filter(m => m.status !== 'alumni' && !memberHasAccount(m));
       if (!list.length) { toast('全部人都已經開咗戶', 'ok'); return; }
-      const okGo = await confirmDlg({
-        title: '批量開戶', okText: `為 ${list.length} 位開戶`,
-        message: `會為 <b>${list.length}</b> 位未開戶嘅人設首次密碼 <b>${TEMP_PASSWORD}</b>（首次登入要改）。`
+      const okGo = await confirmBulkOperation({
+        title: 'Dry-run：批量開戶', actionLabel: `確認為 ${list.length} 位開戶`, count: list.length,
+        scope: `${profile().name || '現時旅團'}／現役而未開戶成員`, requireText: `確認 ${list.length}`,
+        changes: [
+          { label: '未開戶', before: list.length, after: 0 },
+          { label: '新增 Unified Users', before: 0, after: list.length },
+          { label: '首次密碼', before: '—', after: TEMP_PASSWORD, detail: '首次登入強制更改' }
+        ],
+        preview: list.slice(0, 100).map(m => ({ label: `${m.name} · ${m.ymis || m.email || '未有登入 ID'}`, before: '未開戶', after: `${identityLabel(identityOf(m))}帳戶／首次登入改密碼` })),
+        warnings: ['會用一個後端 request 批量處理；後端會先驗證 YMIS／Email 唯一性，再逐人回報結果。'],
+        backupText: '原名冊唔會被刪改；Users 寫入會記錄操作編號同逐人結果。',
+        rollbackText: '如開錯戶，請喺帳戶管理停用該戶；唔會刪除歷史身份紀錄。',
+        readbackText: '完成後會重新由後端讀取名冊／帳戶投影，核對實際開立數。'
       });
       if (!okGo) return;
-      let n = 0;
-      for (const m of list) { const r = await openMemberAccount(m.id); if (r.ok) n++; }
-      toast(`已為 ${n} 位開戶（首次密碼 ${TEMP_PASSWORD}）`, 'ok');
+      const result = await openMemberAccounts(list.map(m => m.id));
+      if (!result.ok) {
+        toast(result.msg || '批量開戶失敗', 'err');
+      } else {
+        toast(`已開立 ${result.created} 個帳戶${result.failed ? `；${result.failed} 個未能開立` : ''}（首次密碼 ${TEMP_PASSWORD}）`,
+          result.failed ? 'warn' : 'ok');
+      }
       refresh();
       return;
     }
@@ -920,7 +1012,7 @@ export function mount(root, params = {}) {
       if (!m) return;
       const okDel = await confirmDanger({
         title: '刪除用戶', okText: '確定刪除', requireText: m.name,
-        message: `確定刪除 <b>${esc(m.name)}</b>（${esc(identityLabel(m))}）？<br>
+        trustedMessageHtml: `確定刪除 <b>${esc(m.name)}</b>（${esc(identityLabel(m))}）？<br>
           佢嘅出席紀錄會保留但名字會顯示為「—」。<br>
           <span class="xs faint">刪除只會改呢部裝置嘅資料庫；已經同步咗去總表嘅資料要另外處理。</span>`
       });

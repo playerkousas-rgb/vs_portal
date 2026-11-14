@@ -28,13 +28,14 @@ import { APP_VERSION } from '../lib/version.js';
 export async function resolveConflictsDialog({ conflicts = [], ctx = {}, mode = 'save', remoteAt = '', savedCount = 0 } = {}) {
   if (!conflicts.length) return { useMine: [] };
   const rows = conflicts.map(c => ({ key: c.key, ...describeConflict(c, ctx) }));
-  const when = String(remoteAt || '').slice(0, 19).replace('T', ' ');
+  const when = esc(String(remoteAt || '').slice(0, 19).replace('T', ' '));
+  const saved = Math.max(0, Number(savedCount) || 0);
   const intro = mode === 'login'
     ? `你上次有改動未儲存就離開咗。後端喺呢段時間有人儲存過${when ? `（${when}）` : ''}。
        唔撞嘅改動已經保留喺呢部機（記得撳「儲存到後端」）；下面 <b>${rows.length}</b> 格你同對方改咗<b>唔同嘅嘢</b>，
        暫時用咗後端版本 —— 要用返你嘅就剔佢。`
     : `後端喺你登入之後有人儲存過${when ? `（${when}）` : ''}。
-       ${savedCount ? `你其餘 <b>${savedCount}</b> 項改動已經寫入後端；` : ''}但下面 <b>${rows.length}</b> 格你同對方改咗<b>唔同嘅嘢</b>，
+       ${saved ? `你其餘 <b>${saved}</b> 項改動已經寫入後端；` : ''}但下面 <b>${rows.length}</b> 格你同對方改咗<b>唔同嘅嘢</b>，
        所以<b>未寫入</b>，請再確認：剔咗嘅會用你嘅蓋過去，冇剔嘅保留後端。`;
 
   const body = `
@@ -68,7 +69,7 @@ export async function resolveConflictsDialog({ conflicts = [], ctx = {}, mode = 
     title: mode === 'login' ? '上次未儲存嘅改動：有幾格同後端唔同' : `已儲存，但有 ${rows.length} 格同後端唔同 —— 請再確認`,
     sub: '同一格兩邊改咗唔同嘅值 —— 系統唔會自己揀，等你話事',
     wide: true,
-    body,
+    trustedBodyHtml: body,
     onMount: (el) => {
       el.querySelectorAll('[data-all]').forEach(b => b.addEventListener('click', () => {
         const on = b.dataset.all === '1';
@@ -91,7 +92,12 @@ export async function resolveConflictsDialog({ conflicts = [], ctx = {}, mode = 
  *  所以睇落似「寫咗但完全冇嘢」。而家一次過做晒，而且訊息會講明寫咗去邊。 */
 export function saveResultText(r) {
   if (!r) return '儲存失敗';
-  if (!r.ok) return '儲存失敗：' + (r.error || '未知錯誤') + (r.hint ? `（${r.hint}）` : '');
+  if (!r.ok && (r.outcome === 'unknown' || r.mayHaveApplied)) {
+    return '寫入結果未知（唔等於失敗）：' + (r.error || '可能未寫，亦可能已寫入')
+      + (r.operationId ? `（操作編號 ${r.operationId}）` : '') + '；系統冇自動重送。';
+  }
+  if (!r.ok && r.outcome === 'not_sent') return '未有送到後端：' + (r.error || '未能建立連線');
+  if (!r.ok) return '寫入確定未套用：' + (r.error || '未知錯誤') + (r.hint ? `（${r.hint}）` : '');
   const bits = [];
   if (r.remoteChanged) {
     bits.push(`後端喺你登入後有人儲存過 —— 對方 ${r.theirs || 0} 項、你 ${r.mine || 0} 項${r.same ? `（${r.same} 項相同）` : ''}`);
@@ -138,8 +144,8 @@ export async function showSaveReceipt(r) {
   const okAll = !!v?.ok && !!v?.matched;
   const rows = (v?.rows || []).map(x => `<tr>
       <td>${esc(x.label)}</td>
-      <td class="right mono">${x.local}</td>
-      <td class="right mono">${x.backend === null ? '<span class="faint">（冇）</span>' : x.backend}</td>
+      <td class="right mono">${esc(x.local)}</td>
+      <td class="right mono">${x.backend === null ? '<span class="faint">（冇）</span>' : esc(x.backend)}</td>
       <td class="center">${x.same === null ? '—' : x.same ? '<span style="color:var(--ok);font-weight:700">✓</span>' : '<span style="color:var(--danger);font-weight:700">✗</span>'}</td>
     </tr>`).join('');
 
@@ -189,8 +195,7 @@ export async function showSaveReceipt(r) {
       <div class="note-box warn mb-12">${icon('alert', 15)}<div>
         <b>寫入成功，但核對唔到（讀唔到後端）</b>
         <div class="xs mt-4">你嘅資料已經送出，後端亦冇報錯。不過而家讀唔到後端狀態，
-        所以未能證明後端而家有乜 —— 可以遲啲再撳一次「<b>儲存到後端</b>」（佢會自動再核對一次），
-        或者撳「<b>由後端重新載入</b>」對一對後端而家有乜。</div>
+        所以未能證明後端而家有乜。<b>唔好盲目重送</b>；請先查操作狀態，或者用「由後端重新載入」只讀核對後端而家有乜。</div>
       </div></div>
     `}`;
 
@@ -198,12 +203,51 @@ export async function showSaveReceipt(r) {
     title: okAll ? '✓ 已寫入後端（已核對）' : '寫入後核對',
     sub: '「寫咗」同「寫咗去邊、後端有冇」係兩件事 —— 呢張收據答第二件',
     wide: true,
-    body,
+    trustedBodyHtml: body,
     actions: [
       { label: '知道喇', class: 'btn-primary', value: true }
     ]
   }).then(choice => {
     return choice;
+  });
+}
+
+async function showUnknownOperation(r, remote) {
+  let status = null;
+  let verify = null;
+  if (r?.operationId) {
+    try { status = await remote.checkOperationStatus(r.operationId); } catch { status = null; }
+  }
+  /* 狀態 endpoint 舊版未有／仍 processing 時，只做 read-only dbInfo 對數；絕不重送。 */
+  try { verify = await remote.verifyAgainstBackend(''); } catch { verify = null; }
+  const outcome = String(status?.operation?.outcome || status?.outcome || r?.outcome || 'unknown');
+  const state = String(status?.operation?.state || status?.state || 'unknown');
+  const applied = outcome === 'applied';
+  const notApplied = outcome === 'not_applied' || outcome === 'not_sent';
+  const label = applied ? '後端紀錄：已套用' : notApplied ? '後端紀錄：確定未套用' : '仍然未知／處理中';
+  return modal({
+    title: '寫入結果唔可以當失敗',
+    sub: '逾時只代表瀏覽器冇收到回應；系統已停止，冇自動重送', wide: true,
+    trustedBodyHtml: `<div class="note-box ${applied ? 'info' : notApplied ? 'warn' : 'danger'}"><div>
+        <b>${esc(label)}</b><div class="xs mt-4">${esc(r?.error || '')}</div></div></div>
+      <div class="kv mt-12">
+        <div class="kv-row sm"><span>操作編號</span><span class="mono xs">${esc(r?.operationId || '（後端舊版未提供）')}</span></div>
+        <div class="kv-row sm"><span>操作狀態</span><span><b>${esc(state)}</b>／${esc(outcome)}</span></div>
+        <div class="kv-row sm"><span>系統有冇自動重送</span><span><b>冇</b></span></div>
+        ${verify?.ok ? `<div class="kv-row sm"><span>只讀核對</span><span>後端版本 <span class="mono xs">${esc(verify.version || '—')}</span>；筆數${verify.countsOk ? '對得上' : '未對得上'}</span></div>` : ''}
+      </div>
+      <div class="note-box mt-12"><div>${applied
+        ? '操作日誌話已套用；請用下面「只讀收據」再核對版本同筆數。'
+        : notApplied
+          ? '後端明確話未套用。你可以關閉後自行再撳一次儲存；系統唔會代你重送。'
+          : '未查清之前唔好再撳儲存。可以稍後再查同一個操作編號，或者先由另一部機只讀核對後端。'}</div></div>`,
+    actions: [
+      { label: '關閉（唔重送）', class: 'btn', value: 'close' },
+      { label: '睇只讀收據', class: 'btn-primary', value: 'receipt' }
+    ]
+  }).then(async choice => {
+    if (choice === 'receipt') await showSaveReceipt({ ...r, version: status?.operation?.version || '' });
+    return { status, verify };
   });
 }
 
@@ -252,6 +296,9 @@ export async function saveWithDialog({ silent = false, toastOk = true, receipt =
     if (receipt) {
       try { await showSaveReceipt(r); } catch (e) { console.warn('[sync] 收據核對失敗', e); }
     }
+  } else if (r.outcome === 'unknown' || r.mayHaveApplied) {
+    toast(saveResultText(r), 'warn');
+    await showUnknownOperation(r, remote);
   } else if (r.reason === 'no_base') {
     toastAction(r.error, '重新載入', () => reloadFromBackend({ force: false }), 'err');
   } else if (r.reason !== 'busy') {
@@ -273,7 +320,7 @@ export async function reloadFromBackend({ force = false } = {}) {
     if (!force) {
       const ok = await confirmDlg({
         title: '丟棄未儲存嘅改動？',
-        message: `呢部機仲有 <b>${pending}</b> 項改動未儲存到後端。重新載入會<b>全部丟棄</b>，成份用返後端而家嗰份。<br><br>想保留就撳「取消」，再撳「儲存到後端」。`,
+        trustedMessageHtml: `呢部機仲有 <b>${esc(pending)}</b> 項改動未儲存到後端。重新載入會<b>全部丟棄</b>，成份用返後端而家嗰份。<br><br>想保留就撳「取消」，再撳「儲存到後端」。`,
         okText: '丟棄並重新載入', cancelText: '取消', danger: true
       });
       if (!ok) return { ok: false, reason: 'cancelled' };

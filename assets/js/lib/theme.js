@@ -27,13 +27,19 @@ const VAR_MAP = {
   accentBg: '--accent-50'
 };
 
-/** 套用色調（單一旅團可自訂；冇提供就用棗紅預設） */
+/** Theme values can arrive through imported/unit JSON. Only accept literal hex
+ * colours: arbitrary CSS (for example url(...)) must never reach a style token. */
+export function themeColor(value, fallback) {
+  const text = String(value ?? '').trim();
+  return /^#(?:[0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(text) ? text : fallback;
+}
+
+/** 套用色調（單一旅團可自訂；冇提供／無效就用棗紅預設） */
 export function applyTheme(theme = {}) {
-  const t = { ...MAROON, ...(theme || {}) };
+  const source = theme && typeof theme === 'object' && !Array.isArray(theme) ? theme : {};
+  const t = Object.fromEntries(Object.keys(VAR_MAP).map(k => [k, themeColor(source[k], MAROON[k])]));
   const root = document.documentElement;
-  Object.entries(VAR_MAP).forEach(([k, cssVar]) => {
-    if (t[k]) root.style.setProperty(cssVar, t[k]);
-  });
+  Object.entries(VAR_MAP).forEach(([k, cssVar]) => root.style.setProperty(cssVar, t[k]));
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta) meta.setAttribute('content', t.brand800);
   return t;

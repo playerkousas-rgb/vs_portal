@@ -22,29 +22,15 @@ import {
   load, tryLoad, commitCritical, collection, find, add, remove, getSession, setSession, audit, currentUnit
 } from './store.js';
 import { chief as chiefRecord, hasChief } from './model.js';
+import { pendingOperations, finishOperation } from './operations.js';
+import {
+  ROLE_DEFS, branchIdentityIds, canonicalRole, permissionModule, permissionNeedsEdit,
+  roleDef, roleLevel, rolesAscending
+} from './branch-config.js';
+import { canModule } from './access.js';
 
-export const ROLES = {
-  super: {
-    id: 'super', name: '超級管理員', short: '超管', color: '#4A111C', level: 5, hidden: true,
-    desc: '系統擁有者（隱藏帳戶）'
-  },
-  chief: {
-    id: 'chief', name: '團長', short: '團長', color: '#B8892B', level: 4,
-    desc: '團長（每團一位）—— 最高權限：設定／轉移身份、所有模組；第一個開戶嘅人預設係團長'
-  },
-  leader: {
-    id: 'leader', name: '領袖', short: '領袖', color: '#7B2233', level: 3,
-    desc: '團領袖／支部領袖 —— 管理團務、財務、團章、物資'
-  },
-  exco: {
-    id: 'exco', name: '執委', short: '執委', color: '#A83A4E', level: 2,
-    desc: '執委會成員 —— 日常團務：開會、點名、記帳、借用物資'
-  },
-  member: {
-    id: 'member', name: '團員', short: '團員', color: '#8A6E75', level: 1,
-    desc: '團員 —— 睇通告、報活動、自己的進度'
-  }
-};
+/* 身份定義由本支部 schema 提供；唔再喺 auth.js 寫死一套全平台角色。 */
+export const ROLES = ROLE_DEFS;
 
 /* 隱藏超級管理員。
  *
@@ -205,18 +191,48 @@ PERMS['member.identity'] = { super: 1, chief: 1, leader: 1, exco: 0 };
 PERMS['admin.pw.leader'] = { super: 1, chief: 1, leader: 'self', exco: 0 };
 PERMS['admin.accounts'] = { super: 1, chief: 1, leader: 1, exco: 0 };
 
+/*
+ * 舊權限 key 保留作資料兼容，但角色欄由本支部 schema 產生。level 2 日後可以
+ * 叫另一個 id／名稱（例如另一支部自己的委員身份），唔需要把「exco」複製過去。
+ */
+const PERM_TEMPLATE_ROLE_BY_LEVEL = { 1: 'member', 2: 'exco', 3: 'leader', 4: 'chief', 5: 'super' };
+export function permStrength(value) {
+  if (value === 1) return 2;
+  if (value === 'own' || value === 'self') return 1;
+  return 0;
+}
+function strongerPerm(a, b) {
+  return permStrength(a) >= permStrength(b) ? a : b;
+}
+Object.keys(PERMS).forEach(permission => {
+  const row = PERMS[permission];
+  rolesAscending().forEach(role => {
+    if (row[role.id] !== undefined) return;
+    const template = PERM_TEMPLATE_ROLE_BY_LEVEL[role.level];
+    row[role.id] = row[template] ?? 0;
+  });
+  let inherited = 0;
+  rolesAscending().forEach(role => {
+    row[role.id] = strongerPerm(row[role.id] ?? 0, inherited);
+    inherited = row[role.id];
+  });
+});
+
+const visibleIdentityNames = branchIdentityIds().map(id => ROLES[id]?.name || id).join('／');
+const tierTwoName = rolesAscending({ includeHidden: false }).find(role => role.level === 2)?.name || '第二級身份';
+
 export const PERM_GROUPS = [
   { title: '會議', items: [['meeting.view', '查看會議'], ['meeting.create', '新增會議'], ['meeting.edit', '編輯會議'], ['meeting.delete', '刪除會議'], ['meeting.minutes', '記錄 / 點名'], ['meeting.approve', '確認 / 通過']] },
   { title: '財務', items: [['finance.view', '查看帳目'], ['finance.create', '新增收支'], ['finance.edit', '編輯收支'], ['finance.delete', '刪除收支'], ['finance.report', '年結 / 月結報表'], ['finance.export', '輸出 Word / PDF / CSV'], ['claim.submit', '提交收支申報'], ['claim.review', '批核申報']] },
   { title: '團費', items: [['fee.view', '查看收費'], ['fee.mark', '標記收款'], ['fee.edit', '增刪收費項目']] },
-  { title: '用戶（團長／領袖／執委／團員）', items: [['member.view', '查看用戶名冊'], ['member.create', '新增用戶'], ['member.edit', '編輯資料 / 生日'], ['member.identity', '改身份（＝改權限）'], ['member.note', '撰寫備註'], ['member.delete', '刪除用戶'], ['member.export', '輸出名冊及生日表'], ['admin.chief', '轉移團長身份（每團一位）']] },
+  { title: `用戶（${visibleIdentityNames}）`, items: [['member.view', '查看用戶名冊'], ['member.create', '新增用戶'], ['member.edit', '編輯資料 / 生日'], ['member.identity', '改身份（＝改權限）'], ['member.note', '撰寫備註'], ['member.delete', '刪除用戶'], ['member.export', '輸出名冊及生日表'], ['admin.chief', '轉移團長身份（每團一位）']] },
   { title: '物資', items: [['inv.view', '查看物資'], ['inv.manage', '新增 / 修改物資'], ['inv.borrow', '申請借用'], ['inv.approve', '批核借用 / 歸還'], ['inv.audit', '盤點調整庫存']] },
   { title: '通告', items: [['notice.view', '查看通告'], ['notice.create', '開新通告'], ['notice.edit', '編輯通告'], ['notice.publish', '發布 / 分享'], ['notice.signup', '睇報名紀錄']] },
   { title: '欄位與同步', items: [['table.view', '查看欄位設計'], ['table.design', '改欄位 / 加欄位（各分頁「欄位」掣）'], ['table.sync', '設定總表同步（資料管理）']] },
   { title: '行事曆／試卷', items: [['calendar.view', '查看活動行事曆'], ['calendar.edit', '新增／編輯活動同點名'], ['quiz.view', '查看試卷'], ['quiz.edit', '新設／匯入試卷']] },
   { title: '進度系統', items: [['progress.view', '睇團員進度（直接讀取）'], ['progress.tick', '勾選 / 取消進度'], ['progress.config', '設定後端網址同 API Key']] },
   { title: '團章', items: [['constitution.view', '閱讀團章'], ['constitution.edit', '編輯條文'], ['constitution.publish', '發布新版本 / 輸出']] },
-  { title: '系統', items: [['admin.view', '開啟管理頁'], ['admin.accounts', '管理個人帳戶 / 設定密碼'], ['admin.pw.self', '改自己密碼'], ['admin.pw.leader', '改領袖密碼'], ['admin.pw.exco', '改執委密碼'], ['admin.pw.super', '改超管密碼（一律禁止）'], ['admin.data', '備份 / 還原資料'], ['admin.units', '旅團設定']] }
+  { title: '系統', items: [['admin.view', '開啟管理頁'], ['admin.accounts', '管理個人帳戶 / 設定密碼'], ['admin.pw.self', '改自己密碼'], ['admin.pw.leader', '改領袖密碼'], ['admin.pw.exco', `改${tierTwoName}密碼`], ['admin.pw.super', '改超管密碼（一律禁止）'], ['admin.data', '備份 / 還原資料'], ['admin.units', '旅團設定']] }
 ];
 
 /* ============================================================
@@ -307,8 +323,9 @@ function membersByLogin(id) {
 
 /** 名冊身份 → session 角色（未知／空白一律當團員） */
 function roleOfMember(m) {
-  const k = m?.identity;
-  return (k === 'chief' || k === 'leader' || k === 'exco') ? k : 'member';
+  const k = String(m?.identity || '');
+  const def = roleDef(k);
+  return def && !def.hidden ? k : 'member';
 }
 
 /** 建立 session（團長／領袖／執委／團員共用；accountId 一律 'member:<id>'） */
@@ -338,7 +355,7 @@ export async function loginIdentity(id, password) {
   if (!m) return { ok: false, msg: '電郵／YMIS 或密碼不正確', notFound: true };
 
   const role = roleOfMember(m);
-  const isAdult = role === 'chief' || role === 'leader';
+  const isAdult = roleLevel(role) >= roleLevel('leader');
   const hasPw = !!(m.hubPw?.hash || m.hubPassword);
   if (!hasPw) {
     /* ★ 兩條路（安全考慮，唔可以一刀切）：
@@ -374,9 +391,76 @@ export async function loginMember(ymis, password) {
 
 /* 團長查詢交畀 model.js（單一來源）：chief() / hasChief() */
 
-/** 後台開戶（單個／批量）：設首次密碼 1234，要改 */
+/** 同一 Unified Users 投影入面，搵返名冊成員嘅登入帳戶。 */
+export function accountForMember(memberOrId) {
+  const m = typeof memberOrId === 'object' ? memberOrId : find('members', memberOrId);
+  if (!m) return null;
+  const ymis = String(m.ymis || '').trim().toLowerCase();
+  const email = String(m.email || '').trim().toLowerCase();
+  const found = collection('accounts').find(a => {
+    if (!a || a.source !== 'unified-users') return false;
+    return String(a.memberId || '') === String(m.id || '')
+      || (!!ymis && String(a.ymis || '').trim().toLowerCase() === ymis)
+      || (!!email && String(a.email || '').trim().toLowerCase() === email);
+  });
+  if (found) return found;
+  return m.hasAccount ? { id: `unified:${m.ymis || m.id}`, memberId: m.id,
+    ymis: m.ymis || '', email: m.email || '', active: m.accountStatus !== 'inactive',
+    status: m.accountStatus || 'active', source: 'unified-users' } : null;
+}
+export function memberHasAccount(memberOrId) { return !!accountForMember(memberOrId); }
+
+/**
+ * 後台單戶／批量開戶：browser 一次送晒，Unified handler 在同一 Users Sheet
+ * 批量處理。呢個唔係逐人 fetch loop，亦唔會建立第二套 Portal identity。
+ */
+export async function openMemberAccounts(memberIds, { password = TEMP_PASSWORD } = {}) {
+  const ids = [...new Set((Array.isArray(memberIds) ? memberIds : []).map(String).filter(Boolean))];
+  const list = ids.map(id => find('members', id)).filter(Boolean);
+  if (!list.length) return { ok: false, msg: '請先選擇要開戶嘅用戶' };
+  const unopened = list.filter(m => !memberHasAccount(m));
+  if (!unopened.length) return { ok: false, msg: '所選用戶已經開戶' };
+  const s = getSession();
+  const expiresAt = Number(s?.sessionExpiresAt || 0);
+  if (s?.sessionToken && Number.isFinite(expiresAt) && expiresAt > Date.now() && !s.setupKey) {
+    try {
+      const remote = await import('./remote.js');
+      if (remote.remoteConfigured?.() && remote.hasPending?.()) {
+        return { ok: false, msg: '名冊仲有未儲存改動。請先撳頂部「儲存到後端」並完成 readback，再返嚟開戶；系統唔會暗中代你寫。' };
+      }
+      const users = unopened.map(m => ({
+        targetYmis: String(m.ymis || ''), ymis: String(m.ymis || ''),
+        name: String(m.name || ''), email: String(m.email || ''), branch: String(m.branch || ''),
+        role: String(m.identity || 'member'), password: String(password || TEMP_PASSWORD)
+      }));
+      const called = await callBranchBackend({ action: 'authOpenAccounts', unit: currentUnit(),
+        users, ...backendAuthPayload(s) });
+      const data = called.data || {};
+      if (!backendMutationSucceeded(called)) {
+        return { ...backendMutationFailure(called, '開戶確定未套用',
+          '唔好重送，請先重新讀取帳戶名冊核對。'),
+          created: Number(data.created || 0), failed: Number(data.failed || users.length), results: data.results || [] };
+      }
+      return { ok: true, created: Number(data.created || users.length), failed: Number(data.failed || 0),
+        results: data.results || [], refreshed: await refreshAfterAccountMutation() };
+    } catch (err) {
+      return { ok: false, msg: String(err?.message || err || '開戶失敗') };
+    }
+  }
+  /* 開團／舊本機 fixture 保留兼容；正式支部一律走上面的 Unified Users。 */
+  let created = 0;
+  for (const m of unopened) {
+    const result = await setMemberHubPassword(m.id, password, { mustChange: true });
+    if (result.ok) created++;
+  }
+  return { ok: created > 0, created, failed: unopened.length - created,
+    msg: created ? '' : '開戶失敗' };
+}
+
+/** 後台開一個帳戶（批量版本見 openMemberAccounts）。 */
 export async function openMemberAccount(memberId) {
-  return setMemberHubPassword(memberId, TEMP_PASSWORD, { mustChange: true });
+  const result = await openMemberAccounts([memberId], { password: TEMP_PASSWORD });
+  return result.ok ? result : { ...result, msg: result.msg || result.results?.[0]?.error || '開戶失敗' };
 }
 
 export function applyAccount({ ymis, name, email = '', note = '' }) {
@@ -426,32 +510,95 @@ export async function reviewAccountApp(appId, { decision, reviewer = '' } = {}) 
 }
 
 /** 開團 KEY：由旅團 Apps Script 執行 issueSetupKey() 產生，72 小時有效 */
+const AUTH_MUTATION_ACTIONS = new Set([
+  'authChangePassword', 'authResetPassword', 'authDeleteAccount', 'authRestoreAccount',
+  'authCreateAccount', 'authOpenAccounts', 'authForgotPassword', 'authResetByToken', 'authCompletePasswordReset'
+]);
+
 async function callBranchBackend(payload, { timeoutMs = 60000 } = {}) {
   const [remote, gateway] = await Promise.all([import('./remote.js'), import('./gateway.js')]);
   const cfg = remote.remoteCfg();
+  const unit = String(payload.unit || cfg.unit || currentUnit());
+  /* An earlier timeout must survive reload. On the next click, query that receipt
+     only; never create a fresh ID and resend the account/password mutation blindly.
+     A final status unlocks the action but this click still does not mutate—the user
+     must first read the message/reload the account state, then choose again. */
+  if (AUTH_MUTATION_ACTIONS.has(String(payload.action || ''))) {
+    const prior = pendingOperations().find(row => row.outcome === 'unknown'
+      && row.action === payload.action && String(row.unit || '') === unit);
+    if (prior) {
+      const checked = await gateway.postBackend({ action: 'operationStatus', unit, operationId: prior.id }, {
+        unit, execUrl: cfg.url, apiKey: cfg.apiKey, timeoutMs: Math.min(timeoutMs, 25000)
+      });
+      const statusData = checked.json || {};
+      const priorOutcome = String(statusData.operation?.outcome || statusData.outcome || checked.outcome || 'unknown').toLowerCase();
+      if (priorOutcome === 'applied' || priorOutcome === 'not_applied') {
+        finishOperation(prior.id, { state: priorOutcome, outcome: priorOutcome,
+          mayHaveApplied: priorOutcome === 'applied' });
+        const error = priorOutcome === 'applied'
+          ? `上次操作 ${prior.id} 已確認套用；今次冇重送。請先重新讀取帳戶／試用新密碼核對，再決定下一步。`
+          : `上次操作 ${prior.id} 已確認未套用；今次冇重送。請重新核對輸入，之後先再執行。`;
+        return { ok: false, status: 409, data: { success: false, ok: false, error }, error,
+          operationId: prior.id, outcome: 'not_sent', mayHaveApplied: false, via: checked.via || 'none' };
+      }
+      const error = `上次操作 ${prior.id} 結果仍然未知；今次只查狀態，冇重送。請先重新讀取／核對。`;
+      return { ok: false, status: Number(checked.status || 409), data: { success: false, ok: false, error }, error,
+        operationId: prior.id, outcome: 'unknown', mayHaveApplied: true, via: checked.via || 'none' };
+    }
+  }
   const result = await gateway.postBackend(payload, {
-    unit: payload.unit || cfg.unit || currentUnit(), execUrl: cfg.url, apiKey: cfg.apiKey, timeoutMs
+    unit, execUrl: cfg.url, apiKey: cfg.apiKey, timeoutMs
   });
   return { ok: !!result.ok && !!result.json, status: Number(result.status || (result.ok ? 200 : 0)),
-    data: result.json || {}, error: result.error || result.json?.error || '', via: result.via || 'none' };
+    data: result.json || {}, error: result.error || result.json?.error || '', via: result.via || 'none',
+    operationId: result.operationId || result.json?.operationId || '',
+    outcome: result.outcome || result.json?.outcome || '', mayHaveApplied: result.mayHaveApplied === true || result.json?.mayHaveApplied === true };
+}
+
+function backendMutationOutcome(called) {
+  const data = called?.data || {};
+  const explicit = String(called?.outcome || data.outcome || data.operation?.outcome || '').toLowerCase();
+  if (explicit === 'applied' || explicit === 'completed') return 'applied';
+  if (explicit === 'not_applied' || explicit === 'not_sent') return explicit;
+  if (explicit === 'unknown' || explicit === 'processing') return 'unknown';
+  if (called?.mayHaveApplied === true || data.mayHaveApplied === true) return 'unknown';
+  return called?.ok && data.success !== false && data.ok !== false ? 'applied' : 'not_applied';
+}
+
+function backendMutationSucceeded(called) { return backendMutationOutcome(called) === 'applied'; }
+
+function backendMutationFailure(called, fallback, guidance = '請先重新載入／核對，未查清之前唔好重送。') {
+  const data = called?.data || {};
+  const outcome = backendMutationOutcome(called);
+  const unknown = outcome === 'unknown';
+  const operationId = String(called?.operationId || data?.operationId || '');
+  return {
+    ok: false,
+    msg: unknown
+      ? `${data.error || called?.error || fallback}；結果未知。操作編號 ${operationId || '（未提供）'}。${guidance}`
+      : (data.error || called?.error || fallback),
+    operationId,
+    outcome,
+    mayHaveApplied: unknown || outcome === 'applied'
+  };
 }
 
 export async function requestPasswordReset(email, resetUrl) {
   const called = await callBranchBackend({ action: 'authForgotPassword', unit: currentUnit(),
     email: String(email || '').trim(), resetUrl: String(resetUrl || '') });
   const data = called.data;
-  return called.ok && data.success !== false
+  return backendMutationSucceeded(called)
     ? { ok: true, message: data.message || '', resetMode: data.resetMode === 'code' ? 'code' : 'link' }
-    : { ok: false, msg: data.error || called.error || '暫時未能提交' };
+    : backendMutationFailure(called, '暫時未能提交', '電郵可能已經寄出；未查清之前唔好再撳，以免收到多個重設碼。');
 }
 
 export async function completePasswordReset(loginId, code, newPassword) {
   const called = await callBranchBackend({ action: 'authCompletePasswordReset', unit: currentUnit(),
     email: String(loginId || '').trim(), code: String(code || '').trim(), newPassword: String(newPassword || '') });
   const data = called.data;
-  return called.ok && data.success !== false
+  return backendMutationSucceeded(called)
     ? { ok: true, message: data.message || '' }
-    : { ok: false, msg: data.error || called.error || '重設碼不正確或已過期' };
+    : backendMutationFailure(called, '重設碼不正確或已過期', '密碼可能已經更改；先試用新密碼登入，未核對之前唔好重送。');
 }
 
 export async function loginSetupKey(key) {
@@ -488,18 +635,24 @@ export async function setMemberHubPassword(memberId, newPassword, { mustChange =
   /* 正式後端模式不可先在 browser 寫 hash 再靠整庫同步。先把新名冊 row 儲到
      server（如有），再由專用 action 固定操作者／目標並寫 PBKDF2。 */
   if (session?.sessionToken && Number.isFinite(expiresAt) && expiresAt > Date.now() && !session.setupKey) {
+    /* Users 未有帳戶時，「設定密碼」就係直接開戶；由同一批量 endpoint
+       建立 pinned BADGE Users row，唔會先在 browser 造一份 hash。 */
+    if (!memberHasAccount(m)) {
+      const opened = await openMemberAccounts([m.id], { password: String(newPassword) });
+      return opened.ok ? { ok: true, refreshed: opened.refreshed, created: true } : opened;
+    }
     try {
       const remote = await import('./remote.js');
       if (remote.remoteConfigured?.() && remote.hasPending?.()) {
-        const pushed = await remote.saveToBackend({ policy: 'ask', silent: true });
-        if (!pushed?.ok) return { ok: false, msg: pushed?.error || '未能先把新用戶儲存到後端' };
+        return { ok: false, msg: '名冊仲有未儲存改動。請先撳頂部「儲存到後端」並完成 readback，再返嚟設定密碼；系統唔會暗中代你寫。' };
       }
       const called = await callBranchBackend({ action: 'authResetPassword', unit: currentUnit(),
         targetYmis: String(m.ymis || ''), targetEmail: String(m.email || ''),
         targetUsername: String(m.email || m.ymis || ''), newPassword: String(newPassword),
         ...backendAuthPayload(session) });
       const data = called.data;
-      if (!called.ok || data.success === false) return { ok: false, msg: data.error || called.error || '設定密碼失敗' };
+      if (!backendMutationSucceeded(called)) return backendMutationFailure(called, '設定密碼失敗',
+        '密碼可能已經重設；請先重新載入帳戶狀態，未核對之前唔好重送。');
       /* GAS request audit 已記錄操作者；唔再寫一筆本機 audit 令剛讀回版本重新變 pending。 */
       return { ok: true, refreshed: await refreshAfterAccountMutation() };
     } catch (err) {
@@ -536,8 +689,9 @@ async function changePasswordServer(oldPassword, newPassword, sessionOverride = 
       sessionToken: s.sessionToken
     });
     const data = called.data;
-    if (!called.ok || data.success !== true || data.ok === false) {
-      return { ok: false, msg: data.error || called.error || '改唔到密碼' };
+    if (!backendMutationSucceeded(called)) {
+      return backendMutationFailure(called, '改唔到密碼',
+        '密碼可能已經更改；先登出並試用新密碼登入，未核對之前唔好重送。');
     }
     const nextExpires = Number(data.sessionExpiresAt || 0);
     if (!data.sessionToken || !Number.isFinite(nextExpires) || nextExpires <= Date.now()) {
@@ -615,7 +769,8 @@ export async function createAccountServer(payload) {
   if (!s?.sessionToken && !(s?.via === 'portal' && s?.portalToken)) return { ok: false, msg: '登入狀態已失效，請重新登入' };
   const called = await callBranchBackend({ action:'authCreateAccount', unit:currentUnit(), ...payload, ...backendAuthPayload(s) });
   const data = called.data;
-  if (!called.ok || data.success === false) return { ok:false, msg:data.error || called.error || '新增帳戶失敗' };
+  if (!backendMutationSucceeded(called)) return backendMutationFailure(called, '新增帳戶失敗',
+    '帳戶可能已經建立；請先重新讀取帳戶名冊，未核對之前唔好重送。');
   return { ok:true, refreshed: await refreshAfterAccountMutation() };
 }
 
@@ -624,7 +779,8 @@ export async function restoreAccountServer(target, newPassword = '1234') {
   if (!s?.sessionToken && !(s?.via === 'portal' && s?.portalToken)) return { ok: false, msg: '登入狀態已失效，請重新登入' };
   const called = await callBranchBackend({ action:'authRestoreAccount', unit:currentUnit(), targetEmail:target?.email || target?.username || '', newPassword, ...backendAuthPayload(s) });
   const data = called.data;
-  if (!called.ok || data.success === false) return { ok:false, msg:data.error || called.error || '復原帳戶失敗' };
+  if (!backendMutationSucceeded(called)) return backendMutationFailure(called, '復原帳戶失敗',
+    '帳戶可能已經復原；請先重新讀取帳戶名冊，未核對之前唔好重送。');
   return { ok:true, refreshed: await refreshAfterAccountMutation() };
 }
 
@@ -633,7 +789,8 @@ export async function resetAccountPasswordServer(target, newPassword) {
   if (!s?.sessionToken && !(s?.via === 'portal' && s?.portalToken)) return { ok: false, msg: '登入狀態已失效，請重新登入' };
   const called = await callBranchBackend({ action: 'authResetPassword', unit: currentUnit(), targetUsername: target?.username || target?.email || '', newPassword: String(newPassword || ''), ...backendAuthPayload(s) });
   const data = called.data;
-  if (!called.ok || data.success === false) return { ok: false, msg: data.error || called.error || '重設密碼失敗' };
+  if (!backendMutationSucceeded(called)) return backendMutationFailure(called, '重設密碼失敗',
+    '密碼可能已經重設；請先核對／重新登入，未查清之前唔好重送。');
   return { ok: true, refreshed: await refreshAfterAccountMutation() };
 }
 
@@ -662,7 +819,8 @@ export async function loginPortalFromUrl(params = new URLSearchParams(location.s
     return { ok: false, msg: session.error || '隔離 auth fixture 無法完成支部 session 兌換' };
   }
   const a = session.account;
-  const role = ['chief', 'leader', 'exco', 'member'].includes(a.role) ? a.role : 'member';
+  const branchRole = canonicalRole(a.role);
+  const role = roleDef(branchRole) && !roleDef(branchRole).hidden ? branchRole : 'member';
   const subject = String(a.ymis || data.subject || '');
   setSession({
     role, accountId: `central:${a.id || subject}`, username: String(a.username || subject),
@@ -687,7 +845,8 @@ export async function deleteAccountServer(target) {
   if (!s?.sessionToken && !(s?.via === 'portal' && s?.portalToken)) return { ok: false, msg: '登入狀態已失效，請重新登入' };
   const called = await callBranchBackend({ action: 'authDeleteAccount', unit: currentUnit(), targetUsername: target?.username || target?.email || '', ...backendAuthPayload(s) });
   const data = called.data;
-  if (!called.ok || data.success === false) return { ok: false, msg: data.error || called.error || '刪除帳戶失敗' };
+  if (!backendMutationSucceeded(called)) return backendMutationFailure(called, '刪除帳戶失敗',
+    '帳戶可能已經停用；請先重新讀取帳戶名冊，未核對之前唔好重送。');
   return { ok: true, refreshed: await refreshAfterAccountMutation() };
 }
 
@@ -713,7 +872,7 @@ export async function loginServer(role, username, password) {
     return { ok: false, msg: '登入後端未能建立安全 session，請更新 Code.gs 後再試' };
   }
   const a = data.account || {};
-  const accountRole = a.role || (role === 'member' ? 'member' : 'leader');
+  const accountRole = canonicalRole(a.role) || (role === 'member' ? 'member' : 'leader');
   const dest = accountRole === 'member' ? 'hub' : 'staff';
   setSession({ role: accountRole, accountId: a.id, username: a.username, email: a.email || '', name: a.name,
     memberId: a.memberId || (a.kind === 'member' ? a.id : ''), ymis: a.ymis || '', identity: accountRole,
@@ -772,13 +931,15 @@ export async function login(role, username, password) {
   if (!acc) return { ok: false, msg: '電郵／YMIS 或密碼不正確' };
   if (!(await verifyPassword(acc, p))) return { ok: false, msg: '電郵／YMIS 或密碼不正確' };
 
+  const accountRole = canonicalRole(acc.role);
+  if (!accountRole) return { ok: false, msg: '帳戶身份不屬於本支部 schema' };
   const mustChangePw = !!acc.mustChangePw || !!acc.defaultPw || p === TEMP_PASSWORD;
   setSession({
-    role: acc.role, accountId: acc.id, username: acc.username, email: acc.email || '',
+    role: accountRole, accountId: acc.id, username: acc.username, email: acc.email || '',
     name: acc.name, title: acc.title || '', at: Date.now(), mustChangePw
   });
   auditLogin(acc.username, '登入（舊個人帳戶）');
-  return { ok: true, role: acc.role, mustChangePw };
+  return { ok: true, role: accountRole, mustChangePw };
 }
 
 function auditLogin(who, what) {
@@ -794,11 +955,11 @@ export function current() {
   }
   return s;
 }
-export function currentRole() { return getSession()?.role || null; }
+export function currentRole() { return canonicalRole(getSession()?.role) || null; }
 export function isSuper() { return currentRole() === 'super'; }
 /* ★ 2026-09-24 團長：「刪除示範資料 (MOCK) 我都在用要MOCK 幹什麼」
    → 示範模式成個拆走，isMockSession() 亦都冇存在意義。 */
-export function roleInfo(role = currentRole()) { return ROLES[role] || null; }
+export function roleInfo(role = currentRole()) { return roleDef(role); }
 
 /** 介面上顯示嘅身份名稱（超管唔會顯示帳號） */
 export function displayName() {
@@ -810,8 +971,9 @@ export function displayName() {
 export function displaySub() {
   const s = current();
   if (!s) return '';
-  const role = ROLES[s.role]?.name || s.role;
-  return s.role === 'super' ? role : `${role} · ${s.username}`;
+  const identity = canonicalRole(s.role);
+  const role = roleDef(identity)?.name || identity || s.role;
+  return identity === 'super' ? role : `${role} · ${s.username}`;
 }
 
 /* ============================================================
@@ -824,17 +986,7 @@ export function displaySub() {
 function permOverrides() {
   try { return tryLoad()?.permOverrides || {}; } catch { return {}; }
 }
-/** 某個功能對某個身份嘅**實際**值（override 優先，其次出廠預設） */
-export function permValue(perm, role) {
-  const ov = permOverrides()[perm];
-  if (ov && Object.prototype.hasOwnProperty.call(ov, role)) return ov[role];
-  return (PERMS[perm] || {})[role];
-}
-/** 呢格係咪被旅團改過（介面顯示「已改」用） */
-export function permIsCustom(perm, role) {
-  const ov = permOverrides()[perm];
-  return !!(ov && Object.prototype.hasOwnProperty.call(ov, role));
-}
+
 /** 呢個功能嘅可循環值（出廠用咗『自己』／『自己建立』先至會出現在循環入面） */
 export function permCycle(perm) {
   const base = PERMS[perm] || {};
@@ -844,41 +996,115 @@ export function permCycle(perm) {
   if (vals.includes('self')) cycle.splice(1, 0, 'self');
   return cycle;
 }
-/** 改一格權限（跟旅團資料庫存；只有團長／超管可以改） */
+
+function rawPermRow(perm, overrides = permOverrides()) {
+  const base = PERMS[perm] || {};
+  const custom = overrides[perm] || {};
+  const row = {};
+  rolesAscending().forEach(role => {
+    const proposed = Object.prototype.hasOwnProperty.call(custom, role.id) ? custom[role.id] : base[role.id];
+    row[role.id] = permCycle(perm).includes(proposed) ? proposed : (base[role.id] ?? 0);
+  });
+  return row;
+}
+
+/**
+ * 實際細項權限亦單調向上：低身份有「可以／自己」時，高身份最少有同等權。
+ * 備份檔就算夾帶逆序 override，讀取時都會正規化，唔會造成低有高冇。
+ */
+export function effectivePermRow(perm, overrides = permOverrides()) {
+  const row = rawPermRow(perm, overrides);
+  let inherited = 0;
+  rolesAscending().forEach(role => {
+    row[role.id] = strongerPerm(row[role.id], inherited);
+    inherited = row[role.id];
+  });
+  return row;
+}
+
+/** 某個功能對某個身份嘅實際值（override + 向上繼承）。 */
+export function permValue(perm, role) {
+  return effectivePermRow(perm)[canonicalRole(role)];
+}
+
+/** 呢格係咪被支部改過（介面顯示「已改」用） */
+export function permIsCustom(perm, role) {
+  role = canonicalRole(role);
+  const ov = permOverrides()[perm];
+  return !!(role && ov && Object.prototype.hasOwnProperty.call(ov, role));
+}
+
+export function canManagePermRole(targetRole, actorRole = currentRole()) {
+  const actor = roleDef(actorRole);
+  const target = roleDef(targetRole);
+  return !!(actor && target && target.level < actor.level);
+}
+
+/** 改一格細項權限；只准改比自己低的身份，並保持向上繼承。 */
 export function setPerm(perm, role, value) {
-  if (!canEditPerms()) return { ok: false, msg: '只有團長可以改權限總表' };
+  role = canonicalRole(role);
+  if (!canEditPerms()) return { ok: false, msg: '你冇可管理的較低身份' };
   if (!PERMS[perm]) return { ok: false, msg: '冇呢個功能' };
+  if (!canManagePermRole(role)) return { ok: false, msg: '只可以更改比自己低級的身份權限' };
+  if (!roleDef(role) || !permCycle(perm).includes(value)) return { ok: false, msg: '權限值唔正確' };
+
   const db = load();
-  db.permOverrides = { ...(db.permOverrides || {}) };
-  const cur = { ...(db.permOverrides[perm] || {}) };
-  const base = (PERMS[perm] || {})[role];
-  if (value === base || value === undefined) delete cur[role];   // 改返預設＝刪走 override
-  else cur[role] = value;
-  if (Object.keys(cur).length) db.permOverrides[perm] = cur; else delete db.permOverrides[perm];
+  const overrides = { ...(db.permOverrides || {}) };
+  const row = rawPermRow(perm, overrides);
+  const targetLevel = roleLevel(role);
+  row[role] = value;
+  /* 關細權限時，一併收窄所有更低身份；否則會被向上繼承即刻重新打開。 */
+  rolesAscending().forEach(def => {
+    if (def.level < targetLevel && permStrength(row[def.id]) > permStrength(value)) row[def.id] = value;
+  });
+
+  const next = {};
+  rolesAscending().forEach(def => {
+    const base = (PERMS[perm] || {})[def.id] ?? 0;
+    if (row[def.id] !== base) next[def.id] = row[def.id];
+  });
+  if (Object.keys(next).length) overrides[perm] = next; else delete overrides[perm];
+  if (Object.keys(overrides).length) db.permOverrides = overrides; else delete db.permOverrides;
   commitCritical('perm');
   audit('更改權限', `${perm} · ${ROLES[role]?.name || role} → ${value === 1 ? '可以' : value === 0 ? '不可以' : value}`);
   return { ok: true };
 }
-/** 還原成出廠預設（清走晒 override） */
+
+/** 只還原操作者可管理（較低身份）的 override；不觸碰自己或更高身份。 */
 export function resetPerms() {
-  if (!canEditPerms()) return { ok: false, msg: '只有團長可以改權限總表' };
+  if (!canEditPerms()) return { ok: false, msg: '你冇可管理的較低身份' };
+  const actorLevel = roleLevel(currentRole());
   const db = load();
-  const n = Object.keys(db.permOverrides || {}).length;
-  delete db.permOverrides;
+  const overrides = { ...(db.permOverrides || {}) };
+  let cleared = 0;
+  Object.keys(overrides).forEach(perm => {
+    const row = { ...(overrides[perm] || {}) };
+    Object.keys(row).forEach(role => {
+      if (roleLevel(role) < actorLevel) { delete row[role]; cleared++; }
+    });
+    if (Object.keys(row).length) overrides[perm] = row; else delete overrides[perm];
+  });
+  if (Object.keys(overrides).length) db.permOverrides = overrides; else delete db.permOverrides;
   commitCritical('perm');
-  audit('還原權限總表', `清走 ${n} 項自訂`);
-  return { ok: true, cleared: n };
+  audit('還原權限總表', `清走 ${cleared} 格較低身份自訂`);
+  return { ok: true, cleared };
 }
-/** 邊個改到權限總表：團長（每團一位，最高權限）同超管 */
+
+/** 每一級都可管理較低級；團員本身冇更低身份，所以不可編輯。 */
 export function canEditPerms() {
-  const r = currentRole();
-  return r === 'chief' || r === 'super';
+  const level = roleLevel(currentRole());
+  return rolesAscending().some(role => role.level < level);
 }
 
 export function can(perm, ctx) {
   const s = getSession();
   if (!s) return false;
   if (!PERMS[perm]) return false;
+  /* 側欄 read/edit 係所有細項 action 的外層硬閘；直接打 URL 或直接呼叫
+     畫面操作都唔可以繞過。自己改密碼不屬任何側欄內容，刻意例外。 */
+  const moduleId = permissionModule(perm);
+  if (moduleId && perm !== 'admin.pw.self'
+      && !canModule(moduleId, permissionNeedsEdit(perm) ? 'edit' : 'read', s.role)) return false;
   const v = permValue(perm, s.role);
   if (v === 1) return true;
   if (v === 0 || v == null) return false;
@@ -900,9 +1126,9 @@ export function can(perm, ctx) {
 /** 所有可見帳戶（永遠唔包括超管） */
 export function accounts({ role = null, active = null } = {}) {
   let list = collection('accounts').slice();
-  if (role) list = list.filter(a => a.role === role);
+  if (role) list = list.filter(a => canonicalRole(a.role) === canonicalRole(role));
   if (active !== null) list = list.filter(a => (a.active !== false) === active);
-  return list.sort((a, b) => (ROLES[a.role]?.level || 0) - (ROLES[b.role]?.level || 0) || String(a.name).localeCompare(String(b.name)));
+  return list.sort((a, b) => roleLevel(a.role) - roleLevel(b.role) || String(a.name).localeCompare(String(b.name)));
 }
 export function accountById(id) { return find('accounts', id); }
 
@@ -921,16 +1147,12 @@ export function canChangePasswordOf(accountId) {
     const m = find('members', sid.slice('member:'.length));
     if (!m) return false;
     if (isSelf) return true;
-    if (s.role === 'chief') return true;                   // 團長：全團都可以改（超管除外）
-    if (s.role === 'leader') return m.identity !== 'chief' && m.identity !== 'leader';
-    return false;
+    return roleLevel(m.identity || 'member') < roleLevel(s.role);
   }
   const acc = accountById(accountId);
   if (!acc) return false;
-  if (s.role === 'chief') return true;
-  if (s.role === 'leader') return isSelf || acc.role === 'exco';
-  if (s.role === 'exco') return isSelf;                    // 執委只可改自己
-  return false;
+  if (isSelf) return true;
+  return roleLevel(acc.role) < roleLevel(s.role);
 }
 
 /* ============================================================
@@ -948,10 +1170,9 @@ export function canChangePasswordOf(accountId) {
 export function canSetIdentityOf(target) {
   const s = getSession();
   if (!s) return false;
-  if (s.role === 'super' || s.role === 'chief') return true;
-  if (s.role !== 'leader') return false;
-  const ident = String(target?.identity || '');
-  return ident !== 'chief';                 // 領袖改唔到團長
+  const actorLevel = roleLevel(s.role);
+  const targetLevel = roleLevel(target?.identity || 'member');
+  return actorLevel >= roleLevel('leader') && targetLevel < actorLevel;
 }
 
 /** 改身份（＝改權限）。identity: chief | leader | exco | member */
@@ -959,10 +1180,14 @@ export async function setMemberIdentity(memberId, identity) {
   const m = find('members', memberId);
   if (!m) return { ok: false, msg: '搵唔到呢位用戶' };
   const want = String(identity || '').trim();
-  if (!['chief', 'leader', 'exco', 'member'].includes(want)) return { ok: false, msg: '身份唔正確' };
+  if (!branchIdentityIds().includes(want)) return { ok: false, msg: '身份唔正確' };
   const s = getSession();
   const before = m.identity || 'member';
   if (before === want) return { ok: true, member: m, unchanged: true };
+
+  if (want !== 'chief' && s?.role !== 'super' && roleLevel(want) >= roleLevel(s?.role)) {
+    return { ok: false, msg: '只可以設定比自己低級的身份' };
+  }
 
   if (want === 'chief') {
     if (!can('admin.chief')) return { ok: false, msg: '團長身份只有現任團長（或者超管）可以轉移 —— 請現任團長交棒' };
@@ -995,7 +1220,7 @@ export async function setMemberIdentity(memberId, identity) {
   return { ok: true, member: m };
 }
 
-const IDENTITY_LABEL = { chief: '團長', leader: '領袖', exco: '執委', member: '團員' };
+const IDENTITY_LABEL = Object.fromEntries(branchIdentityIds().map(id => [id, ROLES[id]?.name || id]));
 
 /** 轉移團長身份（現任團長交棒） */
 export async function transferChief(toMemberId) {
@@ -1009,7 +1234,7 @@ export function canClaimChief() {
   if (hasChief()) return false;
   const s = getSession();
   if (!s) return false;
-  return s.role === 'super' || s.role === 'chief' || s.role === 'leader' || !!s.setupKey;
+  return roleLevel(s.role) >= roleLevel('leader') || !!s.setupKey;
 }
 
 /**
@@ -1055,11 +1280,11 @@ export async function claimChief(info = {}) {
 /** 我係唔係可以開／刪呢個角色嘅帳戶 */
 export function canManageRole(role) {
   const s = getSession();
-  if (!s) return false;
-  if (s.role === 'super') return role === 'chief' || role === 'leader' || role === 'exco';
-  if (s.role === 'chief') return role === 'leader' || role === 'exco';
-  if (s.role === 'leader') return role === 'exco';
-  return false;
+  const actor = roleDef(s?.role);
+  const target = roleDef(role);
+  if (!actor || !target || target.hidden) return false;
+  /* 團員登入由名冊／團員入口處理；呢個舊帳戶 API 只建立較低的管理身份。 */
+  return target.level > roleLevel('member') && target.level < actor.level;
 }
 
 export async function createAccount({ role, username, password, name, title = '', memberId = '', email = '' }) {

@@ -10,14 +10,22 @@
       由 Script 寫入後端「總 Sheet」（一張 Sheet 統管整個 Venture）
    ============================================================ */
 
-import { load, commit, commitMeta, collection, add, update, remove, find, getBase, exportAll, importAll, resetToSeed, wipe, audit, currentUnit } from '../lib/store.js';
+import { load, commit, commitMeta, collection, add, update, remove, find, getBase, exportAll, importAll, resetToSeed, wipe, audit, currentUnit, assertSafeDataTree } from '../lib/store.js';
 import { esc, icon, modal, confirmDlg, toast, uid, nf, todayISO, nowStamp, download, copyText } from '../lib/util.js';
 import { toCSV, toWord, download as dlFile, stamp } from '../lib/exporter.js';
 import { go, parse, setQuery } from '../lib/router.js';
 import { can, current } from '../lib/auth.js';
 import { profile, settings } from '../lib/model.js';
 import { remoteConfigured, backendStatus, syncState } from '../lib/remote.js';
-import { pageHead, tabs, stat, empty, noteBox, kv, storageBar } from './ui.js';
+import { pageHead, tabs, stat, empty, noteBoxHtml, kvHtml, storageBar } from './ui.js';
+import {
+  confirmBulkOperation, createSafetySnapshot, undoable,
+  listSafetySnapshots, readSafetySnapshot, dropSafetySnapshot, downloadSafetySnapshot
+} from '../lib/guard.js';
+import { beginOperation, operationResult, uncertainWriteText } from '../lib/operations.js';
+import { rolesAscending } from '../lib/branch-config.js';
+
+const TABLE_IDENTITIES = rolesAscending({ includeHidden: false }).slice().reverse();
 
 let tab = 'design';
 let mapState = null;        // 自己 Sheet 匯入狀態
@@ -70,11 +78,11 @@ export const DEFAULT_TABLES = {
     ]
   },
   members: {
-    label: '用戶（領袖／執委／團員）', icon: 'users', collection: 'members',
+    label: `用戶（${TABLE_IDENTITIES.map(role => role.name).join('／')}）`, icon: 'users', collection: 'members',
     fields: [
       { key: 'name', label: '姓名', type: 'text', required: true, core: true, show: true },
       { key: 'eng', label: '英文名', type: 'text', show: false },
-      { key: 'identity', label: '身份', type: 'select', options: ['chief', 'leader', 'exco', 'member'], optionLabels: ['團長', '領袖', '執委', '團員'], core: true, show: true },
+      { key: 'identity', label: '身份', type: 'select', options: TABLE_IDENTITIES.map(role => role.id), optionLabels: TABLE_IDENTITIES.map(role => role.name), core: true, show: true },
       { key: 'birthday', label: '出生日期', type: 'date', core: true, show: true },
       { key: 'role', label: '職位', type: 'text', show: true },
       { key: 'status', label: '狀態', type: 'select', options: ['active', 'inactive', 'alumni'], optionLabels: ['現役', '休假', '舊團員'], show: true },
@@ -205,7 +213,7 @@ export function openFieldDesigner(key, { onSaved = null } = {}) {
 
   const paint = () => {
     if (!state.listEl) return;
-    state.listEl.innerHTML = fields.map((f, i) => fieldRow(f, i, edit)).join('');
+    state.listEl.innerHTML = fields.map((f, i) => fieldRow(f, i, edit, fields.length)).join('');
     bindRows();
   };
   const save = () => { saveDef(key, fields, def.label); onSaved?.(); };
@@ -234,7 +242,7 @@ export function openFieldDesigner(key, { onSaved = null } = {}) {
     list.querySelectorAll('[data-delf]').forEach(b => b.addEventListener('click', async () => {
       const i = Number(b.dataset.delf); const f = fields[i];
       if (!(await confirmDlg({ title: '刪除欄位', danger: true, okText: '確定刪除',
-        message: `刪除「${esc(f.label)}」？（已存在嘅資料唔會刪，只係唔再顯示）` }))) return;
+        message: `刪除「${f.label}」？（已存在嘅資料唔會刪，只係唔再顯示）` }))) return;
       fields.splice(i, 1); save(); paint();
     }));
   };
@@ -243,7 +251,7 @@ export function openFieldDesigner(key, { onSaved = null } = {}) {
     title: `${def.label} · 欄位`,
     sub: '改欄位名／改類型／加欄位／排次序 —— 只影響顯示同輸入方式，資料唔會唔見',
     wide: true,
-    body: `
+    trustedBodyHtml: `
       <div class="row-between wrap gap-8 mb-12">
         <div class="xs faint">欄位會跟旅團儲存；匯出 JSON 備份會一齊帶走。</div>
         ${edit ? `<div class="row gap-6">
@@ -251,7 +259,7 @@ export function openFieldDesigner(key, { onSaved = null } = {}) {
           <button class="btn btn-sm" data-fd="reset">${icon('refresh', 15)} 還原預設</button>
         </div>` : '<span class="badge b-grey">唯讀（你冇改欄位權限）</span>'}
       </div>
-      <div id="fd-list">${fields.map((f, i) => fieldRow(f, i, edit)).join('')}</div>
+      <div id="fd-list">${fields.map((f, i) => fieldRow(f, i, edit, fields.length)).join('')}</div>
       <div class="hint mt-12">隱藏嘅欄位唔會刪資料，只係唔顯示；<b>核心</b>欄位唔可以刪。</div>`,
     actions: [{ label: '完成', class: 'btn-primary', value: true }],
     onMount: (el) => {
@@ -263,10 +271,10 @@ export function openFieldDesigner(key, { onSaved = null } = {}) {
         if (act === 'add') {
           const r = await modal({
             title: '加欄位',
-            body: `<div class="grid g-2" style="gap:12px">
+            trustedBodyHtml: `<div class="grid g-2" style="gap:12px">
               <div class="field"><label class="label">欄位名稱</label><input class="input" id="nf-label" placeholder="例：小隊 / 收據編號"></div>
               <div class="field"><label class="label">類型</label><select class="select" id="nf-type">
-                ${Object.entries(TYPE_LABEL).map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('')}</select></div>
+                ${Object.entries(TYPE_LABEL).map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join('')}</select></div>
               <div class="field" style="grid-column:1/-1"><label class="label">選項（下拉用，用、分隔）</label>
                 <input class="input" id="nf-options" placeholder="例：甲小隊、乙小隊"></div>
             </div>`,
@@ -349,7 +357,7 @@ function designView(key, def) {
             <button class="btn btn-sm" data-act="reset-fields">${icon('refresh', 15)} 還原預設</button>
           </div>` : ''}</div>
         <div style="padding:14px 18px" id="field-list">
-          ${def.fields.map((f, i) => fieldRow(f, i, edit)).join('')}
+          ${def.fields.map((f, i) => fieldRow(f, i, edit, def.fields.length)).join('')}
         </div>
       </div>
 
@@ -361,7 +369,7 @@ function designView(key, def) {
             <button class="btn btn-sm" data-act="exp-table-word">${icon('download', 15)} Word</button>
           </div></div>
         ${rows.length ? `<div class="scroll-x"><table class="table table-compact">
-          <thead><tr>${shown.map(f => `<th>${esc(f.label)}</th>`).join('')}</tr></thead>
+<thead><tr>${shown.map(f => `<th>${esc(f.label)}</th>`).join('')}</tr></thead>
           <tbody>${rows.slice(0, 12).map(r => `<tr>${shown.map(f => `<td class="sm">${esc(cellText(r, f))}</td>`).join('')}</tr>`).join('')}</tbody>
         </table></div>${rows.length > 12 ? `<div class="hint" style="padding:8px 16px">（只顯示頭 12 筆）</div>` : ''}`
           : empty('table', '未有資料', '呢個表仲未有紀錄')}
@@ -377,7 +385,7 @@ function designView(key, def) {
             <li><b>隱藏</b>：唔用嘅欄位可以收埋，唔會刪資料</li>
             <li><b>還原</b>：隨時可以還原成預設</li>
           </ul>
-          ${noteBox('欄位設計會跟旅團儲存（匯出 JSON 備份會一齊帶走）。', 'info')}
+          ${noteBoxHtml('欄位設計會跟旅團儲存（匯出 JSON 備份會一齊帶走）。', 'info')}
         </div>
       </div>
       <div class="card"><div class="card-head"><div class="card-title">其他旅團可以用自己嘅 Sheet</div></div>
@@ -391,11 +399,11 @@ function designView(key, def) {
   </div>`;
 }
 
-function fieldRow(f, i, edit) {
-  return `<div class="schema-row" data-field="${i}">
+function fieldRow(f, i, edit, total) {
+  return `<div class="schema-row" data-field="${esc(i)}">
     <input class="input" data-k="label" value="${esc(f.label || '')}" placeholder="欄位名稱" ${edit ? '' : 'disabled'} style="padding:7px 10px">
     <select class="select" data-k="type" ${edit ? '' : 'disabled'} style="padding:7px 10px">
-      ${Object.entries(TYPE_LABEL).map(([v, l]) => `<option value="${v}" ${f.type === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}
+      ${Object.entries(TYPE_LABEL).map(([v, l]) => `<option value="${esc(v)}" ${f.type === v ? 'selected' : ''}>${esc(l)}</option>`).join('')}
     </select>
     <div class="row gap-8 wrap">
       <input class="input" data-k="options" value="${esc((f.options || []).join('、'))}" placeholder="選項（用、分隔）"
@@ -405,9 +413,9 @@ function fieldRow(f, i, edit) {
       ${f.core ? '<span class="badge b-grey xs">核心</span>' : ''}
     </div>
     <div class="row gap-4">
-      ${edit ? `<button class="btn btn-xs btn-ghost" data-up="${i}" ${i === 0 ? 'disabled' : ''}>↑</button>
-        <button class="btn btn-xs btn-ghost" data-down="${i}" ${i === 0 ? 'disabled' : ''}>↓</button>
-        ${f.core ? '' : `<button class="btn btn-xs btn-ghost" data-delf="${i}">${icon('trash', 12)}</button>`}` : '<span class="xs faint">唯讀</span>'}
+      ${edit ? `<button class="btn btn-xs btn-ghost" data-up="${esc(i)}" ${i === 0 ? 'disabled' : ''}>↑</button>
+        <button class="btn btn-xs btn-ghost" data-down="${esc(i)}" ${i >= total - 1 ? 'disabled' : ''}>↓</button>
+        ${f.core ? '' : `<button class="btn btn-xs btn-ghost" data-delf="${esc(i)}">${icon('trash', 12)}</button>`}` : '<span class="xs faint">唯讀</span>'}
     </div>
   </div>`;
 }
@@ -419,27 +427,34 @@ function sourceView() {
   const sources = load().tableSources || [];
   return `
   <div class="note-box mb-16">${icon('link', 15)}<div>
-    其他旅團已經有自己嘅 Google Sheet 都唔怕：貼上連結 → 系統讀欄位 → 你話邊欄對應本系統邊個欄位 → 匯入或定時同步。
-    <br><span class="xs">Sheet 要設定分享權限：<b>知道連結嘅任何人均可檢視</b>（因為係公開讀取；只會讀，唔會改你嘅表）。</span>
+    每團原本嘅 Excel／Google Sheet 可以完全唔同：選來源 → 揀工作表同標題行 → 逐欄對應 → dry-run → 確認先匯入。
+    <br><span class="xs"><b>.xlsx 會留喺瀏覽器本機解析</b>，唔會上載；Google Sheet 連結則只讀公開資料，唔會改你原表。</span>
   </div></div>
+  <div class="migration-steps mb-16">
+    <div class="migration-step"><b>1. Excel／Sheet／貼上</b><span class="xs muted">支援多工作表；Excel 公式只讀目前顯示值，唔執行巨集。</span></div>
+    <div class="migration-step"><b>2. 對應欄位</b><span class="xs muted">原欄名對本系統欄名；未對應就唔匯入。</span></div>
+    <div class="migration-step"><b>3. Diff、快照、核對</b><span class="xs muted">先睇新增／取代幾多筆，建立安全快照，再 readback。</span></div>
+  </div>
 
   <div class="grid g-2-1">
-    <div class="card"><div class="card-head"><div><div class="card-title">1. 貼上你嘅 Sheet 連結</div>
-      <div class="card-sub">支援 Google Sheet / 任何 CSV 網址</div></div></div>
+    <div class="card"><div class="card-head"><div><div class="card-title">1. 選擇原有資料來源</div>
+      <div class="card-sub">原生 Excel (.xlsx)、Google Sheet，或者貼上 CSV／表格</div></div></div>
       <div style="padding:16px 18px">
         <div class="field"><label class="label">Sheet 網址</label>
           <input class="input" id="s-url" placeholder="https://docs.google.com/spreadsheets/d/…/edit?gid=123456#gid=123456"></div>
         <div class="grid g-2 mt-12" style="gap:12px">
           <div class="field"><label class="label">匯入到</label>
             <select class="select" id="s-target">
-              ${Object.entries(tableDefs()).map(([k, d]) => `<option value="${k}">${esc(d.label)}</option>`).join('')}
+              ${Object.entries(tableDefs()).map(([k, d]) => `<option value="${esc(k)}">${esc(d.label)}</option>`).join('')}
             </select></div>
           <div class="field"><label class="label">工作表（分頁）名稱／gid</label>
             <input class="input" id="s-gid" placeholder="可留空（用連結內嘅 gid）"></div>
         </div>
         <div class="row gap-8 mt-12 wrap">
-          <button class="btn btn-primary" data-act="load-sheet">${icon('download', 16)} 讀取欄位</button>
-          <button class="btn" data-act="paste-csv">${icon('copy', 16)} 改為貼上 CSV</button>
+          <button class="btn btn-primary" data-act="load-sheet">${icon('download', 16)} 讀取 Sheet 連結</button>
+          <label class="btn" style="cursor:pointer">${icon('upload', 16)} 上載 Excel／CSV
+            <input type="file" id="s-file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,.csv,.tsv,.txt,text/csv" style="display:none"></label>
+          <button class="btn" data-act="paste-csv">${icon('copy', 16)} 貼上表格</button>
         </div>
         <div id="sheet-preview" class="mt-16"></div>
       </div>
@@ -456,8 +471,8 @@ function sourceView() {
                 <div class="li-s" style="word-break:break-all">${esc(s.kind === 'csv' ? '（貼上嘅 CSV）' : (s.url || '').slice(0, 70))}</div>
               </div>
               <div class="row gap-4">
-                <button class="btn btn-xs" data-reload="${i}">同步</button>
-                <button class="btn btn-xs btn-ghost" data-delsrc="${i}">${icon('trash', 12)}</button>
+                <button class="btn btn-xs" data-reload="${esc(i)}">同步</button>
+                <button class="btn btn-xs btn-ghost" data-delsrc="${esc(i)}">${icon('trash', 12)}</button>
               </div>
             </div>`).join('') : '<div style="padding:16px" class="sm faint">未加入任何來源</div>'}
         </div>
@@ -593,8 +608,6 @@ function syncView() {
   </div>
   <div style="padding:12px 16px" class="sm muted">
     <div class="kv-row"><span>總表同步</span><code>${esc(shortUrl(backend.gasUrl))}</code></div>
-    <div class="kv-row"><span>手機記帳送出</span><code>${esc(shortUrl(load().settings?.publicEntry?.submitUrl || '')) || '（未設定）'}</code></div>
-    <div class="kv-row"><span>通告報名送出</span><code>${esc(shortUrl(load().settings?.notice?.submitUrl || '')) || '（未設定）'}</code></div>
   </div></div>` : (!route.serverManaged && wired ? `<div class="card mb-16"><div class="card-head">
     <div><div class="card-title">${icon('cloud', 15)} 後端接線方式</div>
       <div class="card-sub">呢個旅團經平台伺服器端接線（唔使喺瀏覽器打 Key）${route.verified ? ' · 登入／載入已實際核對成功' : ''}</div></div>
@@ -635,7 +648,6 @@ function syncView() {
           所以唔會再出現「兩部機互相蓋走對方資料」。</span>
         </div></div>
         ${pending ? `<div class="hint" style="color:var(--warn)">有 <b>${pending}</b> 次改動仲未寫入後端。</div>` : ''}
-        <label class="check mt-6"><input type="checkbox" id="y-share" ${(load().settings?.publicEntry?.submitUrl || load().settings?.notice?.submitUrl) === s.url ? 'checked' : ''}> <b>同一條網址共用</b>畀「手機記帳」同「通告報名」</label>
         <div class="row gap-8 mt-12 wrap">
           <button class="btn btn-primary" data-act="save-sync">${icon('save', 16)} 儲存設定</button>
           <button class="btn" data-act="push-sync">${icon('table', 16)} 更新報表分頁</button>
@@ -670,7 +682,7 @@ function syncView() {
       </div>
       <div class="card"><div class="card-head"><div class="card-title">資料統計</div></div>
         <div style="padding:14px 18px">
-          ${kv(Object.entries(tableDefs()).map(([k, d]) => [d.label, `${(load()[d.collection] || []).length} 筆`]))}
+          ${kvHtml(Object.entries(tableDefs()).map(([k, d]) => [d.label, `${(load()[d.collection] || []).length} 筆`]))}
         </div>
       </div>
     </div>
@@ -701,8 +713,106 @@ function payloadSample() {
 /* ============================================================
    4. 儲存與備份
    ============================================================ */
+const RESTORABLE_TABLES = new Set(Object.values(DEFAULT_TABLES).map(def => def.collection));
+const FULL_SNAPSHOT_KINDS = new Set(['full-json-import', 'reset-seed', 'wipe', 'snapshot-restore-full']);
+const FINANCE_SNAPSHOT_KINDS = new Set(['finance-import', 'snapshot-restore-finance']);
+const FEE_SNAPSHOT_KINDS = new Set(['fee-mark-all', 'snapshot-restore-fees']);
+const CONSTITUTION_SNAPSHOT_KINDS = new Set([
+  'constitution-import', 'constitution-delete', 'constitution-delete-article',
+  'constitution-delete-item', 'constitution-delete-block', 'snapshot-restore-constitution'
+]);
+
+function snapshotKindSupported(meta = {}) {
+  const kind = String(meta.kind || '');
+  return FULL_SNAPSHOT_KINDS.has(kind) || FINANCE_SNAPSHOT_KINDS.has(kind)
+    || FEE_SNAPSHOT_KINDS.has(kind) || CONSTITUTION_SNAPSHOT_KINDS.has(kind)
+    || kind === 'strip-photos' || kind === 'snapshot-restore-transactions'
+    || ((kind === 'table-import' || kind === 'snapshot-restore-table')
+      && RESTORABLE_TABLES.has(String(meta.table || '')));
+}
+
+function stableJson(value) {
+  const clean = (input, top = false) => {
+    if (Array.isArray(input)) return input.map(x => clean(x));
+    if (!input || typeof input !== 'object') return input;
+    const out = {};
+    Object.keys(input).sort().forEach(key => {
+      if (top && ['_exportedFrom', '_exportedAt', 'sync', 'backend', 'unitCode', 'kind'].includes(key)) return;
+      if (top && key === 'meta') {
+        const meta = { ...(input.meta || {}) };
+        delete meta.updatedAt;
+        out.meta = clean(meta);
+        return;
+      }
+      out[key] = clean(input[key]);
+    });
+    return out;
+  };
+  return JSON.stringify(clean(value, true));
+}
+
+export function snapshotRestorePlan(snapshot) {
+  const data = snapshot?.data;
+  try { assertSafeDataTree(data); } catch { return null; }
+  const meta = snapshot?.meta || {};
+  const kind = String(meta.kind || '');
+  const clone = value => structuredClone(value);
+  if (FULL_SNAPSHOT_KINDS.has(kind) && data && typeof data === 'object' && !Array.isArray(data) && data.schema) {
+    return {
+      target: '完整資料庫', count: Object.values(data).reduce((n, v) => n + (Array.isArray(v) ? v.length : 0), 0),
+      capture: () => JSON.parse(exportAll()),
+      apply: value => importAll(JSON.stringify(value)),
+      verify: value => stableJson(load()) === stableJson(value),
+      safetyMeta: { kind: 'snapshot-restore-full' }
+    };
+  }
+  const table = String(meta.table || '');
+  if ((kind === 'table-import' || kind === 'snapshot-restore-table')
+      && RESTORABLE_TABLES.has(table) && Array.isArray(data)) {
+    return {
+      target: `資料表 ${table}`, count: data.length,
+      capture: () => clone(load()[table] || []),
+      apply: value => { const db = load(); db[table] = clone(value); commit(); },
+      verify: value => JSON.stringify(load()[table] || []) === JSON.stringify(value),
+      safetyMeta: { kind: 'snapshot-restore-table', table }
+    };
+  }
+  if ((kind === 'strip-photos' || kind === 'snapshot-restore-transactions') && Array.isArray(data)) {
+    return {
+      target: '帳目', count: data.length,
+      capture: () => clone(load().transactions || []),
+      apply: value => { const db = load(); db.transactions = clone(value); commit(); },
+      verify: value => JSON.stringify(load().transactions || []) === JSON.stringify(value),
+      safetyMeta: { kind: 'snapshot-restore-transactions' }
+    };
+  }
+  if ((FINANCE_SNAPSHOT_KINDS.has(kind) || FEE_SNAPSHOT_KINDS.has(kind)) && data && typeof data === 'object' && !Array.isArray(data)) {
+    const fields = FINANCE_SNAPSHOT_KINDS.has(kind) ? ['transactions', 'fees', 'settings'] : ['transactions', 'fees'];
+    if (!fields.every(key => data[key] && (key === 'settings' ? typeof data[key] === 'object' : Array.isArray(data[key])))) return null;
+    return {
+      target: FINANCE_SNAPSHOT_KINDS.has(kind) ? '財務資料及設定' : '帳目及團費',
+      count: fields.reduce((n, key) => n + (Array.isArray(data[key]) ? data[key].length : 0), 0),
+      capture: () => Object.fromEntries(fields.map(key => [key, clone(load()[key] || (key === 'settings' ? {} : []))])),
+      apply: value => { const db = load(); fields.forEach(key => { db[key] = clone(value[key]); }); commit(); },
+      verify: value => fields.every(key => JSON.stringify(load()[key]) === JSON.stringify(value[key])),
+      safetyMeta: { kind: FINANCE_SNAPSHOT_KINDS.has(kind) ? 'snapshot-restore-finance' : 'snapshot-restore-fees' }
+    };
+  }
+  if (CONSTITUTION_SNAPSHOT_KINDS.has(kind) && data && typeof data === 'object' && !Array.isArray(data)) {
+    return {
+      target: '團章', count: (data.chapters || []).length + (data.appendices || []).length,
+      capture: () => clone(load().constitution || {}),
+      apply: value => { const db = load(); db.constitution = clone(value); commit(); },
+      verify: value => JSON.stringify(load().constitution || {}) === JSON.stringify(value),
+      safetyMeta: { kind: 'snapshot-restore-constitution' }
+    };
+  }
+  return null;
+}
+
 function dataView() {
   const db = load();
+  const snapshots = listSafetySnapshots();
   const n = a => Array.isArray(a) ? a.length : 0;
   return `
   <div class="grid g-2">
@@ -723,6 +833,21 @@ function dataView() {
         </details>
       </div>
     </div>
+    <div class="card" style="grid-column:1/-1"><div class="card-head"><div><div class="card-title">操作前安全快照</div>
+      <div class="card-sub">只顯示目前旅團最近 6 份；可下載核對，亦可經明確確認還原</div></div></div>
+      <div style="padding:14px 18px">
+        ${snapshots.length ? `<div class="col gap-8">${snapshots.map(s => {
+          const supported = snapshotKindSupported(s.meta || {});
+          return `<div class="row gap-10 wrap" style="padding:9px 0;border-bottom:1px solid var(--line)">
+            <div class="grow"><div class="sm"><b>${esc(s.label || '安全快照')}</b></div>
+              <div class="xs faint">${esc(String(s.at || '').slice(0, 19).replace('T', ' '))} · ${Math.max(1, Math.ceil(Number(s.bytes || 0) / 1024))} KB${supported ? '' : ' · 只供下載'}</div></div>
+            <button class="btn btn-xs" data-snapshot-download="${esc(s.id)}">${icon('download', 13)} 下載</button>
+            <button class="btn btn-xs" data-snapshot-restore="${esc(s.id)}" ${supported ? '' : 'disabled'}>${icon('history', 13)} 還原</button>
+            <button class="btn btn-xs btn-danger" data-snapshot-delete="${esc(s.id)}">${icon('trash', 13)} 刪除</button>
+          </div>`;
+        }).join('')}</div>` : '<div class="sm faint">未有安全快照。批量匯入、清空、刪除團章等動作確認後會先建立快照。</div>'}
+      </div>
+    </div>
     <div class="card"><div class="card-head"><div><div class="card-title">瀏覽器儲存</div>
       <div class="card-sub">相片最佔位；可以喺下面清理已入帳相片</div></div></div>
       <div style="padding:16px 18px">
@@ -734,7 +859,7 @@ function dataView() {
     </div>
     <div class="card"><div class="card-head"><div><div class="card-title">逐個表格匯出（CSV）</div></div></div>
       <div style="padding:16px 18px" class="col gap-6">
-        ${Object.entries(tableDefs()).map(([k, d]) => `<button class="btn btn-sm btn-block" data-exp-one="${k}">${icon('download', 15)} ${esc(d.label)}（${(db[d.collection] || []).length} 筆）</button>`).join('')}
+        ${Object.entries(tableDefs()).map(([k, d]) => `<button class="btn btn-sm btn-block" data-exp-one="${esc(k)}">${icon('download', 15)} ${esc(d.label)}（${(db[d.collection] || []).length} 筆）</button>`).join('')}
       </div>
     </div>
   </div>`;
@@ -847,6 +972,28 @@ export function rowsFromSheet(sheet, map, fields) {
   return out;
 }
 
+function importSignature(row, fields) {
+  return fields.filter(f => f.key !== 'id' && f.type !== 'photos').map(f => {
+    const v = row?.[f.key];
+    return Array.isArray(v) ? v.join('|') : String(v ?? '').trim().toLowerCase();
+  }).join('\u001f');
+}
+
+/** 通用表格匯入計劃：必填驗證＋來源內／現有資料重複偵測。 */
+export function planTableImport(rows, existing, fields, { replace = false } = {}) {
+  const required = fields.filter(f => f.required).map(f => f.key);
+  const invalid = [], duplicates = [], accepted = [];
+  const seen = new Set(replace ? [] : (existing || []).map(r => importSignature(r, fields)));
+  (rows || []).forEach((row, index) => {
+    const missing = required.filter(key => row?.[key] === '' || row?.[key] === null || row?.[key] === undefined);
+    if (missing.length) { invalid.push({ index, row, missing }); return; }
+    const key = importSignature(row, fields);
+    if (seen.has(key)) { duplicates.push({ index, row }); return; }
+    seen.add(key); accepted.push(row);
+  });
+  return { accepted, duplicates, invalid, removed: replace ? (existing || []).length : 0 };
+}
+
 /* ============================================================
    總表同步：送出
    ============================================================ */
@@ -917,60 +1064,73 @@ export async function pushToMaster({ silent = false } = {}) {
   }
   /* 經代理就唔好送空 key —— 等伺服器端由 TROOP_* 注入（同 remote.js 一樣做法） */
   if (viaProxy && !payload.apiKey) delete payload.apiKey;
+  const operation = beginOperation('sync', { unit: payload.unit, label: '更新報表分頁' });
+  payload.operationId = operation.id;
+  payload.operation_id = operation.id;
   /* 同步紀錄係簿記 —— commitMeta() 只寫本機，唔會計入「未儲存改動」 */
   const log = (msg) => {
     const db = load();
     db.sync = { ...(db.sync || {}), log: [...((db.sync || {}).log || []), { at: new Date().toISOString().slice(0, 19).replace('T', ' '), msg }].slice(-40), lastAt: new Date().toISOString() };
     commitMeta();
   };
+  const ctrl = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), 45_000);
   try {
     const res = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': viaProxy ? 'application/json' : 'text/plain;charset=utf-8' },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload), signal: ctrl.signal
     });
-    const txt = (await res.text()).slice(0, 2000);
+    const rawText = await res.text();
+    const txt = rawText.slice(0, 2000);
     let json = null;
-    try { json = JSON.parse(txt); } catch { /* 直接打 GAS 嗰陣成日唔係 JSON，唔出奇 */ }
-    if (viaProxy && !json) {
-      /* 同源根本冇呢個 API（純靜態部署）＋ 又冇填本地網址 → 同未設定一樣 */
+    try { json = JSON.parse(rawText); } catch { /* 非 JSON 只可當結果未知 */ }
+    if (viaProxy && !json && res.status === 404) {
+      /* 同源根本冇呢個 API（純靜態部署）：真正後端未收到。 */
       const msg = `連唔到同源代理（HTTP ${res.status}），又未設定後端網址`;
+      const result = operationResult({ ok: false, reason: 'not_sent', error: msg, outcome: 'not_sent' }, operation, { sent: false });
       log(`✗ ${msg}`);
       if (!silent) toast(msg, 'err');
-      return { ok: false, msg, viaProxy };
+      return { ok: false, msg, viaProxy, ...result };
     }
-    /* 經代理一定讀到 JSON：唔好淨係睇 HTTP code —— GAS 就算拒絕
-       （例如 API Key 唔啱）都係回 HTTP 200，要睇 ok／success 先知
-       究竟寫入咗未。（直接打 GAS 嗰陣多數讀唔到回應，維持舊做法。） */
-    const failed = viaProxy
-      ? (!res.ok || !json || json.ok === false || json.success === false)
-      : !res.ok;
-    const ok = !failed;
-    const detail = viaProxy ? String(json?.error || json?.msg || '').replace(/\s+/g, ' ').slice(0, 120) : '';
+    /* JSON 業務失敗要照失敗；冇 JSON 或 transport 異常只可以叫 unknown，
+       絕對唔可以當作冇寫入。 */
+    const businessOk = !!json && json.ok !== false && json.success !== false;
+    const ok = res.ok && businessOk;
+    const detail = String(json?.error || json?.msg || '').replace(/\s+/g, ' ').slice(0, 120);
+    const classified = operationResult(json ? {
+      ...json, ok, reason: json.reason || (ok ? '' : 'backend'), error: detail
+    } : {
+      ok: false, reason: 'bad_response', mayHaveApplied: true,
+      error: `後端回應格式異常（HTTP ${res.status}）`
+    }, operation, { sent: true });
+    /* Durable operation outcome wins over HTTP/envelope flags. */
+    const applied = classified.outcome === 'applied';
     /* 報表分頁同步唔會郁「資料庫」分頁，所以**唔會**清 pending —— 未儲存嘅改動仍然未儲存 */
-    if (!ok && viaProxy && detail) {
+    if (!applied && detail) {
       const d = load();
       d.sync = { ...(d.sync || {}), lastError: detail };
     }
     const total = payload.counts ? Object.values(payload.counts).reduce((a, b) => a + b, 0) : 0;
-    log(`${ok ? '✓' : '✗'} 報表分頁 HTTP ${res.status}${viaProxy ? '（代理）' : ''} · ${total} 筆 · ${(detail || txt).replace(/\s+/g, ' ').slice(0, 80)}`);
-    if (!silent) toast(ok ? '已更新總表嘅報表分頁（資料庫本身要撳「儲存到後端」）' : ('同步失敗：' + (detail || ('HTTP ' + res.status))), ok ? 'ok' : 'err');
-    /* total ＝ 今次攤平咗幾多筆落報表分頁 —— 「儲存到後端」嘅成功訊息會用嚟
-       話畀用家知「團員／帳目嗰啲分頁而家有嘢睇」，唔使再開張 Sheet 先知。 */
-    return { ok, msg: detail || txt.slice(0, 300), viaProxy, total };
+    const marker = classified.outcome === 'unknown' ? '?' : applied ? '✓' : '✗';
+    log(`${marker} 報表分頁 HTTP ${res.status}${viaProxy ? '（代理）' : ''} · ${total} 筆 · 操作 ${operation.id} · ${(detail || txt).replace(/\s+/g, ' ').slice(0, 80)}`);
+    if (!silent) toast(applied
+      ? '已更新總表嘅報表分頁（資料庫本身要撳「儲存到後端」）'
+      : classified.outcome === 'unknown' ? uncertainWriteText(operation.id) : ('同步確定未套用：' + (detail || ('HTTP ' + res.status))),
+      applied ? 'ok' : classified.outcome === 'unknown' ? 'warn' : 'err');
+    /* total ＝ 今次攤平咗幾多筆落報表分頁。 */
+    return { msg: detail || txt.slice(0, 300), viaProxy, total, ...classified, ok: applied };
   } catch (e) {
-    if (viaProxy) {
-      /* 經代理唔會有「送咗但讀唔到」呢回事 —— 掟 exception 即係根本未送到 */
-      const msg = /abort/i.test(e?.name || '') ? '連線逾時' : ('連唔到同源代理：' + (e.message || '網絡錯誤'));
-      log(`✗ ${msg}`);
-      if (!silent) toast(msg, 'err');
-      return { ok: false, msg, viaProxy };
-    }
-    // 跨網域下瀏覽器可能唔畀讀回應（Apps Script 常見）→ 資料其實可能已經寫入
-    const uncertain = /Failed to fetch|NetworkError|load failed|network/i.test(e.message || '');
-    log(`${uncertain ? '⚠' : '✗'} ${uncertain ? '已送出，但讀唔到伺服器回應（Apps Script 可能已收到）' : e.message} · ${e.message}`);
-    if (!silent) toast(uncertain ? '已送出（讀唔到回應，可能已寫入總表；睇同步紀錄）' : '同步失敗：' + e.message, uncertain ? 'warn' : 'err');
-    return { ok: false, pending: uncertain, msg: e.message };
+    /* fetch 一開始之後，proxy／直連兩條路遇到 timeout 或斷線都可能已經送到 GAS。
+       一律 unknown；保留同一 operation ID，絕不自動重送。 */
+    const msg = /abort|timeout/i.test(`${e?.name || ''} ${e?.message || ''}`) ? '連線逾時' : (e?.message || '網絡錯誤');
+    const classified = operationResult({ ok: false, reason: /abort|timeout/i.test(msg) ? 'timeout' : 'network',
+      mayHaveApplied: true, error: msg }, operation, { sent: true });
+    log(`? 報表寫入結果未知 · 操作 ${operation.id} · ${msg} · 系統冇重送`);
+    if (!silent) toast(uncertainWriteText(operation.id), 'warn');
+    return { ok: false, pending: true, msg, viaProxy, ...classified };
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -989,7 +1149,7 @@ export function mount(root, params) {
     const def = tableDefs()[key];
     const fields = def.fields;
 
-    const paint = () => { if (list) { list.innerHTML = fields.map((f, i) => fieldRow(f, i, can('table.design'))).join(''); bind(); } };
+    const paint = () => { if (list) { list.innerHTML = fields.map((f, i) => fieldRow(f, i, can('table.design'), fields.length)).join(''); bind(); } };
 
     const bind = () => {
       if (!list) return;
@@ -1006,14 +1166,16 @@ export function mount(root, params) {
         }));
       });
       list.querySelectorAll('[data-up]').forEach(b => b.addEventListener('click', () => {
-        const i = Number(b.dataset.up); [fields[i - 1], fields[i]] = [fields[i], fields[i - 1]]; saveDef(key, fields); paint();
+        const i = Number(b.dataset.up); if (i <= 0) return;
+        [fields[i - 1], fields[i]] = [fields[i], fields[i - 1]]; saveDef(key, fields); paint();
       }));
       list.querySelectorAll('[data-down]').forEach(b => b.addEventListener('click', () => {
-        const i = Number(b.dataset.down); [fields[i + 1], fields[i]] = [fields[i], fields[i + 1]]; saveDef(key, fields); paint();
+        const i = Number(b.dataset.down); if (i >= fields.length - 1) return;
+        [fields[i + 1], fields[i]] = [fields[i], fields[i + 1]]; saveDef(key, fields); paint();
       }));
       list.querySelectorAll('[data-delf]').forEach(b => b.addEventListener('click', () => {
         const f = fields[Number(b.dataset.delf)];
-        confirmDlg({ title: '刪除欄位', danger: true, okText: '確定刪除', message: `刪除「${esc(f.label)}」？（已存在嘅資料唔會刪，只係唔再顯示）` })
+        confirmDlg({ title: '刪除欄位', danger: true, okText: '確定刪除', message: `刪除「${f.label}」？（已存在嘅資料唔會刪，只係唔再顯示）` })
           .then(ok => { if (!ok) return; fields.splice(Number(b.dataset.delf), 1); saveDef(key, fields); paint(); });
       }));
     };
@@ -1024,10 +1186,10 @@ export function mount(root, params) {
       if (act === 'add-field') {
         const r = await modal({
           title: '加欄位',
-          body: `<div class="grid g-2" style="gap:12px">
+          trustedBodyHtml: `<div class="grid g-2" style="gap:12px">
             <div class="field"><label class="label">欄位名稱</label><input class="input" id="nf-label" placeholder="例：小隊 / 收據編號"></div>
             <div class="field"><label class="label">類型</label><select class="select" id="nf-type">
-              ${Object.entries(TYPE_LABEL).map(([v, l]) => `<option value="${v}">${esc(l)}</option>`).join('')}</select></div>
+              ${Object.entries(TYPE_LABEL).map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join('')}</select></div>
             <div class="field" style="grid-column:1/-1"><label class="label">選項（下拉用，用、分隔）</label>
               <input class="input" id="nf-options" placeholder="例：甲小隊、乙小隊"></div>
           </div>`,
@@ -1060,7 +1222,7 @@ export function mount(root, params) {
         const rows = (load()[def.collection] || []).map(r => `<tr>${shown.map(f => `<td>${esc(cellText(r, f))}</td>`).join('')}</tr>`).join('');
         toWord({
           filename: `${def.label}_${stamp()}.doc`, title: def.label, org: profile().name,
-          bodyHtml: `<div class="doc-head"><div class="doc-title">${esc(def.label)}</div>
+          trustedBodyHtml: `<div class="doc-head"><div class="doc-title">${esc(def.label)}</div>
             <div class="doc-sub">${esc(profile().name || '')} · ${esc(todayISO())}</div></div>
             <table><thead><tr>${shown.map(f => `<th>${esc(f.label)}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table>`
         });
@@ -1088,10 +1250,10 @@ export function mount(root, params) {
       const target = root.querySelector('#s-target').value;
       const fields = tableDefs()[target].fields;
       const map = autoMap(sheet.cols, fields);
-      mapState = { sheet, target, fields, map };
+      mapState = { sheet, target, fields, map, sourceKind: sheet.sourceKind || 'sheet' };
       preview.innerHTML = `
-        <div class="note-box info mb-12">${icon('check', 15)}<div>讀到 <b>${sheet.rows.length}</b> 筆、${sheet.cols.length} 欄${sheet.title ? `（工作表：${esc(sheet.title)}）` : ''}。
-          下面係自動對應，可以自己改。</div></div>
+        <div class="note-box info mb-12">${icon('check', 15)}<div><b>來源預覽（未改資料）</b>：讀到 <b>${sheet.rows.length}</b> 筆、${sheet.cols.length} 欄${sheet.title ? `（工作表：${esc(sheet.title)}）` : ''}。
+          下面係自動對應，可以自己改；未對應欄位會原封不動留喺來源，唔會亂塞入其他欄。</div></div>
         <div class="card"><div class="card-head"><div><div class="card-title">欄位對應 → ${esc(tableDefs()[target].label)}</div>
           <div class="card-sub">左邊係你 Sheet 嘅欄，右邊揀本系統嘅欄位</div></div></div>
           <div style="padding:12px 16px">
@@ -1099,7 +1261,7 @@ export function mount(root, params) {
               <div class="map-row">
                 <div class="sm"><b>${esc(c.label || c.id || `第 ${i + 1} 欄`)}</b>
                   <span class="xs faint">（例：${esc((sheet.rows[0]?.[i] || '').slice(0, 24))}）</span></div>
-                <select class="select" data-map="${i}" style="padding:7px 10px">
+                <select class="select" data-map="${esc(i)}" style="padding:7px 10px">
                   <option value="">— 唔匯入 —</option>
                   ${fields.map(f => `<option value="${esc(f.key)}" ${map[i] === f.key ? 'selected' : ''}>${esc(f.label)}</option>`).join('')}
                 </select>
@@ -1111,9 +1273,9 @@ export function mount(root, params) {
               <tbody>${sheet.rows.slice(0, 5).map(r => `<tr>${sheet.cols.slice(0, 8).map((c, i) => `<td class="sm">${esc(String(r[i] ?? '').slice(0, 20))}</td>`).join('')}</tr>`).join('')}</tbody>
             </table></div>
             <div class="row gap-8 mt-12 wrap">
-              <button class="btn btn-primary" data-act="do-import">${icon('upload', 16)} 匯入到「${esc(tableDefs()[target].label)}」</button>
-              <button class="btn" data-act="save-source">${icon('save', 16)} 儲存做同步來源</button>
-              <label class="check"><input type="checkbox" id="s-clear" ${['transactions', 'invItems'].includes(target) ? 'checked' : ''}> 匯入前清空該表（避免重複）</label>
+              <button class="btn btn-primary" data-act="do-import">${icon('upload', 16)} Dry-run 並核對「${esc(tableDefs()[target].label)}」</button>
+              ${mapState?.sourceKind === 'sheet' ? `<button class="btn" data-act="save-source">${icon('save', 16)} 儲存做同步來源</button>` : ''}
+              <label class="check"><input type="checkbox" id="s-clear"> <b>取代模式：</b>匯入前清空該表（預設唔剔，保留現有資料）</label>
             </div>
           </div>
         </div>`;
@@ -1129,24 +1291,59 @@ export function mount(root, params) {
         const rows = rowsFromSheet(mapState.sheet, mapState.map, mapState.fields);
         if (!rows.length) { toast('冇任何對應到嘅資料', 'err'); return; }
         if (act === 'do-import') {
-          const clear = root.querySelector('#s-clear')?.checked;
-          if (!(await confirmDlg({
-            title: '匯入資料', danger: clear, okText: '確定匯入',
-            message: `會匯入 <b>${rows.length}</b> 筆到「${esc(tableDefs()[mapState.target].label)}」${clear ? '，並且<b>先清空該表</b>' : '（附加，唔會刪原有資料）'}。`
-          }))) return;
-          const col = tableDefs()[mapState.target].collection;
-          if (clear) {
-            const db = load();
-            db[col] = [];
-            commit();
+          const clear = !!root.querySelector('#s-clear')?.checked;
+          const def = tableDefs()[mapState.target];
+          const col = def.collection;
+          const existing = load()[col] || [];
+          const plan = planTableImport(rows, existing, mapState.fields, { replace: clear });
+          if (!plan.accepted.length) {
+            toast(`冇可匯入記錄（重複 ${plan.duplicates.length}、必填欄缺漏 ${plan.invalid.length}）`, 'err'); return;
           }
-          let n = 0;
-          rows.forEach(r => {
-            const idKey = mapState.target === 'members' ? 'm' : mapState.target === 'invItems' ? 'g' : 'r';
-            add(col, { id: uid(idKey), importedAt: nowStamp(), ...r });
-            n++;
+          const ok = await confirmBulkOperation({
+            title: `Dry-run：${clear ? '取代' : '附加'}「${def.label}」`,
+            actionLabel: `${clear ? '確認取代' : '確認匯入'} ${plan.accepted.length} 筆`, count: plan.accepted.length,
+            scope: `${profile().name || '現時旅團'}／${def.label}／${clear ? '取代模式' : '附加模式'}`,
+            requireText: `${clear ? '取代' : '確認'} ${plan.accepted.length}`, danger: clear,
+            changes: [
+              { label: '現有記錄', before: existing.length, after: clear ? 0 : existing.length },
+              { label: '新增記錄', before: 0, after: plan.accepted.length },
+              { label: '完成後記錄', before: existing.length, after: (clear ? 0 : existing.length) + plan.accepted.length },
+              { label: '重複／缺欄跳過', before: 0, after: `${plan.duplicates.length}／${plan.invalid.length}` }
+            ],
+            preview: plan.accepted.slice(0, 80).map((r, i) => {
+              const labelField = mapState.fields.find(f => ['name', 'item', 'title', 'date'].includes(f.key) && r[f.key] != null) || mapState.fields.find(f => r[f.key] != null);
+              return { label: String(r[labelField?.key] || `第 ${i + 1} 筆`), before: clear ? '取代舊表' : '（新增）', after: mapState.fields.filter(f => r[f.key] !== undefined).slice(0, 3).map(f => `${f.label}: ${r[f.key]}`).join('；') };
+            }),
+            warnings: [
+              ...(clear ? [`會先移除「${def.label}」現有 ${existing.length} 筆；呢個係破壞性取代。`] : []),
+              ...(plan.duplicates.length ? [`偵測到 ${plan.duplicates.length} 筆重複，預設跳過。`] : []),
+              ...(plan.invalid.length ? [`有 ${plan.invalid.length} 筆缺少必填欄，唔會匯入。`] : [])
+            ],
+            backupText: `會先保存「${def.label}」現有 ${existing.length} 筆本機安全快照。`,
+            rollbackText: '完成後可即時還原整張表到匯入前狀態。',
+            readbackText: '會按今次新增記錄 ID 重新讀取並核對數量。'
           });
-          toast(`已匯入 ${n} 筆`, 'ok');
+          if (!ok) return;
+          const before = structuredClone(existing);
+          const snapshot = createSafetySnapshot(`${def.label}匯入前`, before, { kind: 'table-import', table: col, replace: clear, count: plan.accepted.length });
+          if (!snapshot.ok) { toast(`${snapshot.error}；為安全起見已取消匯入`, 'err'); return; }
+          const db = load();
+          if (clear) { db[col] = []; commit(); }
+          const ids = [];
+          plan.accepted.forEach(r => {
+            const idKey = mapState.target === 'members' ? 'm' : mapState.target === 'invItems' ? 'g' : 'r';
+            const made = add(col, { id: uid(idKey), importedAt: nowStamp(), ...r });
+            if (made?.id) ids.push(made.id);
+          });
+          const found = new Set((load()[col] || []).map(r => r.id));
+          const written = ids.filter(id => found.has(id)).length;
+          if (written !== ids.length) {
+            toast(`匯入後只核對到 ${written}/${ids.length} 筆；已保留快照，請先唔好儲存到後端`, 'err'); return;
+          }
+          await undoable(`已匯入並核對 ${written} 筆（仍未儲存到後端）`, () => {
+            const currentDb = load(); currentDb[col] = structuredClone(before); commit(); refresh();
+            toast(`已還原「${def.label}」匯入前狀態`, 'ok');
+          });
           refresh();
         }
         if (act === 'save-source') {
@@ -1160,6 +1357,57 @@ export function mount(root, params) {
         }
       }));
     };
+
+    const localFile = root.querySelector('#s-file');
+    if (localFile) localFile.addEventListener('change', async () => {
+      const file = localFile.files?.[0];
+      if (!file) return;
+      try {
+        if (Number(file.size || 0) > 12 * 1024 * 1024) throw new Error('檔案大過 12MB；請另存只包含要搬入工作表嘅檔案或者 CSV');
+        if (/\.xlsx$/i.test(file.name || '') || /spreadsheetml/i.test(file.type || '')) {
+          const { readXlsx, detectHeaderRow } = await import('../lib/xlsx.js');
+          const workbook = await readXlsx(await file.arrayBuffer());
+          const picked = await modal({
+            title: `揀 Excel 工作表：${file.name}`, sub: '標題行以上嘅說明文字唔會當資料匯入',
+            trustedBodyHtml: `<div class="field"><label class="label">工作表</label><select class="select" id="xls-sheet">
+              ${workbook.sheets.map((s, i) => `<option value="${esc(i)}">${esc(s.name)}（${s.rows.length} 行）</option>`).join('')}</select></div>
+              <div class="field mt-12"><label class="label">標題行</label><select class="select" id="xls-head"></select></div>
+              ${workbook.warnings.length ? `<div class="note-box warn mt-12"><div>${workbook.warnings.map(esc).join('<br>')}</div></div>` : ''}`,
+            actions: [{ label: '取消', class: 'btn', value: null }, { label: '開始欄位對應', class: 'btn-primary', onClick: el => ({
+              sheetIndex: Number(el.querySelector('#xls-sheet').value) || 0, headerRow: Number(el.querySelector('#xls-head').value) || 0
+            }) }],
+            onMount: el => {
+              const sheets = el.querySelector('#xls-sheet'), heads = el.querySelector('#xls-head');
+              const fill = () => {
+                const sheet = workbook.sheets[Number(sheets.value) || 0];
+                const detected = detectHeaderRow(sheet.rows);
+                heads.innerHTML = sheet.rows.slice(0, 12).map((row, i) => `<option value="${esc(i)}" ${i === detected ? 'selected' : ''}>第 ${i + 1} 行：${esc(row.filter(Boolean).slice(0, 4).join('｜').slice(0, 80) || '（空白）')}</option>`).join('');
+              };
+              sheets.addEventListener('change', fill); fill();
+            }
+          });
+          if (!picked) return;
+          const source = workbook.sheets[picked.sheetIndex];
+          const head = source.rows[picked.headerRow] || [];
+          const width = Math.max(source.maxColumns || 0, head.length);
+          showMapping({
+            title: source.name, sourceKind: 'xlsx',
+            cols: Array.from({ length: width }, (_, i) => ({ id: 'c' + i, label: String(head[i] || '').trim() || `第 ${i + 1} 欄`, type: 'string' })),
+            rows: source.rows.slice(picked.headerRow + 1).filter(r => r.some(v => String(v ?? '').trim() !== ''))
+          });
+          toast(`已本機讀取「${source.name}」；未寫入任何資料`, 'ok');
+        } else {
+          const text = await file.text();
+          const { splitCsv } = await import('./finance.js');
+          const isTab = (text.split(/\r?\n/)[0] || '').includes('\t');
+          const table = isTab ? text.split(/\r?\n/).filter(l => l.trim()).map(l => l.split('\t')) : splitCsv(text);
+          const head = table[0] || [];
+          if (!head.length) throw new Error('檔案冇可讀欄位');
+          showMapping({ title: file.name, sourceKind: 'csv', cols: head.map((h, i) => ({ id: 'c' + i, label: String(h).trim() || `第 ${i + 1} 欄`, type: 'string' })), rows: table.slice(1) });
+        }
+      } catch (e) { toast(`讀取失敗：${e.message || e}`, 'err'); }
+      finally { localFile.value = ''; }
+    });
 
     root.querySelectorAll('[data-act]').forEach(b => b.addEventListener('click', async () => {
       const act = b.dataset.act;
@@ -1179,7 +1427,7 @@ export function mount(root, params) {
       if (act === 'paste-csv') {
         const r = await modal({
           title: '貼上 CSV / 表格', wide: true,
-          body: `<div class="field"><label class="label">由 Google Sheet 複製（Tab 分隔都得）</label>
+          trustedBodyHtml: `<div class="field"><label class="label">由 Google Sheet 複製（Tab 分隔都得）</label>
             <textarea class="textarea" id="pc-text" style="min-height:170px;font-family:var(--mono);font-size:12.5px"></textarea></div>`,
           actions: [{ label: '取消', class: 'btn', value: null },
             { label: '讀取', class: 'btn-primary', onClick: el => el.querySelector('#pc-text').value }]
@@ -1190,7 +1438,7 @@ export function mount(root, params) {
         const table = isTab ? r.split(/\r?\n/).filter(l => l.trim()).map(l => l.split('\t')) : splitCsv(r);
         const head = table[0];
         const sheet = {
-          title: '（貼上）',
+          title: '（貼上）', sourceKind: 'paste',
           cols: head.map((h, i) => ({ id: 'c' + i, label: String(h).trim() || `第 ${i + 1} 欄`, type: 'string' })),
           rows: table.slice(1).map(r => head.map((_, i) => String(r[i] ?? '').trim()))
         };
@@ -1242,21 +1490,13 @@ export function mount(root, params) {
         delete db.sync.auto;
         delete db.sync.autoModel;
         delete db.sync.poll;
-        const share = root.querySelector('#y-share')?.checked;
-        if (share && url) {
-          db.settings = { ...(db.settings || {}) };
-          db.settings.notice = { ...(db.settings.notice || {}), submitUrl: url };
-          db.settings.publicEntry = { ...(db.settings.publicEntry || {}), submitUrl: url };
-          db.backend = { ...(db.backend || {}), gasUrl: url, apiKey: db.sync.apiKey };
-        }
         /* 連線設定係呢部機自己嘅嘢（唔會上後端），所以只寫本機、唔計入未儲存改動 */
         commitMeta();
-        toast(share && url ? '已儲存，手機記帳／通告報名一齊用同一條網址'
-          : '已儲存連線設定（資料寫入後端：撳頂部「儲存到後端」）', 'ok');
+        toast('已儲存連線設定（資料寫入後端：撳頂部「儲存到後端」）', 'ok');
         refresh();
       }
       if (act === 'push-sync') {
-        if (!(await confirmDlg({ title: '更新報表分頁', okText: '開始', message: '會將全部表格資料攤平送去你嘅 Google Sheet 嘅報表分頁（帳目／團員／物資…），畀你自己睇同用公式。<br><br><b>唔會</b>寫「資料庫」分頁 —— 資料庫本身由頂部「儲存到後端」處理。' }))) return;
+        if (!(await confirmDlg({ title: '更新報表分頁', okText: '開始', trustedMessageHtml: '會將全部表格資料攤平送去你嘅 Google Sheet 嘅報表分頁（帳目／團員／物資…），畀你自己睇同用公式。<br><br><b>唔會</b>寫「資料庫」分頁 —— 資料庫本身由頂部「儲存到後端」處理。' }))) return;
         await pushToMaster(); refresh();
       }
 
@@ -1274,7 +1514,7 @@ export function mount(root, params) {
              唔好淨係彈個 toast —— toast 一閃就冇，用家只會覺得「又係唔得」。 */
           await modal({
             title: r.reason === 'bad_key' ? '寫唔入後端：API Key 唔啱' : '寫唔入後端：個 /exec 仲係舊版',
-            body: `<div class="note-box err">${icon('alert', 15)}<div><b>後端回覆：</b>${esc(r.error || '未知錯誤')}</div></div>
+            trustedBodyHtml: `<div class="note-box err">${icon('alert', 15)}<div><b>後端回覆：</b>${esc(r.error || '未知錯誤')}</div></div>
               <p class="sm mt-12">${esc(r.hint)}</p>
               <p class="sm muted mt-8">你部機啲資料仲喺度，一修好就會即刻寫得入 —— 唔會蝕咗。</p>`,
             actions: [{ label: '知道喇', class: 'btn-primary', value: true }]
@@ -1291,9 +1531,9 @@ export function mount(root, params) {
         const pend = Number(load().sync?.pending || 0);
         const okGo = await confirmDlg({
           title: '由後端重新載入', danger: true, okText: pend ? '丟棄本機改動，用後端嗰份' : '用後端資料覆蓋本機',
-          message: `後端最後更新：<b>${esc(String(info.at || info.version || '').slice(0, 19).replace('T', ' '))}</b><br>
-            內容：團員 ${c.members ?? '?'} · 帳目 ${c.transactions ?? '?'} · 會議 ${c.meetings ?? '?'} · 通告 ${c.notices ?? '?'} · 物資 ${c.invItems ?? '?'}<br><br>
-            <b>呢部機而家嘅資料會被覆蓋。</b>${pend ? `本機有 <b>${pend}</b> 項未儲存改動會<b>全部丟棄</b>；想保留就撳「取消」再撳「儲存到後端」。` : ''}`
+          trustedMessageHtml: `後端最後更新：<b>${esc(String(info.at || info.version || '').slice(0, 19).replace('T', ' '))}</b><br>
+            內容：團員 ${esc(c.members ?? '?')} · 帳目 ${esc(c.transactions ?? '?')} · 會議 ${esc(c.meetings ?? '?')} · 通告 ${esc(c.notices ?? '?')} · 物資 ${esc(c.invItems ?? '?')}<br><br>
+            <b>呢部機而家嘅資料會被覆蓋。</b>${pend ? `本機有 <b>${esc(pend)}</b> 項未儲存改動會<b>全部丟棄</b>；想保留就撳「取消」再撳「儲存到後端」。` : ''}`
         });
         if (!okGo) return;
         const { reloadFromBackend } = await import('./syncdialog.js');
@@ -1327,6 +1567,60 @@ export function mount(root, params) {
 
   /* ---- 儲存與備份 ---- */
   if (params.id === 'data') {
+    root.querySelectorAll('[data-snapshot-download]').forEach(b => b.addEventListener('click', async () => {
+      const snapshot = readSafetySnapshot(b.dataset.snapshotDownload);
+      if (!snapshot || snapshot.unit !== currentUnit()) return toast('快照不存在，或者唔屬於目前旅團', 'err');
+      const downloaded = await downloadSafetySnapshot(snapshot);
+      toast(downloaded ? '已下載安全快照，可用文字編輯器核對 JSON' : '快照下載失敗', downloaded ? 'ok' : 'err');
+    }));
+    root.querySelectorAll('[data-snapshot-delete]').forEach(b => b.addEventListener('click', async () => {
+      const snapshot = readSafetySnapshot(b.dataset.snapshotDelete);
+      if (!snapshot || snapshot.unit !== currentUnit()) return toast('快照不存在，或者唔屬於目前旅團', 'err');
+      const confirmed = await confirmDlg({
+        title: '刪除安全快照', danger: true, okText: '刪除快照',
+        message: `只會刪除「${snapshot.label}」呢份本機安全快照；現有資料唔會改。建議先下載留底。`
+      });
+      if (!confirmed) return;
+      if (!dropSafetySnapshot(snapshot.id)) return toast('未能刪除快照', 'err');
+      toast('已刪除安全快照', 'ok'); refresh();
+    }));
+    root.querySelectorAll('[data-snapshot-restore]').forEach(b => b.addEventListener('click', async () => {
+      const snapshot = readSafetySnapshot(b.dataset.snapshotRestore);
+      if (!snapshot || snapshot.unit !== currentUnit()) return toast('快照不存在，或者唔屬於目前旅團', 'err');
+      const plan = snapshotRestorePlan(snapshot);
+      if (!plan) return toast('呢種舊快照只可下載，未能自動還原', 'warn');
+      const confirmed = await confirmBulkOperation({
+        title: `Dry-run：還原「${snapshot.label}」`, actionLabel: `確認還原 ${plan.target}`,
+        count: plan.count, scope: `${profile().name || currentUnit()}／${plan.target}`,
+        requireText: `還原 ${plan.target}`, danger: true,
+        changes: [{ label: plan.target, before: '目前本機版本', after: String(snapshot.at || '').slice(0, 19).replace('T', ' ') }],
+        preview: [{ label: snapshot.label, before: '目前資料', after: `快照 ${plan.count} 筆／項` }],
+        warnings: ['會覆蓋所列範圍嘅目前本機資料；唔會自動寫到後端。'],
+        backupText: '執行前會再建立一份「還原前」安全快照。',
+        rollbackText: '完成後可即時還原返今次操作前版本。',
+        readbackText: '完成後會重新讀取同快照逐項核對；唔一致會自動回滾。'
+      });
+      if (!confirmed) return;
+      const before = plan.capture();
+      const safety = createSafetySnapshot(`還原「${snapshot.label}」前`, before, plan.safetyMeta, { preserveId: snapshot.id });
+      if (!safety.ok) return toast(`${safety.error}；為安全起見已取消還原`, 'err');
+      try {
+        plan.apply(snapshot.data);
+        if (!plan.verify(snapshot.data)) throw new Error('還原後 readback 同快照唔一致');
+      } catch (error) {
+        try { plan.apply(before); } catch { /* 保留兩份快照畀人手處理 */ }
+        toast(`${error?.message || error}；已嘗試自動回滾，兩份快照仍然保留`, 'err');
+        refresh(); return;
+      }
+      audit('還原安全快照', `${snapshot.label}／${plan.target}`);
+      await undoable(`已還原並核對「${snapshot.label}」（仍未儲存到後端）`, () => {
+        plan.apply(before);
+        if (!plan.verify(before)) throw new Error('即時還原 readback 失敗');
+        toast('已回復今次還原操作前版本', 'ok'); refresh();
+      }, 'warn');
+      refresh();
+    }));
+
     /* ★ 2026-11-12 補漏：舊系統入面嗰個「資料管理」雖然主要係指路頁，
        但入面其實仲有 JSON 備份／匯入／重設／清空四個真動作。
        刪指路頁時要將真功能搬到呢個真正分頁，唔可以連功能一齊刪。 */
@@ -1339,38 +1633,89 @@ export function mount(root, params) {
         }
         if (act === 'import-json') {
           const r = await modal({
-            title: '匯入備份', sub: '會覆蓋目前旅團所有資料',
-            body: `<div class="field"><label class="label">貼上備份 JSON</label>
+            title: '讀取備份（未改資料）', sub: '下一步會先列 dry-run，再建立及下載操作前備份',
+            trustedBodyHtml: `<div class="field"><label class="label">貼上備份 JSON</label>
                 <textarea class="textarea" id="q-json" style="min-height:180px;font-family:var(--mono);font-size:12px" placeholder='{"schema":2,…}'></textarea></div>
               <div id="q-err" class="err mt-8"></div>`,
             actions: [{ label: '取消', class: 'btn', value: null },
-              { label: '匯入', class: 'btn-primary', onClick: el => el.querySelector('#q-json').value }]
+              { label: '讀取並預覽', class: 'btn-primary', onClick: el => el.querySelector('#q-json').value }]
           });
           if (!r) return;
           try {
+            const incoming = JSON.parse(r);
+            if (!incoming || typeof incoming !== 'object' || !incoming.schema) throw new Error('唔似係本系統備份（缺少 schema）');
+            const beforeText = exportAll();
+            const beforeDb = JSON.parse(beforeText);
+            const names = [['members', '團員'], ['transactions', '帳目'], ['invItems', '物資'], ['meetings', '會議'], ['notices', '通告'], ['events', '活動']];
+            const totalBefore = names.reduce((n, [k]) => n + (Array.isArray(beforeDb[k]) ? beforeDb[k].length : 0), 0);
+            const totalAfter = names.reduce((n, [k]) => n + (Array.isArray(incoming[k]) ? incoming[k].length : 0), 0);
+            const ok = await confirmBulkOperation({
+              title: 'Dry-run：用 JSON 備份取代全部資料', actionLabel: '確認取代全部資料', count: totalAfter,
+              scope: `${profile().name || currentUnit()}／完整本機資料庫`, requireText: `取代 ${totalBefore}`, danger: true,
+              changes: names.map(([k, label]) => ({ label, before: Array.isArray(beforeDb[k]) ? beforeDb[k].length : 0, after: Array.isArray(incoming[k]) ? incoming[k].length : 0 })),
+              preview: names.map(([k, label]) => ({ label, before: `${Array.isArray(beforeDb[k]) ? beforeDb[k].length : 0} 筆`, after: `${Array.isArray(incoming[k]) ? incoming[k].length : 0} 筆` })),
+              warnings: ['會覆蓋目前旅團所有本機資料；連線設定會保留，亦唔會自動寫到後端。'],
+              backupText: '確認後會先建立本機安全快照，並自動下載完整 JSON 備份。',
+              rollbackText: '如結果唔啱，可即時「還原」或重新匯入自動下載嘅操作前備份。',
+              readbackText: '匯入後會重新讀取 schema 同各表筆數核對。'
+            });
+            if (!ok) return;
+            const snapshot = createSafetySnapshot('完整資料匯入前', beforeDb, { kind: 'full-json-import', before: totalBefore, after: totalAfter });
+            dlFile(`ecportal_${currentUnit()}_匯入前安全備份_${stamp()}.json`, beforeText, 'application/json');
+            if (!snapshot.ok) toast('本機空間不足，已改用自動下載嘅 JSON 做安全備份', 'warn');
             importAll(r);
-            toast('已匯入，重新載入…', 'ok');
-            setTimeout(() => location.reload(), 600);
+            const after = load();
+            if (Number(after.schema) !== Number(incoming.schema)) throw new Error('匯入後 schema 核對唔一致');
+            await undoable(`已匯入並核對 ${totalAfter} 筆（仍未儲存到後端）`, () => {
+              importAll(beforeText); toast('已還原匯入前完整資料', 'ok'); refresh();
+            });
+            refresh();
           } catch (e) { toast('匯入失敗：' + e.message, 'err'); }
           return;
         }
         if (act === 'reset-seed') {
-          if (await confirmDlg({
-            title: '還原初始資料', danger: true, okText: '確定還原',
-            message: '本機所有改動會消失，還原做 <b>data/</b> 檔案嘅初始內容，並會登出。建議先匯出備份。'
-          })) {
-            await resetToSeed();
-            toast('已還原，重新載入…', 'ok');
-            setTimeout(() => { location.href = location.pathname + location.search; }, 700);
-          }
+          const beforeText = exportAll();
+          const before = JSON.parse(beforeText);
+          const currentRows = Object.values(before).reduce((n, v) => n + (Array.isArray(v) ? v.length : 0), 0);
+          const ok = await confirmBulkOperation({
+            title: 'Dry-run：還原初始資料', actionLabel: '確認還原初始資料', count: currentRows,
+            scope: `${profile().name || currentUnit()}／完整資料庫`, requireText: `還原 ${currentUnit()}`, danger: true,
+            changes: [{ label: '目前資料', before: `${currentRows} 筆`, after: '由 data/ 初始檔重新建立' }],
+            warnings: ['目前本機改動會被取代；操作完成後仍然唔會自動寫後端。'],
+            backupText: '會先建立安全快照並下載完整 JSON。', rollbackText: '要回復時重新匯入下載嘅 JSON。',
+            readbackText: '會核對初始資料 schema 同旅團編號。'
+          });
+          if (!ok) return;
+          const snapshot = createSafetySnapshot('還原初始資料前', before, { kind: 'reset-seed' });
+          dlFile(`ecportal_${currentUnit()}_還原前安全備份_${stamp()}.json`, beforeText, 'application/json');
+          if (!snapshot.ok) toast('本機空間不足；已下載 JSON 安全備份', 'warn');
+          await resetToSeed();
+          toast('已還原初始資料；仍未儲存到後端', 'ok');
+          refresh();
           return;
         }
-        if (act === 'wipe' && await confirmDlg({
-          title: '清空本旅團資料', danger: true, okText: '確定清空',
-          message: '所有團員、帳目、物資、團章改動會<b>全部清空</b>。'
-        })) {
-          wipe(); toast('已清空', 'ok');
-          setTimeout(() => location.reload(), 600);
+        if (act === 'wipe') {
+          const beforeText = exportAll();
+          const before = JSON.parse(beforeText);
+          const currentRows = Object.values(before).reduce((n, v) => n + (Array.isArray(v) ? v.length : 0), 0);
+          const ok = await confirmBulkOperation({
+            title: 'Dry-run：清空本旅團所有資料', actionLabel: '永久清空本機資料', count: currentRows,
+            scope: `${profile().name || currentUnit()}／完整資料庫`, requireText: `清空 ${currentUnit()}`, danger: true,
+            changes: [{ label: '所有記錄', before: currentRows, after: 0 }, { label: '後端連線設定', before: '保留', after: '保留' }],
+            warnings: ['會清空團員、帳目、物資、會議、通告、團章等本機資料；未撳頂部儲存之前後端唔會改。'],
+            backupText: '會先建立安全快照並下載完整 JSON。', rollbackText: '完成後可即時還原；亦可重新匯入下載檔。',
+            readbackText: '會重新計數確認本機工作副本已清空。'
+          });
+          if (!ok) return;
+          const snapshot = createSafetySnapshot('清空完整資料前', before, { kind: 'wipe', count: currentRows });
+          dlFile(`ecportal_${currentUnit()}_清空前安全備份_${stamp()}.json`, beforeText, 'application/json');
+          if (!snapshot.ok) toast('本機空間不足；已下載 JSON 安全備份', 'warn');
+          wipe();
+          const nowRows = Object.values(load()).reduce((n, v) => n + (Array.isArray(v) ? v.length : 0), 0);
+          await undoable(`已清空本機資料（readback：${nowRows} 筆預設／系統記錄）`, () => {
+            importAll(beforeText); toast('已還原清空前完整資料', 'ok'); refresh();
+          }, 'warn');
+          refresh();
         }
       }));
 
@@ -1385,13 +1730,30 @@ export function mount(root, params) {
       toast('已匯出', 'ok');
     }));
     root.querySelectorAll('[data-act="strip-photos"]').forEach(b => b.addEventListener('click', async () => {
-      if (!(await confirmDlg({ title: '清理相片', danger: true, okText: '確定清理',
-        message: '會移除<b>已入帳</b>嘅帳目相片（保留文字記錄同「有單據」標記）。未批核嘅申報相片唔會清。' }))) return;
       const db = load();
-      let n = 0;
-      (db.transactions || []).forEach(t => { if ((t.photos || []).length) { n += t.photos.length; t.photos = []; t.receipt = true; } });
+      const affected = (db.transactions || []).filter(t => (t.photos || []).length);
+      const photoCount = affected.reduce((n, t) => n + t.photos.length, 0);
+      if (!photoCount) { toast('冇已入帳相片要清理', 'ok'); return; }
+      const ok = await confirmBulkOperation({
+        title: 'Dry-run：清理已入帳相片', actionLabel: `確認移除 ${photoCount} 張相片`, count: photoCount,
+        scope: `${affected.length} 筆已入帳帳目`, requireText: `清理 ${photoCount}`, danger: true,
+        changes: [{ label: '相片', before: photoCount, after: 0 }, { label: '文字帳目', before: affected.length, after: `${affected.length}（保留）` }],
+        preview: affected.slice(0, 80).map(t => ({ label: `${t.date || ''} · ${t.item || t.id}`, before: `${t.photos.length} 張相`, after: '保留帳目＋有單據標記' })),
+        warnings: ['只會移除已入帳交易內嵌相片；未批核申報相片唔會清。'],
+        backupText: '會保存受影響帳目安全快照。', rollbackText: '完成後可即時還原相片。', readbackText: '會重新計算剩餘內嵌相片數。'
+      });
+      if (!ok) return;
+      const before = structuredClone(db.transactions || []);
+      const snapshot = createSafetySnapshot('清理帳目相片前', before, { kind: 'strip-photos', photos: photoCount });
+      if (!snapshot.ok) { toast(`${snapshot.error}；為安全起見已取消`, 'err'); return; }
+      affected.forEach(t => { t.photos = []; t.receipt = true; });
       commit();
-      toast(`已清理 ${n} 張相片`, 'ok'); refresh();
+      const left = (load().transactions || []).reduce((n, t) => n + (t.photos || []).length, 0);
+      await undoable(`已清理 ${photoCount} 張相片（readback：剩餘 ${left} 張）`, () => {
+        const currentDb = load(); currentDb.transactions = structuredClone(before); commit(); refresh();
+        toast('已還原清理前相片', 'ok');
+      }, 'warn');
+      refresh();
     }));
   }
 }

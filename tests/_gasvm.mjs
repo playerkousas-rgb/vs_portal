@@ -68,13 +68,14 @@ function makeSheet(name, headers, { coerceNumericText = false } = {}) {
   return sheet;
 }
 
-function makeGas({ apiKey = null, coerceNumericText = false } = {}) {
+function makeGas({ apiKey = null, coerceNumericText = false, sourceFile = 'apps-script/Code.gs' } = {}) {
   const sheets = new Map();
   const props = new Map();
   const cache = new Map();
   const cacheWrites = [];
   const mail = [];
   const lockStats = { waits: 0, releases: 0 };
+  let uuidCounter = 0;
   if (apiKey) props.set('API_KEY', apiKey);
 
   const ss = {
@@ -99,7 +100,7 @@ function makeGas({ apiKey = null, coerceNumericText = false } = {}) {
       })
     },
     Utilities: {
-      getUuid: () => 'aaaabbbb-cccc-dddd-eeee-ffff00001111',
+      getUuid: () => `00000000-0000-4000-8000-${String(++uuidCounter).padStart(12, '0')}`,
       formatDate: (d) => new Date(d).toISOString(), sleep: () => {},
       base64Decode: () => [],
       newBlob: (value) => ({ getBytes: () => [...Buffer.from(String(value), 'utf8')], setName: () => ({}) }),
@@ -129,7 +130,8 @@ function makeGas({ apiKey = null, coerceNumericText = false } = {}) {
     isNaN, parseInt, parseFloat, RegExp, Error, encodeURIComponent, decodeURIComponent
   };
   vm.createContext(sandbox);
-  vm.runInContext(fs.readFileSync(path.join(ROOT, 'apps-script/Code.gs'), 'utf8'), sandbox, { filename: 'Code.gs' });
+  const sourcePath = path.join(ROOT, sourceFile);
+  vm.runInContext(fs.readFileSync(sourcePath, 'utf8'), sandbox, { filename: path.basename(sourceFile) });
 
   const networkPost = (body, parameter = {}) => {
     const out = sandbox.doPost({ parameter, postData: { contents: JSON.stringify(body || {}) } });

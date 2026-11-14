@@ -152,12 +152,15 @@ ok(progMissing.length === 0, `進度前端嘅 ${needProg.length} 個 action 全�
   progMissing.join(', '));
 
 /** 白名單入面嘅 action 後端真係識做 —— 唔好放行咗但後端冇。
-    正式 Code.gs 暫時保持原 Portal build；中央兌換及 server 改密碼只屬隔離的
-    UnifiedCode.gs。兩個例外必須在 unified extension 的 action map 真實存在。 */
+    正式 Code.gs 暫時保持原 Portal build；中央兌換、server 密碼及批量開戶只屬
+    UnifiedCode.gs。這些例外必須在 unified extension 的 action map 真實存在。 */
 const gasSrc = fs.readFileSync(gas, 'utf8');
 const gasHandles = new Set([...gasSrc.matchAll(/body\.action === '([a-zA-Z]+)'/g)].map(m => m[1]));
 const unifiedExtension = fs.readFileSync(path.join(ROOT, 'apps-script', 'unified-src', 'unified-extension.gs'), 'utf8');
-const unifiedOnlyProxyActions = new Set(['authPortalExchange', 'authChangePassword', 'authCompletePasswordReset']);
+const unifiedOnlyProxyActions = new Set([
+  'authPortalExchange', 'authChangePassword', 'authCompletePasswordReset', 'authOpenAccounts',
+  'operationStatus'
+]);
 const missingUnifiedHandlers = [...unifiedOnlyProxyActions].filter(action =>
   !(new RegExp(`\\b${action}:\\s*1\\b`).test(unifiedExtension)));
 ok(missingUnifiedHandlers.length === 0,

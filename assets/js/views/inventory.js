@@ -16,7 +16,7 @@ import { esc, icon, modal, confirmDlg, toast, uid, fmtDate, daysUntil, nf, avata
 import { toCSV, toWord, printDoc, qrSvg, download as dlFile, stamp } from '../lib/exporter.js';
 import { go, parse } from '../lib/router.js';
 import { can, current, isSuper } from '../lib/auth.js';
-import { pageHead, tabs, stat, empty, kv, chipbar, noteBox } from './ui.js';
+import { pageHead, tabs, stat, empty, kvHtml, chipbar, noteBoxHtml } from './ui.js';
 
 let tab = 'items';
 let loanFilter = 'open';
@@ -89,7 +89,7 @@ function itemsView() {
       <tbody>${list.map(i => {
         const t = itemTotals(i.id);
         const low = t.available <= 0;
-        return `<tr style="cursor:pointer" data-open="${i.id}">
+        return `<tr style="cursor:pointer" data-open="${esc(i.id)}">
           <td class="mono sm">${esc(i.code || '')}</td>
           <td><div class="semibold">${esc(i.name)}</div>${i.note ? `<div class="xs faint">${esc(i.note)}</div>` : ''}</td>
           <td><span class="tag">${esc(i.category || '其他')}</span></td>
@@ -119,9 +119,9 @@ function itemDetail(id) {
     title: i.name, sub: `${i.code || ''} · ${i.category || ''} · 存放：${i.location || '—'}`,
     actions: `
       <button class="btn btn-sm" data-act="back">${icon('chevronL', 15)} 返回</button>
-      ${can('inv.borrow') ? `<button class="btn btn-sm btn-primary" data-act="new-loan" data-item="${i.id}">${icon('plus', 15)} 申請借用</button>` : ''}
-      ${can('inv.audit') ? `<button class="btn btn-sm" data-act="adjust" data-id="${i.id}">${icon('edit', 15)} 盤點調整</button>` : ''}
-      ${can('inv.manage') ? `<button class="btn btn-sm" data-act="edit-item" data-id="${i.id}">${icon('edit', 15)} 編輯資料</button>` : ''}`
+      ${can('inv.borrow') ? `<button class="btn btn-sm btn-primary" data-act="new-loan" data-item="${esc(i.id)}">${icon('plus', 15)} 申請借用</button>` : ''}
+      ${can('inv.audit') ? `<button class="btn btn-sm" data-act="adjust" data-id="${esc(i.id)}">${icon('edit', 15)} 盤點調整</button>` : ''}
+      ${can('inv.manage') ? `<button class="btn btn-sm" data-act="edit-item" data-id="${esc(i.id)}">${icon('edit', 15)} 編輯資料</button>` : ''}`
   })}
 
   <div class="grid g-4 mb-16">
@@ -140,7 +140,7 @@ function itemDetail(id) {
     <div class="card">
       <div class="card-head"><div class="card-title">物資資料</div></div>
       <div style="padding:16px 18px">
-        ${kv([
+        ${kvHtml([
           ['編號', esc(i.code || '—')],
           ['分類', esc(i.category || '—')],
           ['單位', esc(i.unit || '—')],
@@ -151,9 +151,9 @@ function itemDetail(id) {
         ${audits.length ? `<div class="mt-16"><div class="sm semibold mb-8">盤點調整</div>
           ${audits.map(a => `<div class="row-between sm" style="padding:6px 0;border-bottom:1px solid var(--line-2)">
             <span>${esc(a.date)} · ${esc(a.reason || '')}</span>
-            <span class="mono" style="color:${Number(a.delta) < 0 ? 'var(--danger)' : 'var(--ok)'}">${Number(a.delta) > 0 ? '+' : ''}${a.delta}</span>
+            <span class="mono" style="color:${Number(a.delta) < 0 ? 'var(--danger)' : 'var(--ok)'}">${Number(a.delta) > 0 ? '+' : ''}${esc(a.delta)}</span>
           </div>`).join('')}</div>` : ''}
-        ${can('inv.manage') ? `<button class="btn btn-sm btn-danger btn-block mt-16" data-act="del-item" data-id="${i.id}">${icon('trash', 15)} 刪除此物資</button>` : ''}
+        ${can('inv.manage') ? `<button class="btn btn-sm btn-danger btn-block mt-16" data-act="del-item" data-id="${esc(i.id)}">${icon('trash', 15)} 刪除此物資</button>` : ''}
       </div>
     </div>
   </div>`;
@@ -209,13 +209,13 @@ function loanRow(l, compact = false) {
       <div class="row gap-10">
         <span class="stat-ic">${icon('grid', 16)}</span>
         <div>
-          <div class="semibold">${esc(item?.name || '（物資已刪除）')} <span class="faint sm mono">×${l.qty} ${esc(item?.unit || '')}</span></div>
+          <div class="semibold">${esc(item?.name || '（物資已刪除）')} <span class="faint sm mono">×${esc(l.qty)} ${esc(item?.unit || '')}</span></div>
           <div class="xs faint">${esc(l.borrowerName || memberName(l.borrowerId) || '')}${l.purpose ? ` · ${esc(l.purpose)}` : ''}</div>
         </div>
       </div>
       <div class="row gap-6">
         ${overdue ? '<span class="badge b-danger"><span class="dot"></span>逾期未還</span>' : ''}
-        <span class="badge ${S.c}"><span class="dot"></span>${S.l}</span>
+        <span class="badge ${S.c}"><span class="dot"></span>${esc(S.l)}</span>
       </div>
     </div>
 
@@ -229,13 +229,13 @@ function loanRow(l, compact = false) {
 
     ${compact ? '' : `<div class="row gap-8 wrap mt-12 no-print" style="margin-left:46px">
       ${l.status === 'requested' && can('inv.approve') ? `
-        <button class="btn btn-xs btn-primary" data-loan="approve" data-id="${l.id}">${icon('check', 14)} 批准</button>
-        <button class="btn btn-xs" data-loan="reject" data-id="${l.id}">${icon('x', 14)} 拒絕</button>` : ''}
-      ${l.status === 'approved' ? `<button class="btn btn-xs btn-primary" data-loan="checkout" data-id="${l.id}">${icon('arrowUp', 14)} 已取走（−庫存）</button>` : ''}
-      ${l.status === 'out' ? `<button class="btn btn-xs btn-primary" data-loan="return" data-id="${l.id}">${icon('arrowDown', 14)} 已歸還（＋庫存）</button>` : ''}
-      ${['requested', 'approved'].includes(l.status) && (mine || isSuper() || can('inv.manage')) ? `<button class="btn btn-xs" data-loan="cancel" data-id="${l.id}">取消</button>` : ''}
-      <button class="btn btn-xs" data-loan="slip" data-id="${l.id}">${icon('print', 14)} 借用單</button>
-      ${can('inv.manage') ? `<button class="btn btn-xs btn-danger" data-loan="del" data-id="${l.id}">${icon('trash', 14)}</button>` : ''}
+        <button class="btn btn-xs btn-primary" data-loan="approve" data-id="${esc(l.id)}">${icon('check', 14)} 批准</button>
+        <button class="btn btn-xs" data-loan="reject" data-id="${esc(l.id)}">${icon('x', 14)} 拒絕</button>` : ''}
+      ${l.status === 'approved' ? `<button class="btn btn-xs btn-primary" data-loan="checkout" data-id="${esc(l.id)}">${icon('arrowUp', 14)} 已取走（−庫存）</button>` : ''}
+      ${l.status === 'out' ? `<button class="btn btn-xs btn-primary" data-loan="return" data-id="${esc(l.id)}">${icon('arrowDown', 14)} 已歸還（＋庫存）</button>` : ''}
+      ${['requested', 'approved'].includes(l.status) && (mine || isSuper() || can('inv.manage')) ? `<button class="btn btn-xs" data-loan="cancel" data-id="${esc(l.id)}">取消</button>` : ''}
+      <button class="btn btn-xs" data-loan="slip" data-id="${esc(l.id)}">${icon('print', 14)} 借用單</button>
+      ${can('inv.manage') ? `<button class="btn btn-xs btn-danger" data-loan="del" data-id="${esc(l.id)}">${icon('trash', 14)}</button>` : ''}
     </div>`}
   </div>`;
 }
@@ -253,14 +253,14 @@ function auditsView() {
         <tbody>${audits.map(a => `<tr>
           <td class="mono sm">${esc(a.date)}</td>
           <td>${esc(invItem(a.itemId)?.name || '—')}</td>
-          <td class="center mono" style="color:${Number(a.delta) < 0 ? 'var(--danger)' : 'var(--ok)'};font-weight:700">${Number(a.delta) > 0 ? '+' : ''}${a.delta}</td>
+          <td class="center mono" style="color:${Number(a.delta) < 0 ? 'var(--danger)' : 'var(--ok)'};font-weight:700">${Number(a.delta) > 0 ? '+' : ''}${esc(a.delta)}</td>
           <td class="sm">${esc(a.reason || '')}</td>
           <td class="sm">${esc(a.by || '')}</td></tr>`).join('')}</tbody>
       </table></div>` : empty('history', '未有盤點紀錄')}</div>
     </div>
     <div class="card">
       <div style="padding:16px 18px">
-        ${noteBox('庫存數字係由「物資登記 + 盤點調整 − 未歸還借用」即時計算，所以批核借用會自動 <b>−庫存</b>，歸還會自動 <b>＋庫存</b>，唔會計錯數。')}
+        ${noteBoxHtml('庫存數字係由「物資登記 + 盤點調整 − 未歸還借用」即時計算，所以批核借用會自動 <b>−庫存</b>，歸還會自動 <b>＋庫存</b>，唔會計錯數。')}
         <div class="mt-16 sm muted">小提示：每次活動前後做一次盤點，記錄損耗或遺失，庫存就長期準確。</div>
       </div>
     </div>
@@ -287,7 +287,7 @@ function itemEditor(id) {
             ${invCategories().map(c => `<option ${i?.category === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}
           </select></div>
         <div class="field"><label class="label">總數量 <span class="req">*</span></label>
-          <input class="input" id="f-total" type="number" min="0" value="${i?.total ?? 1}"></div>
+          <input class="input" id="f-total" type="number" min="0" value="${esc(i?.total ?? 1)}"></div>
         <div class="field"><label class="label">單位</label>
           <input class="input" id="f-unit" value="${esc(i?.unit || '個')}" placeholder="個 / 張 / 套"></div>
         <div class="field"><label class="label">存放位置</label>
@@ -298,7 +298,7 @@ function itemEditor(id) {
       <div class="field mt-16"><label class="label">備註</label>
         <textarea class="textarea" id="f-note">${esc(i?.note || '')}</textarea></div>
       <div id="f-err" class="err mt-8"></div>
-      <button class="btn btn-primary mt-16" data-act="save-item" data-id="${id || ''}">${icon('save', 16)} ${i ? '儲存' : '新增物資'}</button>
+      <button class="btn btn-primary mt-16" data-act="save-item" data-id="${esc(id || '')}">${icon('save', 16)} ${i ? '儲存' : '新增物資'}</button>
     </div>
   </div>`;
 }
@@ -315,7 +315,7 @@ function exportItemsWord() {
   }).join('');
   toWord({
     filename: `物資清單_${stamp()}.doc`, title: '旅團物資清單', org: profile().name,
-    bodyHtml: `<div class="doc-head"><div class="doc-title">物資清單</div>
+    trustedBodyHtml: `<div class="doc-head"><div class="doc-title">物資清單</div>
       <div class="doc-sub">${esc(profile().name || '')} · 共 ${invItems().length} 種 · ${todayISO()}</div></div>
       <table><thead><tr><th>編號</th><th>物資</th><th>分類</th><th class="num">總數</th><th class="num">借出</th>
         <th class="num">可用</th><th>存放</th><th>狀況</th></tr></thead><tbody>${rows}</tbody></table>
@@ -325,13 +325,13 @@ function exportItemsWord() {
 
 function exportLoansWord() {
   const rows = invLoans().slice().sort((a, b) => String(b.outDate).localeCompare(String(a.outDate))).map(l => `<tr>
-    <td>${esc(invItem(l.itemId)?.name || '')}</td><td class="num">${l.qty}</td>
+    <td>${esc(invItem(l.itemId)?.name || '')}</td><td class="num">${esc(l.qty)}</td>
     <td>${esc(l.borrowerName || memberName(l.borrowerId) || '')}</td><td>${esc(l.purpose || '')}</td>
     <td>${esc(l.outDate || '')}</td><td>${esc(l.dueDate || '')}</td><td>${esc(l.returnDate || '')}</td>
     <td>${esc((loanStatus()[l.status] || {}).l || l.status)}</td><td>${esc(l.approvedBy || '')}</td></tr>`).join('');
   toWord({
     filename: `物資借用紀錄_${stamp()}.doc`, title: '物資借用紀錄', org: profile().name,
-    bodyHtml: `<div class="doc-head"><div class="doc-title">物資借用紀錄</div>
+    trustedBodyHtml: `<div class="doc-head"><div class="doc-title">物資借用紀錄</div>
       <div class="doc-sub">${esc(profile().name || '')} · 列印日期 ${todayISO()}</div></div>
       <table><thead><tr><th>物資</th><th class="num">數量</th><th>借用人</th><th>用途</th>
         <th>借出日</th><th>應還日</th><th>歸還日</th><th>狀態</th><th>批核人</th></tr></thead><tbody>${rows}</tbody></table>`
@@ -348,7 +348,7 @@ function loanSlip(loan) {
   <table>
     <tr><th style="width:110pt">借用人</th><td>${esc(loan.borrowerName || memberName(loan.borrowerId) || '')}</td>
         <th style="width:110pt">聯絡</th><td>${esc(member(loan.borrowerId)?.phone || '')}</td></tr>
-    <tr><th>物資</th><td>${esc(item?.name || '')}（${esc(item?.code || '')}）</td><th>數量</th><td>${loan.qty} ${esc(item?.unit || '')}</td></tr>
+    <tr><th>物資</th><td>${esc(item?.name || '')}（${esc(item?.code || '')}）</td><th>數量</th><td>${esc(loan.qty)} ${esc(item?.unit || '')}</td></tr>
     <tr><th>借出日期</th><td>${esc(loan.outDate || '')}</td><th>應還日期</th><td>${esc(loan.dueDate || '')}</td></tr>
     <tr><th>用途</th><td colspan="3">${esc(loan.purpose || '')}</td></tr>
     <tr><th>備註</th><td colspan="3">${esc(loan.note || '')}</td></tr>
@@ -359,7 +359,7 @@ function loanSlip(loan) {
   </table>
   <p class="note">借用規則：請於應還日期或之前歸還，如有損壞或遺失請即時通知執委會。可用數量會於批核時自動 −1，歸還時自動 +1。</p>
   <div style="text-align:center;margin-top:10pt">${qrSvg(location.href.split('#')[0] + '#/inventory/loans', 4, 2)}</div>`;
-  printDoc({ title: `借用單 ${loan.id}`, org: profile().name, bodyHtml: html });
+  printDoc({ title: `借用單 ${loan.id}`, org: profile().name, trustedBodyHtml: html });
 }
 
 function printBlankSlip() {
@@ -379,7 +379,7 @@ function printBlankSlip() {
   </table>
   <p class="note">線上申請：掃描 QR Code 直接開借用面版（需登入帳戶），批核後庫存自動更新。</p>
   <div style="text-align:center;margin-top:10pt">${qrSvg(borrowUrl, 4, 2)}</div>`;
-  printDoc({ title: '空白借用單', org: profile().name, bodyHtml: html });
+  printDoc({ title: '空白借用單', org: profile().name, trustedBodyHtml: html });
 }
 
 /* ============================================================
@@ -423,7 +423,7 @@ export function mount(root, params) {
       if (invLoans().some(l => l.itemId === id && ['approved', 'out', 'requested'].includes(l.status))) {
         toast('呢件物資仍有未完成嘅借用紀錄，唔可以刪除', 'err'); return;
       }
-      if (await confirmDlg({ title: '刪除物資', danger: true, okText: '確定刪除', message: `確定刪除 <b>${esc(i?.name || '')}</b>？` })) {
+      if (await confirmDlg({ title: '刪除物資', danger: true, okText: '確定刪除', trustedMessageHtml: `確定刪除 <b>${esc(i?.name || '')}</b>？` })) {
         remove('invItems', id); toast('已刪除', 'ok'); go('#/inventory');
       }
     }
@@ -432,10 +432,10 @@ export function mount(root, params) {
       const item = id ? invItem(id) : null;
       const r = await modal({
         title: '盤點調整', sub: item ? item.name : '選擇物資',
-        body: `
+        trustedBodyHtml: `
           <div class="field"><label class="label">物資 <span class="req">*</span></label>
             <select class="select" id="q-item" ${item ? 'disabled' : ''}>
-              ${invItems().map(i => `<option value="${i.id}" ${item?.id === i.id ? 'selected' : ''}>${esc(i.code || '')} ${esc(i.name)}（可用 ${itemTotals(i.id).available}）</option>`).join('')}
+              ${invItems().map(i => `<option value="${esc(i.id)}" ${item?.id === i.id ? 'selected' : ''}>${esc(i.code || '')} ${esc(i.name)}（可用 ${esc(itemTotals(i.id).available)}）</option>`).join('')}
             </select></div>
           <div class="field mt-12"><label class="label">調整數量（加減） <span class="req">*</span></label>
             <input class="input" id="q-delta" type="number" value="-1" placeholder="例：-1 報廢、+2 新購">
@@ -475,13 +475,13 @@ export function mount(root, params) {
       const t = itemTotals(loan.itemId);
       if (t.available < Number(loan.qty)) {
         if (!(await confirmDlg({ title: '庫存不足', danger: true, okText: '仍然批准',
-          message: `現時可用只有 <b>${t.available}</b>，申請數量係 <b>${loan.qty}</b>。仍然批准？（庫存會變負數）` }))) return;
+          trustedMessageHtml: `現時可用只有 <b>${esc(t.available)}</b>，申請數量係 <b>${esc(loan.qty)}</b>。仍然批准？（庫存會變負數）` }))) return;
       }
       update('invLoans', loan.id, { status: 'approved', approvedBy: current()?.username || 'super', approvedAt: nowStamp() });
       toast(`已批准：${item?.name} ×${loan.qty}，庫存 −${loan.qty}（待取走）`, 'ok'); refresh();
     }
     if (action === 'reject') {
-      const r = await modal({ title: '拒絕借用', body: `<div class="field"><label class="label">原因（可選）</label>
+      const r = await modal({ title: '拒絕借用', trustedBodyHtml: `<div class="field"><label class="label">原因（可選）</label>
         <input class="input" id="q-note" placeholder="例：物資已有其他小隊預留"></div>`,
         actions: [{ label: '取消', class: 'btn', value: null }, { label: '確定拒絕', class: 'btn-danger', onClick: el => el.querySelector('#q-note').value }] });
       if (r !== null && r !== undefined) {
@@ -520,25 +520,25 @@ function openLoanForm(root, presetItem) {
     title: '申請借用物資',
     sub: '批核後會自動 −庫存；歸還時自動 +庫存',
     wide: true,
-    body: `
+    trustedBodyHtml: `
       <div class="grid g-2" style="gap:14px">
         <div class="field"><label class="label">物資 <span class="req">*</span></label>
           <select class="select" id="l-item">
-            ${items.map(i => { const t = itemTotals(i.id); return `<option value="${i.id}" ${presetItem === i.id ? 'selected' : ''}>${esc(i.name)}（可用 ${t.available} ${esc(i.unit || '')}）</option>`; }).join('')}
+            ${items.map(i => { const t = itemTotals(i.id); return `<option value="${esc(i.id)}" ${presetItem === i.id ? 'selected' : ''}>${esc(i.name)}（可用 ${esc(t.available)} ${esc(i.unit || '')}）</option>`; }).join('')}
           </select></div>
         <div class="field"><label class="label">數量 <span class="req">*</span></label>
           <input class="input" id="l-qty" type="number" min="1" value="1"></div>
         <div class="field"><label class="label">借用人</label>
           <select class="select" id="l-member">
             <option value="">— 我（${esc(current()?.name || '')}）—</option>
-            ${list.map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join('')}
+            ${list.map(m => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join('')}
           </select></div>
         <div class="field"><label class="label">或輸入名字（非團員）</label>
           <input class="input" id="l-name" placeholder="例：旅部職員"></div>
         <div class="field"><label class="label">借出日期</label>
-          <input class="input" id="l-out" value="${todayISO()}"></div>
+          <input class="input" id="l-out" value="${esc(todayISO())}"></div>
         <div class="field"><label class="label">應還日期</label>
-          <input class="input" id="l-due" value="${addDaysISO(todayISO(), Number(settings().inventory?.loanDays || 14))}"></div>
+          <input class="input" id="l-due" value="${esc(addDaysISO(todayISO(), Number(settings().inventory?.loanDays || 14)))}"></div>
       </div>
       <div class="field mt-12"><label class="label">用途</label>
         <input class="input" id="l-purpose" placeholder="例：10 月秋季露營（小隊 A）"></div>

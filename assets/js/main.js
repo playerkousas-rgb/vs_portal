@@ -25,6 +25,8 @@ import { pendingMeetings, overdueFees, pendingClaims, pendingLoans, profile, not
 import { esc, icon, toast, toastAction, modal, confirmDlg, closeAllModals } from './lib/util.js';
 import { APP_VERSION } from './lib/version.js';
 import { parse, go } from './lib/router.js';
+import { SIDEBAR_MODULES } from './lib/branch-config.js';
+import { canModule } from './lib/access.js';
 
 import * as dashboard from './views/dashboard.js';
 import * as meetings from './views/meetings.js';
@@ -60,39 +62,37 @@ import * as quizzes from './views/quizzes.js';
    ★ 教學（docs）：執委都有 docs.view，所以唔可以收埋入「系統」
      （否則執委連說明都睇唔到）—— 改放頂欄一鍵入口，全部身份都搵得到。
    ============================================================ */
-const NAV = [
-  { id: 'dashboard', label: '儀表板', icon: 'home', view: dashboard },
-  { id: 'calendar', label: '行事曆', icon: 'calendar', view: calendar },
-  { id: 'quizzes', label: '試卷', icon: 'note', view: quizzes },
-  { id: 'meetings', label: '會議', icon: 'clock', view: meetings, badge: () => pendingMeetings().length },
-  { id: 'finance', label: '財務', icon: 'wallet', view: finance, badge: () => overdueFees().length + pendingClaims().length },
-  { id: 'members', label: '用戶與身份', icon: 'users', view: members },
-  { id: 'inventory', label: '物資', icon: 'grid', view: inventory, badge: () => pendingLoans().length },
-  { id: 'progress', label: '進度', icon: 'chart', view: progress },
-  { id: 'notices', label: '通告', icon: 'megaphone', view: noticesView, badge: () => (load()?.notices || []).filter(n => n.status === 'published').length },
-  { id: 'links', label: '公開資料', icon: 'share', view: linksView },
-  { id: 'constitution', label: '團章', icon: 'book', view: constitution },
-  /* 資料管理：本來係孤兒路由，而家正式登記；執委冇 admin.data → 唔准入 */
-  { id: 'tables', label: '資料管理', icon: 'cloud', view: tables, perm: 'admin.data' },
-  { id: 'admin', label: '系統', icon: 'shield', view: accountsView, perm: 'admin.units' }
-];
+const MODULE_VIEWS = {
+  dashboard, calendar, quizzes, meetings, finance, members, inventory, progress,
+  notices: noticesView, links: linksView, constitution, tables, admin: accountsView
+};
+const MODULE_BADGES = {
+  meetings: () => pendingMeetings().length,
+  finance: () => overdueFees().length + pendingClaims().length,
+  inventory: () => pendingLoans().length,
+  notices: () => (load()?.notices || []).filter(n => n.status === 'published').length
+};
+
+/* id／名稱／圖示由支部 schema 提供；main.js 淨係接駁 view 同即時 badge。 */
+const NAV = SIDEBAR_MODULES.map(module => ({
+  ...module, view: MODULE_VIEWS[module.id], badge: MODULE_BADGES[module.id]
+})).filter(module => module.view);
+
 /* 教學：唔屬日常操作，但所有登入身份（包括執委）都要搵得到 → 頂欄入口 */
 const DOCS_NAV = { id: 'docs', label: '教學', icon: 'note', view: docs, perm: 'docs.view' };
 
 /* VIEWS 由 registry 推導（F1：唔再有第二份人手清單） */
 const VIEWS = Object.fromEntries([...NAV, DOCS_NAV].map(n => [n.id, n.view]));
 
-/** 呢個 section 要咩權限（冇登記 perm = 所有登入身份都用得） */
-function sectionPerm(section) {
-  return ([...NAV, DOCS_NAV].find(n => n.id === section) || {}).perm || '';
-}
-/** 有冇權入呢個 section（fail-closed：登記咗 perm 但冇權 = 拒） */
+/**
+ * 側欄顯示同內容閱讀係兩個獨立權限。docs 唔係側欄模組，繼續用細項權限。
+ * show=true/read=false 會顯示入口，但直接入頁仍會收到清楚的拒絕畫面。
+ */
 function canSection(section) {
-  const p = sectionPerm(section);
-  return !p || can(p);
+  if (section === DOCS_NAV.id) return can(DOCS_NAV.perm);
+  return !!NAV.find(n => n.id === section) && canModule(section, 'read');
 }
-/** 側欄／更多選單只顯示有權嘅項目 */
-function visibleNav() { return NAV.filter(n => canSection(n.id)); }
+function visibleNav() { return NAV.filter(n => canModule(n.id, 'show')); }
 
 const MOBILE_MAIN = ['dashboard', 'calendar', 'finance', 'inventory'];
 
@@ -151,22 +151,17 @@ async function boot() {
 }
 
 /* ============================================================
-   後端儲存 —— 一條寫入路，由系統自己行（2026-09-24 修訂）
+   後端儲存 —— 一條、人手觸發嘅寫入路（2026-09-24 定案）
    ------------------------------------------------------------
      開機／登入   → loadFromBackend()：由後端攞成份資料 ＝ 基準
-     之後改乜     → 寫本機 ＋ **自動排一次寫入**（一般 1.2 秒；
-                    開人／設密碼／改身份＝帳戶級，即刻寫）
-     saveToBackend() → 核對版本 → 逐格三方比對 → 唔撞嘅寫入；
-                       撞嘅（早走 vs 遲到）彈框問，確認咗先蓋
-     頂部掣「儲存到後端」＝ 即寫（唯一寫入路）；「重新載入」＝ 由後端拉新嘅
-     另一個分頁嘅改動 → store.bindCrossTabSync() 併入（唔使重新整理）
-     切返呢個分頁 → refreshIfClean()（本機冇未存改動先至拉，唔會彈衝突框）
+     之後改乜     → 只寫本機，累加頂部「未儲存（N）」；唔會背景寫後端
+     頂部掣       → saveToBackend()：核對版本 → 三方比對 → 寫入 → readback
+     同格衝突     → 先保留後端值，逐格列出畀用戶確認，絕不靜靜覆蓋
+     另一個分頁   → store.bindCrossTabSync() 只併入同一瀏覽器工作副本
+     切返分頁     → 本機乾淨先只讀刷新；有未存改動就唔郁
 
-   ★ 點解改（2026-09-20「冇自動儲存」→ 2026-09-24「自動寫入」）：
-     團長回報「1 邊能用 email 登入、1 邊不能，那＝用戶根本沒寫入後端」。
-     舊設計要人記得撳掣先寫，結果帳戶困喺瀏覽器，另一部機登唔到；
-     而超管登入唔經旅團後端，所以淨係佢入到 —— 睇落就似「同步壞晒」。
-     寫入路依然只有一條（saveToBackend），唔會有兩條路互相蓋。
+   帳戶改動同樣唔例外：未撳頂部掣之前，其他裝置未必登入到，所以狀態會
+   明確標紅，登出／離頁亦會提醒；系統仍然唔會偷偷代用戶寫後端。
    ============================================================ */
 let remoteApi = null;
 /* 開機問唔到後端嗰陣嘅原因（登入頁會出橫額） */
@@ -245,7 +240,7 @@ async function syncBoot() {
       try { applyTheme(load()?.unit?.theme); } catch { /* ignore */ }
       if (r.merged) {
         loginConflicts = r.conflicts?.length ? { conflicts: r.conflicts, ctx: r.ctx, remoteAt: r.at } : null;
-        toastAction('上次未寫入嘅改動已保留喺呢部機 —— 系統會自動寫入', '去睇', () => go('#/tables/sync'), '');
+        toastAction('上次未寫入嘅改動已保留喺呢部機 —— 請核對後撳頂部「儲存到後端」', '去睇', () => go('#/tables/sync'), '');
       }
     }
   } catch (e) {
@@ -267,7 +262,7 @@ async function maybeShowLoginConflicts() {
     const { applyChangesLocal } = await import('./lib/store.js');
     const choice = await resolveConflictsDialog({ conflicts: lc.conflicts, ctx: lc.ctx, mode: 'login', remoteAt: lc.remoteAt });
     const ov = overridesFor(lc.conflicts, choice?.useMine || []);
-    if (ov.length) { applyChangesLocal(ov); render(); toast(`已用返你嘅 ${ov.length} 項 —— 自動寫入後端中`, 'ok'); }
+    if (ov.length) { applyChangesLocal(ov); render(); toast(`已用返你嘅 ${ov.length} 項並留喺本機 —— 請撳頂部「儲存到後端」`, 'ok'); }
   } catch (e) { console.warn('[sync] 登入衝突對話框失敗', e); }
 }
 
@@ -405,7 +400,7 @@ export async function openSOS(opts = {}) {
     title: '求救 —— 回報問題畀 ADMIN',
     wide: true,
     sub: '呢份會入 ADMIN 系統嘅「問題回報」看板（同圖書館嗰啲一樣），佢會登記＋轉寄去你 EMAIL 跟進',
-    body: `
+    trustedBodyHtml: `
       <div class="note-box mb-12">${icon('alert', 15)}<div>
         會 SEND 出去嘅嘢只有下面你填嘅嘢＋背景（旅團編號／回報人／Email）：
         <div class="xs mono mt-4">旅團編號：${esc(unit || '（未揀）')}${session ? ` · 回報人：${esc(who || '（未登入）')}${contactEmail ? ` · Email：${esc(contactEmail)}` : ''}` : ' · 未登入（入唔到都可以回報）'}</div>
@@ -478,7 +473,7 @@ export async function openSOS(opts = {}) {
     await modal({
       title: '已送出畀 ADMIN',
       sub: `${res.payload.title} · ${res.payload.severity || '高'} · ${res.via === 'proxy' ? '經伺服器轉發' : '直接送出'}${res.ms != null ? ` · ${res.ms} ms` : ''}`,
-      body: `
+      trustedBodyHtml: `
         <div class="note-box info mb-12">${icon('check', 15)}<div>
           你份問題回報已經入咗<b>ADMIN「問題回報」看板</b>（同圖書館嗰個一樣）。<br>
           <span class="xs">ADMIN 系統<b>唔會即刻覆你</b>（你唔會見到「已收到」）；管理員收到會登記跟進，再轉寄去你 Email。</span>
@@ -488,21 +483,24 @@ export async function openSOS(opts = {}) {
       actions: [{ label: '好', class: 'btn-primary', value: true }]
     });
   } else {
-    const sig = (res.errors || []).join(' · ') || '送出失敗';
-    toast(sig, 'err');
+    const unknown = res.outcome === 'unknown' || res.mayHaveApplied === true;
+    const sig = (res.errors || []).join(' · ') || (unknown ? '送出結果未知' : '送出失敗');
+    toast(sig, unknown ? 'warn' : 'err');
     await modal({
-      title: '送唔到去 ADMIN',
+      title: unknown ? '求救報告送出結果未知' : '送唔到去 ADMIN',
       wide: true,
-      sub: res.via === 'proxy' ? '（經伺服器轉發時失敗）' : '（直接送出時失敗）',
-      body: `
-        <div class="note-box danger mb-12">${icon('alert', 15)}<div>
+      sub: `${res.via === 'proxy' ? '（經伺服器轉發）' : '（直接送出）'}${res.operationId ? ` · 操作 ${res.operationId}` : ''}`,
+      trustedBodyHtml: `
+        <div class="note-box ${unknown ? 'warn' : 'danger'} mb-12">${icon('alert', 15)}<div>
           <b>${esc(sig)}</b><br>
-          <span class="xs">你打嗰啲嘢仲喺下面 —— 你可以複製落嚟，直接 WhatsApp／電郵畀平台管理員，佢一樣會當問題回報處理。</span>
+          <span class="xs">${unknown
+            ? '可能未送到，亦可能 ADMIN 已經收到。系統冇自動重送；未核對操作編號之前唔好再送同一份報告。你可以複製下面內容聯絡管理員查證。'
+            : '你打嗰啲嘢仲喺下面 —— 你可以複製落嚟，直接 WhatsApp／電郵畀平台管理員，佢一樣會當問題回報處理。'}</span>
         </div></div>
         <textarea class="input mono" rows="8" readonly style="font-size:12px">${esc(issueText(res.payload))}</textarea>`,
       actions: [
         { label: '關閉', class: 'btn', value: null },
-        { label: '再試一次', class: 'btn', value: 'retry' },
+        ...(!unknown ? [{ label: '再試一次', class: 'btn', value: 'retry' }] : []),
         { label: '複製報告內容', class: 'btn-primary', value: 'copy' }
       ]
     }).then(async val => {
@@ -746,7 +744,7 @@ async function openDeployGuideModal() {
   await modal({
     title: '🗺️ 深資童軍管理系統 · 多旅團後端部署指南',
     wide: true,
-    body: `
+    trustedBodyHtml: `
       <div class="note-box info mb-12">
         ${icon('check', 16)}
         <div><b>10 分鐘完成部署！</b>每個旅團一張 Google Sheet ＋ 一支完整 Unified GAS；支部系統係功能完整版前端，BADGE 係輕量前端，兩者共用。毋須登入即可下載並提交登記（申請會直接送去平台管理員嘅 ADMIN 系統）。</div>
@@ -831,7 +829,7 @@ async function openApplication() {
   const r = await modal({
     title: '新旅團申請接入', wide: true,
     sub: box.configured ? '申請會送去做平台管理員嘅 ADMIN 系統（呢個系統唔會回覆，送出去就得）' : '（未設定收件匣）',
-    body: `
+    trustedBodyHtml: `
       <div class="note-box mb-12">${icon('alert', 15)}<div>
         <b>申請之前請先起好你自己嘅後端</b>（每個旅團一張自己嘅 Google Sheet）：
         <div class="xs mt-4 mb-8">
@@ -891,7 +889,7 @@ async function openApplication() {
     await modal({
       title: '申請已送出',
       sub: `${res.payload.troopId} · ${res.payload.troopName} · ${res.via === 'proxy' ? '經伺服器轉發去 ADMIN 系統' : '直接送去 ADMIN 系統'}${res.ms != null ? ` · ${res.ms} ms` : ''}`,
-      body: `
+      trustedBodyHtml: `
         <div class="note-box info mb-12">${icon('check', 15)}<div>
           你張申請已經送去<b>平台管理員嘅 ADMIN 系統</b>。
           <br><span class="xs">呢個系統<b>唔會回覆</b>（App 唔會知 ADMIN 收咗未），所以你唔會喺呢度見到「已收到」——正常，唔使擔心。
@@ -915,20 +913,23 @@ async function openApplication() {
       }
     });
   } else {
-    const sig = (res.errors || []).join(' · ') || '送出失敗';
-    toast(sig, 'err');
+    const unknown = res.outcome === 'unknown' || res.mayHaveApplied === true;
+    const sig = (res.errors || []).join(' · ') || (unknown ? '送出結果未知' : '送出失敗');
+    toast(sig, unknown ? 'warn' : 'err');
     await modal({
-      title: '送唔到去 ADMIN 系統', wide: true,
-      sub: res.via === 'proxy' ? '（經伺服器轉發時失敗）' : '（直接送出時失敗）',
-      body: `
-        <div class="note-box danger mb-12">${icon('alert', 15)}<div>
+      title: unknown ? '申請送出結果未知' : '送唔到去 ADMIN 系統', wide: true,
+      sub: `${res.via === 'proxy' ? '（經伺服器轉發）' : '（直接送出）'}${res.operationId ? ` · 操作 ${res.operationId}` : ''}`,
+      trustedBodyHtml: `
+        <div class="note-box ${unknown ? 'warn' : 'danger'} mb-12">${icon('alert', 15)}<div>
           <b>${esc(sig)}</b><br>
-          <span class="xs">申請內容仲喺度，你可以複製落嚟，直接 WhatsApp／電郵畀平台管理員，佢一樣開得團。</span>
+          <span class="xs">${unknown
+            ? '可能未送到，亦可能 ADMIN 已經收到。系統冇自動重送；未核對操作編號之前唔好再送同一份申請。請複製內容聯絡平台管理員查證。'
+            : '申請內容仲喺度，你可以複製落嚟，直接 WhatsApp／電郵畀平台管理員，佢一樣開得團。'}</span>
         </div></div>
         <textarea class="input mono" rows="9" readonly style="font-size:12px">${esc(applicationText(res.payload))}</textarea>`,
       actions: [
         { label: '關閉', class: 'btn', value: null },
-        { label: '再試一次', class: 'btn', value: 'retry' },
+        ...(!unknown ? [{ label: '再試一次', class: 'btn', value: 'retry' }] : []),
         { label: '複製申請內容', class: 'btn-primary', value: 'copy' }
       ]
     }).then(async v => {
@@ -996,8 +997,9 @@ function renderFatal(e) {
       2. 瀏覽器打開 <code>http://localhost:8000</code><br>
       3. 或者部署上 GitHub Pages / Vercel（詳見 README）</div></div>
     <div class="mt-16 xs faint mono">${esc(e?.message || String(e))}</div>
-    <button class="btn btn-primary mt-16" onclick="location.reload()">${icon('refresh', 16)} 再試一次</button>
+    <button class="btn btn-primary mt-16" data-reload>${icon('refresh', 16)} 再試一次</button>
   </div>`;
+  app.querySelector('[data-reload]')?.addEventListener('click', () => location.reload());
 }
 
 /* ============================================================
@@ -1013,30 +1015,6 @@ let pickedUnit = null;
    改權限＝改身份（「用戶」頁），所以門口只需要一個：
    打自己嘅電郵（團長／領袖）／YMIS（執委／團員）＋ 密碼。
    ============================================================ */
-/**
- * ★ 登入頁「公開資料」（免登入）—— 團長 2026-09-24：
- *   「各團嘅公開資料，應該係喺登入帳戶嗰個版面睇到；未來就係登入咗旅系統之後，
- *     喺選擇支部進入前應該會睇到。」
- *
- * 所以未登入都睇得。淨係 show 可見範圍 ＝ 「對外公開」（rank 1）嘅嘢 ——
- * 團員級／執委級／領袖級嘅內容一律唔會喺呢度出現（未登入冇身份＝睇唔到）。
- *
- * 資料由邊度嚟：已登入 staff 會有後端行政副本；未登入 fresh device 只讀本機
- * 已知的公開資料（可能為空），絕不為顯示呢個 modal 匿名下載完整名冊／密碼。
- */
-function showPublicInfo() {
-  const u = unitEntry(currentUnit() || defaultUnitCode()) || {};
-  import('./lib/public-profile.js').then(({ publicPageHtml, publicGroupsFor }) => {
-    const g = publicGroupsFor('other');
-    modal({
-      title: '公開資料', wide: true,
-      sub: `${u.name || '呢個旅團'} · 免登入睇到嘅嘢（${g.reduce((n, x) => n + x.items.length, 0)} 項）`,
-      body: publicPageHtml({ unitName: u.name }),
-      actions: [{ label: '關閉', class: 'btn-primary', value: null }]
-    });
-  }).catch(() => toast('讀唔到公開資料', 'err'));
-}
-
 function renderLogin() {
   document.body.classList.add('login-body');
   const units = unitList();
@@ -1107,8 +1085,6 @@ function renderLogin() {
           <button type="button" id="btnForgotPassword">忘記密碼</button>
           <span class="faint">·</span>
           <button type="button" id="btnApply">申請開戶</button>
-          <span class="faint">·</span>
-          <button type="button" id="btnPublicInfo">公開資料</button>
         </div>
 
         ${!hasUsers ? `
@@ -1152,13 +1128,12 @@ function renderLogin() {
   app.querySelector('#loginGuide')?.addEventListener('click', openDeployGuideModal);
   app.querySelector('#btnGate')?.addEventListener('click', () => forgetChoice());
   app.querySelector('#btnGate2')?.addEventListener('click', () => forgetChoice());
-  app.querySelector('#btnPublicInfo')?.addEventListener('click', () => showPublicInfo());
 
   app.querySelector('#btnApply')?.addEventListener('click', async () => {
     const r = await modal({
       title: '申請開戶',
       sub: '批核後首次密碼係 1234',
-      body: `<div class="field"><label class="label">YMIS（10 位）</label>
+      trustedBodyHtml: `<div class="field"><label class="label">YMIS（10 位）</label>
           <input class="input" id="apY" inputmode="numeric"></div>
         <div class="field mt-12"><label class="label">姓名（同名冊）</label>
           <input class="input" id="apN"></div>
@@ -1210,7 +1185,7 @@ function renderLogin() {
     const r = await modal({
       title: '忘記密碼',
       sub: '請輸入登記過的 EMAIL；如果帳戶存在，系統會寄出一次性重設連結。',
-      body: `<div class="field"><label class="label">EMAIL</label><input class="input" id="forgotEmail" type="email" autocomplete="email"></div><div id="forgotErr" class="err mt-8"></div>`,
+      trustedBodyHtml: `<div class="field"><label class="label">EMAIL</label><input class="input" id="forgotEmail" type="email" autocomplete="email"></div><div id="forgotErr" class="err mt-8"></div>`,
       actions: [
         { label: '取消', class: 'btn', value: null },
         { label: '寄出重設連結', class: 'btn-primary', onClick: async el => {
@@ -1232,7 +1207,7 @@ function renderLogin() {
     const completed = await modal({
       title: '輸入電郵重設碼',
       sub: r.message || '如果 EMAIL 已登記，8 位重設碼會寄到登記電郵。',
-      body: `<div class="field"><label class="label">8 位重設碼</label>
+      trustedBodyHtml: `<div class="field"><label class="label">8 位重設碼</label>
           <input class="input mono" id="resetCode" inputmode="numeric" autocomplete="one-time-code"></div>
         <div class="field mt-12"><label class="label">新密碼</label>
           <input class="input" id="resetNew" type="password" autocomplete="new-password"></div>
@@ -1282,7 +1257,7 @@ function renderLogin() {
       const { saveHubAuth } = await import('./lib/hub-session.js');
       const { saveMe } = await import('./lib/member-me.js');
       saveHubAuth(code, { id: res.member.id, name: res.member.name, ymis: res.member.ymis, identity: 'member', mustChangePw: !!res.mustChangePw, sessionToken: res.sessionToken, sessionExpiresAt: res.sessionExpiresAt });
-      saveMe({ id: res.member.id, name: res.member.name });
+      saveMe({ id: res.member.id, name: res.member.name }, code);
       location.href = `./members.html?u=${encodeURIComponent(code)}${res.mustChangePw ? '#forcepw' : ''}`;
       return;
     }
@@ -1322,7 +1297,7 @@ async function maybeClaimChief() {
   const r = await modal({
     title: '設定團長身份',
     sub: '每個旅團永遠只有一個團長（最高權限，可以轉移）。第一個開戶嘅人就係團長。',
-    body: chiefFormHtml(me),
+    trustedBodyHtml: chiefFormHtml(me),
     actions: [
       { label: '稍後再設', class: 'btn', value: null },
       { label: '確定', class: 'btn-primary', onClick: async el => {
@@ -1430,7 +1405,7 @@ async function confirmLogout() {
     </div></div>`;
   } else if (pending > 0) {
     warn = `<div class="note-box warn mt-8">${icon('alert', 14)}<div>
-      仲有 <b>${pending}</b> 項改動未寫入後端（暫存喺呢部機）。
+      仲有 <b>${esc(pending)}</b> 項改動未寫入後端（暫存喺呢部機）。
       <div class="mt-8">登出<b>唔會</b>幫你寫。要寫：撳「<b>取消</b>」，再撳右上角
       <b>「儲存到後端」</b>呢個大掣。</div>
       <div class="xs faint mt-4">照登出嘅話，改動會留喺呢部機；下次登入會同後端比對，
@@ -1438,7 +1413,7 @@ async function confirmLogout() {
     </div></div>`;
   }
   return modal({
-    title: '登出', body: `<p class="sm">確定登出系統？</p>${warn}`,
+    title: '登出', trustedBodyHtml: `<p class="sm">確定登出系統？</p>${warn}`,
     actions: [
       { label: '取消（返返去）', class: 'btn', value: false },
       { label: pending > 0 ? '照登出（唔寫入）' : '登出', class: 'btn-primary', value: true }
@@ -1460,7 +1435,7 @@ async function maybeForceChangePw() {
   const r = await modal({
     title: '首次登入：請改密碼',
     sub: `唔可以繼續用預設密碼 ${TEMP_PASSWORD}`,
-    body: `<p class="sm mb-12">為安全起見，第一次登入要設自己嘅密碼（至少 4 個字，唔可以係 ${TEMP_PASSWORD}）。</p>
+    trustedBodyHtml: `<p class="sm mb-12">為安全起見，第一次登入要設自己嘅密碼（至少 4 個字，唔可以係 ${esc(TEMP_PASSWORD)}）。</p>
       <div class="field"><label class="label">新密碼</label>
         <input class="input" id="fp1" type="password" autocomplete="new-password"></div>
       <div class="field mt-12"><label class="label">再輸入一次</label>
@@ -1515,6 +1490,9 @@ function render() {
   /* ★ 無權就唔准入（用戶 2026-11-12 定案）—— 直接打 URL 都要拒，
      唔再出現「欄位打到字但儲存掣 disabled、又冇解釋」嘅假畫面。 */
   if (VIEWS[r.section] && !canSection(r.section)) return renderNoAccess(r.section);
+  /* 未知／過期書籤會落到儀表板，但 fallback 本身都要重新過 read gate；
+     否則把 hash 改成任意字串就可以繞過已關閉的 dashboard 直接渲染。 */
+  if (!VIEWS[r.section] && !canSection('dashboard')) return renderNoAccess('dashboard');
   const view = VIEWS[r.section] || VIEWS.dashboard;
   const u = profile();
 
@@ -1557,13 +1535,13 @@ function render() {
           <div class="tb-title truncate">${esc(view.title ? view.title() : '')}</div>
           <div class="tb-sub truncate">${esc(u.name || '')} </div>
         </div>
-        <div class="row gap-8">
+        <div class="row gap-8 topbar-tools">
           <span id="syncChip" class="no-print"></span>
-          ${canSection('docs') ? `<button class="btn btn-ghost btn-sm no-print" data-go="#/docs" title="教學 —— 由登入到輸出文件一步一步">${icon('note', 15)} 教學</button>` : ''}
-          <button class="btn btn-ghost btn-sm no-print" id="btnSOS" title="求救 —— 有咩大問題，SEND 去問 ADMIN，當回報問題處理" style="color:#B8892B">${icon('megaphone', 15)} 求救</button>
-                    ${notices().length ? `<span class="badge b-warn no-print"><span class="dot"></span>${notices().length} 項提示</span>` : ''}
-          <button class="btn btn-ghost btn-sm hide-desktop" id="btnPw2" title="改密碼">${icon('key', 16)}</button>
-          <button class="btn btn-ghost btn-sm hide-desktop" id="btnLogout2" title="登出">${icon('logout', 16)}</button>
+          <span class="topbar-secondary row gap-8">
+            ${canSection('docs') ? `<button class="btn btn-ghost btn-sm no-print" data-go="#/docs" title="教學 —— 由登入到輸出文件一步一步">${icon('note', 15)} 教學</button>` : ''}
+            <button class="btn btn-ghost btn-sm no-print" id="btnSOS" title="求救 —— 有咩大問題，SEND 去問 ADMIN，當回報問題處理" style="color:#B8892B">${icon('megaphone', 15)} 求救</button>
+            ${notices().length ? `<span class="badge b-warn no-print"><span class="dot"></span>${notices().length} 項提示</span>` : ''}
+          </span>
         </div>
       </header>
       <div class="content" id="view">${view.render(r)}</div>
@@ -1572,10 +1550,10 @@ function render() {
     <nav class="tabbar">
       ${MOBILE_MAIN.filter(id => canSection(id)).map(id => {
         const n = NAV.find(x => x.id === id);
-        return `<button data-nav="${id}" aria-current="${r.section === id ? 'page' : 'false'}">
-          <span class="ic">${icon(n.icon, 20)}</span><span>${n.label}</span></button>`;
+        return `<button data-nav="${esc(id)}" aria-current="${esc(r.section === id ? 'page' : 'false')}">
+          <span class="ic">${icon(n.icon, 20)}</span><span>${esc(n.label)}</span></button>`;
       }).join('')}
-      <button data-nav="more" aria-current="${!MOBILE_MAIN.includes(r.section) ? 'page' : 'false'}">
+      <button data-nav="more" aria-current="${esc(!MOBILE_MAIN.includes(r.section) ? 'page' : 'false')}">
         <span class="ic">${icon('grid', 20)}</span><span>更多</span></button>
     </nav>
   </div>`;
@@ -1628,9 +1606,9 @@ function render() {
 function sidebarItem(n, active) {
   let b = 0;
   try { b = n.badge ? n.badge() : 0; } catch { b = 0; }
-  return `<button class="sb-item" data-nav="${n.id}" aria-current="${active === n.id ? 'page' : 'false'}">
-    ${icon(n.icon, 18)}<span>${n.label}</span>
-    ${b ? `<span class="cnt">${b}</span>` : ''}
+  return `<button class="sb-item" data-nav="${esc(n.id)}" aria-current="${esc(active === n.id ? 'page' : 'false')}">
+    ${icon(n.icon, 18)}<span>${esc(n.label)}</span>
+    ${b ? `<span class="cnt">${esc(b)}</span>` : ''}
   </button>`;
 }
 
@@ -1661,13 +1639,12 @@ function renderNoAccess(section) {
     <div class="main">
       <div class="content" id="view">
         <div class="card" style="max-width:560px;margin:40px auto">
-          <div class="card-head"><div><div class="card-title">「${esc(label)}」需要領袖權限</div></div></div>
+          <div class="card-head"><div><div class="card-title">你冇「${esc(label)}」閱讀權限</div></div></div>
           <div style="padding:18px" class="col gap-12">
             <p class="sm">你而家嘅身份係<b>${esc(ROLES[currentRole()]?.name || currentRole() || '')}</b>。
-              呢一頁改嘅係全團共用嘅設定（旅團資料、後端接駁、備份還原），
-              所以只有<b>團長／領袖</b>開得到。</p>
-            <p class="sm muted">如果你真係需要改呢啲嘢，可以搵團長或領袖幫手，
-              或者撳「求救」直接回報畀平台管理員。</p>
+              呢一頁的側欄顯示、內容閱讀同編輯權限係分開設定；直接輸入網址亦唔會繞過閱讀權限。</p>
+            <p class="sm muted">如工作需要，請搵比你高級的身份在「用戶與身份 → 權限總表」調整你所屬身份；
+              對方只會見到自己及較低身份，不會向下公開更高身份的權限。</p>
             <div class="row gap-8 wrap">
               <button class="btn btn-primary" data-go="#/dashboard">${icon('home', 15)} 返儀表板</button>
               ${canSection('docs') ? `<button class="btn" data-go="#/docs">${icon('note', 15)} 睇教學</button>` : ''}
@@ -1693,9 +1670,16 @@ function moreSheet() {
   const items = visibleNav().filter(n => !MOBILE_MAIN.includes(n.id));
   modal({
     title: '更多',
-    body: `<div class="grid g-2" style="gap:10px">
-      ${items.map(n => `<button class="role-card" data-more="${n.id}" style="flex-direction:column;align-items:flex-start;gap:6px">
-        <span class="role-ic">${icon(n.icon, 18)}</span><span class="role-name">${n.label}</span></button>`).join('')}
+    sub: '手機版所有功能同桌面版一樣；日常分頁、教學、求救同帳戶操作都喺度',
+    trustedBodyHtml: `<div class="grid g-2" style="gap:10px">
+      ${items.map(n => `<button class="role-card" data-more="${esc(n.id)}" style="flex-direction:column;align-items:flex-start;gap:6px">
+        <span class="role-ic">${icon(n.icon, 18)}</span><span class="role-name">${esc(n.label)}</span></button>`).join('')}
+      ${canSection('docs') ? `<button class="role-card" data-more="docs" style="flex-direction:column;align-items:flex-start;gap:6px">
+        <span class="role-ic">${icon('note', 18)}</span><span class="role-name">教學</span></button>` : ''}
+      <button class="role-card" data-more="sos" style="flex-direction:column;align-items:flex-start;gap:6px">
+        <span class="role-ic">${icon('megaphone', 18)}</span><span class="role-name">求救／回報問題</span></button>
+      <button class="role-card" data-more="password" style="flex-direction:column;align-items:flex-start;gap:6px">
+        <span class="role-ic">${icon('key', 18)}</span><span class="role-name">更改密碼</span></button>
       <button class="role-card" data-more="logout" style="flex-direction:column;align-items:flex-start;gap:6px">
         <span class="role-ic">${icon('logout', 18)}</span><span class="role-name">登出</span></button>
     </div>`,
@@ -1711,6 +1695,8 @@ function moreSheet() {
           if (await confirmLogout()) doLogout();
           return;
         }
+        if (id === 'sos') { await openSOS(); return; }
+        if (id === 'password') { await accountsView.ownPasswordForm(); return; }
         go('#/' + id);
       }));
     }

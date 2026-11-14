@@ -19,6 +19,7 @@
 //            aud:'vs-portal:branch:<unit>', u, role, sub, name?, iat, exp, jti }
 import crypto from 'node:crypto';
 import { getTrustedUnit } from './_registry.js';
+import { canonicalRole, roleDef, roleLevel } from '../assets/js/lib/branch-config.js';
 
 const ASSERTION_MAX_AGE_MS = 90 * 1000;
 const CLOCK_SKEW_MS = 15 * 1000;
@@ -33,7 +34,6 @@ const CENTRAL_AUDIENCE_PREFIX = 'vs-portal:branch:';
 const EXCHANGE_TYPE = 'central-sso-exchange';
 const EXCHANGE_ISSUER = 'vs-portal';
 const EXCHANGE_AUDIENCE_PREFIX = 'unified-gas:branch:';
-const ALLOWED_ROLES = ['member', 'exco', 'leader', 'chief', 'admin'];
 /* Process-local fast rejection only. End-to-end one-use enforcement lives in GAS
    and uses the deterministic exchange jti, so correctness does not depend on this Map. */
 const redeemed = new Map();
@@ -67,9 +67,10 @@ function cleanupRedeemed(now = Date.now()) {
   while (redeemed.size >= MAX_LOCAL_REPLAY_MARKERS) redeemed.delete(redeemed.keys().next().value);
 }
 function scopesForRole(role) {
+  const level = roleLevel(role);
   const scopes = ['identity:read', 'branch:read', 'progress:self'];
-  if (['exco', 'leader', 'chief', 'admin'].includes(role)) scopes.push('branch:write', 'progress:manage');
-  if (['leader', 'chief', 'admin'].includes(role)) scopes.push('identity:manage', 'branch:repair');
+  if (level >= roleLevel('exco')) scopes.push('branch:write', 'progress:manage');
+  if (level >= roleLevel('leader')) scopes.push('identity:manage', 'branch:repair');
   return scopes;
 }
 
@@ -126,8 +127,11 @@ function verifyAssertion(raw) {
     return { ok: false, reason: 'audience_not_allowed' };
   }
 
-  const role = String(payload.role || '').trim().toLowerCase();
-  if (!ALLOWED_ROLES.includes(role)) return { ok: false, reason: 'role_not_allowed' };
+  const role = canonicalRole(payload.role);
+  const identity = roleDef(role);
+  /* Central fixture may assert only ordinary identities defined by this branch.
+     Hidden platform-super identity continues to use the separate super session. */
+  if (!identity || identity.hidden) return { ok: false, reason: 'role_not_allowed' };
   const subject = String(payload.sub || '').trim();
   const assertionJti = String(payload.jti || '').trim();
   if (!subject || subject.length > 160 || !assertionJti || assertionJti.length > 160) {

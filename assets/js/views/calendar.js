@@ -3,9 +3,10 @@ import { collection, find, add, update, remove } from '../lib/store.js';
 import { memberName, RSVP, rsvpCounts, attendanceStats, activeMembers } from '../lib/model.js';
 import { esc, icon, uid, todayISO, toast, modal, confirmDlg } from '../lib/util.js';
 import { go } from '../lib/router.js';
-import { can, current, displayName } from '../lib/auth.js';
-import { pageHead, tabs, stat, empty, noteBox, visSelect } from './ui.js';
-import { contentVis } from '../lib/public-profile.js';
+import { can, current, currentRole, displayName } from '../lib/auth.js';
+import { pageHead, tabs, stat, empty, noteBoxHtml, visSelect, boundedPercent } from './ui.js';
+import { contentVis, visibleContent } from '../lib/content-visibility.js';
+import { roleLevel } from '../lib/branch-config.js';
 import { allAbsences, absenceCounts, reviewAbsence, absencesCsv, ABSENCE_STATUS, ABSENCE_SLOTS } from '../lib/absence.js';
 import { download } from '../lib/exporter.js';
 
@@ -33,12 +34,13 @@ export function refresh() { window.dispatchEvent(new CustomEvent('v82:refresh'))
 
 const KINDS = { assembly: '集會', activity: '活動', ec: '執委會', other: '其他' };
 
-function list() { return collection('events'); }
+function list() { return collection('events').filter(event => visibleContent(event, 'event', currentRole())); }
+function visibleEvent(id) { const event = find('events', id); return event && visibleContent(event, 'event', currentRole()) ? event : null; }
 
 export function render(params) {
   if (['cal', 'list', 'stats', 'absence'].includes(params.id)) tab = params.id;
   else if (params.id === 'new') return editor(null, params.query);
-  else if (params.id && params.action === 'edit') return editor(find('events', params.id), params.query);
+  else if (params.id && params.action === 'edit') { const event = visibleEvent(params.id); return event ? editor(event, params.query) : empty('shield', '你無權閱讀呢個活動'); }
   else if (params.id) return detail(params.id, params.query);
   return `
   ${pageHead({
@@ -90,12 +92,12 @@ function monthView() {
         if (!d) return '<div class="cal-cell empty"></div>';
         const iso = `${cursor}-${String(d).padStart(2, '0')}`;
         const items = byDay[d] || [];
-        return `<div class="cal-cell" data-calday="${iso}">
+        return `<div class="cal-cell" data-calday="${esc(iso)}">
           <div class="cal-n">${d}</div>
           ${items.map(e => {
             const c = rsvpCounts(e);
             const multi = e.dateEnd && e.dateEnd !== e.date;
-            return `<button class="cal-ev ${e.visibility === 'exco' ? 'exco' : ''}" data-open="${e.id}">
+            return `<button class="cal-ev ${e.visibility === 'exco' ? 'exco' : ''}" data-open="${esc(e.id)}">
               ${multi && String(e.date) !== iso ? '↳ ' : ''}${esc((e.title || '').slice(0, 18))}${multi ? ' …' : ''}
               <span class="xs faint"> ${c.present + c.late + c.early}出／${c.absent}唔出</span>
             </button>`;
@@ -115,7 +117,7 @@ function listView() {
     <tbody>${rows.map(e => {
       const c = rsvpCounts(e);
       const overnight = e.dateEnd && e.dateEnd !== e.date;
-      return `<tr data-open="${e.id}" style="cursor:pointer">
+      return `<tr data-open="${esc(e.id)}" style="cursor:pointer">
         <td class="mono sm">${esc(e.date)}${overnight ? `<br>至 ${esc(e.dateEnd)}` : ''} ${esc(e.time || '')}</td>
         <td><div class="semibold sm">${esc(e.title)}${overnight ? ' <span class="tag">過夜</span>' : ''}</div><div class="xs faint">${esc(KINDS[e.kind] || '')} · ${esc(e.venue || '')}</div></td>
         <td>${e.visibility === 'exco' ? '<span class="badge b-warn">執委＋領袖</span>' : '<span class="badge b-ok">團員可見</span>'}</td>
@@ -131,7 +133,7 @@ function statsView() {
   if (!evs.length) return empty('chart', '未有活動，未有出席統計');
   const rows = roster.map(m => {
     const s = attendanceStats(m.id);
-    return { m, ...s };
+    return { m, ...s, rate: boundedPercent(s.rate) };
   }).sort((a, b) => b.rate - a.rate);
   return `<div class="note-box mb-16">${icon('chart', 15)}<div>統計用<strong>執委點名</strong>（唔係團員自己回覆），方便計全年出席率。</div></div>
   <div class="card"><div class="scroll-x"><table class="table table-compact">
@@ -173,8 +175,8 @@ function absenceView() {
         <td class="semibold sm">${esc(memberName(a.memberId))}</td>
         <td class="sm" style="max-width:360px"><span style="white-space:pre-wrap">${esc(a.reason || '')}</span></td>
         <td><span class="badge ${st.cls}"><span class="dot"></span>${st.label}${a.reviewNote ? '<div class="xs muted mt-4">' + esc(a.reviewNote) + '</div>' : ''}</span></td>
-        <td class="row gap-6 wrap" style="justify-content:flex-end">${a.reviewedBy ? `<span class="xs faint">${esc(a.reviewedBy)}</span>` : `<button class="btn btn-xs" data-abs="ok" data-id="${a.id}">接受</button>
-          <button class="btn btn-xs btn-danger" data-abs="no" data-id="${a.id}">拒絕</button>`}</td>
+        <td class="row gap-6 wrap" style="justify-content:flex-end">${a.reviewedBy ? `<span class="xs faint">${esc(a.reviewedBy)}</span>` : `<button class="btn btn-xs" data-abs="ok" data-id="${esc(a.id)}">接受</button>
+          <button class="btn btn-xs btn-danger" data-abs="no" data-id="${esc(a.id)}">拒絕</button>`}</td>
       </tr>`; }).join('')}</tbody>
   </table></div></div>` : empty('note', '暫時未有請假單', '團員喺團員入口「我的請假」自己交。')}`;
 }
@@ -184,7 +186,7 @@ function bindAbsence(root) {
     const id = b.dataset.id;
     const note = await modal({
       title: '接受請假',
-      body: `<div class="field"><label class="label">備註（可空）</label>
+      trustedBodyHtml: `<div class="field"><label class="label">備註（可空）</label>
           <input class="input" id="ab-note" placeholder="例：已記名，返嚟補一下集會"></div>`,
       actions: [
         { label: '取消', class: 'btn', value: null },
@@ -203,7 +205,7 @@ function bindAbsence(root) {
     const id = b.dataset.id;
     const note = await modal({
       title: '拒絕請假',
-      body: `<div class="field"><label class="label">原因（可空）</label>
+      trustedBodyHtml: `<div class="field"><label class="label">原因（可空）</label>
           <input class="input" id="ab-note" placeholder="例：呢個係全團必須出席的大會"></div>`,
       actions: [
         { label: '取消', class: 'btn', value: null },
@@ -246,7 +248,7 @@ function rollPaneInner(e, roster) {
         <button class="btn btn-xs" data-attact="discard" ${dirty ? '' : 'disabled'}>放棄改動</button>
         <button class="btn btn-xs btn-primary" data-attact="commit" ${dirty ? '' : 'disabled'}>${icon('check', 13)} 確定點名${dirty ? `（${nChanges}）` : ''}</button>
       </div></div>
-    ${noteBox(dirty
+    ${noteBoxHtml(dirty
       ? `有 ${nChanges} 個改動<b>仲未儲存</b> —— 撳右上「確定點名」先會一次過寫入後端。`
       : '撳掣點名<b>唔會即刻寫入後端</b>；點晒全團先撳右上「確定點名」，一次過儲存。中途撳錯可以「放棄改動」或者再撳同一個掣還原。', dirty ? 'warn' : 'brand')}
     <div class="scroll-x"><table class="table table-compact">
@@ -259,7 +261,7 @@ function rollPaneInner(e, roster) {
           <td class="semibold sm">${esc(m.name)}</td>
           <td class="xs">${rst ? RSVP[rst]?.label : '—'}</td>
           <td>${['present','absent','late','early'].map(k =>
-            `<button class="btn btn-xs ${cst === k ? 'btn-primary' : 'btn-ghost'}" data-roll="${m.id}" data-val="${k}">${RSVP[k].label}</button>`).join(' ')}</td>
+            `<button class="btn btn-xs ${cst === k ? 'btn-primary' : 'btn-ghost'}" data-roll="${esc(m.id)}" data-val="${esc(k)}">${RSVP[k].label}</button>`).join(' ')}</td>
         </tr>`;
       }).join('')}</tbody>
     </table></div>
@@ -269,7 +271,7 @@ function rollPaneInner(e, roster) {
 /** 只重繪點名嗰嚿 —— 唔會成頁重繪、唔會彈返上去頂 */
 function paintRollPane(root, params) {
   const host = root.querySelector('#rollPane');
-  const e = find('events', params.id);
+  const e = visibleEvent(params.id);
   if (!host || !e) return;
   host.innerHTML = rollPaneInner(e, activeMembers());
   bindRollPane(root, params);
@@ -279,7 +281,7 @@ function bindRollPane(root, params) {
   const pane = root.querySelector('#rollPane');
   if (!pane) return;
   pane.querySelectorAll('[data-roll]').forEach(b => b.addEventListener('click', () => {
-    const e = find('events', params.id);
+    const e = visibleEvent(params.id);
     if (!e) return;
     if (rollDraftFor !== String(e.id) || !rollDraft) { rollDraft = {}; rollDraftFor = String(e.id); }
     const mid = b.dataset.roll, v = b.dataset.val;
@@ -288,7 +290,7 @@ function bindRollPane(root, params) {
     paintRollPane(root, params);
   }));
   pane.querySelectorAll('[data-attact]').forEach(b => b.addEventListener('click', async () => {
-    const e = find('events', params.id);
+    const e = visibleEvent(params.id);
     if (!e) return;
     const act = b.dataset.attact;
     if (act === 'all') {
@@ -313,7 +315,7 @@ function bindRollPane(root, params) {
 }
 
 function detail(id, query) {
-  const e = find('events', id);
+  const e = visibleEvent(id);
   if (!e) return empty('alert', '搵唔到呢個活動');
   /* 開另一個活動：丟埋上一個嘅未確定點名草稿（唔會帶過去第二個活動） */
   if (rollDraftFor && rollDraftFor !== String(id)) { rollDraft = null; rollDraftFor = ''; }
@@ -339,7 +341,7 @@ function detail(id, query) {
   </div>
   <div class="seg mb-16 no-print">
     ${[['info', '內容'], ['who', '邊個回覆'], ['roll', '點名']].map(([k, l]) =>
-      `<button data-dtab="${k}" aria-selected="${pane === k}">${l}</button>`).join('')}
+      `<button data-dtab="${esc(k)}" aria-selected="${esc(pane === k)}">${l}</button>`).join('')}
   </div>
   ${pane === 'who' ? `<div class="grid g-2">${['present','absent','late','early'].map(k => `
     <div class="card"><div class="card-head"><div class="card-title">${RSVP[k].label}（${rsvp[k].length}）</div></div>
@@ -372,10 +374,10 @@ function editor(e, query = {}) {
       </div>
       <div class="field"><label class="label">地點</label><input class="input" id="e-venue" value="${esc(d.venue || '')}"></div>
       <div class="field"><label class="label">種類</label>
-        <select class="select" id="e-kind">${Object.entries(KINDS).map(([k, v]) => `<option value="${k}" ${d.kind === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
+        <select class="select" id="e-kind">${Object.entries(KINDS).map(([k, v]) => `<option value="${esc(k)}" ${d.kind === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
       <div class="field" style="grid-column:1/-1"><label class="label">邊個睇到</label>
         ${visSelect('event', contentVis(d, 'event'), 'id="e-vis"')}
-        <div class="hint mt-4">設「對外公開」＝ <b>免登入</b>都睇到（會出現喺登入頁「公開資料」／對外專頁）。去側邊欄<b>公開資料</b>可以一眼睇晒而家公開緊啲乜。</div></div>
+        <div class="hint mt-4">只限已登入身份；設定某一級後，該身份同更高身份先睇到。匿名／免登入發佈已刪除。</div></div>
       <div class="field"><label class="label">費用（可空）</label><input class="input" id="e-fee" value="${esc(d.fee || '')}"></div>
       <div class="field"><label class="label">回覆截止</label><input class="input" type="date" id="e-dead" value="${esc(d.deadline || '')}"></div>
       <div class="field" style="grid-column:1/-1"><label class="label">內容／資訊</label>
@@ -445,11 +447,10 @@ export function mount(root, params) {
     const payload = {
       title, date, dateEnd, time: v('#e-time'), venue: v('#e-venue'),
       kind: v('#e-kind') || 'activity',
-      /* ★「邊個睇到」升級做五級（對外公開／團員／執委／領袖／團長）。
-         visibility 係舊欄（得 members／exco 兩級），繼續寫住等舊代碼（團員入口
-         嘅 `visibility !== 'exco'` 過濾、Code.gs 報表）唔使改都照行。 */
+      /* vis 只列已登入身份。visibility 保留舊兩級欄作向下兼容：任何高過
+         團員的範圍都寫成 exco，舊團員入口至少會 fail closed。 */
       vis: v('#e-vis') || 'member',
-      visibility: v('#e-vis') === 'exco' ? 'exco' : 'members',
+      visibility: roleLevel(v('#e-vis')) > roleLevel('member') ? 'exco' : 'members',
       detail: v('#e-detail'), fee: v('#e-fee'), deadline: v('#e-dead'), status: 'ok'
     };
     if (params.id && params.id !== 'new') {

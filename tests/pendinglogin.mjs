@@ -84,7 +84,8 @@ const BLOCAL_EMAIL = 'blocal@example.com';
 
 try {
   spawnBg([path.join(ROOT, 'tests', '_realgas.mjs'), String(GAS_PORT)], {
-    REALGAS_APIKEY: 'test_key_0082'
+    REALGAS_APIKEY: 'test_key_0082',
+    REALGAS_UNIFIED: '1'
   });
   spawnBg([path.join(ROOT, 'dev-server.mjs')], {
     TROOP_0082_BACKEND: FAKE_EXEC,
@@ -93,20 +94,23 @@ try {
     PORT: String(WEB_PORT),
     SUPER_KEY: TEST_SUPER_PASSWORD
   });
-  ok('真 Code.gs 後端＋dev-server 已啟動', (await waitPort(GAS_PORT)) && (await waitPort(WEB_PORT)));
+  ok('真 UnifiedCode.gs 後端＋dev-server 已啟動', (await waitPort(GAS_PORT)) && (await waitPort(WEB_PORT)));
 
   /* ============ 第一步：A 機開第一個帳戶並寫入後端 ============ */
   section('第一步：A 機開戶 → 寫入後端');
   const SETUP = await runDevice({ steps: [
+    { op: 'wipe' },
     { op: 'load' },
+    { op: 'login', login: 'admin@example.com', pw: 'changeme' },
     { op: 'addStaff', name: '團長A', email: A_EMAIL, ymis: '2026100001', identity: 'leader' },
+    { op: 'syncNow' }, // 明確儲存名冊＋readback，開戶唔會暗中代寫
     { op: 'setHubPw', id: '@last', pw: A_PW },
-    { op: 'syncNow' },
     { op: 'backendHasLogin', login: A_EMAIL }
   ] });
   ok('A 機開戶＋寫入後端冇爆', SETUP.ok === true, SETUP.error || '');
   const setupHas = stepOf(SETUP, 'backendHasLogin');
-  ok('A 機帳戶真係到到後端（有密碼）', setupHas.found === true && setupHas.withPw === true, JSON.stringify(setupHas));
+  ok('A 機帳戶真係到到 Unified Users（安全投影唔會洩漏密碼 hash）',
+    setupHas.found === true && setupHas.withPw === false, JSON.stringify(setupHas));
 
   /* ============ 第二步：B 機載入後端 → 自己開一個未儲存帳戶 → 存檔（模擬 B 一直開住） ============ */
   section('第二步：B 機開咗一個「未寫入後端」嘅帳戶（仲未撳儲存）');
@@ -125,14 +129,16 @@ try {
   section('第三步：A 機開第二個帳戶 → 寫入後端');
   const A2 = await runDevice({ steps: [
     { op: 'load' },
+    { op: 'login', login: 'admin@example.com', pw: 'changeme' },
     { op: 'addStaff', name: 'A機新開', email: ANEW_EMAIL, ymis: '2026100003', identity: 'leader' },
+    { op: 'syncNow' }, // 先由用戶明確儲存名冊
     { op: 'setHubPw', id: '@last', pw: ANEW_PW },
-    { op: 'syncNow' },
     { op: 'backendHasLogin', login: ANEW_EMAIL }
   ] });
   ok('A 機開第二個帳戶冇爆', A2.ok === true, A2.error || '');
   const a2has = stepOf(A2, 'backendHasLogin');
-  ok('A 機第二個帳戶真係到到後端', a2has.found === true && a2has.withPw === true, JSON.stringify(a2has));
+  ok('A 機第二個帳戶真係到到 Unified Users（安全投影冇 hash）',
+    a2has.found === true && a2has.withPw === false, JSON.stringify(a2has));
 
   /* ============ 第四步（關鍵）：B 機登入 —— 未存資料要留住，但身份只由後端帳戶核對 ============ */
   section('第四步（關鍵）：B 機登入（登入硬閘會重拉後端）');
@@ -169,14 +175,16 @@ try {
   const MPW = 'member1234';
   const A3 = await runDevice({ steps: [
     { op: 'load' },
+    { op: 'login', login: 'admin@example.com', pw: 'changeme' },
     { op: 'addStaff', name: '新團員', ymis: AMEM, identity: 'member' },
+    { op: 'syncNow' }, // 先由用戶明確儲存名冊
     { op: 'setHubPw', id: '@last', pw: MPW },
-    { op: 'syncNow' },
     { op: 'backendHasLogin', login: AMEM }
   ] });
   ok('A 機開團員帳戶冇爆', A3.ok === true, A3.error || '');
   const a3has = stepOf(A3, 'backendHasLogin');
-  ok('團員帳戶真係到到後端（有密碼）', a3has.found === true && a3has.withPw === true, JSON.stringify(a3has));
+  ok('團員帳戶真係到到 Unified Users（安全投影冇 hash）',
+    a3has.found === true && a3has.withPw === false, JSON.stringify(a3has));
 
   const B3 = await runDevice({ steps: [
     { op: 'import', file: FILE },                 // B 機嗰份未存資料（同上一個情境）

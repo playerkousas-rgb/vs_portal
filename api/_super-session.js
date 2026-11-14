@@ -6,7 +6,10 @@ const PREFIX = 'v82s';
 const MAX_AGE_MS = 8 * 60 * 60 * 1000;
 const CLOCK_SKEW_MS = 15 * 1000;
 
-function secret() { return String(process.env.SUPER_KEY || ''); }
+function secret() {
+  const value = String(process.env.SUPER_KEY || '');
+  return value.length >= 16 ? value : '';
+}
 function b64(value) { return Buffer.from(value).toString('base64url'); }
 function safeEqual(a, b) {
   const x = Buffer.from(String(a || ''));

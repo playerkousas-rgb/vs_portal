@@ -10,7 +10,7 @@ import {
 } from '../lib/model.js';
 import { esc, icon, avatar, fmtDate, relDay, todayISO } from '../lib/util.js';
 import { current, can, displayName } from '../lib/auth.js';
-import { pageHead, stat, empty, noteBox } from './ui.js';
+import { pageHead, stat, empty, noteBoxHtml } from './ui.js';
 import { go } from '../lib/router.js';
 import { claimForm } from './finance.js';
 
@@ -45,7 +45,7 @@ export function render() {
     </div>
     <div style="padding:6px 0">
       ${list.slice(0, 8).map(n => `
-        <div class="row gap-12" style="padding:10px 16px;border-bottom:1px solid var(--line-2);cursor:pointer" data-go="${n.link}">
+        <div class="row gap-12" style="padding:10px 16px;border-bottom:1px solid var(--line-2);cursor:pointer" data-go="${esc(n.link)}">
           <span class="stat-ic" style="background:var(--${n.level === 'danger' ? 'danger' : n.level === 'warn' ? 'warn' : 'brand'}-bg);color:var(--${n.level === 'danger' ? 'danger' : n.level === 'warn' ? 'warn' : 'brand'}-700)">
             ${icon(n.kind === 'birthday' ? 'sparkle' : n.kind === 'fee' ? 'wallet' : n.kind === 'claim' ? 'note' : n.kind === 'loan' ? 'grid' : n.kind === 'agm' ? 'calendar' : 'alert', 15)}
           </span>
@@ -70,7 +70,7 @@ export function render() {
     </div>
   </div>
 
-  ${bal.now < 0 ? noteBox(
+  ${bal.now < 0 ? noteBoxHtml(
     `<b>點解會見到負數？</b> 而家顯示嘅係「<b>${esc(bal.year)} 年度</b>期初結餘 ＋ 本年度收入 − 本年度支出」。${
       bal.likelyMissingOpening
         ? `你仲未填 <b>${esc(bal.year)} 年度嘅期初結餘</b>（上年度 ${esc(bal.prevYear)} 嘅期末係 <b>${money(bal.prevClosing)}</b>${bal.referenceClosing ? `；你嘅舊帳期末係 <b>${money(bal.referenceClosing)}</b>` : ''}），所以先會變負。`
@@ -124,7 +124,7 @@ export function render() {
       `期初 ${money(bal.opening)} ＋ 收入 ${money(bal.income)} − 支出 ${money(bal.expense)}`,
       bal.now < 0 ? 'danger' : 'ok')}
     ${stat(f.unpaidCount ? '未收團費' : '團費已清', f.unpaidCount ? money(f.outstanding) : '全部收齊',
-      `${esc(settings().feePeriodLabel || '')}${f.paidCount}/${f.total} 已收（${f.rate}%）`, f.unpaidCount ? 'warn' : 'ok')}
+      `${settings().feePeriodLabel || ''}${f.paidCount}/${f.total} 已收（${f.rate}%）`, f.unpaidCount ? 'warn' : 'ok')}
   </div>
 
   <div class="grid g-2-1">
@@ -153,7 +153,7 @@ export function render() {
           <button class="btn btn-sm" data-go="#/meetings">${icon('calendar', 14)} 全部會議</button>
         </div>
         <div>${upcomingMeetings(4).length ? upcomingMeetings(4).map(m => `
-          <div class="list-item" data-go="#/meetings/${m.id}">
+          <div class="list-item" data-go="#/meetings/${esc(m.id)}">
             <span class="stat-ic">${icon('calendar', 16)}</span>
             <div class="li-main"><div class="li-t">${esc(m.title)}</div>
               <div class="li-s">${esc(fmtDate(m.date, 'full'))} · ${esc(m.time || '')} · ${esc(m.venue || '')}</div></div>
@@ -239,7 +239,7 @@ function bdayRow(x, custom = '') {
 }
 
 function row(link, ic, label, count) {
-  return `<div class="row gap-12" style="padding:10px 16px;border-bottom:1px solid var(--line-2);cursor:pointer" data-go="${link}">
+  return `<div class="row gap-12" style="padding:10px 16px;border-bottom:1px solid var(--line-2);cursor:pointer" data-go="${esc(link)}">
     <span class="stat-ic">${icon(ic, 15)}</span>
     <div class="grow sm">${esc(label)}</div>
     <span class="badge ${count ? 'b-warn' : 'b-grey'}">${count}</span>

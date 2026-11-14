@@ -63,6 +63,7 @@ const auth = await import('../assets/js/lib/auth.js');
 const model = await import('../assets/js/lib/model.js');
 const fiscal = await import('../assets/js/lib/fiscal.js');
 const unitsLib = await import('../assets/js/lib/units.js');
+const themeLib = await import('../assets/js/lib/theme.js');
 await import('../assets/js/main.js');
 await new Promise(r => setTimeout(r, 400));
 
@@ -84,6 +85,11 @@ ok('初始化完成', store.ready() === true);
 ok('旅團編號', String(store.currentUnit()) === '0082', String(store.currentUnit()));
 
 const db = store.load();
+const hostileTheme = themeLib.applyTheme({ brand700: 'url(https://evil.example/pixel)', brand800: '#123abc' });
+ok('匯入嘅 theme 只接受 literal hex（唔會把 url()/任意 CSS 放入 style token）',
+  hostileTheme.brand700 === themeLib.MAROON.brand700 && hostileTheme.brand800 === '#123abc'
+    && !doc.documentElement.style.getPropertyValue('--brand-700').includes('url('), JSON.stringify(hostileTheme));
+themeLib.applyTheme(db.unit?.theme);
 /* ★ 2026-09-24 團長定案：唔再種「領袖共用帳戶／執行委員會帳號」。
    帳戶＝名冊入面嘅人（身份即帳號），db.accounts 只留低舊資料庫嘅個人帳戶。 */
 ok('冇「共用帳戶」種子（領袖／執委都唔會自動開）',
@@ -130,17 +136,12 @@ ok('閘面讀到檔案嘅 0082', unitsLib.unitList().some(u => String(u.code) ==
 ok('有登記就係預設（唔係空殼幽靈）', unitsLib.defaultUnitCode() === '0082', unitsLib.defaultUnitCode());
 ok('未配後端 ＝ 冇後端（唔會借用人哋張 Sheet）', unitsLib.backendOf('0082') === null);
 
-/* 下面一大堆測試係驗「後端接通之後」嘅行為（總表同步、手機記帳、
-   通告報名、借用送出、進度…）。檔案名單得個名（冇後端），
-   所以喺度自己裝一個**測試用**後端 —— 驗功能，唔借任何真實 /exec 做 fixture。 */
+/* 下面測試需要一條隔離測試 /exec 作 authenticated routing。API Key 唔係身份，
+   而舊 publicEntry／publicBorrow／noticeSubmitUrl 匿名設定已經永久退役。 */
 const TEST_EXEC = 'https://script.google.com/macros/s/AKfycbTESTonlyTESTonlyTESTonlyTEST/exec';
 const tdb = store.load();
-tdb.backend = { gasUrl: TEST_EXEC, apiKey: '', name: '測試後端', shared: false, noticeSubmitUrl: TEST_EXEC };
+tdb.backend = { gasUrl: TEST_EXEC, apiKey: '', name: '測試後端', shared: false };
 tdb.sync = { ...(tdb.sync || {}), url: TEST_EXEC, unit: tdb.unitCode, apiKey: '', log: tdb.sync?.log || [] };
-tdb.settings = tdb.settings || {};
-tdb.settings.publicEntry = { ...(tdb.settings.publicEntry || {}), submitUrl: TEST_EXEC };
-tdb.settings.notice = { ...(tdb.settings.notice || {}), submitUrl: TEST_EXEC };
-tdb.settings.publicBorrow = { ...(tdb.settings.publicBorrow || {}), submitUrl: TEST_EXEC };
 store.commit();
 
 
@@ -327,8 +328,8 @@ section('一鍵匯入參考帳目');
   }
 }
 
-/* ---------- 團章公開頁所需的發布檔 ---------- */
-section('團章發布檔（公開頁面用）');
+/* ---------- 團章 authenticated hub 所需的發布資料 ---------- */
+section('團章發布資料（登入後按身份投影）');
 const cons = store.load().constitution || {};
 /* 新旅團由空白開始：團章要自己寫，所以呢度驗結構撐得住空白 */
 ok('團章結構存在（可以係空）', typeof cons === 'object' && cons !== null);
@@ -564,6 +565,28 @@ window.eval(fs.readFileSync(path.join(ROOT, 'assets/vendor/qrcode.js'), 'utf8'))
 window.eval(fs.readFileSync(path.join(ROOT, 'assets/vendor/qrcode_UTF8.js'), 'utf8'));
 const util = await import('../assets/js/lib/util.js');
 const exporter = await import('../assets/js/lib/exporter.js');
+const safeJson = await import('../assets/js/lib/safe-json.js');
+ok('URL sanitizer 擋 javascript/data executable scheme，同時保留 HTTPS／內部路徑',
+  util.safeHref('javascript:alert(1)') === '#'
+    && util.safeHref('data:text/html,<script>alert(1)</script>') === '#'
+    && util.safeHref('https://example.org/a') === 'https://example.org/a'
+    && util.safeHref('https://') === '#'
+    && util.safeHref('/\\evil.example/path') === '#'
+    && util.safeHref('./members.html?u=0082#/notice/n1') === './members.html?u=0082#/notice/n1');
+ok('相片 sanitizer 拒絕 SVG／屬性注入，只接受安全 raster data URL',
+  util.safeImageSrc('data:image/svg+xml,<svg onload=alert(1)>') === ''
+    && util.safeImageSrc('x" onerror="alert(1)') === ''
+    && util.safeImageSrc('data:image/png;base64,iVBORw0KGgo=') === 'data:image/png;base64,iVBORw0KGgo=');
+ok('下載檔名會移除路徑、控制字元同特殊字元',
+  util.safeFilename('../惡意/檔名\u0000?.csv') === '.._惡意_檔名_.csv');
+let unsafeJsonRejected = false;
+try { safeJson.assertSafeJsonTree(JSON.parse('{"__proto__":{"polluted":true}}')); }
+catch { unsafeJsonRejected = true; }
+let unsafeJsonUrlRejected = false;
+try { await safeJson.loadSafeJson('data:text/json,{"ok":true}'); }
+catch { unsafeJsonUrlRejected = true; }
+ok('公開 JSON loader 拒絕 prototype key 同 executable/data URL',
+  unsafeJsonRejected && unsafeJsonUrlRejected && ({}).polluted === undefined);
 ok('qrcode 模組已載入', typeof window.qrcode === 'function');
 /* jsdom 冇 createObjectURL／會攔下載 → 用 stub 令下載路徑可以真跑 */
 window.URL.createObjectURL = () => 'blob:test';
@@ -574,6 +597,10 @@ const qr1 = util.qrSvg('https://example.org/constitution.html?u=0082', 4, 2);
 ok('團章公開網址 QR 產生 SVG', qr1.trim().startsWith('<svg') && qr1.includes('</svg>'), qr1.slice(0, 30));
 const qr2 = util.qrSvg('https://example.org/?u=0082&role=exec_committee&ymis=DEMO-EXEC&from=portal&embed=1', 4, 2);
 ok('公開連結 QR 產生成功', qr2.trim().startsWith('<svg'));
+const hostileQr = util.qrSvg('</path><script id="qr-pwn">alert(1)</script>', '4\" onload=\"alert(1)', -999);
+ok('QR SVG 只由已驗證數字砌成，唔會反映 payload／屬性注入',
+  hostileQr.trim().startsWith('<svg') && !hostileQr.includes('qr-pwn') && !hostileQr.includes('onload=')
+    && !hostileQr.includes('<script'));
 const qr3 = util.qrSvg('https://example.org/constitution.html?u=0082', 4, 2);
 let inconsistent = 0;
 for (let i = 0; i < 2; i++) if (util.qrSvg('https://example.org/constitution.html?u=0082', 4, 2) !== qr3) inconsistent++;
@@ -581,18 +608,73 @@ ok('同一內容 QR 穩定一致', inconsistent === 0);
 
 /* ---------- Word / CSV 輸出（純字串部分） ---------- */
 section('文件輸出');
-const word = exporter.wordHtml({ title: '團章', org: '測試旅深資童軍團', bodyHtml: '<h1>測試</h1><p>中文內容</p>', meta: '2024.09' });
+const htmlEntrypoints = fs.readdirSync(ROOT).filter(name => name.endsWith('.html'));
+const inlineEntrypoints = htmlEntrypoints.filter(name => /<script(?![^>]*\bsrc=)[^>]*>/i.test(fs.readFileSync(path.join(ROOT, name), 'utf8')));
+const cspHeader = JSON.parse(fs.readFileSync(path.join(ROOT, 'vercel.json'), 'utf8')).headers
+  ?.find(rule => rule.source === '/(.*)')?.headers
+  ?.find(header => header.key === 'Content-Security-Policy')?.value || '';
+ok('HTML 入口冇 inline script，站點 CSP 可以禁止 inline JS', inlineEntrypoints.length === 0, inlineEntrypoints.join(', '));
+ok('Vercel 全站 CSP 禁止 inline script／object／base URL',
+  cspHeader.includes("script-src 'self'") && !cspHeader.includes("script-src 'self' 'unsafe-inline'")
+    && cspHeader.includes("object-src 'none'") && cspHeader.includes("base-uri 'none'"));
+const analyticsOrderingFailures = htmlEntrypoints.filter(name => {
+  const html = fs.readFileSync(path.join(ROOT, name), 'utf8');
+  const queueAt = html.indexOf('assets/js/analytics.js');
+  const insightsAt = html.indexOf('/_vercel/insights/script.js');
+  return queueAt < 0 || insightsAt < 0 || queueAt > insightsAt;
+});
+const analyticsBootstrap = fs.readFileSync(path.join(ROOT, 'assets/js/analytics.js'), 'utf8');
+ok('Vercel Analytics 用官方 queue 形狀並全程同源，符合 script-src/connect-src self',
+  analyticsOrderingFailures.length === 0 && /window\.vaq/.test(analyticsBootstrap)
+    && /window\.va/.test(analyticsBootstrap) && cspHeader.includes("connect-src 'self'"),
+  analyticsOrderingFailures.join(', '));
+const word = exporter.wordHtml({ title: '團章', org: '測試旅深資童軍團', trustedBodyHtml: '<h1>測試</h1><p>中文內容</p>', meta: '2024.09' });
+let ambiguousExportBodyRejected = false;
+try { exporter.wordHtml({ title: '舊 API', bodyHtml: '<p>含糊</p>' }); } catch { ambiguousExportBodyRejected = true; }
+ok('文件輸出拒絕含糊 bodyHtml API，必須明示 trustedBodyHtml', ambiguousExportBodyRejected);
 ok('Word 檔含 mso 標頭', word.includes('urn:schemas-microsoft-com:office:word'));
 ok('Word 檔含中文內容', word.includes('中文內容'));
 ok('Word 檔有機構名', word.includes('測試旅深資童軍團'));
+ok('Word／HTML 輸出帶 CSP，禁止 script、object、表單同外部圖片',
+  word.includes("script-src 'none'") && word.includes("object-src 'none'")
+    && word.includes("form-action 'none'") && word.includes('img-src data: blob:'));
 const csv = exporter.csvText({ headers: ['姓名', '生日'], rows: [['陳大文', '2006-06-10'], ['有,逗號', 'x"y']] });
 ok('CSV 有表頭', csv.split('\r\n')[0] === '姓名,生日');
 ok('CSV 會 escape 逗號與引號', csv.includes('"有,逗號"') && csv.includes('"x""y"'));
+const hostileCsv = exporter.csvText({ headers: ['值'], rows: [['=HYPERLINK("https://evil.example")'], ['+cmd|calc'], ['-10.5'], ['@SUM(1,2)']] });
+ok('CSV 將外來公式控制字當純文字，並保留真正負數',
+  hostileCsv.includes("'=HYPERLINK") && hostileCsv.includes("'+cmd|calc")
+    && hostileCsv.includes('-10.5') && !hostileCsv.includes("'-10.5") && hostileCsv.includes("'@SUM"), hostileCsv);
 ok('CSV 用 CRLF 換行', csv.split('\r\n').length === 3);
-const standalone = exporter.toStandaloneHtml({ filename: '/tmp/x.html', title: '團章', bodyHtml: '<p>內容</p>', meta: '' });
+const membersView = await import('../assets/js/views/members.js');
+const hostileIcsText = membersView.icsText('陳大文\r\nATTENDEE:mailto:evil@example.test,一;二\\三');
+ok('iCalendar 文字會 escape 換行／分隔符，唔可注入第二個欄位',
+  !hostileIcsText.includes('\r') && !hostileIcsText.includes('\nATTENDEE:')
+    && hostileIcsText.includes('\\nATTENDEE:') && hostileIcsText.includes('\\,')
+    && hostileIcsText.includes('\\;') && hostileIcsText.includes('\\\\'));
+const quizzesView = await import('../assets/js/views/quizzes.js');
+const hostileQuizPreview = quizzesView.quizImportPreviewHtml({
+  title: '<img id="quiz-title-pwn">',
+  questions: [{ prompt: '<img id="quiz-prompt-pwn">', type: '<img id="quiz-type-pwn">', options: ['<img id="quiz-option-pwn">'] }]
+});
+const quizPreviewProbe = doc.createElement('div');
+quizPreviewProbe.innerHTML = hostileQuizPreview;
+ok('試卷匯入預覽將標題／題目／類型／選項全部當純文字',
+  !quizPreviewProbe.querySelector('[id$="-pwn"]') && quizPreviewProbe.textContent.includes('<img id="quiz-option-pwn">'));
+const previousCurrency = store.load().settings?.currency;
+store.load().settings = { ...(store.load().settings || {}), currency: '<img src=x onerror=alert(1)>' };
+ok('money/currency 拒絕由匯入設定帶入 HTML 標記', model.currency() === 'HK$' && !model.money(10).includes('<'));
+store.load().settings.currency = previousCurrency;
+const standalone = exporter.toStandaloneHtml({ filename: '/tmp/x.html', title: '團章', trustedBodyHtml: '<p>內容</p>', meta: '' });
 ok('單一 HTML 版含版面 CSS', standalone.includes('max-width:820px') && standalone.includes('${extraHead}') === false);
+ok('單一 HTML 版同樣帶限制性 CSP', standalone.includes("default-src 'none'") && standalone.includes("script-src 'none'"));
+const constitutionViewSource = fs.readFileSync(path.join(ROOT, 'assets/js/views/constitution.js'), 'utf8');
+ok('可互動團章 HTML 用 nonce CSP，冇 inline onclick',
+  constitutionViewSource.includes("script-src 'nonce-${nonce}'")
+    && constitutionViewSource.includes('<script nonce="${esc(nonce)}">')
+    && !constitutionViewSource.includes('onclick="window.print()"'));
 ok('列印 CSS 有分頁控制', exporter.docCss().includes('A4') || exporter.docCss().includes('page'));
-const wordFile = exporter.toWord({ filename: 'test.doc', title: '團章', bodyHtml: '<p>內容</p>' });
+const wordFile = exporter.toWord({ filename: 'test.doc', title: '團章', trustedBodyHtml: '<p>內容</p>' });
 ok('Word 下載函式回報成功', wordFile === true);
 const csvFile = exporter.toCSV({ filename: 'test.csv', headers: ['A'], rows: [[1]] });
 ok('CSV 下載函式冇拋錯', csvFile === undefined || csvFile === true);
@@ -660,6 +742,18 @@ section('財務匯入解析');
   ok('CSV：類型判斷正確（收入／支出）', rows[0].type === 'income' && rows[1].type === 'expense');
   ok('CSV：日期正規化為 YYYY-MM-DD', rows[0].date === '2025-12-07' && rows[2].date === '2025-12-10');
   ok('CSV：冇填分類會俾預設值', rows[1].category === '物資');
+  const signedOnly = fin.parsePasted('日期,項目,金額\n2025-12-09,退款,-88');
+  ok('CSV：冇類型欄時，負數金額會推斷做支出',
+    signedOnly.length === 1 && signedOnly[0].type === 'expense' && signedOnly[0].amount === 88,
+    JSON.stringify(signedOnly));
+  const badReceipt = fin.parsePasted('日期,類型,項目,金額,單據\n2025-12-09,支出,測試,88,javascript:alert(1)');
+  ok('CSV：單據只保留有效 HTTP(S) 網址，無效 scheme 唔會扮成有單據',
+    badReceipt[0]?.receiptLink === '' && badReceipt[0]?.receipt === false, JSON.stringify(badReceipt[0]));
+  ok('CSV／XLSX 期初結餘會寫入最早匯入年度，唔會再寫舊全域欄',
+    fin.financeImportOpeningYear([
+      { date: '2026-06-01', period: '2026-27' },
+      { date: '2025-12-01', period: '2025-26' }
+    ], '2099-00') === '2025-26');
 
   const tsv = fin.parsePasted('日期\t類型\t項目\t金額\n2025-12-07\t收入\t團費\t360\n2025-12-07\t支出\t場地\t100');
   ok('TSV（Google Sheet 直接複製）都支援', tsv.length === 2 && tsv[1].type === 'expense', JSON.stringify(tsv));
@@ -670,6 +764,10 @@ section('財務匯入解析');
   ok('CSV：引號內換行都唔會爆（RFC4180）',
     fin.splitCsv('a,"b\nc",d').length === 1 && fin.splitCsv('a,"b\nc",d')[0][1] === 'b\nc');
   ok('匯入讀檔函式存在（上載 CSV 用）', typeof fin.readImportFile === 'function');
+  let oversizedFinanceFileRejected = false;
+  try { await fin.readImportFile({ size: 12 * 1024 * 1024 + 1 }); }
+  catch (e) { oversizedFinanceFileRejected = /12MB|大過/.test(String(e?.message || e)); }
+  ok('財務 CSV／文字檔同 XLSX 一樣有 12MB 本機記憶體上限', oversizedFinanceFileRejected);
 
   // 你嘅 Google Form 式表（收入項目／支出項目／收入／支出／結餘／付款人／備註）
   const formCsv = [
@@ -761,11 +859,17 @@ section('通告（開一張・分享・報名）');
   ok('其中一張要報名（needSignup）', list.some(n => n.needSignup), JSON.stringify(list.map(n => n.needSignup)));
   const first = list[0];
   ok('通告有中英標題', !!(first?.title?.zh && first?.title?.en), JSON.stringify(first?.title));
-  ok('通告已發布（公開睇得到）', first?.status === 'published', first?.status);
+  ok('通告已發布（登入後按身份先睇得到）', first?.status === 'published', first?.status);
 
   const link = noticesMod.publicUrl(first);
-  ok('分享連結指向 notice.html（帶旅團 + 通告編號）',
-    /^notice\.html\?u=/.test(link) && link.includes('n=' + first.id), link);
+  ok('分享連結指向 authenticated members.html 通告路線（帶旅團 + 通告編號）',
+    /members\.html\?/.test(link) && link.includes('u=0082') && link.endsWith('#/notice/' + first.id), link);
+  const legacyNoticeSettings = store.load().settings.notice;
+  store.load().settings.notice = { ...(legacyNoticeSettings || {}), publicBaseUrl: 'javascript:alert(1)' };
+  const blockedNoticeLink = noticesMod.publicUrl(first);
+  store.load().settings.notice = legacyNoticeSettings;
+  ok('舊 executable publicBaseUrl 不再獲採用，仍然只會產生同源登入路線',
+    /members\.html\?/.test(blockedNoticeLink) && !/^javascript:/i.test(blockedNoticeLink), blockedNoticeLink);
 
   // 分享對話框（QR Code）
   const shareBtn = doc.querySelector('[data-share]');
@@ -778,7 +882,7 @@ section('通告（開一張・分享・報名）');
     const ov = doc.querySelector('.overlay');
     ok('分享對話框有 QR Code（SVG 或圖檔）',
       !!ov && (!!ov.querySelector('.qr-box svg') || /^data:image/.test(ov.querySelector('.qr-box img')?.getAttribute('src') || '')));
-    ok('分享對話框顯示報名連結', !!ov && (ov.querySelector('#sh-url')?.value || '').includes('notice.html'));
+    ok('分享對話框顯示需登入的通告連結', !!ov && (ov.querySelector('#sh-url')?.value || '').includes('members.html'));
     /* 2026-09-16：分享要有 WhatsApp 一撳、QR 圖、報名統計 */
     ok('分享對話框有「用 WhatsApp 分享」掣', !!ov && !!ov.querySelector('[data-sh="wa-open"]'));
     ok('分享對話框有「儲存 QR 圖」掣（貼落 WhatsApp 用）', !!ov && !!ov.querySelector('[data-sh="img"]'));
@@ -805,6 +909,11 @@ section('通告（開一張・分享・報名）');
   if (firstText) firstText.value = '測試報名者';
   const vals = noticesMod.collectFields(holder, fields);
   ok('報名表單收集到欄位值', (vals.name || vals[Object.keys(vals)[0]]) !== undefined, JSON.stringify(vals));
+  const hostileHolder = doc.createElement('div');
+  hostileHolder.innerHTML = noticesMod.fieldInput({ key: '__proto__', label: '惡意', type: 'text' }, 'x');
+  const hostileValues = noticesMod.collectFields(hostileHolder, [{ key: '__proto__', label: '惡意', type: 'text' }]);
+  ok('內部通告欄位收集拒絕 prototype 特殊 key',
+    !Object.prototype.hasOwnProperty.call(hostileValues, '__proto__') && ({}).polluted === undefined);
 
   const before = (store.find('notices', withFields.id)?.signups || []).length;
   noticesMod.add_signup(store.find('notices', withFields.id), { name: '測試報名者', ...vals });
@@ -823,8 +932,8 @@ section('通告（開一張・分享・報名）');
   ok('有報名表 CSV 匯出', csvOk);
 }
 
-/* ---------- 團長回報（2026-09-17）：已發布通告 →「同步到公開頁」 ---------- */
-section('通告詳情頁（同步到公開頁 ＝ 行同一條「儲存到後端」路）');
+/* ---------- 已發布通告 →「同步到團員入口」 ---------- */
+section('通告詳情頁（同步到 authenticated 團員入口 ＝ 行同一條「儲存到後端」路）');
 {
   const pub = (store.load().notices || []).find(n => n.status === 'published');
   ok('有已發布通告可以做測試', !!pub);
@@ -854,14 +963,14 @@ section('通告詳情頁（同步到公開頁 ＝ 行同一條「儲存到後端
   window.dispatchEvent(new window.HashChangeEvent('hashchange'));
   await new Promise(r => setTimeout(r, 140));
   const syncBtn = doc.querySelector('#view [data-act="sync-notice"]');
-  ok('已發布通告詳情頁有「同步到公開頁」掣', !!syncBtn);
+  ok('已發布通告詳情頁有「同步到團員入口」掣', !!syncBtn);
   syncBtn?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
   await new Promise(r => setTimeout(r, 400));
   const lastToast = () => [...doc.querySelectorAll('.toast')].map(t => t.textContent).pop() || '';
   const actions = sent.map(x => x?.action);
   ok('撳一次：先問後端版本（dbInfo），再寫入（saveDb）—— 同頂部「儲存到後端」同一條路', actions[0] === 'dbInfo' && actions.includes('saveDb'), JSON.stringify(actions));
   const saved = sent.find(x => x?.action === 'saveDb');
-  ok('寫入內容係整個資料庫，包括呢張通告（公開頁由「資料庫」分頁讀）',
+  ok('寫入內容係整個資料庫，包括呢張通告（團員入口由 server 安全投影讀）',
     Array.isArray(saved?.db?.notices) && saved.db.notices.some(n => n.id === pub.id), JSON.stringify(Object.keys(saved?.db || {})).slice(0, 200));
   ok('寫入帶埋旅團編號同 API Key', saved?.unit && saved?.apiKey === 'TESTKEY', JSON.stringify([saved?.unit, saved?.apiKey]));
   ok('寫上後端嘅 db 唔會夾帶 sync／backend（連線設定唔上 Sheet）', saved?.db && !('sync' in saved.db) && !('backend' in saved.db), JSON.stringify(Object.keys(saved?.db || {})));
@@ -903,6 +1012,14 @@ section('欄位設計器（欄位改名・加欄位・還原）');
   const rows = doc.querySelectorAll('#fd-list .schema-row');
   ok('欄位設計器列出欄位（帳目）', rows.length >= 8, String(rows.length));
   ok('有「加欄位」掣', !!doc.querySelector('[data-fd="add"]'));
+  const firstUp = rows[0]?.querySelector('[data-up]');
+  const firstDown = rows[0]?.querySelector('[data-down]');
+  const lastDown = rows[rows.length - 1]?.querySelector('[data-down]');
+  ok('欄位排序邊界：第一欄唔可以上移但可以下移',
+    firstUp?.disabled === true && firstDown?.disabled === false,
+    `up=${firstUp?.disabled} down=${firstDown?.disabled}`);
+  ok('欄位排序邊界：最後一欄唔可以下移', lastDown?.disabled === true,
+    `down=${lastDown?.disabled}`);
 
   const inp = doc.querySelector('#fd-list [data-field="0"] [data-k="label"]');
   ok('第一個欄位係「日期」', inp?.value === '日期', inp?.value);
@@ -958,12 +1075,13 @@ google.visualization.Query.setResponse({"version":"0.6","reqId":"0","status":"ok
   window.location.hash = '#/tables/sync';
   window.dispatchEvent(new window.HashChangeEvent('hashchange'));
   await new Promise(r => setTimeout(r, 40));
-  ok('有「同一條網址共用」畀手機記帳／通告報名', !!doc.querySelector('#y-share'));
+  ok('總表同步頁不再提供匿名手機記帳／通告報名共用開關', !doc.querySelector('#y-share'));
 
-    ok('總表同步頁顯示「後端已連接」', /後端已連接|已設定 Apps Script/.test(doc.getElementById('view')?.textContent || ''));
+  ok('總表同步頁顯示「後端已連接」', /後端已連接|已設定 Apps Script/.test(doc.getElementById('view')?.textContent || ''));
   ok('Apps Script 網址已預填落輸入格',
     /\/exec$/.test(doc.querySelector('#y-url')?.value || ''), doc.querySelector('#y-url')?.value);
-  ok('共用掣預設已剔（三條路同一個後端）', doc.querySelector('#y-share')?.checked === true);
+  ok('同步頁講明團員入口必須登入，API Key 唔會當身份',
+    /團員入口|登入|API Key/.test(doc.getElementById('view')?.textContent || ''));
 
   /* 2026-09-19 回歸（團長回報「有啲嘢把解決方法封死」）：
      平台用 Vercel 環境變數登記嘅旅團，`db.backend` **一定**係 null ——
@@ -1016,7 +1134,8 @@ google.visualization.Query.setResponse({"version":"0.6","reqId":"0","status":"ok
     /function doPost/.test(code) && /UNIFIED_GS_VERSION/.test(code) && /PortalAdminCompat_/.test(code));
   ok('Unified 範本會寫入行政及進度共用分頁',
     ['帳目', '物資', '團員', '報名', '進度追蹤', '活動履歷'].every(k => code.includes(k)));
-  ok('Unified 範本支援報名即時寫入', /appendSignup/.test(code));
+  ok('Unified 範本只經 authenticated hubNoticeSignup 即時寫入通告回覆',
+    /hubNoticeSignup/.test(code) && !/action === 'noticeSignup'/.test(code));
   ok('App download 帶非空 generated SHA-256', /^[0-9a-f]{64}$/.test(UNIFIED_GAS_SHA256));
 }
 
@@ -1042,7 +1161,7 @@ section('快速記帳（影相＋選欄目）');
   await new Promise(r => setTimeout(r, 20));
   ok('關閉之後冇殘留 modal', !doc.querySelector('.overlay'));
 
-  // 畀成員自己填（公開收集頁 QR + 送出網址）
+  // 團員登入入口 QR（舊匿名收集頁／送出網址已退役）
   window.location.hash = '#/finance/claims';
   window.dispatchEvent(new window.HashChangeEvent('hashchange'));
   await new Promise(r => setTimeout(r, 40));
@@ -1052,19 +1171,18 @@ section('快速記帳（影相＋選欄目）');
   await new Promise(r => setTimeout(r, 80));
   const ov2 = doc.querySelector('.overlay');
   ok('彈出 QR 對話框（成員用手機掃）', !!ov2 && !!ov2.querySelector('.qr-box svg'));
+  const hubQrUrl = ov2?.querySelector('input[readonly]')?.value || '';
   ok('QR 連結指向團員入口 members.html（掃一次齊晒；帶旅團編號）',
-    (ov2?.querySelector('#es-url')?.value || '').includes('members.html?u='),
-    ov2?.querySelector('#es-url')?.value);
-  ok('可以設定 Apps Script 送出網址（寫入總表）', !!ov2?.querySelector('#es-submit'));
-
-    ok('送出網址已預填你嘅 /exec',
-    /\/exec$/.test(ov2?.querySelector('#es-submit')?.value || ''), ov2?.querySelector('#es-submit')?.value);
+    hubQrUrl.includes('members.html') && /[?&]u=0082(?:&|$)/.test(hubQrUrl), hubQrUrl);
+  ok('QR 對話框不再提供匿名 Apps Script 送出網址／API Key',
+    !ov2?.querySelector('#es-submit') && !/API Key/i.test(ov2?.textContent || ''));
   doc.querySelector('.overlay [data-close-x]')?.click();
   await new Promise(r => setTimeout(r, 20));
 
-  // 設定檔：公開收集頁
-  ok('unit.json 有 publicEntry 設定', !!store.load().settings?.publicEntry);
-  ok('entry.html 存在（成員手機入口）', typeof fs.readFileSync === 'function' && fs.existsSync(path.join(ROOT, 'entry.html')));
+  ok('舊 publicEntry 匿名設定不再存在', !store.load().settings?.publicEntry);
+  ok('entry.html 只保留相容殼，會轉返 authenticated members.html',
+    fs.existsSync(path.join(ROOT, 'entry.html'))
+      && /members\.html/.test(fs.readFileSync(path.join(ROOT, 'assets/js/public-entry.js'), 'utf8')));
 }
 
 /* ============================================================
@@ -1084,12 +1202,15 @@ section('Code.gs（Apps Script 範本）');
   ok('冇「字串入面斷行」（舊 bug：line 158 Invalid or unexpected token）',
     !lines.some((l, i) => /^\'\)/.test(l.trim()) || /join\('$/.test(l)),
     lines.map((l, i) => `${i + 1}:${l}`).filter(([, l]) => /join\('$/.test(l)).join('|'));
-  ok("links.join('\\n') 保留做跳行字串（唔係真換行）", code.includes("links.join('\\n')"));
+  ok("簽名 canonical 欄位 join('\\n') 保留做跳行字串（唔係真換行）",
+    code.includes("String(digest || '')].join('\\n')"));
   ok('有定義 SHEET_TABS（舊版本用到但未定義）', /var SHEET_TABS = \[/.test(code));
   ok('有 doPost / doGet / syncAll', ['function doPost', 'function doGet', 'function syncAll'].every(f => code.includes(f)));
-  ok('支援 action: ping / sync / claim / noticeSignup / loan',
-    ['ping', 'sync', 'claim', 'noticeSignup', 'loan'].every(a => code.includes(`'${a}'`)));
-  ok('有物資借用分頁寫入（appendLoan）', code.includes('function appendLoan') && code.includes("'物資借用'"));
+  ok('匿名 claim／noticeSignup／loan 已從 action dispatcher 移除',
+    !/body\.action === '(claim|noticeSignup|loan)'/.test(code)
+      && ['hubNoticeSignup', 'hubRsvp', 'hubQuiz', 'hubAbsence'].every(a => code.includes(`'${a}'`)));
+  ok('物資借用只保留行政資料表，不再暴露匿名 appendLoan action',
+    code.includes("'物資借用'") && !/body\.action === 'loan'/.test(code));
   ok('報名分頁有「出席與否」欄', code.includes("'出席與否'") && code.includes('function attendOf'));
   ok('部署步驟說明有內容', gasGuide().split('\n').length >= 5);
 }
@@ -1119,8 +1240,8 @@ section('用戶名冊（可編輯 · 身份）');
   ok('撳「編輯」會去編輯頁（#/members/edit/<id>）',
     window.location.hash === '#/members/edit/' + firstId, window.location.hash);
   ok('編輯頁有身份下拉（團長／領袖／執委／團員）', !!doc.querySelector('#f-identity'));
-  ok('身份選項係 團長／領袖／執委／團員（團長睇得到）',
-    Array.from(doc.querySelectorAll('#f-identity option')).map(o => o.value).join(',') === 'chief,leader,exco,member',
+  ok('身份選項由支部 schema 產生（團員→執委→領袖→團長）',
+    Array.from(doc.querySelectorAll('#f-identity option')).map(o => o.value).join(',') === 'member,exco,leader,chief',
     Array.from(doc.querySelectorAll('#f-identity option')).map(o => o.value).join(','));
 
   doc.querySelector('#f-name').value = '測試用戶甲';
@@ -1134,12 +1255,17 @@ section('用戶名冊（可編輯 · 身份）');
   ok('身份可以改成「執委」', m.identity === 'exco', m.identity);
   ok('編輯完會返去個人頁', window.location.hash === '#/members/' + firstId, window.location.hash);
 
-  // 舊資料升級：冇 identity 欄 → 自動推算
-  const migrated = store.migrateIdentities({ members: [
-    { id: 'x1', name: '甲', role: '團長' }, { id: 'x2', name: '乙', role: '司庫' }, { id: 'x3', name: '丙', role: '' }
-  ] });
+  // 舊資料升級：冇 identity 欄 → 自動推算；其他 backend 拼法只係本支部身份 alias。
+  const legacyIdentityDb = { members: [
+    { id: 'x1', name: '甲', role: '團長' }, { id: 'x2', name: '乙', role: '司庫' },
+    { id: 'x3', name: '丙', role: '' }, { id: 'x4', name: '丁', identity: 'exec_committee' }
+  ], accounts: [{ id: 'a-old', role: 'branch_leader' }] };
+  const migrated = store.migrateIdentities(legacyIdentityDb);
   ok('舊資料自動推算身份（團長→領袖 / 司庫→執委 / 其他→團員）',
     migrated === true, String(migrated));
+  ok('舊 backend 身份拼法會 canonicalize 到本支部 schema，而唔係新增全平台角色',
+    legacyIdentityDb.members.find(x => x.id === 'x4')?.identity === 'exco'
+      && legacyIdentityDb.accounts[0].role === 'leader', JSON.stringify(legacyIdentityDb));
   const g = store.load();
   ok('每個用戶都有身份欄', g.members.length === 0 || g.members.every(x => ['chief', 'leader', 'exco', 'member'].includes(x.identity)),
     JSON.stringify(g.members.filter(x => !x.identity).map(x => x.name)));
@@ -1155,8 +1281,9 @@ section('防呆（暫存 → 確認 → 可還原）');
   guard.dropAllDrafts();
   guard.saveDraft('member', 'm_test', { name: '暫存測試' });
   ok('草稿可以暫存去瀏覽器', guard.readDraft('member', 'm_test')?.data?.name === '暫存測試');
-  ok('草稿存喺 localStorage（唔係資料庫）',
-    !!window.localStorage.getItem('venture82.drafts.v2')
+  ok('草稿存喺目前旅團嘅 localStorage namespace（唔係資料庫）',
+    !!window.localStorage.getItem(`venture82.drafts.v2.${store.currentUnit()}`)
+    && !window.localStorage.getItem('venture82.drafts.v2')
     && !store.load().members.some(m => m.name === '暫存測試'));
   ok('可以列出所有暫存', guard.listDrafts().some(d => d.section === 'member'));
   guard.clearDraft('member', 'm_test');
@@ -1175,6 +1302,24 @@ section('防呆（暫存 → 確認 → 可還原）');
     JSON.stringify(guard.readDraft('member', 'new')));
   ok('未撳「儲存」之前唔會寫入資料庫', !store.load().members.some(m => m.name === '未儲存用戶'));
   guard.dropAllDrafts();
+
+  // 安全快照唔可以淨係「寫咗落 localStorage」；要真係讀得返、還原同 readback。
+  const meetingsBefore = structuredClone(store.load().meetings || []);
+  const safety = guard.createSafetySnapshot('會議還原測試', meetingsBefore, { kind: 'table-import', table: 'meetings' });
+  const safetyRead = guard.readSafetySnapshot(safety.id);
+  const { snapshotRestorePlan } = await import('../assets/js/views/tables.js');
+  const restorePlan = snapshotRestorePlan(safetyRead);
+  store.load().meetings = [{ id: 'snapshot-regression', title: '不應保留' }];
+  restorePlan.apply(safetyRead.data);
+  ok('安全快照可以程式還原並 readback 核對',
+    restorePlan.verify(safetyRead.data)
+      && JSON.stringify(store.load().meetings || []) === JSON.stringify(meetingsBefore));
+  guard.dropSafetySnapshot(safety.id);
+  let unsafeBackupRejected = false;
+  try { store.importAll('{"schema":2,"__proto__":{"polluted":true}}'); }
+  catch (e) { unsafeBackupRejected = /不安全欄位/.test(String(e?.message || e)); }
+  ok('JSON 備份拒絕 prototype-pollution 特殊欄位',
+    unsafeBackupRejected && ({}).polluted === undefined);
 
   // 刪除要打字確認
   window.location.hash = '#/members/' + firstId2();
@@ -1480,92 +1625,85 @@ section('旅團選擇閘（先揀旅團再登入）');
   ok('登入頁有「更換旅團」掣', /btnGate/.test(mainSrc));
 }
 
-/* ---------- 6. 公開資料（申報 / 物資 / 通告報名 / 社交媒體 / 相簿） ----------
-   ★ 2026-09-24 團長：「『成員連結』改名為『公開資料』」 */
-section('公開資料（免登入公開頁）');
+/* ---------- 6. 已登入團員入口；匿名公開層已退役 ---------- */
+section('已登入團員入口（無匿名公開資料）');
 {
   const links = model.memberLinks();
-  const ids = links.map(l => l.id);
-  ok('有收支申報連結（entry.html）', ids.includes('entry'));
-  ok('有物資借用連結（borrow.html）', ids.includes('borrow'));
-  ok('有團章連結（constitution.html）', ids.includes('constitution'));
-  ok('每條連結都帶旅團編號', links.every(l => /u=(0082|MOCK)/.test(l.url)), links.map(l => l.url).join(' | '));
-  ok('borrow.html 存在', fs.existsSync(path.join(ROOT, 'borrow.html')));
-  ok('public-borrow.js 存在', fs.existsSync(path.join(ROOT, 'assets/js/public-borrow.js')));
+  ok('只派一條 authenticated 團員入口',
+    links.length === 1 && links[0].id === 'hub' && /members\.html\?/.test(links[0].url),
+    JSON.stringify(links));
+  ok('團員入口帶旅團編號，但不會帶 API Key',
+    /[?&]u=0082(?:&|$)/.test(links[0].url) && !/apiKey|key=/i.test(links[0].url), links[0].url);
 
-  /* ★ 2026-09-24 團長（定位修正）：
-     「公開資料其實**唔係要填嘢嘅**，係方便了解有乜嘢而家正喺度公開。」
-     → 預設嗰版係**只讀一覽表**（冇輸入位），填嘢要去「旅團設定」；
-       QR／海報嗰啲分享掣喺另一個分頁「團員入口（分享）」。 */
-  /* 種啲公開資料落去，先至驗到一覽表有聚合晒「連結 ＋ APP 內內容」 */
-  {
-    const db = store.load();
-    db.publicProfile = {
-      socials: [{ id: 'pp_test_ig', kind: 'instagram', title: '82 旅 IG', url: 'https://instagram.com/test82', desc: '活動相', vis: 'other' }],
-      albums: [{ id: 'pp_test_al', title: '2026 夏季營', url: 'https://photos.example/summer', desc: '', vis: 'member' }],
-      links: [{ id: 'pp_test_l', title: '香港童軍總會', url: 'https://www.scout.org.hk', desc: '', vis: 'other' }],
-      site: { url: 'https://troop82.example.org', title: '82 旅網站', desc: '', vis: 'other' },
-      about: { text: '我團 1982 年成立。', vis: 'member' }
-    };
-    store.commit();
-  }
+  const previousPublicLinks = store.load().settings.publicLinks;
+  store.load().settings.publicLinks = { ...(previousPublicLinks || {}), 'members.html': 'javascript:alert(1)' };
+  const safeMemberUrl = model.publicPageUrl('members.html', { u: store.load().unitCode });
+  store.load().settings.publicLinks = previousPublicLinks;
+  ok('舊 publicLinks host 覆寫已失效，只會產生同源 members.html',
+    !/^javascript:/i.test(safeMemberUrl) && /members\.html/.test(safeMemberUrl), safeMemberUrl);
+
+  const visibility = await import('../assets/js/lib/content-visibility.js');
+  ok('內容可見層只包含本支部已登入身份，沒有 anonymous／other',
+    visibility.VIS_LEVELS.map(level => level.id).join(',') === 'member,exco,leader,chief');
+  ok('舊 other 值安全收窄到最低已登入 member；未登入身份仍 fail closed',
+    visibility.visOf({ vis: 'other' }) === 'member'
+      && visibility.visibleContent({ vis: 'other' }, 'notice', '') === false
+      && visibility.visibleContent({ vis: 'other' }, 'notice', 'member') === true);
+
+  const redirects = [
+    ['public.js', "target.hash = '/constitution'"],
+    ['public-notice.js', "target.hash = notice ? `/notice/"],
+    ['public-entry.js', "target.hash = '/home'"],
+    ['public-borrow.js', "target.hash = '/home'"]
+  ];
+  redirects.forEach(([file, route]) => {
+    const src = fs.readFileSync(path.join(ROOT, 'assets/js', file), 'utf8');
+    ok(`${file} 只保留 members.html authenticated 相容轉向`,
+      src.includes("new URL('./members.html'") && src.includes('location.replace') && src.includes(route)
+        && !/fetch\s*\(/.test(src));
+  });
+  ok('四個舊 HTML 仍存在作安全相容殼',
+    ['constitution.html', 'notice.html', 'entry.html', 'borrow.html'].every(file => fs.existsSync(path.join(ROOT, file))));
 
   window.location.hash = '#/links';
   window.dispatchEvent(new window.HashChangeEvent('hashchange'));
   await new Promise(r => setTimeout(r, 60));
-  const v3 = doc.getElementById('view');
-  ok('「公開資料」頁可以渲染', (v3.innerHTML || '').length > 400, String((v3.innerHTML || '').length));
-  ok('★ 一覽表版：冇任何輸入位（唔係填嘢嘅位）',
-    v3.querySelectorAll('input:not([type=checkbox]):not([type=radio]), textarea, select').length === 0,
-    String(v3.querySelectorAll('input, textarea, select').length));
-  ok('★ 一覽表有「公開緊／對外公開」統計', /公開緊/.test(v3.textContent) && /對外公開/.test(v3.textContent));
-  ok('★ 一覽表聚合埋 APP 內內容（行事曆／通告／試卷）',
-    /行事曆/.test(v3.textContent) && /通告/.test(v3.textContent) && /試卷/.test(v3.textContent),
-    v3.textContent.slice(0, 160));
-  ok('★ 一覽表出齊 5 類連結內容', ['關於我團', '旅團網站', '社交媒體', '相簿', '其他連結']
-    .every(t => v3.textContent.includes(t)), v3.textContent.slice(0, 200));
-  ok('★ 每項都標明「邊個睇到」', v3.textContent.includes('對外公開以上') && v3.textContent.includes('團員以上'));
-  ok('★ 每組都有「去改」掣（跳去真正填嘢嗰個位）', v3.querySelectorAll('[data-go]').length >= 3,
-    String(v3.querySelectorAll('[data-go]').length));
-  ok('★ 有「預覽對外專頁」掣（免登入嗰份）', !!v3.querySelector('[data-act="preview"]'));
+  const view = doc.getElementById('view');
+  ok('「團員入口」頁可以渲染', (view.innerHTML || '').length > 400, String((view.innerHTML || '').length));
+  ok('頁面清楚標明先登入，並沒有匿名／對外預覽控制',
+    /要先核實個人身份|仍然要.*登入/.test(view.textContent)
+      && !view.querySelector('[data-act="preview"]')
+      && view.querySelectorAll('input, textarea, select').length === 0,
+    view.textContent.slice(0, 220));
+  ok('團員入口只提供一條登入 QR／複製／列印操作',
+    view.querySelectorAll('.qr-box').length === 1
+      && !!view.querySelector('[data-act="copy-hub"]')
+      && !!view.querySelector('[data-act="print-hub"]'));
+  ok('側邊欄使用「團員入口」，不再出現「公開資料」',
+    /團員入口/.test(doc.querySelector('.sidebar')?.textContent || '')
+      && !/公開資料/.test(doc.querySelector('.sidebar')?.textContent || ''));
 
-  window.location.hash = '#/links/hub';
-  window.dispatchEvent(new window.HashChangeEvent('hashchange'));
-  await new Promise(r => setTimeout(r, 60));
-  const v3b = doc.getElementById('view');
-  ok('「團員入口（分享）」分頁可以渲染', (v3b.innerHTML || '').length > 400, String((v3b.innerHTML || '').length));
-  ok('分享分頁有 QR 掣', v3b.querySelectorAll('[data-qr]').length >= 3, String(v3b.querySelectorAll('[data-qr]').length));
-  ok('分享分頁有列印海報掣', v3b.querySelectorAll('[data-poster]').length >= 3);
-  ok('側邊欄有「公開資料」（已由「成員連結」改名）', /公開資料/.test(doc.querySelector('.sidebar')?.textContent || ''));
-  /* ★ 2026-09-24 團長：「進入旅團後,旁邊選單第二行『選擇旅團』沒有用，都進入了還選什麼？
-     只須要下方登出」—— 呢度係 DOM 級驗證（gate-env 嗰邊開唔到完整殼，只做源碼級檢查）。 */
-  ok('★ 側邊欄已經冇「選擇旅團」掣', !doc.getElementById('unitSwitch')
+  /* 進入旅團後只保留登出，不再顯示無意義的「選擇旅團」。 */
+  ok('側邊欄已經冇「選擇旅團」掣', !doc.getElementById('unitSwitch')
     && !/選擇旅團/.test(doc.querySelector('.sidebar')?.textContent || ''));
-  ok('★ 側邊欄底部「登出」仍然喺度', !!doc.getElementById('btnLogout'));
-  /* ★ 2026-09-25 團長：「加個求救制，有咩大問題 SEND 去問 ADMIN，當回報問題處理」—— 頂部要見到求救掣 */
-  ok('★ 頂部有「求救」掣（任何一版都撳得到）', /求救/.test((doc.getElementById('btnSOS')?.textContent || '')), doc.getElementById('btnSOS')?.textContent);
-  {
-    /* 撳咗開求救 modal，標題＋詳情必填、送出格式對正 ADMIN「問題回報」合約 */
-    doc.getElementById('btnSOS')?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
-    await new Promise(r => setTimeout(r, 120));
-    const ov = [...doc.querySelectorAll('.overlay')].pop();
-    ok('求救 modal 開咗（標題／問題詳情框開咗）', !!ov && /標題/.test(ov.textContent || '') && /問題詳情/.test(ov.textContent || ''), (ov?.textContent || '').slice(0, 80));
-    const cancel = [...(ov?.querySelectorAll('button') || [])].find(x => /取消/.test(x.textContent || ''));
-    cancel?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
-    await new Promise(r => setTimeout(r, 80));
-  }
-  {
-    const ob = await import('../assets/js/lib/onboard.js');
-    ok('求救 payload 對正 ADMIN「問題回報」合約（type=issue ＋ sourceApp=82venture ＋ title/desc/severity）',
-      ob.validateIssue({ troopId: '0082', title: '同步啲掣唔知點排', desc: '成頁好亂', severity: '高' }).payload.type === 'issue'
-      && ob.validateIssue({ troopId: '0082', title: '同步啲掣唔知點排', desc: '成頁好亂', severity: '高' }).payload.sourceApp === '82venture'
-      && ob.validateIssue({ troopId: '0082', title: '同步啲掣唔知點排', desc: '成頁好亂', severity: '高' }).payload.severity === '高');
-  }
+  ok('側邊欄底部「登出」仍然喺度', !!doc.getElementById('btnLogout'));
+  ok('頂部有「求救」掣', /求救/.test((doc.getElementById('btnSOS')?.textContent || '')),
+    doc.getElementById('btnSOS')?.textContent);
+  doc.getElementById('btnSOS')?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await new Promise(r => setTimeout(r, 120));
+  const overlay = [...doc.querySelectorAll('.overlay')].pop();
+  ok('求救 modal 有標題同問題詳情', !!overlay && /標題/.test(overlay.textContent || '')
+    && /問題詳情/.test(overlay.textContent || ''), (overlay?.textContent || '').slice(0, 80));
+  [...(overlay?.querySelectorAll('button') || [])].find(button => /取消/.test(button.textContent || ''))
+    ?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await new Promise(r => setTimeout(r, 80));
 
-    ok('物資借用送出網址已設定（borrow.html → 總表）',
-    /\/exec$/.test(store.load().settings?.publicBorrow?.submitUrl || ''),
-    store.load().settings?.publicBorrow?.submitUrl);
-
+  const ob = await import('../assets/js/lib/onboard.js');
+  const issue = ob.validateIssue({ troopId: '0082', title: '同步啲掣唔知點排', desc: '成頁好亂', severity: '高' }).payload;
+  ok('求救 payload 對正 ADMIN 問題回報合約',
+    issue.type === 'issue' && issue.sourceApp === '82venture' && issue.severity === '高');
+  ok('舊 publicEntry／publicBorrow 匿名設定已從資料庫遷移移除',
+    !store.load().settings?.publicEntry && !store.load().settings?.publicBorrow);
 }
 
 /* ---------- 7. 進度紀錄：同一 Unified Sheet 的 actions ---------- */
@@ -1620,11 +1758,11 @@ section('進度紀錄（同一 Unified Sheet · actions 分頁）');
   ok('Code.gs 支援 ?action=load（讀進度）', /action === 'load'/.test(code) && /function loadProgressData/.test(code));
   ok('Code.gs 支援 save / saveOtherBadge 寫入（要 API Key）', /'save' \|\| body\.action === 'saveOtherBadge'/.test(code) && /saveProgress/.test(code));
   ok('Code.gs 寫入前一定核對 API Key', /未授權：API Key 唔正確/.test(code));
-  ok('Code.gs 有「通告全文」分頁（公開頁免登入讀新通告，唔使改 Git）',
-    SHEET_TABS.includes('通告全文') && /function writeNoticesFull/.test(code) && /function loadPublicNotices/.test(code));
-  ok('公開通告只回 published（草稿唔會外洩）',
-    /textOf\(rows\[i\]\[2\]\) !== 'published'/.test(code));
-  ok('Code.gs 支援 action=notices（公開讀通告）', /body\.action === 'notices'/.test(code));
+  ok('Code.gs 不再暴露匿名 notices／constitution action',
+    !/body\.action === 'notices'/.test(code) && !/body\.action === 'constitution'/.test(code));
+  ok('通告／團章只經 opaque session hubLoad 安全投影',
+    /body\.action === 'hubLoad'/.test(code) && /function hubSafeDb_/.test(code)
+      && /requireAuthSession/.test(code));
   ok('Code.gs 有審批中心（reviewRequest / reviewLogRequest，要 API Key）',
     /body\.action === 'reviewRequest' \|\| body\.action === 'reviewLogRequest'/.test(code)
     && /function reviewProgressRequest/.test(code) && /function reviewLogRequest/.test(code));
@@ -1702,6 +1840,21 @@ section('首頁帳目（現在結餘 · 期初結餘）');
     !/唔吻合/.test(dtxt));
   ok('逐年期初結餘有捷徑去年度設定',
     !!dash2.querySelector('[data-go="#/finance/settings"]'));
+
+  window.location.hash = '#/finance';
+  window.dispatchEvent(new window.HashChangeEvent('hashchange'));
+  await new Promise(r => setTimeout(r, 80));
+  const financeSub = doc.querySelector('#view .page-head .page-sub')?.textContent || '';
+  ok('財務頁頂方程式嘅期初／收入／支出全部只計本年度',
+    financeSub.includes(`現在結餘 ${model.money(7846.64)}`)
+      && financeSub.includes(`期初 ${model.money(7846.64)}`)
+      && financeSub.includes(`收入 ${model.money(0)}`)
+      && financeSub.includes(`支出 ${model.money(0)}`)
+      && !financeSub.includes(model.money(8630)) && !financeSub.includes(model.money(9586.64)),
+    financeSub);
+  window.location.hash = '#/dashboard';
+  window.dispatchEvent(new window.HashChangeEvent('hashchange'));
+  await new Promise(r => setTimeout(r, 60));
 
   // 負數時要有解釋
   delete db3.settings.openingBalances;
@@ -1968,10 +2121,13 @@ console.log('\n▌新旅團申請接入（送去 ADMIN 收件匣）');
     throw new Error('network failed');
   });
   const badSend = await ob.submitApplication(APP);
-  ok('伺服器路線＋直接送都失敗 → 當失敗（唔會呃申請人話成功）',
-    badSend.ok === false && /未能送達管理員/.test(badSend.errors.join(' ')), JSON.stringify(badSend.errors));
-  ok('失敗都帶返 payload（可以複製去 WhatsApp／電郵畀管理員）',
-    badSend.payload && badSend.payload.troopId === '0100');
+  ok('代理 502 冇明確結果 → 當 unknown 並停止，唔會直接重送造成重複',
+    badSend.ok === false && badSend.outcome === 'unknown' && badSend.mayHaveApplied === true
+      && seen.length === 1 && /未能送達管理員/.test(badSend.errors.join(' ')),
+    JSON.stringify({ result: badSend, requests: seen.length }));
+  ok('結果未知仍帶 operation ID 同 payload（可以交管理員核對）',
+    badSend.operationId && badSend.payload?.operationId === badSend.operationId
+      && badSend.payload.troopId === '0100');
   ok('申請內容純文字版有齊編號／後端／appType（求救用）',
     /旅團編號：0100/.test(ob.applicationText(badSend.payload))
     && /\/exec/.test(ob.applicationText(badSend.payload))
@@ -1984,11 +2140,11 @@ console.log('\n▌新旅團申請接入（送去 ADMIN 收件匣）');
     return { ok: true, status: 200 };
   });
   const rescued = await ob.submitApplication(APP);
-  ok('伺服器路線失敗 → 會自動再直接送一次（寧願重複都唔好收唔到）',
-    seen.length === 2 && seen[1].url === ob.adminInbox().url && seen[1].init.mode === 'no-cors',
-    seen.map(x => x.url).join(' → '));
-  ok('呢種情況一樣當送到（直接送），亦唔會當係 ADMIN 已回覆',
-    rescued.ok === true && rescued.via === 'direct' && rescued.receipt === false);
+  ok('代理 502 就算直接路線可用亦唔盲目重送',
+    seen.length === 1 && seen[0].url === 'api/proxy', seen.map(x => x.url).join(' → '));
+  ok('代理 502 保留 unknown 同操作編號，唔會誤報直接送到',
+    rescued.ok === false && rescued.outcome === 'unknown' && rescued.operationId
+      && rescued.receipt === false, JSON.stringify(rescued));
 
   seen.length = 0;
   globalThis.fetch = stub(async () => ({ ok: false, status: 404, text: async () => '<html>404</html>', json: async () => { throw new Error('not json'); } }));
@@ -1996,8 +2152,10 @@ console.log('\n▌新旅團申請接入（送去 ADMIN 收件匣）');
   ok('冇 /api/proxy（純靜態部署）→ 自動 fallback 直接 POST 去收件匣',
     seen.length === 2 && seen[1].url === ob.adminInbox().url && seen[1].init.mode === 'no-cors',
     seen.map(x => x.url).join(' → '));
-  ok('直接送出（冇 /api）一樣當送到',
-    fallback.ok === true && fallback.via === 'direct' && fallback.receipt === false);
+  ok('直接 no-cors 冇回執 → 只可標 unknown，唔會聲稱 ADMIN 已收到',
+    fallback.ok === false && fallback.via === 'direct' && fallback.receipt === false
+      && fallback.outcome === 'unknown' && fallback.mayHaveApplied === true
+      && fallback.operationId, JSON.stringify(fallback));
   globalThis.fetch = realFetch;
 
   const cl = ob.adminChecklist('0100');
@@ -2270,6 +2428,8 @@ section('進度紀錄（讀 ＋ 勾 ＋ 寫，同一個後端）');
     if (body?.action === 'save') out = { ok: true, data: { processed: (body.data?.changes || []).length } };
     if (body?.action === 'reviewRequest') out = { ok: true, data: { success: true, message: body.data?.decision === 'approved' ? '已批准並寫入進度' : '已拒絕' } };
     if (body?.action === 'reviewLogRequest') out = { ok: true, data: { success: true, message: '已批准並寫入活動履歷', record_id: 'LOG_TEST' } };
+    if (body?.action === 'bulkReviewRequests') out = { ok: true, data: { success: true,
+      processed: body.data?.requests?.length || 0, message: `已批量批准 ${body.data?.requests?.length || 0} 項` } };
     return { ok: true, status: 200, text: async () => JSON.stringify(out), json: async () => out };
   };
 
@@ -2305,6 +2465,29 @@ section('進度紀錄（讀 ＋ 勾 ＋ 寫，同一個後端）');
         && !sv.querySelector('[data-act^="door-"]'));
     ok('Progress client 不再匯出入口狀態或開關 helper',
       typeof progressLib.getLinkState === 'undefined' && typeof progressLib.setLocalLogin === 'undefined');
+    ok('資料來源頁講明支部可直接用同一 Unified Users 開戶，並有可操作入口',
+      /Users/.test(sv.textContent) && /直接開戶/.test(sv.textContent)
+        && !!sv.querySelector('[data-go="#/members"]')
+        && !!sv.querySelector('[data-go="#/members/accounts"]'));
+
+    const settingsLoadsBefore = calls.filter(c => c.body?.action === 'load').length;
+    doc.getElementById('view').querySelector('[data-act="reload"]')?.click();
+    await new Promise(r => setTimeout(r, 220));
+    ok('資料來源頁「重新讀取」真係可按（唔係成頁被遮罩鎖死）',
+      calls.filter(c => c.body?.action === 'load').length > settingsLoadsBefore);
+    doc.getElementById('view').querySelector('[data-go="#/progress/overview"]')?.click();
+    await new Promise(r => setTimeout(r, 120));
+    const staleOverlay = doc.createElement('div');
+    staleOverlay.className = 'overlay';
+    doc.body.appendChild(staleOverlay);
+    doc.getElementById('view').querySelector('[data-act="settings"]')?.click();
+    await new Promise(r => setTimeout(r, 150));
+    ok('由進度頁開資料來源會清走舊遮罩，頁面控制項保持可按',
+      window.location.hash === '#/progress/settings' && !doc.body.contains(staleOverlay)
+        && !!doc.getElementById('view').querySelector('[data-act="reload"]'));
+    doc.getElementById('view').querySelector('[data-go="#/members/accounts"]')?.click();
+    await new Promise(r => setTimeout(r, 120));
+    ok('資料來源頁可直接打開支部「身份與帳號」', window.location.hash === '#/members/accounts');
 
     window.location.hash = '#/progress';
     window.dispatchEvent(new window.HashChangeEvent('hashchange'));
@@ -2344,9 +2527,25 @@ section('進度紀錄（讀 ＋ 勾 ＋ 寫，同一個後端）');
       !!saveBtn && !saveBtn.disabled && /未儲存/.test(view().textContent));
 
     saveBtn.click();
-    await new Promise(r => setTimeout(r, 250));
+    await new Promise(r => setTimeout(r, 100));
+    const saveDialog = doc.querySelector('.modal, [role="dialog"]');
+    ok('批量更新進度先顯示 dry-run、未確認不會寫後端',
+      /Dry-run/.test(saveDialog?.textContent || '') && !calls.some(c => c.body?.action === 'save'));
+    const saveConfirmInput = saveDialog?.querySelector('#bulk-confirm-text');
+    const saveConfirmScope = saveDialog?.querySelector('#bulk-confirm-scope');
+    if (saveConfirmInput) {
+      saveConfirmInput.value = '確認 1';
+      saveConfirmInput.dispatchEvent(new window.Event('input', { bubbles: true }));
+    }
+    if (saveConfirmScope) {
+      saveConfirmScope.checked = true;
+      saveConfirmScope.dispatchEvent(new window.Event('change', { bubbles: true }));
+    }
+    [...doc.querySelectorAll('.modal button, [role="dialog"] button')]
+      .find(b => /確認寫入 1 項/.test(b.textContent || ''))?.click();
+    await new Promise(r => setTimeout(r, 300));
     const saveCall = calls.filter(c => c.body?.action === 'save').pop();
-    ok('儲存會 POST 去後端（action=save ＋ changes）', !!saveCall, JSON.stringify(calls.map(c => c.body?.action)));
+    ok('確認後會 POST 去後端（action=save ＋ changes）', !!saveCall, JSON.stringify(calls.map(c => c.body?.action)));
     ok('changes 帶 ymis / itemId / uncomplete=false（勾）',
       saveCall?.body?.data?.changes?.[0]?.ymis === '1234567890'
       && saveCall?.body?.data?.changes?.[0]?.itemId === 'L1-ACT-02'
@@ -2361,7 +2560,21 @@ section('進度紀錄（讀 ＋ 勾 ＋ 寫，同一個後端）');
     cb1.dispatchEvent(new window.Event('change', { bubbles: true }));
     await new Promise(r => setTimeout(r, 80));
     doc.getElementById('view').querySelector('[data-act="save-ticks"]').click();
-    await new Promise(r => setTimeout(r, 250));
+    await new Promise(r => setTimeout(r, 100));
+    const undoDialog = doc.querySelector('.modal, [role="dialog"]');
+    const undoConfirmInput = undoDialog?.querySelector('#bulk-confirm-text');
+    const undoConfirmScope = undoDialog?.querySelector('#bulk-confirm-scope');
+    if (undoConfirmInput) {
+      undoConfirmInput.value = '確認 1';
+      undoConfirmInput.dispatchEvent(new window.Event('input', { bubbles: true }));
+    }
+    if (undoConfirmScope) {
+      undoConfirmScope.checked = true;
+      undoConfirmScope.dispatchEvent(new window.Event('change', { bubbles: true }));
+    }
+    [...doc.querySelectorAll('.modal button, [role="dialog"] button')]
+      .find(b => /確認寫入 1 項/.test(b.textContent || ''))?.click();
+    await new Promise(r => setTimeout(r, 300));
     const save2 = calls.filter(c => c.body?.action === 'save').pop();
     ok('取消勾選會帶 uncomplete=true（後端會刪除該項）',
       save2?.body?.data?.changes?.[0]?.uncomplete === true,
@@ -2378,30 +2591,57 @@ section('進度紀錄（讀 ＋ 勾 ＋ 寫，同一個後端）');
       /待批完成/.test(rv.textContent) && /李小明/.test(rv.textContent) && /服務一次/.test(rv.textContent));
     ok('審批中心列出待批履歷（服務紀錄）',
       /待批履歷/.test(rv.textContent) && /公益賣旗/.test(rv.textContent));
-    ok('審批中心有批准／拒絕掣', !!rv.querySelector('[data-rev-id][data-rev-decision="approved"]')
-      && !!rv.querySelector('[data-rev-id][data-rev-decision="rejected"]'));
+    ok('審批中心每列有 tick、全選、批量批准及逐項拒絕',
+      rv.querySelectorAll('[data-review-select]').length === 2
+        && !!rv.querySelector('#rv-select-all')
+        && !!rv.querySelector('[data-act="bulk-approve"]')
+        && !!rv.querySelector('[data-rev-id][data-rev-decision="rejected"]')
+        && !rv.querySelector('[data-rev-id][data-rev-decision="approved"]'));
+    ok('未選任何項目時批量批准 disabled（防呆）', rv.querySelector('[data-act="bulk-approve"]')?.disabled === true);
     ok('總覽／分頁標籤顯示待批數（1＋1）', /審批中心（2）/.test(doc.getElementById('view').textContent)
       || /審批中心（2）/.test(doc.body.textContent));
 
-    const apprBtn = doc.getElementById('view').querySelector('[data-rev-kind="req"][data-rev-decision="approved"]');
-    apprBtn.click();
+    const selectAll = doc.getElementById('view').querySelector('#rv-select-all');
+    selectAll.checked = true;
+    selectAll.dispatchEvent(new window.Event('change', { bubbles: true }));
+    await new Promise(r => setTimeout(r, 100));
+    const bulkBtn = doc.getElementById('view').querySelector('[data-act="bulk-approve"]');
+    ok('全選後顯示已選 2 項，批量批准先亮起',
+      !bulkBtn.disabled && /已選\s*2\s*項/.test(doc.getElementById('view').textContent));
+    bulkBtn.click();
     await new Promise(r => setTimeout(r, 200));
     const dlg = () => doc.querySelector('.modal, [role="dialog"]');
-    ok('批准之前一定要撳「確定」（防呆：唔會一撳就寫入）',
-      !calls.some(c => c.body?.action === 'reviewRequest')
-      && [...doc.querySelectorAll('.modal button, [role="dialog"] button')].some(b => /確定批准/.test(b.textContent || '')));
-    ok('確認框列出團員同項目（畀你核對）',
-      /李小明/.test(dlg()?.textContent || '') && /服務一次/.test(dlg()?.textContent || ''));
+    ok('批量批准送出前一定要再確認，未確認不會寫後端',
+      !calls.some(c => c.body?.action === 'bulkReviewRequests')
+      && [...doc.querySelectorAll('.modal button, [role="dialog"] button')]
+        .some(b => /確認批准 2 項/.test(b.textContent || '')));
+    ok('批量確認框列出數量、進度／履歷拆分及所選內容',
+      /2 項/.test(dlg()?.textContent || '') && /進度 1 項/.test(dlg()?.textContent || '')
+        && /履歷 1 項/.test(dlg()?.textContent || '')
+        && /李小明/.test(dlg()?.textContent || '') && /公益賣旗/.test(dlg()?.textContent || ''));
+    const bulkConfirmInput = dlg()?.querySelector('#bulk-confirm-text');
+    const bulkConfirmScope = dlg()?.querySelector('#bulk-confirm-scope');
+    if (bulkConfirmInput) {
+      bulkConfirmInput.value = '確認 2';
+      bulkConfirmInput.dispatchEvent(new window.Event('input', { bubbles: true }));
+    }
+    if (bulkConfirmScope) {
+      bulkConfirmScope.checked = true;
+      bulkConfirmScope.dispatchEvent(new window.Event('change', { bubbles: true }));
+    }
     [...doc.querySelectorAll('.modal button, [role="dialog"] button')]
-      .find(b => /確定批准/.test(b.textContent || ''))?.click();
-    await new Promise(r => setTimeout(r, 300));
-    const revCall = calls.filter(c => c.body?.action === 'reviewRequest').pop();
-    ok('批准會 POST /api/progress action=reviewRequest（帶 request_id／decision）',
-      revCall?.body?.data?.request_id === 'RQ_1' && revCall?.body?.data?.decision === 'approved',
-      JSON.stringify(revCall?.body?.data || {}));
-    ok('審批 browser payload 只帶 session，不會取得或傳送 API Key',
-      revCall?.body?.apikey === undefined && revCall?.body?.backend === undefined
-        && !!revCall?.body?.sessionToken);
+      .find(b => /確認批准 2 項/.test(b.textContent || ''))?.click();
+    await new Promise(r => setTimeout(r, 350));
+    const bulkCalls = calls.filter(c => c.body?.action === 'bulkReviewRequests');
+    const bulkCall = bulkCalls.at(-1);
+    ok('兩項批准只 POST 一次 bulkReviewRequests，browser 不會逐列寫',
+      bulkCalls.length === 1 && bulkCall?.body?.data?.requests?.length === 2
+        && bulkCall.body.data.requests.some(x => x.kind === 'req' && x.request_id === 'RQ_1')
+        && bulkCall.body.data.requests.some(x => x.kind === 'log' && x.request_id === 'LR_1'),
+      JSON.stringify(bulkCall?.body?.data || {}));
+    ok('批量審批 browser payload 只帶 session，不會取得或傳送 API Key',
+      bulkCall?.body?.apikey === undefined && bulkCall?.body?.backend === undefined
+        && !!bulkCall?.body?.sessionToken);
 
     const rejBtn = doc.getElementById('view').querySelector('[data-rev-kind="log"][data-rev-decision="rejected"]');
     rejBtn.click();

@@ -15,7 +15,7 @@
    ============================================================ */
 
 import { collection, add, update, remove, currentUnit } from './store.js';
-import { uid, todayISO } from './util.js';
+import { uid, todayISO, esc } from './util.js';
 
 export const ABSENCE_STATUS = {
   pending:  { label: '待覆核',   cls: 'b-warn' },
@@ -127,9 +127,9 @@ export function absenceLimits(list = collection('absences')) {
 export function absenceLine(a, { memberName = '', showReviewer = false } = {}) {
   const st = ABSENCE_STATUS[a.status] || ABSENCE_STATUS.pending;
   const extra = [];
-  if (memberName) extra.push(`<b>${memberName}</b>`);
-  extra.push(`${a.date} · ${slotLabel(a.slot)}`);
-  if (showReviewer && a.reviewedBy) extra.push(`覆核：${a.reviewedBy}`);
+  if (memberName) extra.push(`<b>${esc(memberName)}</b>`);
+  extra.push(`${esc(a.date)} · ${esc(slotLabel(a.slot))}`);
+  if (showReviewer && a.reviewedBy) extra.push(`覆核：${esc(a.reviewedBy)}`);
   return { st, extra };
 }
 

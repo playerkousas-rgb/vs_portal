@@ -121,9 +121,7 @@ const SUITES = [
   { name: '用戶與身份', home: '#/members', tabs: ['accounts', 'perms', 'birthdays'] },
   { name: '通告', home: '#/notices', tabs: ['signups', 'settings'] },
   { name: '資料管理（原表格與同步）', home: '#/tables', tabs: ['sync', 'source', 'data'] },
-  /* ★ 2026-09-24 團長：「公開資料其實唔係要填嘢嘅，係方便了解有乜嘢而家正喺度公開」
-     → 分頁由「社交／相簿／連結（三個填嘢位）」變成「一覽 ／ 團員入口（分享）」。 */
-  { name: '公開資料（原成員連結）', home: '#/links', tabs: ['overview', 'hub'] },
+  /* 團員入口已合併成一頁 authenticated login QR，沒有匿名 overview/hub 分頁。 */
   /* ★ 2026-11-12：8 → 6 分頁。reports 本來同時有頂部掣＋分頁（重複）→ 只留頂部掣；
      import 併入 settings（一次性工具，收喺 <details>）。舊 hash 仍然認得。 */
   { name: '財政', home: '#/finance', tabs: ['fees', 'claims', 'budgets', 'settings'] },
@@ -149,8 +147,6 @@ const RENDER = [
   ['#/admin', 'unit', '旅團'],
   ['#/tables', 'data', '備份'],
   ['#/tables', 'sync', '總表同步'],   // sync 放最後：tables 分頁係「記住上次」，下面「預設＝sync」斷言要乾淨狀態
-  ['#/links', 'overview', '公開緊'],
-  ['#/links', 'hub', '團員入口'],
   ['#/notices', 'signups', '報名']
 ];
 for (const [home, tab, needle] of RENDER) {
@@ -159,6 +155,13 @@ for (const [home, tab, needle] of RENDER) {
   const txt = doc.getElementById('view')?.textContent || '';
   ok(`撳完 ${home}/${tab} 見到「${needle}」`, txt.includes(needle),
     txt.replace(/\s+/g, ' ').slice(0, 90));
+}
+await goTo('#/links');
+{
+  const txt = doc.getElementById('view')?.textContent || '';
+  ok('團員入口係單一 authenticated QR 頁，沒有匿名分頁列',
+    /團員入口/.test(txt) && /登入/.test(txt) && !doc.querySelector('#view [data-tabnav]'),
+    txt.replace(/\s+/g, ' ').slice(0, 120));
 }
 /* ★ 2026-09-25：「資料管理」開版即係「總表同步」（最常用行先，唔再兜去「插入 Sheet」） */
 {

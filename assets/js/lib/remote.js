@@ -7,10 +7,10 @@
    另一部機／另一個分頁當然讀唔到 —— 而超管登入唔經旅團後端，
    所以淨係佢永遠入到，令問題睇落更加似「同步壞咗」。
 
-   而家：**寫入依然只有一條路**（saveToBackend），但由系統自己行：
+   而家：**寫入只有一條、而且只由用戶明確觸發**（saveToBackend）：
      ① 登入／開機      loadFromBackend()  由後端攞成份資料 → 本機工作副本 ＋ 基準快照
-     ② 之後改乜        寫本機 → **自動排一次寫入**（一般 1.2 秒；帳戶級改動即刻）
-     ③ saveToBackend() 先問後端版本：
+     ② 之後改乜        只寫本機、增加 pending；唔會背景寫後端
+     ③ 用戶撳頂部掣  saveToBackend() 先問後端版本：
           · 冇人喺我登入後儲存過          → 直接寫
           · 有人儲存過                    → 三方比對（lib/merge3.js）：
                佢改嘅同我改嘅一樣          → 冇問題
@@ -34,8 +34,9 @@ import {
   hasLocalContent, localChanges, getSession, storeScope
 } from './store.js';
 import { unitEntry } from './units.js';
-import { postBackend, isExecUrl } from './gateway.js';
+import { postBackend, isExecUrl, CRITICAL_WRITE_ACTIONS } from './gateway.js';
 import { threeWay, overridesFor, describeConflict, diffDb, applyChanges, SKIP_TOP } from './merge3.js';
+import { uncertainWriteText } from './operations.js';
 
 /* ---------------- 狀態 ---------------- */
 let inFlight = false;
@@ -252,15 +253,24 @@ async function callBackend(payload, { timeoutMs = 60000 } = {}) {
   if (r.via === 'none') {
     return {
       ok: false, reason: r.reason, error: r.error,
+      operationId: r.operationId || '', outcome: r.outcome || 'not_sent', mayHaveApplied: !!r.mayHaveApplied,
       hint: r.reason === 'not_registered' ? SELF_SERVE_HINT : NO_ROUTE_HINT
     };
   }
   if (!r.json) {
     noteBackend(r, { error: r.error || '連唔到旅團後端' });
-    return { ok: false, reason: r.reason || 'network', error: r.error || '連唔到旅團後端', hint: r.reason === 'bad_url' ? URL_HINT : '', via: r.via };
+    return { ok: false, reason: r.reason || 'network', error: r.error || '連唔到旅團後端',
+      operationId: r.operationId || '', outcome: r.outcome || 'unknown', mayHaveApplied: !!r.mayHaveApplied,
+      hint: r.reason === 'bad_url' ? URL_HINT : '', via: r.via };
   }
   const out = normalize(r.json);
   out.via = r.via;                       // 界面／診斷用：今次行咗邊條路
+  out.operationId = r.operationId || out.operationId || out.operation_id || out.operation?.id || '';
+  out.outcome = r.outcome || out.outcome || out.operation?.outcome || (out.ok ? 'applied' : 'not_applied');
+  /* A mutation response may have an HTTP/envelope ok:true while its durable
+     journal still says unknown/not_applied. Explicit write outcome wins. */
+  if (CRITICAL_WRITE_ACTIONS.has(String(payload?.action || ''))) out.ok = out.outcome === 'applied';
+  out.mayHaveApplied = r.mayHaveApplied === true || out.mayHaveApplied === true || out.outcome === 'unknown' || out.outcome === 'applied';
   /* ★ v2.8.0：後端自報識唔識「簡單寫入」（逐表）—— 見過一次就記住 */
   if (out.simpleWrite === true) simpleMode = true;
   /* ★ v2.8.0：後端自報「識唔識簡單寫入」。status／dbInfo 都會帶呢個欄位，
@@ -609,7 +619,11 @@ export async function uploadPhotos(photos = [], { id = '' } = {}) {
    新安全投影，呢部機採用佢做工作副本，唔會再嘗試整庫同步。
    ============================================================ */
 function adoptHubResult(result) {
-  if (!result?.ok || !result.db || typeof result.db !== 'object') return result;
+  const explicit = String(result?.outcome || result?.operation?.outcome || '').toLowerCase();
+  /* Mutation 的明確結果優先過 transport envelope：ok:true + unknown/not_applied
+     不可採用為成功；反之 outcome:applied 即使外層 HTTP flag 異常仍屬已套用。 */
+  const applied = explicit ? explicit === 'applied' : result?.ok === true;
+  if (!applied || !result?.db || typeof result.db !== 'object') return result;
   /* 防呆：hub projection 只准落團員 namespace；任何行政頁誤調都 fail closed，
      唔可以用裁剪資料覆蓋完整 DB。 */
   if (storeScope() !== 'hub') return { ok: false, error: '團員資料儲存區未隔離', code: 'HUB_SCOPE_REQUIRED' };
@@ -617,7 +631,8 @@ function adoptHubResult(result) {
     adoptRemote(result.db, { version: String(result.version || '') });
     lastLoadAt = Date.now();
     setState('idle', '團員資料已同步');
-    return { ...result, adopted: true };
+    return { ...result, ok: true, success: true, adopted: true,
+      outcome: explicit || result.outcome || 'applied', mayHaveApplied: true };
   } catch (e) {
     return { ok: false, error: e?.message || '團員資料格式唔正確' };
   }
@@ -642,6 +657,12 @@ export async function saveHubRsvp(payload = {}, { sessionToken = '' } = {}) {
 export async function saveHubQuiz(payload = {}, { sessionToken = '' } = {}) {
   const result = await callBackend({ action: 'hubQuiz', sessionToken: String(sessionToken || ''),
     quizId: payload.quizId, answers: payload.answers || {} });
+  return adoptHubResult(result);
+}
+
+export async function saveHubNoticeSignup(payload = {}, { sessionToken = '' } = {}) {
+  const result = await callBackend({ action: 'hubNoticeSignup', sessionToken: String(sessionToken || ''),
+    noticeId: payload.noticeId, answers: payload.answers || {} });
   return adoptHubResult(result);
 }
 
@@ -816,6 +837,17 @@ export async function verifyAgainstBackend(expectedVersion = '') {
 
 function spreadsheetName() { return lastSpreadsheet; }
 
+/** 只讀查詢 operation journal；永遠唔會重送原本寫入。 */
+export async function checkOperationStatus(operationId) {
+  const id = String(operationId || '').trim();
+  if (!id) return { ok: false, reason: 'missing_operation_id', error: '冇操作編號' };
+  const r = await callBackend({ action: 'operationStatus', operationId: id }, { timeoutMs: 25000 });
+  if (!r.ok && /未知 action|unknown action|不支援/.test(String(r.error || ''))) {
+    return { ...r, reason: 'old_deploy', hint: '後端版本未有操作狀態查詢；系統會改用只讀後端版本／筆數核對，唔會自動重送。' };
+  }
+  return r;
+}
+
 /** 冇基準嘅舊裝置專用：後端為準 ＋ 本機多出嚟嘅紀錄（有 id）補入。唔刪、唔蓋。 */
 function unionAdditions(remote, local) {
   const out = JSON.parse(JSON.stringify(remote));
@@ -915,7 +947,7 @@ export async function requireBackendForLogin() {
 
 /**
  * ★ 2026-09-24「切返呢個分頁」用：本機**冇**未存改動先至由後端拉新嗰份。
- * 唔會彈衝突框（有未存改動就乜都唔做，交返畀自動儲存處理）。
+ * 唔會彈衝突框（有未存改動就乜都唔做，留返畀用戶撳頂部儲存時處理）。
  * 呢個係「另一個視窗儲存咗 → 呢邊返嚟即刻見到」嗰條路。
  */
 export async function refreshIfClean({ maxAgeMs = 20000 } = {}) {
@@ -1074,9 +1106,21 @@ async function saveToBackendInner({ policy = 'ask', resolver = null, silent = tr
       };
     }
     if (!r.ok) {
+      if (r.outcome === 'unknown' || r.mayHaveApplied === true) {
+        const message = uncertainWriteText(r.operationId);
+        setState('unknown', message);
+        logLocal(`? 寫入結果未知（${r.operationId || '冇操作編號'}）；系統冇自動重送`);
+        return {
+          ok: false, reason: 'unknown', outcome: 'unknown', mayHaveApplied: true,
+          operationId: r.operationId || '', error: message,
+          hint: '請用「查操作狀態／重新讀取核對」。未查清之前唔好再撳儲存，以免重複。',
+          mode: r.mode || '', simpleRows: Number(r.simpleRows || 0)
+        };
+      }
       setState('error', r.error || '儲存失敗');
-      logLocal(`✗ 儲存失敗：${r.error || '未知錯誤'}`);
-      return { ok: false, reason: r.reason || 'backend', error: r.error || '儲存失敗', hint: r.hint || '',
+      logLocal(`✗ 寫入確定未套用：${r.error || '未知錯誤'}`);
+      return { ok: false, reason: r.reason || 'backend', outcome: r.outcome || 'not_applied',
+        operationId: r.operationId || '', error: r.error || '儲存失敗', hint: r.hint || '',
         mode: r.mode || '', simpleRows: Number(r.simpleRows || 0) };
     }
 
@@ -1097,7 +1141,8 @@ async function saveToBackendInner({ policy = 'ask', resolver = null, silent = tr
       logLocal(`ℹ 後端喺你登入後有人儲存過（${remoteAt.slice(0, 19).replace('T', ' ')}）：對方 ${theirsN} 項、你 ${mineN} 項、相同 ${sameN} 項、衝突 ${conflicts.length} 項`);
     }
     const out = {
-      ok: true, pushed: true, version: String(r.version || ''), bytes: r.bytes || 0, parts: r.parts || 0,
+      ok: true, pushed: true, outcome: 'applied', operationId: r.operationId || '',
+      version: String(r.version || ''), bytes: r.bytes || 0, parts: r.parts || 0,
       /* ★ v2.8.0：呢次儲存行咗邊條路 —— 'simple'（逐表寫）／''（舊嘅整份寫）。
          界面同「同步診斷」要話畀用家知，出事先追得到。 */
       mode: r.mode || '',
@@ -1208,10 +1253,11 @@ async function pushPayload(payload, { baseVersion, unit, silent, tables: changed
     /* 冇後端自證就靠上面讀回驗證；兩者都過唔到就保留 pending，絕不假成功。 */
     if (sr.ok && sr.confirmed !== true) {
       return {
-        ok: false, reason: 'not_confirmed', mode: 'simple', bytes: 0, parts: 0, version: '',
+        ok: false, reason: 'unknown', outcome: 'unknown', mayHaveApplied: true,
+        operationId: sr.operationId || '', mode: 'simple', bytes: 0, parts: 0, version: '',
         simpleRows: Number(sr.simpleRows || 0),
-        error: '後端寫入後即刻讀返唔到（有多部機同時儲存／後端部署唔啱）—— 你嘅改動仲喺呢部機，冇蝕；請再撳一次「儲存到後端」',
-        hint: '如果試幾次都係咁：① 睇下有冇另一部機／另一個分頁同時撳緊儲存；② 後端 Code.gs 可能太舊 —— 去「總表同步 → 後端 Apps Script 範本」撳「下載 Code.gs」，重貼 Code.gs、部署揀「新版本」再試。'
+        error: uncertainWriteText(sr.operationId),
+        hint: '後端回過成功，但即時 readback 對唔上；系統唔會重送。請先查操作狀態，再重新載入核對版本同筆數。'
       };
     }
     if (sr.ok) return { ...sr, bytes: sr.bytes || bytes, parts: 0, mode: 'simple' };

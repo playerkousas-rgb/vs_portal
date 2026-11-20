@@ -204,6 +204,14 @@ ok('改超管密碼會被拒絕', rp.ok === false, rp.msg);
   await auth.login('leader', 'leader', '8202');
   ok('領袖改唔到團長身份（唔可以用下拉／直接改）',
     auth.can('admin.chief') === false && auth.canSetIdentityOf({ identity: 'chief' }) === false);
+  const leaderSelf = store.find('members', auth.current()?.memberId);
+  const lowerTarget = store.load().members.find(x => x.identity === 'member' && x.id !== auth.current()?.memberId);
+  const selfRoleEdit = leaderSelf ? await auth.setMemberIdentity(leaderSelf.id, 'exco') : { ok: true };
+  const peerPromotion = lowerTarget ? await auth.setMemberIdentity(lowerTarget.id, 'leader') : { ok: true };
+  ok('branch_leader 可管理較低身份，但不能改自己或把下屬升到同級',
+    lowerTarget && auth.canSetIdentityOf(lowerTarget) && leaderSelf
+      && !auth.canSetIdentityOf(leaderSelf) && selfRoleEdit.ok === false && peerPromotion.ok === false,
+    JSON.stringify({ hasLowerTarget: !!lowerTarget, selfRoleEdit, peerPromotion }));
   const toChief = await auth.setMemberIdentity(store.load().members.find(x => x.loginId === 'exco').id, 'chief');
   ok('領袖想扶人做團長 → 被拒（要現任團長交棒）', toChief.ok === false, toChief.msg);
 
@@ -219,11 +227,13 @@ ok('改超管密碼會被拒絕', rp.ok === false, rp.msg);
     ok('★ 轉移之後一樣只有一位團長', nowChief.length === 1, String(nowChief.length));
     ok('★ 舊團長自動變返領袖', store.load().members.find(x => x.loginId === 'chief').identity === 'leader');
     ok('★ 新團長就係接棒嗰位', nowChief[0].id === target.id);
-    ok('★ 交棒之後新團長嘅 session 即刻係團長（唔使重新登入）', auth.current()?.role === 'chief');
+    ok('★ 交棒後現任團長的 session 即時降級為領袖', auth.current()?.role === 'leader');
   }
   const demote = await auth.setMemberIdentity(target.id, 'leader');
-  ok('★ 團長身份唔可以就咁改低（一定要交棒）', demote.ok === false, demote.msg);
-  /* 還原：而家嘅 session 就係新團長（未登出過）—— 由佢交返畀原本嗰位 */
+  ok('★ 領袖不能直接改團長身份；仍須由團長交棒', demote.ok === false, demote.msg);
+  /* 還原：接任者以自己的登入代號重新核實身份，再交返畀原本嗰位。 */
+  await auth.login('leader', 'leader', '8202');
+  ok('接任者重新登入後由名冊身份取得 chief 權限', auth.current()?.role === 'chief');
   const giveBack = await auth.setMemberIdentity(store.load().members.find(x => x.loginId === 'chief').id, 'chief');
   ok('★ 可以交返畀原本嗰位（測試還原）', giveBack.ok === true, giveBack.msg);
   ok('仲係只有一位團長', store.load().members.filter(x => x.identity === 'chief').length === 1);
@@ -947,7 +957,7 @@ section('通告詳情頁（同步到 authenticated 團員入口 ＝ 行同一條
   /* 假後端：後端仲係空（dbInfo found:false）→ 儲存直接寫 saveDb */
   let infoReply = { ok: true, success: true, found: false };
   globalThis.fetch = async (url, init = {}) => {
-    if (/script\.google\.com|\/exec/.test(String(url))) {
+    if (/api\/proxy/.test(String(url))) {
       const body = init?.body ? JSON.parse(init.body) : null;
       sent.push(body);
       let reply = { ok: true, success: true };
@@ -972,7 +982,7 @@ section('通告詳情頁（同步到 authenticated 團員入口 ＝ 行同一條
   const saved = sent.find(x => x?.action === 'saveDb');
   ok('寫入內容係整個資料庫，包括呢張通告（團員入口由 server 安全投影讀）',
     Array.isArray(saved?.db?.notices) && saved.db.notices.some(n => n.id === pub.id), JSON.stringify(Object.keys(saved?.db || {})).slice(0, 200));
-  ok('寫入帶埋旅團編號同 API Key', saved?.unit && saved?.apiKey === 'TESTKEY', JSON.stringify([saved?.unit, saved?.apiKey]));
+  ok('寫入帶旅團編號但不帶本機 API Key', saved?.unit && !('apiKey' in saved), JSON.stringify([saved?.unit, saved?.apiKey]));
   ok('寫上後端嘅 db 唔會夾帶 sync／backend（連線設定唔上 Sheet）', saved?.db && !('sync' in saved.db) && !('backend' in saved.db), JSON.stringify(Object.keys(saved?.db || {})));
   ok('成功有 toast 提示', /已儲存到後端/.test(lastToast()), lastToast());
   ok('同步之後掣會還原（可以再撳）', !!doc.querySelector('#view [data-act="sync-notice"]:not([disabled])'));
@@ -986,7 +996,7 @@ section('通告詳情頁（同步到 authenticated 團員入口 ＝ 行同一條
   await new Promise(r => setTimeout(r, 400));
   ok('失敗都有 toast（唔會靜靜地冇反應）', /儲存失敗/.test(lastToast()), lastToast());
   ok('失敗提示去「資料管理 → 總表同步」檢查 /exec 同 API Key',
-    /總表同步/.test(lastToast()) && /\/exec/.test(lastToast()) && /API Key/.test(lastToast()), lastToast());
+    /Admin/.test(lastToast()) && /BADGE/.test(lastToast()), lastToast());
   ok('讀唔到後端版本 → 一個 saveDb 都冇送出', !sent.some(x => x?.action === 'saveDb'), JSON.stringify(sent.map(x => x?.action)));
 
   globalThis.fetch = realFetch;
@@ -1077,9 +1087,8 @@ google.visualization.Query.setResponse({"version":"0.6","reqId":"0","status":"ok
   await new Promise(r => setTimeout(r, 40));
   ok('總表同步頁不再提供匿名手機記帳／通告報名共用開關', !doc.querySelector('#y-share'));
 
-  ok('總表同步頁顯示「後端已連接」', /後端已連接|已設定 Apps Script/.test(doc.getElementById('view')?.textContent || ''));
-  ok('Apps Script 網址已預填落輸入格',
-    /\/exec$/.test(doc.querySelector('#y-url')?.value || ''), doc.querySelector('#y-url')?.value);
+  ok('同步頁講明共用後端尚未驗收', /尚未驗收/.test(doc.getElementById('view')?.textContent || ''));
+  ok('同步頁沒有 browser URL／Key 設定', !doc.querySelector('#y-url') && !doc.querySelector('#y-key'));
   ok('同步頁講明團員入口必須登入，API Key 唔會當身份',
     /團員入口|登入|API Key/.test(doc.getElementById('view')?.textContent || ''));
 
@@ -1240,8 +1249,8 @@ section('用戶名冊（可編輯 · 身份）');
   ok('撳「編輯」會去編輯頁（#/members/edit/<id>）',
     window.location.hash === '#/members/edit/' + firstId, window.location.hash);
   ok('編輯頁有身份下拉（團長／領袖／執委／團員）', !!doc.querySelector('#f-identity'));
-  ok('身份選項由支部 schema 產生（團員→執委→領袖→團長）',
-    Array.from(doc.querySelectorAll('#f-identity option')).map(o => o.value).join(',') === 'member,exco,leader,chief',
+  ok('身份選項依 BADGE 階級只包含低於團長的角色（團長交棒另走專用流程）',
+    Array.from(doc.querySelectorAll('#f-identity option')).map(o => o.value).join(',') === 'member,exco,leader',
     Array.from(doc.querySelectorAll('#f-identity option')).map(o => o.value).join(','));
 
   doc.querySelector('#f-name').value = '測試用戶甲';
@@ -1254,6 +1263,14 @@ section('用戶名冊（可編輯 · 身份）');
   ok('改資料可以儲存（以前儲存唔到）', m.name === '測試用戶甲', m.name);
   ok('身份可以改成「執委」', m.identity === 'exco', m.identity);
   ok('編輯完會返去個人頁', window.location.hash === '#/members/' + firstId, window.location.hash);
+
+  await auth.login('leader', 'leader', '8202');
+  window.location.hash = '#/members/edit/' + firstId;
+  window.dispatchEvent(new window.HashChangeEvent('hashchange'));
+  await new Promise(r => setTimeout(r, 50));
+  ok('branch_leader 的角色選項只包含 member／exec_committee（低於操作者）',
+    Array.from(doc.querySelectorAll('#f-identity option')).map(o => o.value).join(',') === 'member,exco',
+    Array.from(doc.querySelectorAll('#f-identity option')).map(o => o.value).join(','));
 
   // 舊資料升級：冇 identity 欄 → 自動推算；其他 backend 拼法只係本支部身份 alias。
   const legacyIdentityDb = { members: [
@@ -1515,8 +1532,9 @@ section('開新旅團教學（只限超管）');
     ['TROOP_0081_NAME', 'TROOP_0081_BACKEND', 'TROOP_0081_APIKEY'].every(k => t.includes(k))
       && !/PROGRESSBACKEND|PROGRESSAPIKEY|PORTALSECRET/.test(t), t);
   ok('範本會帶入 /exec 網址同 Key', t.includes('AKfycbTEST') && t.includes('= k81'));
-  ok('逐步指示提到 Redeploy 同 initializeSheets',
-    ob.envUnitSteps('0081').join(' ').includes('Redeploy') && ob.envUnitSteps('0081').join(' ').includes('initializeSheets'));
+  ok('逐步指示要求核對既有後端、驗收 contract 及 Redeploy，不叫旅團執行測試初始化',
+    /既有 BADGE/.test(ob.envUnitSteps('0081').join(' ')) && /contract/.test(ob.envUnitSteps('0081').join(' '))
+      && /Redeploy/.test(ob.envUnitSteps('0081').join(' ')) && !/initializeSheets/.test(ob.envUnitSteps('0081').join(' ')));
 
   /* 教學頁：新章節存在、可以複製 */
   window.location.hash = '#/docs/newunit';
@@ -1534,8 +1552,9 @@ section('開新旅團教學（只限超管）');
   await new Promise(r => setTimeout(r, 60));
   ok('改編號會即時重新產生範本',
     /TROOP_0085_/.test(dv.querySelector('#nu-out')?.textContent || ''), dv.querySelector('#nu-out')?.textContent?.split('\n')[0]);
-  ok('教學章節有檢查清單（Redeploy／initializeSheets／實測）',
-    /檢查清單/.test(dv.textContent) && /Redeploy/.test(dv.textContent) && /initializeSheets/.test(dv.textContent));
+  ok('教學章節有既有部署、Redeploy 與跨前端驗收檢查清單',
+    /開通後驗收/.test(dv.textContent) && /Redeploy/.test(dv.textContent)
+      && /既有 BADGE/.test(dv.textContent) && /兩個前端|BADGE 與 Portal/.test(dv.textContent));
 
   /* 帳號與系統 → 旅團設定：入口 */
   window.location.hash = '#/admin/unit';
@@ -2037,9 +2056,9 @@ console.log('\n▌跨前端身份 key（同一 Unified Sheet，以 canonical YMI
   window.dispatchEvent(new window.HashChangeEvent('hashchange'));
   await new Promise(r => setTimeout(r, 80));
   const pv = doc.getElementById('view').textContent;
-  ok('進度頁講明完整 Unified GS 服務功能完整版及 BADGE 輕量前端',
-    /vs_portal 功能完整版與 vsbadge 輕量版前端/.test(pv)
-      && /同一支完整 Unified GS/.test(pv) && /同一 Unified Sheet/.test(pv));
+  ok('未登記時進度頁講明沿用既有 BADGE 後端，並提示正式 contract 尚未驗收',
+    /既有 BADGE/.test(pv) && /Sheet/.test(pv) && /Users/.test(pv)
+      && /不等於已接通/.test(pv));
   ok('進度頁有唯讀「資料來源」入口',
     !!doc.querySelector('[data-act="settings"]') && /資料來源/.test(pv));
   ok('進度頁只列 server Registry 三項，不叫 browser 執行 showApiKey 貼 Key',
@@ -2111,8 +2130,15 @@ console.log('\n▌新旅團申請接入（送去 ADMIN 收件匣）');
     seen[0].url === 'api/proxy' && body.action === 'submitRegistration', seen[0].url);
   ok('送出嘅 payload 帶 appType=82venture ＋ appName（ADMIN 系統認得到係邊個 app）',
     body.appType === '82venture' && body.appName === '深資童軍管理系統', JSON.stringify({ appType: body.appType, appName: body.appName }));
-  ok('送出成功 → 經 proxy 送到 ADMIN（唔會當自己「ADMIN 已確認」，因為收件匣唔回執）',
+  ok('proxy 成功但冇 receipt 欄位 → 不可宣稱 ADMIN 已確認收到',
     okSend.ok === true && okSend.via === 'proxy' && okSend.receipt === false, JSON.stringify(okSend));
+
+  seen.length = 0;
+  globalThis.fetch = stub(async () => ({ ok: true, status: 200,
+    json: async () => ({ success: true, ok: true, receipt: true, message: '申請已提交' }) }));
+  const confirmedReceipt = await ob.submitApplication(APP);
+  ok('只有 proxy 明確回 receipt:true，申請結果才標記 ADMIN 收件回執',
+    confirmedReceipt.ok === true && confirmedReceipt.receipt === true, JSON.stringify(confirmedReceipt));
 
   seen.length = 0;
   globalThis.fetch = stub(async (url) => {
@@ -2159,23 +2185,20 @@ console.log('\n▌新旅團申請接入（送去 ADMIN 收件匣）');
   globalThis.fetch = realFetch;
 
   const cl = ob.adminChecklist('0100');
-  ok('管理員 checklist 有列出公開 metadata、三項 Vercel、Unified GAS 同通知支部',
-    cl.length >= 5 && cl.some(x => x.includes('units.json')) && cl.some(x => /NAME／BACKEND／APIKEY/.test(x))
-      && cl.some(x => /Unified Code\.gs/.test(x)) && cl.some(x => /通知支部/.test(x)),
-    JSON.stringify(cl));
-  ok('checklist 講明功能完整版支部前端與 BADGE 輕量前端共用完整後端',
-    cl.some(x => /功能完整版支部前端/.test(x) && /BADGE 輕量前端/.test(x)
-      && /共用/.test(x) && /完整 Unified GAS/.test(x)), JSON.stringify(cl));
-  ok('checklist 講明兩個前端各自受 allowlist 及 server 身份授權',
-    cl.some(x => /兩個前端/.test(x) && /action allowlist/.test(x)
-      && /session／role／scope/.test(x)), JSON.stringify(cl));
+  ok('checklist 核對既有 BADGE、server 登記與實際驗收',
+    cl.length >= 5 && cl.some(x => /既有 BADGE/.test(x) && /API Key/.test(x))
+      && cl.some(x => /NAME／BACKEND／APIKEY/.test(x) && /Redeploy/.test(x))
+      && cl.some(x => /Users/.test(x) && /兩個前端/.test(x)), JSON.stringify(cl));
+  ok('checklist 不把裸 BADGE v9.6 或 Registry readiness 當成已接通',
+    cl.some(x => /authLogin/.test(x) && /驗收前/.test(x))
+      && cl.some(x => /backendReady/.test(x) && /不是/.test(x)), JSON.stringify(cl));
+  ok('checklist 禁止第二後端或複製帳戶',
+    cl.some(x => /不得要求新建 Sheet\/GAS/.test(x) && /搬移帳戶/.test(x))
+      && cl.some(x => /沒有新增第二帳戶表/.test(x)), JSON.stringify(cl));
   ok('checklist 不會叫用戶去進度頁貼 Script／API Key',
     !cl.some(x => /進度 → 設定/.test(x) && /API Key/.test(x)), JSON.stringify(cl));
-  ok('checklist 唔再要求 portalOrigin（同一完整 Unified 後端）',
-    !cl.some(x => /portalOrigin/.test(x)), JSON.stringify(cl));
-  ok('checklist 固定未來由旅系統端驗收 reader，不把中央 SSO 當支部工序',
-    cl.some(x => /旅系統 reader/.test(x) && /旅系統端/.test(x))
-      && !cl.some(x => /中央 SSO.*留待|接通中央 SSO/.test(x)), JSON.stringify(cl));
+  ok('checklist 唔要求 portalOrigin 或中央 SSO',
+    !cl.some(x => /portalOrigin|中央 SSO/.test(x)), JSON.stringify(cl));
 
 }
 
@@ -2185,32 +2208,32 @@ console.log('\n▌新旅團申請接入（送去 ADMIN 收件匣）');
   window.dispatchEvent(new window.HashChangeEvent('hashchange'));
   await new Promise(r => setTimeout(r, 80));
   const dt = doc.getElementById('view').textContent;
-  ok('教學「多旅團部署」有講新旅團申請接入', /新旅團申請接入/.test(dt));
-  ok('教學講明每旅團用自己嘅 Sheet（唔係共用總表）', /每個旅團用自己嘅 Google Sheet 做後端/.test(dt));
-  ok('教學有教起後端步驟（Code.gs / initializeSheets / 部署）',
-    /Code\.gs/.test(dt) && /initializeSheets/.test(dt) && /網頁應用程式/.test(dt));
+  ok('多旅團教學以既有 BADGE 後端作為接入來源',
+    /既有 BADGE/.test(dt) && /Users/.test(dt) && /\/exec/.test(dt));
+  ok('多旅團教學禁止複製帳戶或建立第二資料來源',
+    /不得/.test(dt) && /複製帳戶/.test(dt) && /另建資料來源/.test(dt));
+  ok('多旅團教學清楚區分 Registry、正式 action 及 staging',
+    /Registry/.test(dt) && /action contract/.test(dt) && /staging/.test(dt));
 
   window.location.hash = '#/docs/progress';
   window.dispatchEvent(new window.HashChangeEvent('hashchange'));
   await new Promise(r => setTimeout(r, 80));
   const pt = doc.getElementById('view').textContent;
-  ok('教學「進度紀錄」講明完整後端、功能完整版及輕量版前端',
-    /完整 Unified 後端/.test(pt) && /vs_portal 係功能完整版前端/.test(pt)
-      && /vsbadge 係輕量前端/.test(pt) && /Progress 係完整版前端內的模組/.test(pt));
-  ok('教學講明前端功能面不取代 action allowlist／role／scope 授權',
-    /功能有冇顯示亦唔係授權/.test(pt) && /action/.test(pt)
-      && /allowlist/.test(pt) && /角色及 scope/.test(pt));
-  ok('教學列明與 BADGE 完全相同的 NAME／BACKEND／APIKEY',
+  ok('進度教學講明完整版、輕量前端與共用後端的目標',
+    /一個旅團、一個既有 BADGE 後端、一套帳戶/.test(pt)
+      && /完整管理前端/.test(pt) && /較輕前端/.test(pt));
+  ok('進度教學要求 session、role、scope 及 allowlist 授權',
+    /server session/.test(pt) && /role/.test(pt) && /scope/.test(pt) && /allowlist/.test(pt));
+  ok('教學列明與 BADGE 相同的 NAME／BACKEND／APIKEY',
     /NAME/.test(pt) && /BACKEND/.test(pt) && /APIKEY/.test(pt) && /BADGE/.test(pt));
-  ok('教學講明 staff／團員要由 session 固定權限', /staff session/.test(pt) && /session 固定/.test(pt));
-  ok('教學講明 API Key 不等於執委身份', /不等於執委身份/.test(pt));
+  ok('教學講明 staff／團員讀取受 session 限制', /staff session/.test(pt) && /session 限定/.test(pt));
+  ok('教學講明 API Key 不等於用戶身份', /不等於用戶身份/.test(pt));
   ok('教學講明考核項目已內建（唔使第二資料後端）', /data\/progress\/items\.json/.test(pt) && /不是第二個資料後端/.test(pt));
-  ok('教學列出審批 action 並寫回同一 Sheet',
-    /reviewRequest/.test(pt) && /reviewLogRequest/.test(pt) && /同一 Sheet/.test(pt));
-  ok('教學講明所有前端用同一 YMIS 對人', /同一 YMIS/.test(pt));
-  ok('教學固定未來旅系統單向讀支部，唔改支部登入或 Progress',
-    /旅系統只由 server 單向讀取支部後端最小投影/.test(pt)
-      && /不改變支部登入或 Progress/.test(pt) && !/中央 SSO 留待/.test(pt));
+  ok('教學列出審批 action 並寫回同一旅團後端',
+    /reviewRequest/.test(pt) && /reviewLogRequest/.test(pt) && /同一旅團後端/.test(pt));
+  ok('教學講明所有前端用同一使用者和 YMIS 對人', /同一 BADGE 使用者與 YMIS/.test(pt));
+  ok('教學要求真實跨前端驗收，不以 Registry 當開通',
+    /真實跨前端/.test(pt) && /驗收完成前/.test(pt) && /不應宣稱 Portal 已開通/.test(pt));
 }
 
 /* ---------- 財務：領袖免收團費（2026-09-16 團長要求） ---------- */
@@ -2453,22 +2476,21 @@ section('進度紀錄（讀 ＋ 勾 ＋ 寫，同一個後端）');
     window.dispatchEvent(new window.HashChangeEvent('hashchange'));
     await new Promise(r => setTimeout(r, 150));
     const sv = doc.getElementById('view');
-    ok('資料來源頁講明三項與 BADGE 相同及 API Key 不是身份',
+    ok('資料來源頁講明 BADGE Registry 三項、browser 不保存 API Key 及未驗收',
       /BADGE/.test(sv.textContent) && /NAME/.test(sv.textContent)
         && /BACKEND/.test(sv.textContent) && /APIKEY/.test(sv.textContent)
-        && /不是用戶身份|唔係用戶身份/.test(sv.textContent));
+        && /瀏覽器不保存/.test(sv.textContent) && /仍需驗收/.test(sv.textContent));
     ok('Registry 登記後仍無 browser 後端／Key／另存設定欄',
       !sv.querySelector('#p-backend') && !sv.querySelector('#p-key') && !sv.querySelector('[data-act="save-cfg"]'));
-    ok('資料來源頁只交代兩種前端定位及同一完整 GS 的獲准 action，沒有接駁或入口控制',
-      /vs_portal 功能完整版與 vsbadge 輕量版前端按獲准 action 使用同一支完整 GS/.test(sv.textContent)
-        && !/接駁|本地入口|入口狀態|旅系統/.test(sv.textContent)
+    ok('資料來源頁指出 action 回應不代表已互通，沒有入口控制',
+      /單次 action 成功不等於/.test(sv.textContent)
+        && /共用尚未驗收/.test(sv.textContent)
         && !sv.querySelector('[data-act^="door-"]'));
     ok('Progress client 不再匯出入口狀態或開關 helper',
       typeof progressLib.getLinkState === 'undefined' && typeof progressLib.setLocalLogin === 'undefined');
-    ok('資料來源頁講明支部可直接用同一 Unified Users 開戶，並有可操作入口',
-      /Users/.test(sv.textContent) && /直接開戶/.test(sv.textContent)
-        && !!sv.querySelector('[data-go="#/members"]')
-        && !!sv.querySelector('[data-go="#/members/accounts"]'));
+    ok('資料來源頁不因 Registry 設定就聲稱帳戶已共用',
+      /Users/.test(sv.textContent) && /此頁不會驗證帳戶是否已共用/.test(sv.textContent)
+        && /staging/.test(sv.textContent));
 
     const settingsLoadsBefore = calls.filter(c => c.body?.action === 'load').length;
     doc.getElementById('view').querySelector('[data-act="reload"]')?.click();
@@ -2485,9 +2507,9 @@ section('進度紀錄（讀 ＋ 勾 ＋ 寫，同一個後端）');
     ok('由進度頁開資料來源會清走舊遮罩，頁面控制項保持可按',
       window.location.hash === '#/progress/settings' && !doc.body.contains(staleOverlay)
         && !!doc.getElementById('view').querySelector('[data-act="reload"]'));
-    doc.getElementById('view').querySelector('[data-go="#/members/accounts"]')?.click();
+    doc.getElementById('view').querySelector('[data-go="#/progress/overview"]')?.click();
     await new Promise(r => setTimeout(r, 120));
-    ok('資料來源頁可直接打開支部「身份與帳號」', window.location.hash === '#/members/accounts');
+    ok('資料來源頁可返回進度總覽', window.location.hash === '#/progress/overview');
 
     window.location.hash = '#/progress';
     window.dispatchEvent(new window.HashChangeEvent('hashchange'));
@@ -2672,10 +2694,9 @@ section('進度紀錄（讀 ＋ 勾 ＋ 寫，同一個後端）');
     await new Promise(r => setTimeout(r, 120));
     view().querySelector('[data-act="reload"]')?.click();
     await new Promise(r => setTimeout(r, 220));
-    ok('空進度分頁仍顯示已成功讀到正常成員及 0 格進度',
-      /已成功讀到同一 Unified Sheet 嘅 2 位成員/.test(view().textContent)
-        && /目前有 0 格進度紀錄/.test(view().textContent)
-        && /Progress action 已成功/.test(view().textContent));
+    ok('空進度分頁顯示 2 位成員、0 格進度及尚未跨端驗收',
+      /Progress action 回傳 2 位成員、0 格進度紀錄/.test(view().textContent)
+        && /正式 staging 未通過/.test(view().textContent));
     ok('空進度資料不會顯示讀取失敗',
       !/讀唔到後端|讀取失敗/.test(view().textContent));
     ok('空進度重新讀取仍只執行 Progress 業務 action',
@@ -2687,9 +2708,9 @@ section('進度紀錄（讀 ＋ 勾 ＋ 寫，同一個後端）');
     await new Promise(r => setTimeout(r, 120));
     ok('進度設定頁已經冇「測試連線」掣（清理診斷嘢）',
       !doc.getElementById('view').querySelector('[data-act="test"]'));
-    ok('資料來源頁以實際空 load 顯示成功及 0 格',
-      /讀取結果\s*Progress action 成功/.test(doc.getElementById('view').textContent)
-        && /進度紀錄\s*0 格/.test(doc.getElementById('view').textContent));
+    ok('資料來源頁以實際空 load 顯示已回應及 0 格，並提示未驗收',
+      /Progress action 已回應；共用尚未驗收/.test(doc.getElementById('view').textContent)
+        && /上游回傳進度紀錄\s*0 格/.test(doc.getElementById('view').textContent));
 
     ok('進度頁冇咗外連模式（唔再開任何其他系統）',
       !/外連模式/.test(doc.getElementById('view').textContent));

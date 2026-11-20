@@ -44,7 +44,7 @@
 | 衝突 | 三方逐格比對；同格唔同值要列出、未寫入、等用戶確認 |
 | 收據 | 寫完要 readback 核對；唔確定唔准自動重送（F6-b） |
 | 公開資料 | 只讀總覽；真正編輯返所屬模組；按可見權限過濾 |
-| 前後端定位 | 每支部 Unified GS 有完整功能；vs_portal 是功能完整版前端，BADGE 是輕量前端。唔准因 BADGE 輕量而拆第二支精簡 GS；授權仍由 server role／scope 決定 |
+| 前後端定位 | 目標沿用既有 BADGE GS／Sheet／Users；Portal compatibility contract 及真 Apps Script staging 尚未完成；隔離 Unified bundle 不得部署到正式旅團 |
 | BOOK／BADGE | BOOK 可讀正式資料及提交待批匯入；只有領袖確認後先可寫入正式紀錄，唔准直接匯入繞過審批 |
 | 已拆除 | MOCK、登入閘診斷／修復／搶救掣 —— 唔准加返 |
 
@@ -61,7 +61,7 @@
 3. 版號：`assets/js/lib/version.js` 嘅 `APP_VERSION` 同 `gastemplate.js` 嘅
    `BACKEND_VERSION` 必須一致（`npm run lint` 會擋）。
 4. 歷史註解寫「自 vX.Y 起…」敘述式，**唔好**寫 `// vX.Y`（F15 guard 會擋）。
-5. 前端／後端一齊發版；部署拷貝要同步。
+5. 測試 artifact 不等於正式 BADGE release；正式更新只可由 BADGE source of truth 經核准 staging 後進行。
 
 ## 5. 閘門（ Definition of Done ）
 

@@ -423,11 +423,14 @@ ok('unitsHandler 回傳 units 物件', !!resJson?.units?.TEST9);
   });
   const sent = JSON.parse(calls[0]?.init?.body || '{}');
   ok('提交申請 → 用同源 proxy 轉發（申請人唔使直接打 GAS）', calls.length === 1 && calls[0].target === ADMIN, calls[0]?.target);
+  upstreamJson = { success: true, receipt: true };
+  let explicitReceipt;
   ok('收件匣目的地由伺服器端固定（前端改唔到）',
-    (await post({ action: 'submitRegistration', troopId: '0100', troopName: 'X', apiKey: 'K1',
+    (explicitReceipt = await post({ action: 'submitRegistration', troopId: '0100', troopName: 'X', apiKey: 'K1',
       adminUrl: 'https://evil.example.com/exec',
       scriptUrl: 'https://script.google.com/macros/s/AKfycbTESTTESTTESTTESTTESTTESTTESTTEST/exec' }))
       && calls[calls.length - 1].target === ADMIN);
+  upstreamJson = { success: true, message: '申請已提交' };
   ok('轉發 payload 帶 appType=82venture ＋ appName（同 VSBADGE 共用收件匣，可以分辨）',
     sent.appType === '82venture' && sent.appName === '深資童軍管理系統', JSON.stringify({ appType: sent.appType, appName: sent.appName }));
   ok('轉發 payload 帶齊旅團編號／名稱／後端／API Key／聯絡人／主系統網址',
@@ -435,10 +438,12 @@ ok('unitsHandler 回傳 units 物件', !!resJson?.units?.TEST9);
     && /\/exec$/.test(sent.scriptUrl) && sent.apiKey === 'K1' && sent.contact === 'a@b.hk'
     && sent.mainSystemUrl === 'https://ecportal.vercel.app' && /^\d{4}-\d{2}-\d{2}T/.test(sent.at || ''));
   ok('收件匣明確回 JSON success → proxy 先確認 applied',
-    good.statusCode === 200 && good.body?.success === true && good.body?.receipt === true
-      && good.body?.delivered === 'confirmed' && good.body?.outcome === 'applied' && good.body?.mayHaveApplied === true
+    good.statusCode === 200 && good.body?.success === true && good.body?.receipt === false
+      && good.body?.delivered === 'submitted' && good.body?.outcome === 'applied' && good.body?.mayHaveApplied === true
       && !!good.body?.operationId && sent.operationId === good.body.operationId
       && sent.operation_id === good.body.operationId, JSON.stringify(good.body));
+  ok('只有上游明確 receipt:true 才聲稱 ADMIN 已確認收件',
+    explicitReceipt.body?.receipt === true && explicitReceipt.body?.delivered === 'confirmed', JSON.stringify(explicitReceipt.body));
   const beforeIncomplete = calls.length;
   const incomplete = await post({ action: 'submitRegistration', troopId: '0100', troopName: 'X',
     scriptUrl: 'https://script.google.com/macros/s/AKfycbTESTTESTTESTTESTTESTTESTTESTTEST/exec' });

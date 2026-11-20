@@ -155,7 +155,8 @@ function unifiedOperationPublic_(rec) {
   if (state === 'processing' && isFinite(age) && age > 10 * 60 * 1000) state = 'unknown';
   if (state === 'unknown' || state === 'processing') outcome = 'unknown';
   return { id: rec.id, action: rec.action, unit: rec.unit, state: state, outcome: outcome,
-    startedAt: rec.startedAt, updatedAt: rec.updatedAt, error: rec.error || '' };
+    startedAt: rec.startedAt, updatedAt: rec.updatedAt,
+    error: rec.error ? '操作未完成；請登入後核對' : '' };
 }
 
 function unifiedBeginOperation_(body, action) {
@@ -206,10 +207,10 @@ function unifiedFinishOperation_(started, outcome, result, error) {
     var rec = unifiedFindOperation_(started.id);
     if (!rec) return null;
     var state = outcome === 'applied' ? 'applied' : outcome === 'not_applied' ? 'not_applied' : 'unknown';
-    var resultText = '';
-    try { resultText = JSON.stringify(result || {}); } catch (ignoreJson) {}
-    if (resultText.length > 40000) resultText = JSON.stringify({ success: result && result.success === true,
-      ok: result && result.ok === true, version: String(result && result.version || '') });
+    // The operation ID is a status capability, not a login credential. Never
+    // persist account details or full administrative/member projections here.
+    var resultText = JSON.stringify({ success: !!(result && result.success === true),
+      ok: !!(result && result.ok === true) });
     var sheet = unifiedOperationSheet_();
     sheet.getRange(rec.row, 4, 1, 6).setValues([[
       state, outcome, rec.startedAt ? new Date(rec.startedAt) : new Date(), new Date(), resultText,
@@ -244,17 +245,14 @@ function unifiedOperationWrap_(body, action, run) {
   if (started.duplicate) {
     var old = started.record;
     var oldPublic = unifiedOperationPublic_(old);
-    if ((oldPublic.outcome === 'applied' || oldPublic.outcome === 'not_applied') && old.resultJson) {
-      try {
-        var replay = JSON.parse(old.resultJson);
-        replay.operationId = old.id; replay.operation_id = old.id; replay.outcome = oldPublic.outcome;
-        replay.operation = oldPublic; replay.deduplicated = true;
-        return unifiedJson_(replay);
-      } catch (ignoreReplay) {}
-    }
-    return unifiedJson_({ success: false, ok: false, reason: 'operation_in_progress',
-      operationId: old.id, outcome: 'unknown', mayHaveApplied: true, operation: oldPublic,
-      error: '同一操作編號已經處理過或仍在處理；為免重複，後端冇再次執行' });
+    // This branch runs before action authentication. An operation ID must never
+    // replay a previous response (which may contain another user's private db).
+    // Return only the status receipt and require a fresh authenticated read.
+    return unifiedJson_({ success: false, ok: false,
+      reason: oldPublic.outcome === 'unknown' ? 'operation_in_progress' : 'operation_already_recorded',
+      operationId: old.id, operation_id: old.id, outcome: oldPublic.outcome,
+      mayHaveApplied: oldPublic.outcome !== 'not_applied', operation: oldPublic, deduplicated: true,
+      error: '同一操作編號已處理或仍在處理；後端沒有再次執行，請查看狀態並重新登入讀取資料' });
   }
   try {
     var out = run();
@@ -265,12 +263,13 @@ function unifiedOperationWrap_(body, action, run) {
         mayHaveApplied: true, operation: unifiedOperationPublic_(unknownRec), error: '後端回應格式異常；結果未知' });
     }
     var applied = parsed.success === true || parsed.ok === true;
-    var outcome = applied ? 'applied' : 'not_applied';
-    var finished = unifiedFinishOperation_(started, outcome, parsed, parsed.error || '');
+    var partial = parsed.rosterSyncPending === true || parsed.revisionPending === true || parsed.writePending === true;
+    var outcome = partial ? 'unknown' : (applied ? 'applied' : 'not_applied');
+    var finished = unifiedFinishOperation_(started, outcome, parsed, parsed.error || parsed.warning || '');
     parsed.operationId = started.id;
     parsed.operation_id = started.id;
     parsed.outcome = outcome;
-    parsed.mayHaveApplied = applied;
+    parsed.mayHaveApplied = applied || partial;
     parsed.operation = unifiedOperationPublic_(finished || started.record) || { id: started.id, state: outcome, outcome: outcome };
     return unifiedJson_(parsed);
   } catch (err) {
@@ -616,7 +615,7 @@ function unifiedResolveActor_(body, allowPortalExchangeToken) {
   var meta = unifiedTokenMeta_(token);
   if (!localLoginAllowed() && (!meta || meta.source !== 'central-sso')) {
     return { ok: false, code: 'CENTRAL_SSO_REQUIRED',
-      error: '隔離 fixture 的 legacy 入口旗標已關閉；正式支部請重新執行 initializeSheets()' };
+      error: '支部本地入口目前關閉，請聯絡 Sheet 管理員核對並明確開啟' };
   }
   var role = unifiedRoleFromBackend_(meta && meta.role ? meta.role : user.role);
   if (!role) return { ok: false, code: 'ROLE_NOT_ALLOWED', error: '支部帳戶身份不屬於目前 branch schema' };
@@ -824,7 +823,42 @@ function unifiedActorCan_(actor, action) {
   return false;
 }
 
-function unifiedCanonicalMembers_(existing) {
+/* Mark removals of roster-only members as well as account tombstones; otherwise
+   an old Portal administrative record could recreate a person deleted in BADGE. */
+function unifiedRosterTombstoneKey_(ymis) {
+  return 'UNIFIED_ROSTER_REMOVED_' + sha256Hex(String(ymis || '').trim().toLowerCase());
+}
+function unifiedRememberRosterRemoval_(ymis) {
+  PropertiesService.getScriptProperties().setProperty(unifiedRosterTombstoneKey_(ymis), '1');
+}
+function unifiedClearRosterRemoval_(ymis) {
+  PropertiesService.getScriptProperties().deleteProperty(unifiedRosterTombstoneKey_(ymis));
+}
+function unifiedWasRosterRemoved_(ymis) {
+  return PropertiesService.getScriptProperties().getProperty(unifiedRosterTombstoneKey_(ymis)) === '1';
+}
+
+function unifiedBadgeRosterLock_(fn) {
+  var lock = LockService.getScriptLock();
+  if (!lock.tryLock(10000)) return jsonResponse({ success: false, error: '系統正處理另一項修改，請稍後重試' });
+  try { return fn(); } finally { lock.releaseLock(); }
+}
+function handleAddMember(ymis, name, branch, actor) {
+  return unifiedBadgeRosterLock_(function () {
+    var result = handleAddMemberUnlocked_(ymis, name, branch, actor);
+    var parsed = unifiedOutputObject_(result);
+    if (parsed && parsed.success === true) unifiedClearRosterRemoval_(ymis);
+    return result;
+  });
+}
+function handleUpdateUserRole(targetYmis, newRole, canTick, managerYmis, allowedBadges) {
+  return unifiedBadgeRosterLock_(function () { return handleUpdateUserRoleUnlocked_(targetYmis, newRole, canTick, managerYmis, allowedBadges); });
+}
+function handleSetUserStatus(targetYmis, status, manager) {
+  return unifiedBadgeRosterLock_(function () { return handleSetUserStatusUnlocked_(targetYmis, status, manager); });
+}
+
+function unifiedCanonicalMembers_(existing, preferAuthoritative) {
   var old = Array.isArray(existing) ? existing : [];
   var byYmis = {};
   old.forEach(function (m) {
@@ -850,12 +884,16 @@ function unifiedCanonicalMembers_(existing) {
     /* Build the prospective canonical row in memory. Incoming ordinary roster
        fields may change, but identity always comes from Users; no Sheet is
        mutated until the compatibility save has actually succeeded. */
-    merged.name = safeSheetText(prior.name, 100) || String(rows[i][1] || user.name || '');
-    merged.branch = safeSheetText(prior.branch, 100) || String(rows[i][3] || user.branch || '');
-    merged.email = isEmail(prior.email) ? String(prior.email).trim()
-      : String(user.email || (isEmail(rows[i][4]) ? rows[i][4] : ''));
-    merged.phone = safeSheetText(prior.phone, 80)
-      || (isEmail(rows[i][4]) ? '' : String(rows[i][4] || ''));
+    var rosterName = String(rows[i][1] || user.name || '');
+    var rosterBranch = String(rows[i][3] || user.branch || '');
+    var rosterContact = String(rows[i][4] || '');
+    var rosterEmail = String(user.email || (isEmail(rosterContact) ? rosterContact : ''));
+    merged.name = preferAuthoritative ? rosterName : (safeSheetText(prior.name, 100) || rosterName);
+    merged.branch = preferAuthoritative ? rosterBranch : (safeSheetText(prior.branch, 100) || rosterBranch);
+    merged.email = preferAuthoritative ? rosterEmail : (isEmail(prior.email) ? String(prior.email).trim() : rosterEmail);
+    merged.phone = preferAuthoritative ? (isEmail(rosterContact) ? '' : rosterContact)
+      : (safeSheetText(prior.phone, 80) || (isEmail(rosterContact) ? '' : rosterContact));
+    if (!prior.join && rows[i][2]) merged.join = formatDate(rows[i][2]);
     merged.identity = unifiedRoleFromBackend_(user.role || 'member');
     merged.hasAccount = user.has_account === true;
     merged.accountStatus = merged.hasAccount ? String(user.status || 'active') : 'not_open';
@@ -869,6 +907,11 @@ function unifiedCanonicalMembers_(existing) {
   old.forEach(function (m) {
     var key = String(m && m.ymis || '').trim().toLowerCase();
     if (!key || seen[key]) return;
+    if (preferAuthoritative && unifiedWasRosterRemoved_(key)) return;
+    // BADGE keeps a deleted account as a tombstone and removes it from the roster.
+    // An older administrative copy must not silently revive that identity.
+    var existingRecord = findUserRecord(key);
+    if (existingRecord && existingRecord.user && existingRecord.user.status === 'deleted') return;
     var kept = {};
     for (var p in m) if (Object.prototype.hasOwnProperty.call(m, p)) kept[p] = m[p];
     kept.name = safeSheetText(kept.name, 100);
@@ -935,6 +978,7 @@ function unifiedUpsertRoster_(members) {
       if (contact) sheet.getRange(row, 5).setValue(contact);
     } else {
       sheet.appendRow([ymis, name, new Date(), branch, contact]);
+      unifiedClearRosterRemoval_(ymis);
       rowByYmis[ymis.toLowerCase()] = sheet.getLastRow();
     }
     var rec = findUserRecord(ymis);
@@ -948,11 +992,102 @@ function unifiedUpsertRoster_(members) {
   });
 }
 
+/* Called while the compatibility write lock is still held. Only a successfully
+   authorized/confirmed write may update the shared roster. */
+function unifiedFinishRosterWrite_(result, members, unit) {
+  if (!result || result.success !== true) return result;
+  if (Array.isArray(members)) {
+    try { unifiedUpsertRoster_(members); }
+    catch (err) {
+      result.rosterSyncPending = true;
+      result.warning = '行政資料已儲存，但共用名冊更新未完成；請重新讀取核對';
+    }
+  }
+  // Capture the returned revision while the same write lock is held. Reading it
+  // after release could accidentally label an unseen concurrent write as our base.
+  try {
+    var snapshot = unifiedAdminSnapshot_(unit, { source: 'server-super', role: 'super' }, true);
+    if (!snapshot.success) throw new Error(snapshot.error || '無法核對');
+    result.version = snapshot.version;
+  } catch (err2) {
+    result.revisionPending = true;
+    result.warning = (result.warning ? result.warning + '；' : '') + '已寫入，但共用版本未能核對；請重新讀取';
+  }
+  return result;
+}
+
 function unifiedPrepareAdminDb_(db) {
   db = db && typeof db === 'object' && !Array.isArray(db) ? db : {};
   db.members = unifiedCanonicalMembers_(db.members || []);
   db.accounts = unifiedAccountProjection_(db.members);
   return db;
+}
+
+/* Read administrative data and current BADGE identity from the SAME Sheet.
+   The compatibility storage may legitimately be empty; that is not evidence
+   that Users or 成員名單 are empty. Project only after resolving the actor. */
+function unifiedAdminSnapshot_(unit, actor, branchOwner) {
+  var loaded = PortalAdminCompat_.loadDb(String(unit || ''));
+  if (!loaded || loaded.success !== true) return { success: false, error: (loaded && loaded.error) || '讀取後端失敗' };
+  var db = loaded.db && typeof loaded.db === 'object' ? loaded.db : {};
+  db.members = unifiedCanonicalMembers_(db.members || [], true);
+  db.accounts = unifiedAccountProjection_(db.members);
+  var auth = branchOwner || actor.source === 'server-super'
+    ? { serverSigned: true, role: 'server' }
+    : { serverSigned: true, delegated: true, role: actor.role,
+        session: { ok: true, portal: true, role: actor.role, subject: actor.ymis } };
+  var projectedActor = PortalAdminCompat_.staffActorFromAuth(db, auth);
+  if (!projectedActor || !projectedActor.ok) return { success: false, error: (projectedActor && projectedActor.error) || '未能核對操作者身份' };
+  var projected = PortalAdminCompat_.staffSafeDb(db, projectedActor);
+  var version = 'U-' + sha256Hex(JSON.stringify([String(loaded.version || ''), db.members, db.accounts]));
+  return { success: true, found: !!loaded.found || db.members.length > 0 || db.accounts.length > 0,
+    db: projected, version: version, rawVersion: String(loaded.version || ''), at: loaded.at || '' };
+}
+
+/* Called inside the compatibility module's script lock, before mutation. The
+   client-visible revision covers both administrative storage and BADGE roster.
+   Every ordinary Portal write must use a freshly read shared revision. */
+function unifiedGuardAdminVersion_(body) {
+  var supplied = String(body.baseVersion || '');
+  if (!/^U-[0-9a-f]{64}$/.test(supplied)) return { success: false, conflict: true,
+    code: 'SHARED_REVISION_REQUIRED', error: '請先從共用後端重新讀取資料，然後再儲存' };
+  var snapshot = unifiedAdminSnapshot_(body.unit, { source: 'server-super', role: 'super' }, true);
+  if (!snapshot.success) return { success: false, error: snapshot.error };
+  if (supplied !== snapshot.version) return { success: false, conflict: true, version: snapshot.version,
+    error: '後端名冊或行政資料已更新，請重新讀取及合併' };
+  body.baseVersion = snapshot.rawVersion;
+  return { success: true };
+}
+
+function unifiedAdminRead_(action, body, actor, branchOwner) {
+  var snapshot = unifiedAdminSnapshot_(body.unit, actor, branchOwner);
+  if (!snapshot.success) return unifiedJson_({ ok: false, success: false, error: snapshot.error });
+  var common = { ok: true, success: true, found: snapshot.found, version: snapshot.version,
+    at: snapshot.at, unifiedGsVersion: UNIFIED_GS_VERSION };
+  if (action === 'dbInfo') {
+    var info = PortalAdminCompat_.dbInfo(String(body.unit || '')) || {};
+    if (info.success !== true) return unifiedJson_(info);
+    var stats = PortalAdminCompat_.dbStats(snapshot.db || {});
+    return unifiedJson_(Object.assign(info, common, { bytes: stats.bytes, sizes: stats.sizes,
+      counts: stats.counts, photoBytes: stats.photoBytes, simpleWrite: true }));
+  }
+  if (action === 'loadDb' || action === 'loadTables') {
+    return unifiedJson_(Object.assign(common, { db: snapshot.found ? snapshot.db : null,
+      broken: [], bytes: JSON.stringify(snapshot.db || {}).length }));
+  }
+  if (action === 'loadDbPart') {
+    var text = JSON.stringify(snapshot.db || {}), size = 1000000;
+    var idx = Math.max(0, parseInt(body.partIdx, 10) || 0);
+    var parts = Math.max(1, Math.ceil(text.length / size));
+    if (!snapshot.found) return unifiedJson_(Object.assign(common, { part: '', partIdx: idx, parts: 0 }));
+    if (idx >= parts) return unifiedJson_({ ok: false, success: false, found: true, error: '分段編號超出範圍' });
+    return unifiedJson_(Object.assign(common, { part: text.substring(idx * size, (idx + 1) * size),
+      partIdx: idx, parts: parts, bytes: text.length }));
+  }
+  var names = Object.keys(snapshot.db || {}).sort(), i = Math.max(0, parseInt(body.idx, 10) || 0);
+  if (!snapshot.found) return unifiedJson_(Object.assign(common, { idx: i, count: 0, name: '', broken: [] }));
+  if (i >= names.length) return unifiedJson_({ ok: false, success: false, found: true, error: '表編號超出範圍' });
+  return unifiedJson_(Object.assign(common, { idx: i, count: names.length, name: names[i], value: snapshot.db[names[i]], broken: [] }));
 }
 
 function unifiedPortalEvent_(e, body) {
@@ -996,17 +1131,13 @@ function unifiedPortalAdmin_(e, body, signedActor) {
     body.__serverActorRole = String(actor.role || 'member');
     body.__serverActorSubject = String(actor.ymis || '');
   }
-  /* Keep the requested roster for a post-confirmation mirror update. Calling
-     unifiedUpsertRoster_ before compatibility validation used to mutate 成員名單
-     and Users even when a stale version or protected-field request was rejected. */
-  var rosterAfterSuccess = null;
+  /* Save and privileged force-repair update the roster only after validation,
+     under the same compatibility write lock. */
   if (action === 'saveDb' || action === 'saveDbForce') {
-    rosterAfterSuccess = body.db && Array.isArray(body.db.members) ? body.db.members : null;
     body.db = unifiedPrepareAdminDb_(body.db);
   } else if (action === 'saveTables') {
     body.tables = body.tables && typeof body.tables === 'object' ? body.tables : {};
     if (Object.prototype.hasOwnProperty.call(body.tables, 'members')) {
-      rosterAfterSuccess = Array.isArray(body.tables.members) ? body.tables.members : null;
       body.tables.members = unifiedCanonicalMembers_(body.tables.members);
     }
     if (Object.prototype.hasOwnProperty.call(body.tables, 'accounts')) {
@@ -1014,26 +1145,13 @@ function unifiedPortalAdmin_(e, body, signedActor) {
     }
   }
   if (actor.source !== 'server-super' && !branchOwner) body.__serverIdentityMap = unifiedAuthoritativeIdentityMap_();
+  if (action === 'dbInfo' || action === 'loadDb' || action === 'loadTables'
+      || action === 'loadDbPart' || action === 'loadTablesPart') {
+    return unifiedAdminRead_(action, body, actor, branchOwner);
+  }
   var out = PortalAdminCompat_.dispatchBody(unifiedPortalEvent_(e, body), body);
   var parsed = unifiedOutputObject_(out);
   if (!parsed) return out;
-  if (parsed.success === true) {
-    if (action === 'saveDbCommit') {
-      var committed = PortalAdminCompat_.loadDb(String(body.unit || ''));
-      rosterAfterSuccess = committed && committed.success && committed.db && Array.isArray(committed.db.members)
-        ? committed.db.members : null;
-    }
-    if (rosterAfterSuccess) {
-      try { unifiedUpsertRoster_(rosterAfterSuccess); }
-      catch (rosterErr) {
-        /* The compatibility DB is already confirmed. Report a recoverable mirror
-           warning instead of claiming the rejected request changed nothing or
-           falsely changing success into a total failure. A retry is idempotent. */
-        parsed.rosterSyncPending = true;
-        parsed.warning = '行政資料已儲存，但中央名冊鏡像未完成；請重試同步';
-      }
-    }
-  }
   /* Portal compatibility layer has already applied the actor-specific projection.
      Never re-expand members/accounts here: doing so would put higher identities back
      into a lower actor's response after authorization. */
@@ -1073,13 +1191,17 @@ function unifiedLoadMine_(ymis) {
   var progress = {}; progress[ymis] = (all.progress && all.progress[ymis]) || {};
   var flat = {}; flat[ymis] = (all.flatProgress && all.flatProgress[ymis]) || {};
   var other = {}; other[ymis] = (all.otherBadges && all.otherBadges[ymis]) || {};
+  var requests = unifiedMemberProgressRequests_(ymis);
   return { success: true, ok: true, member: member, members: member ? [member] : [],
     progress: progress, flatProgress: flat, otherBadges: other,
     logs: (all.logs || []).filter(function (r) { return String(r.ymis || '') === String(ymis || ''); }),
+    logsSupported: all.logsSupported === true,
     logRequests: (all.logRequests || []).filter(function (r) { return String(r.ymis || '') === String(ymis || ''); }),
+    logRequestsSupported: all.logRequestsSupported === true,
     /* Baseline handleLoad only exposes pending rows.  A member's own safe history must
        keep approved/rejected rows too, otherwise the UI says the application vanished. */
-    requests: unifiedMemberProgressRequests_(ymis),
+    pendingRequests: requests.filter(function (r) { return r.status === 'pending'; }),
+    requests: requests,
     unifiedGsVersion: UNIFIED_GS_VERSION };
 }
 
@@ -1354,7 +1476,7 @@ function unifiedHubVisible_(record, kind, role) {
 function unifiedHubContext_(loaded, actor) {
   if (!loaded || loaded.success !== true || !loaded.db) return { ok: false, error: loaded && loaded.error || '後端未有資料庫' };
   var db = loaded.db;
-  db.members = unifiedCanonicalMembers_(db.members || []);
+  db.members = unifiedCanonicalMembers_(db.members || [], true);
   var wanted = String(actor.ymis || '').trim().toLowerCase();
   var member = null;
   db.members.some(function (row) {
@@ -1522,20 +1644,25 @@ function unifiedMemberHub_(body) {
   if (!actor.ok) return unifiedJson_({ ok: false, success: false, code: actor.code || 'SESSION_REQUIRED', error: actor.error });
   var unit = String(body.unit || '');
   if (body.action === 'hubLoad') {
-    var read = unifiedHubContext_(PortalAdminCompat_.loadDb(unit), actor);
+    var read = unifiedHubContext_(unifiedAdminSnapshot_(unit, { source: 'server-super', role: 'super' }, true), actor);
     if (!read.ok) return unifiedJson_({ ok: false, success: false, code: read.code || '', error: read.error });
     return unifiedJson_({ ok: true, success: true, found: true, db: unifiedHubProjection_(read),
       version: read.version, at: read.at, role: read.role, unifiedGsVersion: UNIFIED_GS_VERSION });
   }
   for (var attempt = 0; attempt < 2; attempt++) {
-    var ctx = unifiedHubContext_(PortalAdminCompat_.loadDb(unit), actor);
+    var ctx = unifiedHubContext_(unifiedAdminSnapshot_(unit, { source: 'server-super', role: 'super' }, true), actor);
     if (!ctx.ok) return unifiedJson_({ ok: false, success: false, code: ctx.code || '', error: ctx.error });
     var applied;
     try { applied = unifiedHubMutate_(ctx, body); }
     catch (err) { applied = { ok: false, error: String(err && err.message || err) }; }
     if (!applied.ok) return unifiedJson_({ ok: false, success: false, error: applied.error });
     var saved = unifiedHubSave_(unit, ctx);
+    if (saved.writePending === true) return unifiedJson_({ ok: false, success: false, writePending: true,
+      error: saved.error || '寫入未能核對，請重新讀取' });
     if (saved.success === true) {
+      if (saved.rosterSyncPending || saved.revisionPending) return unifiedJson_({ ok: false, success: false,
+        rosterSyncPending: saved.rosterSyncPending === true, revisionPending: saved.revisionPending === true,
+        warning: saved.warning || '已寫入，但核對未完成，請重新讀取', error: saved.warning || '已寫入，但核對未完成，請重新讀取' });
       return unifiedJson_({ ok: true, success: true, id: applied.id || '', version: saved.version || '',
         db: unifiedHubProjection_(ctx), unifiedGsVersion: UNIFIED_GS_VERSION });
     }
@@ -1544,36 +1671,78 @@ function unifiedMemberHub_(body) {
   return unifiedJson_({ ok: false, success: false, code: 'WRITE_CONFLICT', error: '資料已更新，請再試一次' });
 }
 
-function initializeSheets() {
-  var badge = badgeInitializeSheets_();
-  var admin = null;
-  try { admin = PortalAdminCompat_.initializeSheets(); }
-  catch (err) {
-    return { success: false, badge: badge, admin: null,
-      error: '進度基線已初始化，但行政分頁增補失敗：' + String(err && err.message || err),
-      unifiedGsVersion: UNIFIED_GS_VERSION };
+function unifiedUpgradePreflight_() {
+  var ss = getSheet();
+  var progress = ss.getSheetByName('進度追蹤');
+  if (progress && progress.getLastRow() > 0) {
+    var expected = ['YMIS', '項目 ID', '完成日期', '更新時間', '確認者', '備註'];
+    var width = Math.min(Math.max(progress.getLastColumn(), 4), expected.length);
+    var actual = progress.getRange(1, 1, 1, width).getValues()[0];
+    for (var i = 0; i < width; i++) {
+      if (String(actual[i] || '').trim() !== expected[i]) {
+        return '進度追蹤表頭與 BADGE 格式不符；未進行升級，請先備份並核對';
+      }
+    }
   }
-  var props = PropertiesService.getScriptProperties();
-  props.setProperty('ALLOW_LOCAL_LOGIN', 'true');
-  props.setProperty(UNIFIED_INITIALIZED_PROP, UNIFIED_GS_VERSION);
-  return { success: true, badge: badge, admin: admin, preservedExistingData: true,
-    unifiedGsVersion: UNIFIED_GS_VERSION };
+  var users = ss.getSheetByName('Users');
+  if (users && users.getLastRow() > 0) {
+    var headers = users.getRange(1, 1, 1, Math.max(users.getLastColumn(), 1)).getValues()[0];
+    if (!headers.some(function (h) { return String(h || '').trim() === 'ymis'; })) {
+      return 'Users 表頭缺少 ymis；未進行升級，請先備份並核對';
+    }
+  }
+  return '';
 }
 
-/* 支部本地帳戶／session 是正常登入，Sheet 選單不可關閉。Pinned BADGE
-   baseline 的 legacy helpers 只為來源兼容保留；Progress client 與 API 不路由入口控制。 */
+function unifiedInitializationResult_(result) {
+  var message = result.success
+    ? '共用後端結構已檢查。既有帳戶、歷史資料及 API Key 沿用；仍須完成相容性及 staging 驗收。'
+    : String(result.error || '升級未完成；請核對資料及執行紀錄。');
+  try {
+    var ui = SpreadsheetApp.getUi();
+    if (ui) ui.alert(result.success ? '候選後端初始化完成' : '候選後端初始化未完成', message, ui.ButtonSet.OK);
+  } catch (ignore) { /* headless */ }
+  try { Logger.log(message); } catch (ignoreLog) {}
+  return result;
+}
+
+function initializeSheets() {
+  var props = PropertiesService.getScriptProperties();
+  // A failed retry, including preflight failure, cannot retain a success marker.
+  props.deleteProperty(UNIFIED_INITIALIZED_PROP);
+  var preflight = unifiedUpgradePreflight_();
+  if (preflight) return unifiedInitializationResult_({ success: false, error: preflight, unifiedGsVersion: UNIFIED_GS_VERSION });
+  var badge = null, admin = null;
+  try {
+    badge = badgeInitializeSheets_();
+    if (!badge || badge.success !== true) throw new Error('BADGE 初始化未完成');
+    admin = PortalAdminCompat_.initializeSheets();
+    if (!admin || admin.success !== true) throw new Error('行政初始化未完成');
+    if (admin.skipped && admin.skipped.length) {
+      throw new Error('以下分頁表頭未能識別：' + admin.skipped.map(function (r) { return r.tab; }).join('、'));
+    }
+  } catch (err) {
+    return unifiedInitializationResult_({ success: false, badge: badge, admin: admin, partial: true,
+      error: '升級未完成，可能已有結構增補；請核對後重試：' + String(err && err.message || err),
+      unifiedGsVersion: UNIFIED_GS_VERSION });
+  }
+  // Retain the existing BADGE entrance policy, including an unset or closed flag.
+  props.setProperty(UNIFIED_INITIALIZED_PROP, UNIFIED_GS_VERSION);
+  return unifiedInitializationResult_({ success: true, badge: badge, admin: admin, preservedExistingData: true,
+    unifiedGsVersion: UNIFIED_GS_VERSION });
+}
+
+/* Normal branch operation needs local login. Never change a retained flag merely
+   because an old endpoint was called; the Sheet owner may explicitly reopen it. */
 function menuLocalLoginOff() {
-  var message = '支部本地帳戶／session 係正常登入來源，必須保持開啟。';
+  var message = '支部本地帳戶／session 係正常登入來源，不能由此選單關閉。';
   try { SpreadsheetApp.getUi().alert('不可關閉支部本地入口', message, SpreadsheetApp.getUi().ButtonSet.OK); } catch (e) {}
-  try { setLocalLoginAllowed(true, 'unified-branch-login-guard'); } catch (e2) {}
-  try { Logger.log(message); } catch (e3) {}
   return { success: false, code: 'BRANCH_LOCAL_LOGIN_REQUIRED', error: message,
     allow_local_login: localLoginAllowed() };
 }
 
 function onOpen() {
-  /* Branch deployment exposes only branch-safe owner operations. Pinned baseline
-     legacy controls are not a Progress contract and never appear in this Sheet menu. */
+  /* Progress itself does not depend on entrance controls. */
   try {
     var ui = SpreadsheetApp.getUi();
     ui.createMenu('🔗 支部系統')
@@ -1589,6 +1758,27 @@ function onOpen() {
   } catch (e) { /* headless */ }
 }
 
+function unifiedLoadForActor_(actor, e) {
+  if (unifiedProgressActorCanManage_(actor)) return badgeDoGet_(e);
+
+  // A normal member may read only their own progress projection, never the full roster.
+  var mine = unifiedLoadMine_(actor.ymis);
+  var user = actor.user || {};
+  var me = {
+    name: String(user.name || ''), role: String(user.role || actor.role || 'member'),
+    can_tick: user.can_tick === true, allowed_badges: String(user.allowed_badges || ''),
+    force_change_password: user.force_change_password === true
+  };
+  return unifiedJson_(Object.assign({
+    ok: true, success: true,
+    members: mine.members || [], progress: mine.progress || {}, flatProgress: mine.flatProgress || {},
+    pendingRequests: mine.pendingRequests || [], requests: mine.requests || [],
+    otherBadges: mine.otherBadges || {}, logs: mine.logs || [], logsSupported: mine.logsSupported === true,
+    logRequests: mine.logRequests || [], logRequestsSupported: mine.logRequestsSupported === true,
+    me: me, unifiedGsVersion: UNIFIED_GS_VERSION
+  }, getVsGsReleaseStatus()));
+}
+
 function doGet(e) {
   var action = String((e && e.parameter && e.parameter.action) || '');
   if (action === 'status' || action === 'ping' || action === 'test') {
@@ -1596,6 +1786,22 @@ function doGet(e) {
   }
   if (action === 'notices' || action === 'constitution') {
     return unifiedJson_({ ok: false, success: false, code: 'SESSION_REQUIRED', error: '內容只限已登入支部成員' });
+  }
+  if (action === 'load') {
+    var params = (e && e.parameter) || {};
+    var token = String(params.token || '');
+    if (!token) {
+      return unifiedJson_({ ok: false, success: false, upstream_only: true,
+        code: 'SIGNATURE_REQUIRED', error: 'load 必須經已驗證的支部 session 或同源伺服器簽名呼叫' });
+    }
+    // The pinned BADGE rescue session is stateless and remains valid even when
+    // the ordinary local-login gate is closed. Validate it before delegating.
+    if (isSuperAdminToken(token)) return badgeDoGet_(e);
+    var actor = unifiedResolveActor_({ token: token }, false);
+    if (!actor.ok) {
+      return unifiedJson_({ ok: false, success: false, code: actor.code || 'SESSION_REQUIRED', error: actor.error });
+    }
+    return unifiedLoadForActor_(actor, e);
   }
   return badgeDoGet_(e);
 }
@@ -1611,14 +1817,9 @@ function doPost(e) {
   if (Object.prototype.hasOwnProperty.call(body, '__serverActorSubject')) delete body.__serverActorSubject;
   if (Object.prototype.hasOwnProperty.call(body, '__serverIdentityMap')) delete body.__serverIdentityMap;
   var action = String(body.action || '');
-  /* Pinned BADGE keeps these historical handlers internally, but the Unified public
-     router never exposes an entrance-state or entrance-control contract. Invoking an
-     old action restores the required local-login flag and fails closed. */
-  if (action === 'getLinkState' || action === 'setLocalLogin') {
-    PropertiesService.getScriptProperties().setProperty('ALLOW_LOCAL_LOGIN', 'true');
-    return unifiedJson_({ ok: false, success: false, code: 'BRANCH_LOCAL_LOGIN_REQUIRED',
-      error: '支部本地登入必須保持開啟；Unified 不提供入口狀態或控制 action' });
-  }
+  /* Preserve BADGE's existing link controls. The pinned router validates the
+     signed transport and replay nonce before it allows either action. */
+  if (action === 'getLinkState' || action === 'setLocalLogin') return badgeDoPost_(e);
   try {
     if (UNIFIED_PORTAL_AUTH_ACTIONS[action]) {
       // authWhoAmI may be wrapped in the pinned baseline's server signature

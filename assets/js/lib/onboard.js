@@ -1,34 +1,15 @@
 /* ============================================================
-   onboard.js — 新旅團申請接入與部署協助（全前端 App 內完成，毋須存取 Git）
-   流程（旅團嗰邊）：
-     1. 登入前直接喺 App 內下載或複製 Unified Code.gs（毋須登入、毋須 Git）
-     2. 建自己嘅 Google Sheet → 執行 initializeSheets／showApiKey → 複製 API Key
-     3. 部署做 Web App（執行身分：我；存取權：任何人）
-     4. 喺 App 內填寫「申請接入」自動送出，管理員於系統後台／Vercel 登記後即時生效
+   onboard.js — Portal 接入既有 BADGE 後端的申請／Admin 設定輔助。
+   只收集既有 /exec 與 API Key 供 Admin 登記；不建立新 Sheet/GAS，
+   不複製帳戶。申請收件回執不等於功能已啟用，須先通過共用 action contract 驗證。
    ============================================================ */
 
 import { registry } from './units.js';
-import { unifiedGasTemplate } from './unifiedtemplate.generated.js';
-import { download } from './exporter.js';
 import { toast, copyText, icon, esc, modal } from './util.js';
 import { newOperationId, uncertainWriteText } from './operations.js';
 
 export const APP_TYPE = '82venture';       // 中央收件匣用 appType 分辨來源（同 VSBADGE 共用收件匣）
 export const APP_NAME = '深資童軍管理系統';        // 全名，方便管理員喺 ADMIN 系統睇到係邊個 app
-
-/** 登入前／任何時候直接下載同 builder 完全一致的 Unified Code.gs。 */
-export function downloadCodeGs() {
-  download('Code.gs', unifiedGasTemplate(), 'text/plain;charset=utf-8');
-  toast('已下載完整 Unified Code.gs（支部完整版＋BADGE 輕量版前端共用）', 'ok');
-}
-
-/** 登入前／任何時候直接複製 Unified Code.gs 原始碼到剪貼簿。 */
-export async function copyCodeGs() {
-  const code = unifiedGasTemplate();
-  const ok = await copyText(code);
-  if (ok) toast('已複製 Code.gs 全部原始碼到剪貼簿！', 'ok');
-  else toast('未能複製，請使用「下載 Code.gs」', 'err');
-}
 
 /* 內建嘅中央管理員收件匣（同 api/proxy.js 嘅 SCOUT_ADMIN_API 同一個；同 VSBADGE 共用，
    用 appType 分辨）。data/units.json 有設定就用設定值。 */
@@ -66,9 +47,9 @@ export function validateApplication(input = {}) {
   if (!troopId) errors.push('請填旅團編號（例：0100）');
   else if (!ID_RE.test(troopId)) errors.push('旅團編號只可以用英數／-_，最長 32 字');
   if (!troopName) errors.push('請填旅團名稱');
-  if (!scriptUrl) errors.push('請填你嘅 Apps Script /exec 網址');
+  if (!scriptUrl) errors.push('請填既有 BADGE Apps Script /exec 網址');
   else if (!EXEC_RE.test(scriptUrl)) errors.push('後端網址要係 Google Apps Script 嘅 /exec 正式部署網址（https://script.google.com/macros/s/…/exec）');
-  if (!apiKey) errors.push('請填 Unified GAS 執行 showApiKey 顯示嘅 API Key');
+  if (!apiKey) errors.push('請填既有 BADGE backend 的 API Key');
 
   let mainSystemUrl = '';
   try { mainSystemUrl = globalThis.location?.origin || ''; } catch (e) { mainSystemUrl = ''; }
@@ -92,9 +73,8 @@ export function validateApplication(input = {}) {
  * 把申請送去中央管理員收件匣 —— 同 VSBADGE 一樣行同源 proxy：
  *   瀏覽器 ──POST /api/proxy (action=submitRegistration)──▶ Vercel ──▶ 管理員收件匣 GAS
  * 目的地固定喺伺服器端（前端改唔到）。
- * 注意：收件匣**唔會回執**（ADMIN 收到之後自己轉寄畀團長，開團後 email 通知旅團），
- * 所以 App 只可以知道「送出去咗」——ADMIN 系統收到就 OK。
- * 冇 /api/proxy（淨靜態部署、GitHub Pages）就 fallback 直接 POST。
+ * ADMIN 收件匣可能回覆明確 receipt，也可能只回一般成功／無回應；只有上游明確確認才回 `receipt:true`。
+ * 冇 /api/proxy（淨靜態部署、GitHub Pages）就 fallback 直接 POST，而 no-cors 永遠沒有可驗證的 receipt。
  * @returns {{ok:boolean, via:'proxy'|'direct', receipt:boolean, ms:number, payload:object, errors?:string[]}}
  */
 async function postViaProxy(payload, action, timeoutMs) {
@@ -123,7 +103,7 @@ async function postViaProxy(payload, action, timeoutMs) {
     const success = r.ok && j.success !== false && j.ok !== false;
     const outcome = explicit || (success ? 'applied' : (r.status >= 500 ? 'unknown' : 'not_applied'));
     if (outcome === 'applied') {
-      return { available: true, ok: true, outcome, mayHaveApplied: true, ms: Date.now() - t0 };
+      return { available: true, ok: true, outcome, receipt: j.receipt === true, mayHaveApplied: true, ms: Date.now() - t0 };
     }
     return { available: true, ok: false, outcome,
       mayHaveApplied: j.mayHaveApplied === true || outcome === 'unknown' || outcome === 'applied',
@@ -187,7 +167,7 @@ export async function submitApplication(input = {}, timeoutMs = 20000) {
   v.payload.operation_id = operationId;
   const viaProxy = await postViaProxy(v.payload, 'submitRegistration', timeoutMs);
   if (viaProxy.available && viaProxy.ok) {
-    return { ok: true, via: 'proxy', receipt: false, outcome: 'applied', operationId,
+    return { ok: true, via: 'proxy', receipt: viaProxy.receipt === true, outcome: 'applied', operationId,
       ms: viaProxy.ms, payload: v.payload };
   }
   if (viaProxy.outcome === 'unknown') {
@@ -488,23 +468,23 @@ export function envUnitTemplate(code = '<編號>', name = '', execUrl = '', apiK
   ].join('\n');
 }
 
-/** 貼落 Vercel 嘅逐步指示（同一個來源：教學頁同「系統」都用呢個） */
+/** Admin 登記既有 BADGE backend 的核對步驟（不是新建後端操作）。 */
 export function envUnitSteps(code = '<編號>') {
   return [
-    `Vercel → 你嘅專案 → Settings → Environment Variables`,
-    `逐個新增上面 3 個變數（只加到你要測試嘅環境）`,
-    `儲存後撳 Deployments → 最新嗰個 → … → Redeploy（環境變數要重新部署先生效）`,
-    `部署完打開系統 → 旅團清單應該出現 ${code}`,
-    `通知旅團更新同一支 Apps Script 嘅 Unified Code.gs（App 內下載）＋ 在測試副本執行一次 initializeSheets`
+    `先核對 ${code} 提交的是既有 BADGE /exec 與同一個 BADGE API Key；不要建立新 Sheet/GAS 或複製帳戶`,
+    '正式共用 router 尚未驗收前，不要把裸 BADGE v9.6 標作 Portal 已啟用；核對 docs/BACKEND_SYNC.md 的 action contract',
+    `確認正式共用後端已支援 Portal authLogin／authWhoAmI／authOpenAccounts 後，先在 Vercel 測試環境 Settings → Environment Variables 登記`,
+    `加入 TROOP_${code}_NAME、TROOP_${code}_BACKEND、TROOP_${code}_APIKEY；URL 與 Key 必須來自同一既有 BADGE backend`,
+    '儲存後 Redeploy；/api/units 的 backendReady 只表示設定格式齊全，仍要做跨前端登入／開戶／讀回驗收'
   ];
 }
 
 export function adminChecklist(troopId = '<編號>') {
   return [
-    `（可選公開名單）data/units.json：喺 units 加 "${troopId}" entry，只放 code／name／section 等公開資料；唔好放 backend／apiKey 落 Git`,
-    `Vercel：只加 TROOP_${troopId}_NAME／BACKEND／APIKEY；名稱、/exec、Key 必須與 BADGE 完全相同，再 Redeploy`,
-    `旅團同一張 Sheet 貼 App 下載的完整 Unified Code.gs，執行 initializeSheets／showApiKey，再部署正式 /exec`,
-    `功能完整版支部前端（包括 Progress）與 BADGE 輕量前端固定共用上述完整 Unified GAS／Sheet；不要另設精簡 BADGE／Progress 後端或 browser Key`,
-    '實測兩個前端按各自 action allowlist 讀寫同一 YMIS／Sheet，並以本地 session／role／scope 授權後，通知支部接入完成；未來旅系統 reader 由旅系統端另行驗收，支部不新增 SSO 或入口控制'
+    `核對申請中的 ${troopId} 是既有 BADGE backend 的正式 /exec 與 API Key；不得要求新建 Sheet/GAS、建立 Portal 帳戶或搬移帳戶`,
+    '目前裸 BADGE v9.6 尚未實作 Portal 使用的 authLogin／authWhoAmI／authOpenAccounts；在正式共用 adapter 部署及驗收前，不要宣稱 Portal 已啟用',
+    `正式後端 contract 通過後，Admin 才在 Vercel 設定 TROOP_${troopId}_NAME／BACKEND／APIKEY，選對 environment 並 Redeploy`,
+    '確認 /api/units 不洩漏 URL／Key；backendReady 不是 action 相容性或啟用成功的證明',
+    '用同一個 BADGE Users 帳戶驗證兩個前端登入、批次開戶及讀回；核對沒有新增第二帳戶表或複製使用者資料'
   ];
 }

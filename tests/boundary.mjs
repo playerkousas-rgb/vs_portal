@@ -163,24 +163,23 @@ console.log('\n▌⑤ 邊界文件存在而且寫明「唔算連上」');
   ok('SCOPE 講明現在未有中央旅系統', /現在沒有中央旅系統/.test(scope));
   ok('SCOPE 規定本地登入保持正常可用',
     /ALLOW_LOCAL_LOGIN[\s\S]{0,80}保持 `true`/.test(scope));
-  ok('SCOPE 定義 Progress 為功能完整版支部前端內部模組',
-    /Progress 是完整支部前端內的業務模組/.test(scope));
-  ok('SCOPE 固定 Unified GS 是完整功能後端',
-    /Unified GS 是\*\*完整功能後端\*\*/.test(scope)
-      && /身份、進度、獎章、履歷、申報及支部行政功能/.test(scope));
-  ok('SCOPE 固定 vs_portal 完整版、BADGE 輕量版前端定位',
-    /支部系統前端是功能完整版/.test(scope)
-      && /BADGE 是同一後端的輕量前端/.test(scope));
+  ok('SCOPE 定義 Progress 為支部前端業務模組而非第二 backend',
+    /Progress 是完整支部前端的業務模組/.test(scope) && /不建立第二 backend/.test(scope));
+  ok('SCOPE 要求同一既有後端及指出正式 contract 未驗收',
+    /既有 BADGE \/exec／Sheet／Users/.test(scope)
+      && /不是現有正式部署已互通/.test(scope) && /staging 驗收/.test(scope));
+  ok('SCOPE 指明 Portal 完整、BADGE 輕量，兩者目標使用同一後端',
+    /Portal 完整前端/.test(scope) && /BADGE 輕量前端/.test(scope)
+      && /同一既有 BADGE 後端/.test(scope));
   ok('SCOPE 禁止把 BADGE 輕量誤當精簡 GS',
     /BADGE 前端較輕[\s\S]{0,100}精簡 GS/.test(scope));
-  ok('SCOPE 規定 UI 功能面不可取代 server-side 授權',
-    /畫面隱藏亦不是[\s\S]{0,20}安全邊界/.test(scope)
-      && /session、角色及 scope/.test(scope));
+  ok('SCOPE 規定 action 按登入角色與 scope 授權',
+    /實際可用 action 仍按登入角色／scope 授權/.test(scope));
   ok('SCOPE 固定未來方向為旅系統單向讀取支部後端',
     /旅系統[^\n]{0,40}單向讀取各支部後端/.test(scope));
   ok('SCOPE 固定 BOOK 可讀正式資料及提交待批匯入',
-    /BOOK[^\n]{0,50}讀取[^\n]{0,80}BADGE/.test(scope)
-      && /BOOK[^\n]{0,50}提交匯入候選/.test(scope));
+    /BOOK → 讀取 BADGE 正式資料/.test(scope)
+      && /BOOK → BADGE 待批匯入/.test(scope));
   ok('SCOPE 固定 BOOK 匯入要領袖確認先成正式紀錄',
     /只有領袖確認後才寫入正式紀錄/.test(scope)
       && /BOOK 匯入直接成為正式紀錄，或繞過領袖確認/.test(scope));
@@ -190,27 +189,25 @@ console.log('\n▌⑤ 邊界文件存在而且寫明「唔算連上」');
   ok('AGENTS 守住 BOOK 待批匯入邊界',
     /BOOK 可讀正式資料及提交待批匯入/.test(agents)
       && /只有領袖確認後先可寫入正式紀錄/.test(agents));
-  ok('AGENTS 守住完整後端、完整版及輕量版前端定位',
-    /Unified GS 有完整功能/.test(agents)
-      && /vs_portal 是功能完整版前端/.test(agents)
-      && /BADGE 是輕量前端/.test(agents));
+  ok('AGENTS 指明沿用既有 BADGE 後端及測試 bundle 不得部署',
+    /目標沿用既有 BADGE GS／Sheet／Users/.test(agents)
+      && /隔離 Unified bundle 不得部署到正式旅團/.test(agents));
 
   const glossary = read('GLOSSARY.md');
   ok('GLOSSARY 定義 BADGE 輕量只係前端定位',
     /BADGE[^\n]*輕量前端/.test(glossary)
       && /輕量係前端定位[^\n]*精簡 GS/.test(glossary));
-  ok('GLOSSARY 定義 Unified 支部後端具備完整功能',
+  ok('GLOSSARY 定義共用後端沿用 BADGE Sheet、URL、Key 及 Users',
     /完整 Unified 支部後端/.test(glossary)
-      && /具備完整功能/.test(glossary));
+      && /既有 BADGE Sheet/.test(glossary) && /API Key 及 Users/.test(glossary)
+      && /尚未驗收/.test(glossary));
 
   const readme = read('README.md');
-  ok('README 講明完整 Unified 後端配完整版及輕量版前端',
-    /同一支完整 Unified GAS/.test(readme)
-      && /支部系統前端是功能完整版/.test(readme)
-      && /BADGE 是輕量前端/.test(readme));
-  ok('README 講明前端功能面不取代 role／scope 授權',
-    /前端有沒有顯示某功能不是安全邊界/.test(readme)
-      && /session、role 及 scope/.test(readme));
+  ok('README 講明 BADGE 精簡、Portal 完整及可獨立使用',
+    /BADGE 是功能較精簡的前端/.test(readme) && /支部系統是功能完整版前端/.test(readme)
+      && /可只用其中一個，也可兩個一起用/.test(readme) && /不代表目前已驗收完成/.test(readme));
+  ok('README 講明隱藏入口不等於授權',
+    /隱藏入口不等於授權/.test(readme) && /仍須通過後端檢查/.test(readme));
 
   const architecture = read('docs/UNIFIED_ARCHITECTURE_TEST.md');
   ok('架構拓撲把完整能力放在 Unified GS，而不是 BADGE 子集',
@@ -226,13 +223,13 @@ console.log('\n▌⑤ 邊界文件存在而且寫明「唔算連上」');
     'DEPLOY_GUIDE_FOR_TROOPS.md', 'docs/MASTER_SHEET.md',
     'docs/UNIFIED_NEW_SHEET_SETUP.md', 'docs/ADMIN_ONBOARDING.md', 'docs/ADD_NEW_UNIT.md'
   ].map(read).join('\n');
-  ok('部署文件固定完整後端、功能完整版及 BADGE 輕量前端',
-    /完整功能後端/.test(deployDocs)
-      && /功能完整版前端/.test(deployDocs)
-      && /BADGE[^\n]*輕量前端/.test(deployDocs));
-  ok('部署文件拒絕另建 BADGE 精簡後端',
-    /不要因 BADGE 較輕而建立第二支精簡 GAS/.test(deployDocs)
-      && /不要另設 BADGE 精簡後端/.test(deployDocs));
+  ok('部署文件要求兩個前端使用同一既有後端且可單獨使用',
+    /BADGE 與 Portal 可單獨或一起使用/.test(deployDocs)
+      && /同一個既有 Apps Script 專案/.test(deployDocs)
+      && /同一張 Sheet/.test(deployDocs) && /尚未完成正式共用後端驗收/.test(deployDocs));
+  ok('部署文件拒絕為加入 Portal 新建 Sheet、GAS 或複製帳戶',
+    /不得為加入 Portal 新建 Sheet／GAS/.test(deployDocs)
+      && /搬移／複製帳戶/.test(deployDocs));
 
   const builder = read('scripts/build-unified-gas.mjs');
   const extension = read('apps-script/unified-src/unified-extension.gs');

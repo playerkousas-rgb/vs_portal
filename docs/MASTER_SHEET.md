@@ -1,107 +1,79 @@
-# Unified Sheet：行政、進度、通告與申報
+# Portal／BADGE 共用旅團既有後端：架構與驗收邊界
 
-> 每個支部只有一張 Google Sheet 與一支**完整功能** Unified Apps Script。支部系統功能完整版前端與 BADGE 輕量前端都寫回這張 Sheet；不共用其他支部的後端，也不另建 BADGE 精簡後端。
+> **目前狀態：正式共用尚未驗收。** Portal 完整版要使用旅團目前的 BADGE `/exec`、API Key、Google Sheet、`Users` 帳戶、名冊與業務資料。不得為 Portal 新建生產 Sheet／GAS、另建身份／帳戶表／資料來源，亦不得要求搬移或複製帳戶／資料。
 >
-> 現在是「BOOK → BADGE → 5 個支部系統」的第 3 階段，尚未有中央旅系統；本地支部帳戶是正常身份來源。
+> `apps-script/UnifiedCode.gs` 與 `apps-script/unified-src/` 目前是 `isolated-test-only` 測試組合，並非正式 BADGE adapter 或部署指引。
 
-## 1. 拓撲
+## 1. 目標拓撲
 
 ```text
-功能完整版支部前端（vs_portal：行政＋Progress 等完整模組）──┐
-BADGE 輕量前端（vsbadge：只呈現部分流程）───────────────────┼──▶ 同一完整 Unified GAS /exec ──▶ 同一旅團 Sheet
-已登入團員入口（members.html：本人通告／申報／進度）────────┘
+Portal 完整前端 ──同源 Vercel Registry／Proxy──┐
+                                               ├──旅團目前使用的 BADGE /exec、API Key、Sheet、Users
+BADGE 輕量前端 ────────────────────────────────┘
 ```
 
-完整功能屬 Unified GS；「輕量」只描述 BADGE 的前端能力面，不代表後端缺少行政、身份、進度、獎章、履歷或申報功能。不同前端可以有不同 action allowlist，但 routing 與 server-to-server HMAC 根都使用該旅團同一 `API_KEY`。API Key 不等於用戶身份；所有內容 action 都由後端按 server-issued session、本支部身份、模組 grant 及 scope 授權。
+Portal `/api/proxy` 從 server Registry 取既有 `/exec`／API Key，忽略 browser 提交的 URL／Key 並只轉發 allowlist 內 action。Proxy 不會轉換 Portal auth action，也不會替 Apps Script 安裝 handlers。BADGE 前端和 Portal 必須落在同一個既有 backend deployment 與資料上。
 
-## 2. 建立 Unified Sheet
+`GET /api/units` 的 `backendReady` 只代表 Registry 已有格式正確的 URL／Key，不表示 GAS 已實作 Portal action、登入、帳戶或權限契約。申請送到 ADMIN 收件匣亦不會自動寫 Vercel Registry。
 
-1. 建立新的 Google Sheet。
-2. **擴充功能 → Apps Script**。
-3. 貼上 [`../apps-script/UnifiedCode.gs`](../apps-script/UnifiedCode.gs)。
-4. 執行 `initializeSheets`。
-5. 執行 `showApiKey`，安全保存 Key。
-6. 部署 Web App（執行身分：我；存取權：任何人），取得正式 `/exec`。
-7. Vercel 只設定：
+## 2. 核對到的 BADGE／Portal contract 差異
+
+- BADGE v9.6 登入 action 是 `login`，回傳 BADGE `token`；Portal 呼叫 `authLogin`，預期 `sessionToken`、`sessionExpiresAt` 及 Portal account projection。
+- BADGE v9.6 以 `validateToken()` 和 `Users` 進行 session／帳戶驗證；`doPost` 沒有 `authWhoAmI` handler。Portal proxy 的 authenticated routes 因而無法直接對裸 v9.6 執行完整身份核對。
+- BADGE v9.6 帳戶 action 有 `addUser`／`bulkAddUsers`、`resetPassword`、`updateUserProfile`、`setUserStatus`、`deleteUser`、`updateUserRole`／`updatePermissions`。Portal 呼叫 `authOpenAccounts`、`authCreateAccount`、`authResetPassword`、`authDeleteAccount`、`authRestoreAccount` 等；alias 不在裸 BADGE v9.6。
+- BADGE 原生自助密碼流程是 `requestPasswordReset`／`completePasswordReset`；Portal 還呼叫 `authForgotPassword`／`authCompletePasswordReset`。格式、token/session response 及密碼行為要逐項對齊。
+- BADGE 原生 Progress／履歷 actions（如 `load`、`save`、`saveOtherBadge`、`requestComplete`、`reviewRequest`、`saveLogRecord`、`reviewLogRequest`）屬其原有 Sheet handlers；Portal 的行政資料 contract 另有 `loadDb`／`saveDb`／`loadTables`／`saveTables`。Portal proxy allowlist 有某 action 不代表 BADGE GAS 實際提供它。
+- BADGE 權限按 `Users.role`、`can_tick`、`allowed_badges`、`canManageUser()` 及 action handler 限制；Portal branch schema 是 `member`／`exco`／`leader`／`chief`／`super` 及模組 ACL。正式 adapter 必須以 BADGE 使用者資料為身份權威，逐項映射並由 GAS 驗證，不可信任 browser 的 role／YMIS／姓名或 API Key。
+- Portal 原 GAS (`assets/js/lib/gastemplate.js`／`apps-script/Code.gs`) 有獨立帳戶與資料模型，不能作為正式 BADGE Users 或獨立正式部署。
+- `unified-extension.gs` 在 `v9.6-u1-test` 隔離 router 提供部分 alias 並將開戶映射到 BADGE `Users`；`releaseChannel` 是 `isolated-test-only`。這是測試證據，不是裸 BADGE 正式 deployment 已相容的證據。
+
+逐項 action、session、密碼／停用及權限比對見 [`BACKEND_SYNC.md`](BACKEND_SYNC.md)。
+
+## 3. 正式 adapter 所屬位置與接線順序
+
+正式相容層應由擁有 BADGE `Users`、token、native Progress handler 及權限規則的 **BADGE Apps Script source of truth** 維護。Portal repo 維護前端 contract、Registry／Proxy 與回歸；不應加入第二身份來源或另建 GAS 資料層。
+
+原地升級的邊界：
+
+- 同一 Apps Script project、同一生產 Sheet、同一 API Key、同一既有 `/exec` deployment；
+- 同時保留 BADGE 原生 `login`、帳戶、Progress／履歷等 action；
+- Portal aliases 必須服務端映射到同一 BADGE `Users`／session／業務資料；不得產生第二套密碼或帳戶表；
+- 如 Portal 完整版確有 BADGE 尚無的行政業務資料，schema 及儲存位置必須屬正式共用 contract，且仍在同一既有 Sheet／project；不得建立第二來源或複製 BADGE identity／Progress；
+- 由維護者在核准的真 Apps Script staging 驗證既有資料保留、互通權限及回退，通過後才更新既有正式 deployment。
+
+Portal repository 目前沒有已完成真 Apps Script staging 的正式 BADGE compatibility release。不要先向旅團要求建立新 Sheet／GAS、貼測試 bundle、執行測試 `initializeSheets()` 或把裸 v9.6 登記後稱作已啟用。
+
+## 4. Vercel Registry
+
+只有正式共用 adapter 在真實 staging 通過後，Admin 才登記旅團目前正在使用的資訊：
 
 ```dotenv
 TROOP_<ID>_NAME=旅團顯示名稱
-TROOP_<ID>_BACKEND=https://script.google.com/macros/s/部署識別碼/exec
-TROOP_<ID>_APIKEY=showApiKey 顯示的值
+TROOP_<ID>_BACKEND=https://script.google.com/macros/s/<既有 BADGE deployment>/exec
+TROOP_<ID>_APIKEY=<同一既有 BADGE deployment 的 API Key>
 ```
 
-8. Redeploy。
+秘密保存在 Vercel server environment，選對 Production／Preview／Development environment 並 Redeploy。`data/units.json` 只放公開 metadata；不得把 URL／Key 放入 browser、Git、issue 或另外建立 `PROGRESS*`／`PORTAL*` 接線。
 
-不要把 `/exec`／API Key 寫入 Git 的 `data/units.json` 或 browser profile。不要設定 `PORTAL*`／`PROGRESS*` 第二套接線。
+## 5. Progress／名冊／帳戶
 
-## 3. Sheet 內的資料
+- 目標：Portal 和 BADGE 的 Progress、名冊、帳戶操作都由同一既有後端及資料權威處理；正式 action contract 完成前，不能宣稱資料已共用。
+- BADGE 原生 `load`、`save`、`saveOtherBadge`、審批與履歷 actions 必須保留既有行為；Portal `/api/progress` 的 allowlist 只限制 Portal server 請求，不能替上游增加 handler。
+- Portal 名冊新增與開戶分開：名冊編輯不等於 BADGE `Users` 開戶；批量開戶需以已授權 actor 寫入同一 BADGE `Users` 並 readback。
+- 名冊同步不得覆蓋 BADGE `role`、密碼 hash、`can_tick`、`allowed_badges` 或帳戶狀態；權限更新要走專用、同一 BADGE 使用者授權的 action。
+- `data/progress/items.json` 是前端內建考核項目定義，不是帳戶或業務資料的替代後端。
 
-`initializeSheets` 只增補缺失 schema，不應清空現有資料或輪換 API Key。Unified Sheet 會涵蓋：
+## 6. 正式 staging checklist
 
-- 行政資料庫及報表：團員、帳目、物資、會議、通告、報名、申報等；
-- 身份與授權映射：`Users` 及 canonical roster；
-- 進度：`進度追蹤`、`其他獎章`、`待批完成`、`活動履歷`、`待批履歷`、`成員名單`；
-- 操作與同步紀錄。
+- [ ] BADGE source of truth 有正式版本化 compatibility contract，且在既有 Apps Script project／deployment 原地升級。
+- [ ] BADGE 原生登入、token、用戶管理及 Progress／履歷 action 保持正常。
+- [ ] 同一現有 BADGE Users 帳戶在兩個前端互相登入；YMIS、角色、狀態及 session 結果一致。
+- [ ] Portal 開戶／密碼重設／停用／復原／角色變更在 BADGE Users 立即讀回；不新增第二帳戶或密碼來源。
+- [ ] Portal 與 BADGE Progress、名冊及業務資料讀寫落在同一既有 Sheet；無第二資料來源或帳戶鏡像。
+- [ ] GAS server 驗證 session、角色及 scope；client role／YMIS／姓名／API Key 不作授權依據。
+- [ ] member／執委／領袖／團長及錯旅團、錯 Key、過期 session、非法 action 均 fail closed。
+- [ ] 原地更新不清除 BADGE 使用者、hash、名冊、Progress／履歷、API Key；必要的 additive schema 有文件與 staging 結果。
+- [ ] 真 Apps Script runtime 的並發、Lock、逾時、readback 及回退測試通過。
+- [ ] 以上通過後才設定 Vercel `NAME`／`BACKEND`／`APIKEY` 並 Redeploy；`backendReady` 不作為驗收結果。
 
-`Users` 本地帳戶保存 PBKDF2 hash，並在 `ALLOW_LOCAL_LOGIN=true` 時作正常日常登入。未來旅系統的 server-side reader 不會取代這個身份來源、關閉本地登入，亦不會要求 Progress 建立上游帳戶鏡像。
-
-## 4. 行政資料保存
-
-完整管理介面的讀寫必須先有有效 branch session：
-
-1. 登入取得 server-issued opaque session；
-2. 讀取目前 server version；
-3. 本機修改；
-4. 「儲存到後端」做版本與受保護欄位核對；
-5. 同格衝突要明確處理，不得靜默覆蓋。
-
-API Key 只由 server Registry 注入，不能取代 session。browser 自報 role、`__serverSigned`、YMIS 或帳戶欄位不構成授權。
-
-## 5. 進度
-
-- 功能完整版支部前端經同源 `/api/progress` 呼叫同一完整 Unified GAS；BADGE 輕量前端亦按其 allowlist 使用同一 `/exec` 與 API Key。
-- action dispatcher 直接選取 `進度追蹤`、`成員名單` 等分頁；所有分頁與行政能力都屬於同一完整後端。
-- staff 可管理全團；member action 由 session 固定本人 YMIS。
-- 審批 `reviewRequest`／`reviewLogRequest` 寫回同一張 Sheet。
-- 考核項目固定讀同源 `data/progress/items.json`；不是第二資料後端。
-- 「進度 → 資料來源」沒有 backend、API Key、remote catalog、登入閘門或旅系統接口。
-- `進度追蹤` 沒有資料時正常回成功空集合，介面顯示 0 項，不得顯示「讀取失敗」。
-- 未來旅系統單向讀取支部後端；Progress 不參與該 reader 契約。
-- BOOK 可讀取 BADGE 正式資料，也可提交匯入候選；候選先進待批，只有領袖確認後才寫入正式進度／履歷。
-
-## 6. 團員手機申報與通告
-
-所有流程由 `members.html?u=<ID>` 的本地身份登入開始。`entry.html`、`notice.html`、`borrow.html`、`constitution.html` 只保留舊網址轉向，不會匿名讀寫資料。
-
-### 收支申報
-
-已登入團員可在獲授權的入口提交本人待批申報。後端由 session 固定提交者；client 自報姓名、memberId 或角色不構成身份。單據相片如啟用 Drive，DB 只保存 URL。執委／領袖在管理系統批核後，才正式寫入帳目。
-
-### 通告及回覆
-
-通告正文及本人回覆經 authenticated hub projection／`hubNoticeSignup` 處理。後端只回該身份可見內容，並只接受該通告定義的白名單欄位；其他人的回覆及完整行政 DB 不會送到團員瀏覽器。
-
-## 7. 多旅團隔離
-
-- 每旅團各有一張 Sheet、一支 Unified GAS、一個 API Key。
-- Registry 以 `TROOP_<ID>_NAME/BACKEND/APIKEY` 分開。
-- 另一旅團 API Key、session 或未授權 server reader request 全部不可跨旅使用。
-- 不存在「未登記旅團借用預設後端」fallback。
-- `/api/units` 不回傳 secret 或完整 `/exec`。
-
-## 8. 驗收
-
-- [ ] `/api/units` 顯示正確旅團 Registry 狀態，無 secret。
-- [ ] 同一支 Unified GS 具備身份、行政、Progress、獎章、履歷及申報能力；沒有 BADGE 精簡 GS。
-- [ ] 未登入不能下載完整行政 DB。
-- [ ] 功能完整版前端、其 Progress 模組與 BADGE 輕量前端的寫入落在同一 Sheet。
-- [ ] 同一 YMIS 在兩個前端對應同一人。
-- [ ] 兩個前端各自受 action allowlist 限制；browser 偽造 backend／apikey／role／YMIS 不可改路或升權。
-- [ ] member 只可本人；staff scope 正確。
-- [ ] 未登入不能讀通告／團章或提交申報／借用；舊頁只轉向登入入口。
-- [ ] 已登入通告／申報只寫 session actor 的白名單欄位，不能讀完整 DB。
-- [ ] 重跑 `initializeSheets` 兩次，API Key、帳戶 hash、行政與進度資料不變。
-- [ ] 另一旅團 token／Key 全部拒絕。
-- [ ] 真 Apps Script staging 已測 Lock、Cache、Sheet、Drive、Mail 及並發。
-
-完整 staging 證據表見 [`UNIFIED_STAGING_RESULTS.md`](UNIFIED_STAGING_RESULTS.md)。
+全部未跑或未通過的項目保持 `NOT RUN`／`FAIL`；Unified VM 與測試 adapter 不計為真實 staging。最新記錄見 [`UNIFIED_STAGING_RESULTS.md`](UNIFIED_STAGING_RESULTS.md)。

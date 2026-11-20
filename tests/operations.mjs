@@ -104,21 +104,31 @@ assert.equal(wordingUnknown.via, 'proxy');
 assert.equal(wordingUnknown.outcome, 'unknown');
 assert.equal(wordingUnknown.mayHaveApplied, true);
 
-// A definite 404 means the proxy endpoint never accepted the write, so the
-// configured direct endpoint may be used exactly once.
+// Missing proxy never falls back to a browser-selected endpoint, even on 404.
 calls = 0;
-globalThis.fetch = async (url, init) => {
+globalThis.fetch = async (url) => {
   calls++;
-  if (String(url) === 'api/proxy') return new Response('not found', { status: 404 });
-  const body = JSON.parse(init.body);
-  return new Response(JSON.stringify({ success: true, outcome: 'applied', operationId: body.operationId }),
-    { status: 200, headers: { 'Content-Type': 'application/json' } });
+  assert.equal(String(url), 'api/proxy');
+  return new Response('not found', { status: 404 });
 };
-const directAfter404 = await gateway.postBackend({ action: 'saveTables', tables: { members: [{ id: 'm3' }] } },
-  { unit: '0082', execUrl: 'https://script.google.com/macros/s/AKfycbx1234567890/exec' });
-assert.equal(calls, 2);
-assert.equal(directAfter404.via, 'direct');
-assert.equal(directAfter404.outcome, 'applied');
+const noFallback = await gateway.postBackend({ action: 'saveTables', tables: { members: [{ id: 'm3' }] } },
+  { unit: '0082', execUrl: 'https://script.google.com/macros/s/AKfycbx1234567890/exec', apiKey: 'secret', preferDirect: true });
+assert.equal(calls, 1);
+assert.equal(noFallback.via, 'none');
+assert.equal(noFallback.outcome, 'not_sent');
+
+// Client-provided URLs and keys never leave the browser in the proxy payload.
+globalThis.fetch = async (url, init) => {
+  assert.equal(String(url), 'api/proxy');
+  const body = JSON.parse(init.body);
+  for (const key of ['apiKey', 'apikey', 'backend', 'gasUrl']) assert.equal(key in body, false);
+  return new Response(JSON.stringify({ ok: false, reason: 'not_registered', error: 'unknown unit' }), { status: 404 });
+};
+const unregistered = await gateway.postBackend({ action: 'loadDb', apiKey: 'secret', apikey: 'secret', backend: 'evil', gasUrl: 'evil' },
+  { unit: '0082', execUrl: 'https://example.org/exec', preferDirect: true });
+assert.equal(unregistered.reason, 'not_registered');
+assert.equal(unregistered.via, 'proxy');
+assert.equal(gateway.beFromQuery('?be=https://example.org/exec'), '');
 
 // With no proxy and no valid direct endpoint, the backend request was never sent.
 globalThis.location = { protocol: 'file:', hostname: '' };

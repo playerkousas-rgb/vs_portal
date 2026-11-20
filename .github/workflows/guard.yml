@@ -28,11 +28,14 @@ jobs:
       - name: Lint (syntax / action allowlist / deploy manifest)
         run: npm run lint
 
-      - name: Build GAS from single source (V4 - must be reproducible)
+      - name: Build GAS artifacts from sources (must be reproducible)
         run: |
           npm run build:gas
           git diff --exit-code -- apps-script/Code.gs \
             || { echo "::error::apps-script/Code.gs 同 gasTemplate() 唔一致 — 請跑 npm run build:gas 並 commit"; exit 1; }
+          npm run build:gas:unified
+          git diff --exit-code -- apps-script/UnifiedCode.gs assets/js/lib/unifiedtemplate.generated.js \
+            || { echo "::error::Unified GAS 或其瀏覽器下載產物未更新 — 請跑 npm run build:gas:unified 並 commit"; exit 1; }
 
       - name: Guard (S/F/A/W/V - secrets / size / links / version)
         run: node scripts/guard.mjs --ci

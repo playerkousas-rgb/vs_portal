@@ -118,6 +118,9 @@ try {
   section('裝置 A（執委）：種資料並推上後端');
   const A = await runDevice({ steps: [
     { op: 'wipe' },
+    /* The shared Users sheet already contains the first administrator. Load the
+       backend before writing instead of assuming the whole backend is empty. */
+    { op: 'load' },
     { op: 'addMember', name: '陳大文', ymis: '2026000001', identity: 'member' },
     { op: 'addMember', name: '李小美', ymis: '2026000002', identity: 'member' },
     /* 王領袖（leader）—— 用嚟驗本地內容層級：佢要見到團員見唔到嘅內部內容。
@@ -168,6 +171,7 @@ try {
       chapters: [{ heading: { zh: '第一章 總則', en: 'Chapter 1' }, articles: [{ zh: '第 1 條 本團名為測試旅深資童軍團。', en: 'Article 1.', items: [] }] }], appendices: [], history: [] } },
     { op: 'push' }
   ] });
+  ok('裝置 A 先讀取同一後端的初始管理員作同步基準', A.steps?.find(s => s.op === 'load')?.ok === true, JSON.stringify(A.steps?.find(s => s.op === 'load')));
   ok('裝置 A 推後端成功', A.steps?.find(s => s.op === 'push')?.ok === true, JSON.stringify(A.steps?.find(s => s.op === 'push')));
 
   /* Users 係唯一帳戶／role 權威。未開戶名冊不得自行升權，所以由真正 branch admin

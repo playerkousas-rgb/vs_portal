@@ -1,13 +1,11 @@
 /* ============================================================
    progress.js — 功能完整版 vs_portal 內的 Progress client
    ------------------------------------------------------------
-   設計：
-     · 完整 Unified GS 具備身份、行政、Progress、獎章、履歷及申報能力。
-     · vs_portal 係功能完整版前端，vsbadge 係只呈現部分流程的輕量前端；兩者使用同一權威資料。
-     · 呢邊只做兩件事：讀後端（GET ?action=load）／寫後端（POST action=save）。
-     · 固定使用旅團 Registry 已登記嘅同一 BACKEND／APIKEY；browser 冇第二套路線。
-   設定：Vercel 只需 TROOP_<id>_NAME／BACKEND／APIKEY，與 BADGE 完全相同。
-   安全：API Key 只留 server；瀏覽器只送 unit＋opaque session。client allowlist 唔取代後端 session／role／scope 驗證。
+   目標：Portal 與 BADGE 的 Progress 應走旅團目前同一個 BADGE /exec、API Key、Users 及資料。
+   現況：Registry／proxy 只提供路由與 allowlist；裸 BADGE v9.6 未提供 Portal 所需的完整 auth action contract。
+   這個 client 目前可呼叫 Progress actions，但其存在不代表正式 shared backend 已安裝、staging 通過或兩個前端已讀寫同一資料。
+   設定：Vercel 以 TROOP_<id>_NAME／BACKEND／APIKEY 指向團方既有 BADGE backend；backendReady 只表示設定存在。
+   安全：API Key 只留 server；瀏覽器只送 unit＋session。client allowlist 不會替上游增加 handler，亦不取代 GAS session／role／scope 授權。
    ============================================================ */
 
 import { load, getSession } from './store.js';
@@ -69,7 +67,7 @@ async function callApi(payload, { timeoutMs = 60000 } = {}) {
       return finish({ ok: false, reason: res.status === 404 ? 'no_api' : 'bad_response',
         mayHaveApplied: operation && res.status !== 404,
         error: res.status === 404
-          ? '呢部伺服器冇 /api/progress（Progress 要經同源 server API 讀寫支部 Unified Sheet）。本機可以用 `npm run dev`，或在 Vercel 部署。'
+          ? '呢部伺服器冇 /api/progress。Portal Progress 需要同源 API 轉發至 Registry 指向的既有 BADGE backend；正式 contract／staging 未通過前，不能當作共用已開通。'
           : 'Progress API 回應格式異常；寫入結果未能確定' }, res.status !== 404);
     }
     const merged = { ...json };

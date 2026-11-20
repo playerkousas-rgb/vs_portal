@@ -110,12 +110,12 @@ ok('登入表單未出現', !doc.getElementById('loginForm'));
 }
 
 ok('旅團閘有「新旅團申請接入」入口', !!doc.querySelector('[data-act="apply"]'));
-ok('閘面講明每旅團用自己嘅後端', /每個旅團用自己嘅 Google Sheet 做後端/.test(appText()));
+ok('閘面講明每旅團用自己嘅後端', /既有 BADGE/.test(appText()));
 const applyBtn = doc.querySelector('[data-act="apply"]');
 applyBtn.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
 await wait(120);
 const apBody = doc.body.textContent || '';
-ok('撳「申請接入」會開對話框', /新旅團申請接入/.test(apBody) && !!doc.getElementById('ap-id'));
+ok('撳「申請接入」會開對話框', /申請 Portal 接入/.test(apBody) && !!doc.getElementById('ap-id'));
 ok('申請表有齊欄位（編號／名稱／後端網址／API Key／聯絡人）',
   ['ap-id','ap-name','ap-url','ap-key','ap-contact','ap-note'].every(id => !!doc.getElementById(id)),
   ['ap-id','ap-name','ap-url','ap-key','ap-contact','ap-note'].filter(id => !doc.getElementById(id)).join(','));
@@ -128,41 +128,24 @@ ok('申請表有齊欄位（編號／名稱／後端網址／API Key／聯絡人
   const gOv = ovs[ovs.length - 1];
   const g = gOv?.querySelector('.modal, [role="dialog"]');
   const gt = g?.textContent || '';
-  ok('旅團閘有「部署指南」（毋須登入都睇得到）', !!g && /部署指南/.test(gt));
-  ok('指南有 5 步（下載 Code.gs → 貼上 → initializeSheets → 部署 → 提交登記）',
-    /第 1 步/.test(gt) && /第 2 步/.test(gt) && /第 3 步/.test(gt)
-    && /第 4 步/.test(gt) && /第 5 步/.test(gt) && /initializeSheets/.test(gt));
-  ok('指南講明完整後端供支部完整版與 BADGE 輕量前端共用',
-    /完整 Unified GAS/.test(gt) && /功能完整版前端/.test(gt)
-      && /BADGE 係輕量前端/.test(gt) && /進度追蹤/.test(gt) && /共用/.test(gt));
-  ok('指南第 5 步提到管理員會加 TROOP_<編號>_* 設定',
-    /TROOP_/.test(gt) && /環境變數/.test(gt));
-  ok('指南有下載／複製 Code.gs 掣', !!g.querySelector('#guide-dl-btn') && !!g.querySelector('#guide-copy-btn'));
-  ok('指南第 5 步講明申請直接入 ADMIN 系統（收件匣）＋ appType 分辨',
-    /ADMIN 系統/.test(gt) && /收件匣/.test(gt) && /82venture/.test(gt));
-  ok('指南講明「送出就 OK，唔使等回覆」（ADMIN 唔回執，開團後 email 通知）',
-    /送出就 OK/.test(gt) && /唔使等回覆/.test(gt) && /email 通知/.test(gt));
-  ok('指南有「填寫申請表自動送出」掣，連去申請表',
-    !!g.querySelector('#guide-apply-btn'), [...(g?.querySelectorAll('button') || [])].map(b => b.textContent.trim()).join(' | '));
-  /* 撳申請掣 → 應該閂指南、開申請表 */
+  ok('登入前指南說明接入既有 BADGE', !!g && /Portal 接入既有 BADGE/.test(gt));
+  ok('指南要求既有 /exec、Key，明確禁止新 Sheet／GAS 與複製帳戶',
+    /既有 BADGE/.test(gt) && /API Key/.test(gt) && /不要新建/.test(gt) && /不要複製帳戶/.test(gt));
+  ok('指南交代正式 contract 差異、Registry 不等於相容',
+    /authLogin/.test(gt) && /bulkAddUsers/.test(gt) && /backendReady/.test(gt));
+  ok('不提供部署測試 Code.gs 的下載／複製按鈕', !g.querySelector('#guide-dl-btn') && !g.querySelector('#guide-copy-btn'));
+  ok('指南設申請按鈕', !!g.querySelector('#guide-apply-btn'));
   g.querySelector('#guide-apply-btn')?.click();
   await wait(300);
-  ok('撳指南個申請掣 → 真係開到申請接入表',
-    !!doc.getElementById('ap-id') && /新旅團申請接入/.test(doc.body.textContent || ''));
-  ok('申請表寫明會送去做平台管理員嘅 ADMIN 系統',
-    /ADMIN 系統/.test(doc.body.textContent || ''));
+  ok('申請掣打開表單，並指出送去 ADMIN 收件匣', !!doc.getElementById('ap-id') && /ADMIN 收件匣/.test(doc.body.textContent || ''));
   [...doc.querySelectorAll('button')].filter(b => /^取消$/.test((b.textContent || '').trim()))
     .forEach(b => b.click());
   await wait(120);
 }
 
-ok('申請表教埋點起後端（Code.gs → initializeSheets → 部署）',
-  /Code\.gs/.test(apBody) && /initializeSheets/.test(apBody) && /網頁應用程式/.test(apBody));
+ok('申請表只收集現有 BADGE 資料，不指示建立後端',
+  /既有 BADGE/.test(apBody) && /API Key/.test(apBody) && /不需要建立新 Sheet/.test(apBody));
 ok('申請表自動帶主系統網址（方便管理員核對）', /主系統網址/.test(apBody));
-ok('申請表講清楚完整版支部前端與 BADGE 輕量前端共用完整 Unified GAS／API Key',
-  /Unified Code\.gs/.test(apBody) && /API Key/.test(apBody)
-    && /功能完整版支部前端/.test(apBody) && /BADGE 輕量前端/.test(apBody)
-    && /同一完整後端/.test(apBody));
 /* 驗證：填錯嘢要擋得住 */
 {
   const ob = await import('../assets/js/lib/onboard.js');

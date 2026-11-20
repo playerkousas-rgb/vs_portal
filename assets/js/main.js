@@ -12,8 +12,7 @@ import {
 } from './lib/units.js';
 import {
   adminInbox, validateApplication, submitApplication, adminChecklist,
-  applicationText, downloadCodeGs, copyCodeGs,
-  recordIssueReport, markIssueReportSent, validateIssue, submitIssue, issueText
+  applicationText, recordIssueReport, markIssueReportSent, validateIssue, submitIssue, issueText
 } from './lib/onboard.js';
 import { applyTheme, MAROON } from './lib/theme.js';
 import {
@@ -295,7 +294,7 @@ function loginSyncBanner() {
   const verLine = `<div class="xs faint mt-4">${icon('info', 12)} 版本：APP <b class="mono">${APP_VERSION}</b>`
     + `　·　後端 <b class="mono">${esc(bs.version || '（未連過）')}</b>`
     + (bs.spreadsheet ? `　·　${esc(bs.spreadsheet)}` : '')
-    + (bs.route ? `（${bs.route === 'proxy' ? '平台代理' : '自己貼嘅 /exec'}）` : '')
+    + (bs.route ? '（同源代理；相容性尚待驗收）' : '')
     + `</div>`;
   const prov = `<div class="xs faint mt-8">${icon('shield', 12)} 帳戶來源：${esc(src)}`
     + `　·　密碼核對：喺後端讀返嚟嘅名單上進行</div>`
@@ -602,11 +601,10 @@ function renderUnitGate() {
                <li>部署未完成／網絡問題 —— 可以撳下面「重新載入清單」再試</li>
              </ul>
              你可以直接<b>輸入旅團編號</b>入去。`
-          : `你可以撳「新旅團申請接入」登記自己旅團 —— 登記好之後，你嘅旅團就會喺呢度出現，由空白資料庫開始。
+          : `目前未有完成 Portal 共用後端登記嘅旅團。若你已有 BADGE 後端，可提交現有 <code>/exec</code> 同 API Key 俾 Admin 核對；呢個流程唔會建立新 Sheet／GAS 或複製帳戶。
              <ul style="margin:6px 0 0;padding-left:18px;line-height:1.8">
-               <li>已經喺 Vercel 加咗 <code>TROOP_&lt;編號&gt;_*</code>？記得撳 <b>Redeploy</b>，
-                   同埋將變數嘅 Environments 勾埋 <b>Preview ＋ Production</b>
-                   （淨係勾 Production，開 Preview 網址就會一個都讀唔到）</li>
+               <li>申請回執只代表 ADMIN 收到資料；Admin 核實正式共用 action contract 後，先會登記 Vercel 環境變數並通知開通</li>
+               <li>設定完成要 Redeploy，並喺 Production／Preview 等實際使用嘅 environment 登記</li>
              </ul>`}
       </div>
     </div>` : '';
@@ -660,13 +658,12 @@ function renderUnitGate() {
 
         <div class="row-between wrap gap-8" style="border-top:1px solid var(--line-2);padding-top:12px">
           <div class="grow" style="min-width:240px">
-            <div class="semibold">你嘅旅團未喺清單入面？（新旅團部署）</div>
-            <div class="xs faint">每個旅團用自己嘅 Google Sheet 做後端。毋須登入，先下載 <code>Code.gs</code> → 建立 Google Sheet → 執行 <code>initializeSheets</code> → 部署做網頁應用程式 → 把 URL 及 API Key 提交登記。</div>
+            <div class="semibold">已有 BADGE 後端，想開通 Portal？</div>
+            <div class="xs faint">把既有 BADGE Apps Script <code>/exec</code> 同 API Key 交畀 Admin 登記。唔使建立新 Sheet／GAS，亦唔會複製帳戶；Admin 會先核對共用後端版本。</div>
           </div>
           <div class="row gap-8 wrap" style="align-items:center">
-            <button class="btn btn-sm" data-act="dl-gs">${icon('download', 15)} 下載 Unified Code.gs</button>
-            <button class="btn btn-sm" data-act="guide">${icon('note', 15)} 部署指南</button>
-            <button class="btn btn-sm btn-primary" data-act="apply">${icon('plus', 15)} 新旅團申請接入</button>
+            <button class="btn btn-sm" data-act="guide">${icon('note', 15)} 接入說明</button>
+            <button class="btn btn-sm btn-primary" data-act="apply">${icon('plus', 15)} 申請 Portal 接入</button>
 
           </div>
         </div>
@@ -675,8 +672,7 @@ function renderUnitGate() {
       <div class="gate-foot">
         <div class="xs faint" style="margin-bottom:6px">APP 版本 <b class="mono">${APP_VERSION}</b></div>
         揀完之後先會出現<b>登入畫面</b>（領袖 / 執行委員會）。<br>
-        管理員開新旅團：喺 <code>data/units.json</code> 加 entry（唔使起資料夾）＋ Vercel 加
-        <code>TROOP_&lt;編號&gt;_BACKEND</code> / <code>_APIKEY</code>，再 Redeploy（詳見 docs/ADD_NEW_UNIT.md）。
+        正式 BADGE 共用 contract 與 staging 尚未完成；Registry 設定或申請不代表已開通（詳見 docs/BACKEND_SYNC.md）。
         <div class="mt-12"><button class="btn btn-ghost" id="btnUnitGateSOS" type="button">${icon('megaphone', 15)} 求救／回報問題（未揀旅團都用得）</button></div>
       </div>
     </div>
@@ -688,7 +684,6 @@ function renderUnitGate() {
     gotoUnit(code, { remember: false });
   }));
 
-  app.querySelector('[data-act="dl-gs"]')?.addEventListener('click', () => downloadCodeGs());
   app.querySelector('[data-act="guide"]')?.addEventListener('click', openDeployGuideModal);
   app.querySelector('[data-act="apply"]')?.addEventListener('click', openApplication);
   app.querySelector('[data-act="reload"]')?.addEventListener('click', async () => {
@@ -733,6 +728,7 @@ function gotoUnit(code, { remember = true } = {}) {
   setUnitCode(code);
   const u = new URL(location.href);
   u.searchParams.set('u', code);
+  u.searchParams.delete('be'); // retired browser-selected backend
   u.hash = '';
   location.href = u.toString();
 }
@@ -742,74 +738,36 @@ function gotoUnit(code, { remember = true } = {}) {
    ============================================================ */
 async function openDeployGuideModal() {
   await modal({
-    title: '🗺️ 深資童軍管理系統 · 多旅團後端部署指南',
+    title: '🗺️ Portal 接入既有 BADGE 後端',
     wide: true,
     trustedBodyHtml: `
-      <div class="note-box info mb-12">
-        ${icon('check', 16)}
-        <div><b>10 分鐘完成部署！</b>每個旅團一張 Google Sheet ＋ 一支完整 Unified GAS；支部系統係功能完整版前端，BADGE 係輕量前端，兩者共用。毋須登入即可下載並提交登記（申請會直接送去平台管理員嘅 ADMIN 系統）。</div>
+      <div class="note-box warn mb-12">
+        ${icon('alert', 16)}
+        <div><b>不需要建立新 Sheet／GAS，也不要複製帳戶。</b>Portal 的目標是使用旅團既有 BADGE 後端與同一批帳戶。申請回執只代表 ADMIN 收到資料，不代表 Portal 已啟用。</div>
       </div>
-      
       <div class="col gap-12" style="font-size:13.5px;line-height:1.6">
         <div class="card" style="padding:14px">
-          <div class="semibold mb-4">第 1 步：下載 Unified Code.gs</div>
-          <div class="xs faint mb-8">毋須登入；下方下載內容與本 repo builder 產物逐 byte 一致：</div>
-          <div class="row gap-8 wrap">
-            <button class="btn btn-sm btn-primary" id="guide-dl-btn" type="button">${icon('download', 15)} ⬇️ 立即下載 Unified Code.gs</button>
-            <button class="btn btn-sm" id="guide-copy-btn" type="button">${icon('copy', 15)} 📋 複製原始碼</button>
-          </div>
+          <div class="semibold mb-4">第 1 步：準備既有 BADGE 接線資料</div>
+          <div class="xs faint">請向團方取得目前 BADGE Apps Script <code>/exec</code> 與該 deployment 的 API Key，並確認是同一旅團、同一後端。不要新建正式 Sheet/GAS 或搬移帳戶；UnifiedCode.gs 尚未經真實 Apps Script 驗收，支部負責人如自行試用須先備份及閱讀測試指引。</div>
         </div>
-
         <div class="card" style="padding:14px">
-          <div class="semibold mb-4">第 2 步：建立 Google Sheet 並貼上代碼</div>
+          <div class="semibold mb-4">第 2 步：提交 Portal 接入申請</div>
+          <div class="xs faint mb-8">申請會由同源 <code>/api/proxy</code> 轉發到固定 ADMIN 收件匣。成功回執只確認申請收到；它不會寫 Vercel 環境變數，也不會自動啟用 Portal。</div>
+          <button class="btn btn-sm btn-primary" id="guide-apply-btn">${icon('plus', 15)} 提交既有 BADGE 後端資料</button>
+        </div>
+        <div class="card" style="padding:14px">
+          <div class="semibold mb-4">第 3 步：Admin 核對相容性後登記</div>
           <ol class="xs mono" style="padding-left:18px;line-height:1.8">
-            <li>開啟 Google Sheets 建立新試算表（例：「第82旅 執委會總表」）</li>
-            <li>點擊上方選單「擴充功能」→「Apps Script」</li>
-            <li>清空預設代碼，將下載的 <code>Unified Code.gs</code> 全部內容貼上並儲存 💾</li>
+            <li>Admin 確認既有後端已部署正式的 Portal／BADGE 共用 action contract</li>
+            <li>裸 BADGE v9.6 使用 <code>login</code>／<code>bulkAddUsers</code>；Portal 目前呼叫 <code>authLogin</code>／<code>authWhoAmI</code>／<code>authOpenAccounts</code>，不能只靠設定 URL／Key 互通</li>
+            <li>相容性驗收完成後，Admin 才在 Vercel 設定 <code>TROOP_&lt;ID&gt;_NAME／BACKEND／APIKEY</code>，選對 environment 並 Redeploy</li>
+            <li><code>/api/units</code> 的 <code>backendReady</code> 只表示設定齊全，仍要做兩個前端登入、開戶及同一帳戶讀回測試</li>
           </ol>
-        </div>
-
-        <div class="card" style="padding:14px">
-          <div class="semibold mb-4">第 3 步：執行 initializeSheets 初始化試算表</div>
-          <ol class="xs mono" style="padding-left:18px;line-height:1.8">
-            <li>在 Apps Script 函數下拉選單選擇 <code>initializeSheets</code></li>
-            <li>點擊「▶ 執行」，依照 Google 提示完成授權（進階 → 前往 → 允許）</li>
-            <li>系統自動建立完整後端所需嘅全部工作表（帳目、物資、團員、通告、報名、會議…＋支部前端 Progress 模組及 BADGE 輕量前端共用嘅
-              <b>進度追蹤／其他獎章／活動履歷／待批完成／待批履歷／成員名單</b>）</li>
-            <li>彈窗會顯示專屬 <b>API Key</b>，請複製保存（日後可執行 <code>showApiKey</code> 再次查看）</li>
-          </ol>
-        </div>
-
-        <div class="card" style="padding:14px">
-          <div class="semibold mb-4">第 4 步：部署為網頁應用程式（Web App）</div>
-          <ol class="xs mono" style="padding-left:18px;line-height:1.8">
-            <li>點擊右上角「部署」→「新增部署作業」→ 齒輪選擇「網頁應用程式」</li>
-            <li>設定：執行身分選「<b>我</b>」；具有存取權的使用者選「<b>任何人</b>」</li>
-            <li>點擊「部署」，複製 <b>網頁應用程式網址</b>（以 <code>https://script.google.com/macros/s/…/exec</code> 結尾）</li>
-          </ol>
-        </div>
-
-        <div class="card" style="padding:14px">
-          <div class="semibold mb-4">第 5 步：填申請表 → 直接入 ADMIN 系統</div>
-          <div class="xs faint mb-8">
-            撳下面個掣會開<b>申請表</b>（旅團編號、名稱、後端 <code>/exec</code>、API Key、聯絡人）。
-            送出之後，資料會經<b>同源伺服器轉發</b>，直接落到平台管理員嘅
-            <b>ADMIN 系統收件匣</b>（同 VSBADGE 共用同一個收件匣，用 <code>appType: 82venture</code> 分辨）。<br>
-            <b>送出就 OK，唔使等回覆</b>：ADMIN 系統唔會回覆申請人，管理員收到之後會轉寄畀團長跟進，
-            開好團（加好 <code>TROOP_&lt;編號&gt;_*</code> 環境變數）就會 email 通知你。
-            如果幾日都冇消息，用申請內容 WhatsApp／電郵問一聲管理員就得。
-            <br>管理員只會登記 <code>TROOP_&lt;編號&gt;_NAME／BACKEND／APIKEY</code> 三項；
-            功能完整版支部前端（包括 Progress）與 BADGE 輕量前端自動共用同一完整 <code>/exec</code>、API Key 與 Sheet。
-          </div>
-          <button class="btn btn-sm btn-primary" id="guide-apply-btn">${icon('plus', 15)} 填寫申請表自動送出（入 ADMIN 系統）</button>
-          <div class="xs faint mt-8">送唔到（例如網絡問題）？申請表會畀你<b>複製申請內容</b>，直接 WhatsApp／電郵畀管理員都一樣開得團。</div>
         </div>
       </div>
     `,
     actions: [{ label: '關閉', class: 'btn-primary', value: null }],
     onMount: el => {
-      el.querySelector('#guide-dl-btn')?.addEventListener('click', () => downloadCodeGs());
-      el.querySelector('#guide-copy-btn')?.addEventListener('click', () => copyCodeGs());
       el.querySelector('#guide-apply-btn')?.addEventListener('click', async () => {
         const { closeModal } = await import('./lib/util.js');
         closeModal(null);
@@ -820,47 +778,41 @@ async function openDeployGuideModal() {
 }
 
 /* ============================================================
-   新旅團申請接入（送去平台管理員收件匣）
+   申請 Portal 接入既有 BADGE 後端（送去平台管理員收件匣）
    ============================================================ */
 async function openApplication() {
   const box = adminInbox();
   let mainUrl = '';
   try { mainUrl = location.origin; } catch (e) { mainUrl = ''; }
   const r = await modal({
-    title: '新旅團申請接入', wide: true,
-    sub: box.configured ? '申請會送去做平台管理員嘅 ADMIN 系統（呢個系統唔會回覆，送出去就得）' : '（未設定收件匣）',
+    title: '申請 Portal 接入', wide: true,
+    sub: box.configured ? '申請會送去平台管理員 ADMIN 收件匣；收件回執不等於功能已啟用' : '（未設定收件匣）',
     trustedBodyHtml: `
-      <div class="note-box mb-12">${icon('alert', 15)}<div>
-        <b>申請之前請先起好你自己嘅後端</b>（每個旅團一張自己嘅 Google Sheet）：
-        <div class="xs mt-4 mb-8">
-          1. 獲取 <b>Unified Code.gs</b>（免登入；完整支部前端與 BADGE 輕量前端共用）：
-          <button class="btn btn-xs btn-primary ml-8" id="ap-dl-btn" type="button">${icon('download', 13)} 下載 Unified Code.gs</button>
-          <button class="btn btn-xs ml-4" id="ap-copy-btn" type="button">${icon('copy', 13)} 複製原始碼</button><br>
-          2. 建一張新 Google Sheet → 擴充功能 → Apps Script → 貼上 Unified Code.gs<br>
-          3. 執行 <code>initializeSheets</code>（會建好全部分頁），再執行 <code>showApiKey</code> 複製 API Key<br>
-          4. 部署做<b>網頁應用程式</b>（執行身分：我；存取權：任何人），複製 <code>/exec</code> 網址
-        </div></div></div>
+      <div class="note-box warn mb-12">${icon('alert', 15)}<div>
+        <b>請提交旅團目前使用的 BADGE 後端資料。</b>不需要建立新 Sheet／GAS；Portal 不會另建帳戶或複製帳戶。
+        <div class="xs mt-4">Admin 會先核對後端是否支援正式 Portal／BADGE 共用 action contract。裸 BADGE v9.6 尚未直接提供 Portal 使用的 auth actions，因此申請回執不能當作開通完成。</div>
+      </div></div>
       <div class="grid g-2" style="gap:12px">
         <div class="field"><label class="label">旅團編號 <span class="req">*</span></label>
           <input class="input" id="ap-id" placeholder="例：0100" maxlength="32"></div>
         <div class="field"><label class="label">旅團名稱 <span class="req">*</span></label>
           <input class="input" id="ap-name" placeholder="例：第一百旅深資童軍團"></div>
-        <div class="field" style="grid-column:1/-1"><label class="label">你嘅後端 Apps Script <code>/exec</code> 網址 <span class="req">*</span></label>
+        <div class="field" style="grid-column:1/-1"><label class="label">既有 BADGE Apps Script <code>/exec</code> 網址 <span class="req">*</span></label>
           <input class="input" id="ap-url" placeholder="https://script.google.com/macros/s/…/exec"></div>
-        <div class="field"><label class="label">API Key <span class="req">*</span></label>
-          <input class="input" id="ap-key" placeholder="執行 showApiKey 顯示嗰個"></div>
+        <div class="field"><label class="label">既有 BADGE API Key <span class="req">*</span></label>
+          <input class="input" id="ap-key" placeholder="該 BADGE deployment 的 API Key"></div>
         <div class="field"><label class="label">聯絡人（電郵／電話）</label>
           <input class="input" id="ap-contact" placeholder="例：scouter@example.hk"></div>
         <div class="field" style="grid-column:1/-1"><label class="label">備註</label>
-          <input class="input" id="ap-note" placeholder="例：需要啟用本支部進度紀錄"></div>
+          <input class="input" id="ap-note" placeholder="可提供後端版本／接入需求，不要貼其他帳戶資料"></div>
         <div class="field" style="grid-column:1/-1"><label class="label">主系統網址（自動帶）</label>
           <input class="input" value="${esc(mainUrl)}" readonly style="font-family:var(--mono);font-size:12px;background:var(--bg-2)">
           <div class="hint">呢個係<b>你而家睇緊嘅呢個網站</b>嘅網址，方便管理員核對同登記。</div></div>
       </div>
-      <div class="hint mt-8">送出後管理員會以同一組旅團名稱、<code>/exec</code> 與 API Key 登記 Registry。功能完整版支部前端（包括 Progress）及 BADGE 輕量前端自動沿用同一完整後端；不用亦不應在瀏覽器再貼 Key。</div>`,
+      <div class="hint mt-8">申請只會送至固定 ADMIN 收件匣，不會自動更改 Vercel。正式相容性驗收後，由 Admin 將同一組名稱、既有 <code>/exec</code> 與 API Key 登記至 Vercel 環境變數並 Redeploy。</div>`,
     actions: [
       { label: '取消', class: 'btn', value: null },
-      { label: '送出申請', class: 'btn-primary', onClick: el => ({
+      { label: '提交接入申請', class: 'btn-primary', onClick: el => ({
         troopId: el.querySelector('#ap-id').value,
         troopName: el.querySelector('#ap-name').value,
         scriptUrl: el.querySelector('#ap-url').value,
@@ -868,17 +820,7 @@ async function openApplication() {
         contact: el.querySelector('#ap-contact').value,
         note: el.querySelector('#ap-note').value
       }) }
-    ],
-    onMount: el => {
-      el.querySelector('#ap-dl-btn')?.addEventListener('click', (ev) => {
-        ev.preventDefault();
-        downloadCodeGs();
-      });
-      el.querySelector('#ap-copy-btn')?.addEventListener('click', (ev) => {
-        ev.preventDefault();
-        copyCodeGs();
-      });
-    }
+    ]
   });
   if (!r) return;
   const v = validateApplication(r);
@@ -891,9 +833,13 @@ async function openApplication() {
       sub: `${res.payload.troopId} · ${res.payload.troopName} · ${res.via === 'proxy' ? '經伺服器轉發去 ADMIN 系統' : '直接送去 ADMIN 系統'}${res.ms != null ? ` · ${res.ms} ms` : ''}`,
       trustedBodyHtml: `
         <div class="note-box info mb-12">${icon('check', 15)}<div>
-          你張申請已經送去<b>平台管理員嘅 ADMIN 系統</b>。
-          <br><span class="xs">呢個系統<b>唔會回覆</b>（App 唔會知 ADMIN 收咗未），所以你唔會喺呢度見到「已收到」——正常，唔使擔心。
-          管理員收到之後會轉寄畀團長跟進，開好團就會 email 通知你。</span>
+          ${res.receipt === true
+            ? 'ADMIN 收件匣已明確回覆<b>申請收件回執</b>。'
+            : '申請已由 Portal 代理送出；<b>目前未取得 ADMIN 收件回執</b>。'}
+          <br><span class="xs">${res.receipt === true
+            ? '收件回執只確認申請送達，<b>唔代表 Portal 已開通</b>。Admin 仍要核對既有 BADGE 後端及共用 action contract；正式相容性驗收完成後，才登記 Vercel 設定並通知你。'
+            : '目前只確認代理回報送出成功，不能據此確認 ADMIN 已收到，亦<b>唔代表 Portal 已開通</b>。請勿當成 ADMIN 已確認；Admin 會先核對既有 BADGE 後端及共用 action contract，正式相容性驗收完成後才登記 Vercel 設定。'}
+          </span>
         </div></div>
         <div class="row gap-8 mb-12">
           <button class="btn btn-sm" id="ap-copy-again">${icon('copy', 14)} 複製申請內容（跟進／備用）</button>
@@ -1124,7 +1070,6 @@ function renderLogin() {
     renderLogin();
     toast('已再試連線', 'info');
   });
-  app.querySelector('#loginDlGs')?.addEventListener('click', () => downloadCodeGs());
   app.querySelector('#loginGuide')?.addEventListener('click', openDeployGuideModal);
   app.querySelector('#btnGate')?.addEventListener('click', () => forgetChoice());
   app.querySelector('#btnGate2')?.addEventListener('click', () => forgetChoice());
@@ -1575,6 +1520,9 @@ function render() {
   }));
   /* ★ 2026-09-25 團長：「加個求救制，有咩大問題 SEND 去問 ADMIN，當回報問題處理」—— 個掣喺頂部，任何一版都撳得到。 */
   app.querySelector('#btnSOS')?.addEventListener('click', openSOS);
+  // View-specific data-go buttons are bound by their own mounts; the shell's
+  // tutorial button lives outside #view and needs its own navigation handler.
+  app.querySelectorAll('.topbar [data-go]').forEach(el => el.addEventListener('click', () => go(el.dataset.go)));
 
   /* 任何分頁嘅「欄位」掣（data-fields="transactions" / members / invItems / notices / meetings…）
      都會打開同一個欄位設計器 —— 唔再需要一個獨立「表格」分頁 */

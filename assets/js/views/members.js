@@ -3,7 +3,7 @@
    ============================================================ */
 
 import { collection, find, add, update, remove, commit, load, newSystemId } from '../lib/store.js';
-import { rolesDescending } from '../lib/branch-config.js';
+import { rolesDescending, roleLevel } from '../lib/branch-config.js';
 import {
   members, member, memberName, attendanceStats, fees, memberStatus, memberBirthdayText,
   birthdayList, birthdaysThisMonth, birthdaysWithin, birthdaySummary, money, settings, profile,
@@ -23,7 +23,7 @@ import { go, parse } from '../lib/router.js';
 import {
   can, setMemberHubPassword, TEMP_PASSWORD, openMemberAccount, openMemberAccounts,
   memberHasAccount, reviewAccountApp,
-  setMemberIdentity, canClaimChief, claimChief, canChangePasswordOf,
+  setMemberIdentity, canSetIdentityOf, canClaimChief, claimChief, canChangePasswordOf,
   displayName, current,
   ROLES, PERM_GROUPS, permValue, permIsCustom, permCycle, setPerm, resetPerms, canEditPerms,
   canManagePermRole, currentRole
@@ -139,8 +139,7 @@ function listView() {
       <b>可以同進度系統對上：${kc.percent}%</b>（${kc.matched}／${kc.total} 位）
       · 團員／執委 ${kc.youthWithYmis}／${kc.youthTotal} 有 YMIS
       · 領袖 ${kc.leaderWithEmail}／${kc.leaderTotal} 有 Email
-      <div class="xs">功能完整版支部前端同 BADGE 輕量前端共用同一完整 Unified Sheet；<b>團員／執委以 YMIS（10 位數字）</b>做 canonical key，
-      <b>領袖 Email</b> 用嚟對應同一 Users 記錄。要按身份補啱欄位；姓名只作顯示，唔可以當授權身份。</div>
+      <div class="xs">Portal 的目標是沿用旅團既有 BADGE Users；<b>團員／執委以 YMIS（10 位數字）</b>、<b>領袖以 Email</b>作對應線索。呢個覆蓋率只檢查 Portal 名冊欄位，唔代表 BADGE Users 已讀回或兩邊身份已一致；正式共用仍須 Admin 完成 contract 與真實 staging 驗收。</div>
       <div class="xs mt-4">未對得上：${names}${kc.unmatchedList.length > 6 ? ` 等 ${kc.unmatchedList.length} 位` : ''}</div></div></div>`;
   })()}
 
@@ -415,9 +414,14 @@ function detail(id) {
 function editor(id) {
   const m = id ? member(id) : null;
   const ident = m ? identityOf(m) : 'member';
+  const actorLevel = roleLevel(currentRole());
+  const identityOptions = Object.entries(IDENTITIES).filter(([role, def]) =>
+    role === 'chief' ? (!m && can('admin.chief')) : def.level < actorLevel);
+  const canEditIdentity = can('member.identity') && identityOptions.length > 0
+    && (!m || (ident !== 'chief' && canSetIdentityOf(m)));
   return `
   ${pageHead({ title: m ? `編輯：${m.name}` : '新增用戶',
-    sub: '身份（團長 / 領袖 / 執委 / 團員）同資料都可以改；改身份＝改權限；生日可以只填月日（例：03-26）',
+    sub: '身份變更遵守 BADGE 階級：只管理比自己低級的身份；團長交棒另走專用流程。生日可以只填月日（例：03-26）',
     actions: `<button class="btn btn-sm" data-act="cancel">${icon('chevronL', 15)} 取消</button>` })}
   ${draftBanner('member', id || 'new', '用戶資料')}
   <div class="card" style="max-width:760px">
@@ -426,14 +430,16 @@ function editor(id) {
         <div class="field"><label class="label">姓名 <span class="req">*</span></label>
           <input class="input" id="f-name" data-draft="name" value="${esc(m?.name || '')}" placeholder="例：陳大文"></div>
         <div class="field"><label class="label">身份 <span class="req">*</span></label>
-          ${can('member.identity') ? `<select class="select" id="f-identity" data-draft="identity" ${ident === 'chief' ? 'disabled' : ''}>
-            ${Object.entries(IDENTITIES).map(([k, v]) => (k === 'chief' && !can('admin.chief') ? '' : `<option value="${esc(k)}" ${ident === k ? 'selected' : ''}>${v.l}</option>`)).join('')}
+          ${canEditIdentity ? `<select class="select" id="f-identity" data-draft="identity">
+            ${identityOptions.map(([k, v]) => `<option value="${esc(k)}" ${ident === k ? 'selected' : ''}>${v.l}</option>`).join('')}
           </select>` : `<input class="input" value="${esc(identityLabel(m || { identity: 'member' }))}" readonly style="background:var(--bg-2)">`}
           <div class="hint">${ident === 'chief'
-            ? '團長身份唔可以用下拉改 —— 要交棒：去下一位嘅用戶頁撳「設為團長（轉移）」。'
-            : can('member.identity')
-              ? '身份＝權限：團長（每團一位）／領袖／執委／團員。換屆改身份就得，唔使開新帳戶。'
-              : '你（執委）可以改資料，但改身份要由團長／領袖處理。'}</div></div>
+            ? '團長身份不可用下拉改。交棒時接任者成為團長，現任團長會自動降為「領袖」（副團長）。'
+            : canEditIdentity
+              ? '只可設定比自己低級的身份，不能改自己、同級或更高身份。團長交棒另用「設為團長」流程。'
+              : can('member.identity')
+                ? '依 BADGE 階級，只可管理比自己低級且非本人的身份；團長交棒另走專用流程。'
+                : '你目前可以編輯資料，但沒有這位用戶的身份管理權限。'}</div></div>
         <div class="field"><label class="label">英文名</label>
           <input class="input" id="f-eng" data-draft="eng" value="${esc(m?.eng || '')}" placeholder="例：Chan Tai Man"></div>
         <div class="field"><label class="label">會籍編號（YMIS）</label>
@@ -856,18 +862,18 @@ export function mount(root, params = {}) {
         go('#/members/' + id);
       } else {
         const nid = uid('m');
-        const rec = add('members', { ...patch, id: nid, systemId: newSystemId(load().unitCode, nid) });
+        const rec = add('members', { ...patch, identity: 'member', id: nid, systemId: newSystemId(load().unitCode, nid) });
         clearDraft('member', 'new');
         const hubPw = v('#f-hubpw');
         if (hubPw) {
           const pwRes = await setMemberHubPassword(rec.id, hubPw);
           if (!pwRes.ok) toast(pwRes.msg, 'err');
         }
-        /* 新增：身份唔可以直接落 chief（團長要轉移／認領）—— 如果冇 chief 而設定者
-           有 admin.chief 權，就用 setMemberIdentity 行同一條安全路。 */
-        if (wantIdentity === 'chief') {
-          const cr = await setMemberIdentity(rec.id, 'chief');
-          if (!cr.ok) { update('members', rec.id, { identity: 'member' }); toast(cr.msg, 'err'); }
+        /* 新增列先以 member 建立；只有身份管理權限及階級檢查通過後，才套用所選身份。
+           若選擇 chief，setMemberIdentity 會走團長交棒例外，令舊團長自動降為領袖。 */
+        if (wantIdentity !== 'member') {
+          const idRes = await setMemberIdentity(rec.id, wantIdentity);
+          if (!idRes.ok) { update('members', rec.id, { identity: 'member' }); toast(idRes.msg, 'err'); }
         }
         toast(`已新增 ${name}（${identityLabel(member(rec.id))}）`, 'ok');
         if (keyWarn) toast(keyWarn + ' —— 去「編輯」補返', 'warn');
@@ -969,14 +975,17 @@ export function mount(root, params = {}) {
         scope: `${profile().name || '現時旅團'}／現役而未開戶成員`, requireText: `確認 ${list.length}`,
         changes: [
           { label: '未開戶', before: list.length, after: 0 },
-          { label: '新增 Unified Users', before: 0, after: list.length },
+          { label: '提交 BADGE Users 開戶 action（需已批准的共用 contract）', before: 0, after: list.length },
           { label: '首次密碼', before: '—', after: TEMP_PASSWORD, detail: '首次登入強制更改' }
         ],
         preview: list.slice(0, 100).map(m => ({ label: `${m.name} · ${m.ymis || m.email || '未有登入 ID'}`, before: '未開戶', after: `${identityLabel(identityOf(m))}帳戶／首次登入改密碼` })),
-        warnings: ['會用一個後端 request 批量處理；後端會先驗證 YMIS／Email 唯一性，再逐人回報結果。'],
-        backupText: '原名冊唔會被刪改；Users 寫入會記錄操作編號同逐人結果。',
-        rollbackText: '如開錯戶，請喺帳戶管理停用該戶；唔會刪除歷史身份紀錄。',
-        readbackText: '完成後會重新由後端讀取名冊／帳戶投影，核對實際開立數。'
+        warnings: [
+          '會用一個後端 request 批量處理；只有正式 BADGE compatibility release 已部署且 Admin 已批准時，才會以 BADGE Users 為權威。',
+          '正式共用尚未 staging 通過前，不要對旅團正式帳戶執行此操作；Portal action 或回執本身不是跨前端共用證據。'
+        ],
+        backupText: '操作結果需由既有 BADGE Users 重新讀回核對；不要建立 Portal shadow account。',
+        rollbackText: '如開錯戶，按已驗收的 BADGE 帳戶停用／復原流程處理；不要刪除歷史身份資料。',
+        readbackText: 'Portal 會讀回後端帳戶 projection；這不取代在 BADGE 前端實際登入／讀回的 staging 驗收。'
       });
       if (!okGo) return;
       const result = await openMemberAccounts(list.map(m => m.id));

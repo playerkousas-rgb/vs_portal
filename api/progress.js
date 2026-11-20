@@ -1,24 +1,22 @@
 /* ============================================================
-   api/progress.js — 功能完整版支部前端內的 Progress 同源轉發層
+   api/progress.js — Portal Progress 同源 proxy
    ------------------------------------------------------------
-   旅團只有一個完整後端：Google Sheet ＋一支 Unified Apps Script（/exec），
-   具備身份、行政、Progress、獎章、履歷及申報能力。vs_portal 係功能完整版前端，
-   vsbadge 係輕量前端；呢度只會代 vs_portal browser 執行 allowlist 內的本支部
-   Progress 業務 action，直接讀寫同一 Sheet 的指定分頁。
+   目標是把 Portal Progress actions 送到旅團目前使用的 BADGE /exec、API Key 與資料；
+   Registry 只提供路由。裸 BADGE v9.6 沒有 Portal 使用的 authWhoAmI handler，
+   所以本 proxy 對裸 v9.6 會 fail closed；任何 URL／Key 設定或單次 action 回覆
+   都不代表正式共用 contract／跨前端資料已驗收。
 
-   讀：browser POST { action:'load', unit, sessionToken } → server GET Unified ?action=load
-   寫：browser POST { action:'save' | 'saveOtherBadge', unit, sessionToken, data }
-       → server POST 同一 Unified /exec
-   批：POST { action:'reviewRequest' | 'reviewLogRequest', … }
-        → 審批中心：批／拒團員申報（待批完成／待批履歷），批准會寫入進度／活動履歷
+   Browser POST { action, unit, sessionToken } → server 先向既有 /exec 驗 Portal session，
+   再轉發 allowlist 內 Progress action。BADGE compatibility release 未部署前，
+   Portal auth contract 不可用，不能把本服務視為正式已開通。
    考核項目固定讀 app 內建 data/progress/items.json，不接受 remote override。
 
-   後端網址／API Key：固定使用同一旅團 Registry 的 TROOP_<旅團>_BACKEND／APIKEY。
-   瀏覽器傳入 backend／apikey 會被忽略，不能把進度改送另一支 GAS。
+   後端網址／API Key：只使用 Registry 的 TROOP_<旅團>_BACKEND／APIKEY；
+   browser 提交的 backend／apikey 會被忽略，不能把進度改送另一支 GAS。
 
    安全：
      1. 只准 https://script.google.com/macros/s/…/exec（擋 open proxy；可用 V82_PROXY_TEST=1 放行本機 mock）
-     2. 前端／proxy allowlist 只係第一層；Unified GS 仍驗 server-issued session、role、scope
+     2. proxy allowlist 只係第一層；正式 BADGE GAS 必須驗 session、role、scope
      3. payload ≤ 1 MB；上游 45 秒逾時
      4. log 只記 metadata：唔記 API Key、唔記 payload 內容、唔記完整後端網址
    ============================================================ */
@@ -31,14 +29,13 @@ import { canonicalRole, roleLevel } from '../assets/js/lib/branch-config.js';
 export const config = { maxDuration: 60 };
 
 /* ============================================================
-   Unified GAS server-signature transport
+   BADGE server-signature transport compatibility
    ------------------------------------------------------------
-   Progress 永遠只讀寫本支部同一支 Unified GAS。若 GAS 要求 server-signed
-   request，proxy 會用 Registry 的同一 API_KEY 派生用途分隔 HMAC，再向同一
-   /exec 重送同一 action；呢個只係 server authentication transport，與
-   其他前端的狀態或旅系統整合無關。
+   Progress 目標只使用本旅團目前的 BADGE /exec。若已核准的 BADGE compatibility
+   release 要求 server-signed request，proxy 會用 Registry 的同一 API_KEY 派生
+   HMAC，再向同一 /exec 重送同一 action。簽名本身不是身份；GAS 仍須驗 session／role／scope。
 
-   簽名公式與 Unified GAS verifyLinkSig 一致：
+   簽名公式按 BADGE verifyLinkSig contract：
      linkSigKey = hex( HMAC-SHA256( message = "vsbadge-troop-sig-v1", key = SHEET_KEY ) )
      canonical  = action + "\n" + ts + "\n" + nonce + "\n" + hex(SHA-256(rawBody))
      sig        = hex( HMAC-SHA256( canonical, linkSigKey ) )
@@ -79,7 +76,7 @@ const BODY_TOO_LARGE = Symbol('BODY_TOO_LARGE');
 
 // Progress 業務 action；旅系統、登入閘門及其他整合不屬於呢個 API。
 const ACTIONS = new Set(['load', 'save', 'saveOtherBadge', 'reviewRequest', 'reviewLogRequest',
-  /* 一次 browser request、一個 Unified handler；絕不由 browser 逐列 loop 寫入。 */
+  /* 一次 browser request、一個上游 action；絕不由 browser 逐列 loop 寫入。 */
   'bulkReviewRequests', 'operationStatus',
   /* 團員入口只可走個人 bridge：由 server session 對出 YMIS，再叫後端只回／寫本人。 */
   'myProgress', 'addRequest', 'myRequests']);
@@ -103,8 +100,8 @@ function firstStr(v) {
   return '';
 }
 
-/* Unified GAS may still carry legacy transport or entrance metadata.  None of it is
-   part of the Progress business contract, so remove it before replying to browser code. */
+/* Upstream may carry transport or entrance metadata. None is part of the Portal
+   Progress response contract, so remove it before replying to browser code. */
 const INTERNAL_STATE_FIELDS = new Set([
   'linked', 'upstream_only', 'allow_local_login', 'local_login', 'link_flag_set',
   'link_state', 'link_status', 'link_mode', 'integration_state', 'integration_status',
@@ -157,7 +154,7 @@ async function upstream(url, { method = 'POST', payload = null } = {}) {
   return { status: up.status, json, raw: text };
 }
 
-/** 用 Unified GAS 協定的用途分隔 HMAC 做 server-to-server 請求。 */
+/** 用既有 BADGE compatibility release 支援的用途分隔 HMAC transport。 */
 async function signedUpstream(url, action, payload, key) {
   const bodyOnly = { ...(payload || {}), action };
   const inner = makeLinkSig(action, JSON.stringify(bodyOnly), key);
@@ -269,9 +266,8 @@ export default async function handler(req, res) {
   const backend = String(reg.backend || '').trim();
   const apiKey = String(reg.apiKey || '').trim();
 
-  /* 簽名根密鑰＝同一 Unified GAS 的 API_KEY。Browser 提交的 backend／apikey
-     不參與選路或驗證；如標準 transport 要求 server signature，就向同一 /exec
-     重送同一個業務 action。 */
+  /* 簽名根密鑰＝Registry 中既有 BADGE deployment 的 API_KEY。Browser 提交的
+     backend／apikey 不參與選路或驗證；只有上游 contract 要求簽名時才用同一 /exec。 */
 
   // ---- 2. 旅團後端（GAS /exec）驗證 ----
   if (!backend) {
@@ -389,12 +385,19 @@ export default async function handler(req, res) {
     };
 
     if (action === 'load') {
-      /* 先用同一 GAS 的標準 GET action；如部署要求 server signature，再向同一 /exec 重送。 */
+      /* GAS GET 必須帶支部 session；平台超管沒有支部 token，改由已核實的同源 server 簽 POST。 */
       let qs = new URLSearchParams({ action: 'load' });
       if (apiKey) qs.set('apikey', apiKey);
+      if (!actor.super) qs.set('token', firstStr(body.sessionToken));
       up = await upstream(backend + (backend.includes('?') ? '&' : '?') + qs.toString(), { method: 'GET' });
-      if (up.json && up.json.upstream_only && signReady) {
-        const signed = await signedPost();
+      if (up.json && up.json.upstream_only) {
+        if (!signReady) {
+          return sendJson(res, 503, { ok: false, reason: 'no_sign_key', error: 'Progress load 需要伺服器簽名 Key' });
+        }
+        const loadAuth = actor.super
+          ? { unified_super: true, on_behalf: 'sheep' }
+          : { token: firstStr(body.sessionToken) };
+        const signed = await signedPost('load', loadAuth);
         if (signed.tooBig) {
           return sendJson(res, 413, { ok: false, reason: 'sig_body_too_big', error: '資料太大，簽唔到去進度後端' });
         }
@@ -412,9 +415,9 @@ export default async function handler(req, res) {
       }
       up = signed.resp; usedSignature = true;
     } else if (SIGNED_REVIEW_ACTIONS.has(action) || action === 'operationStatus') {
-      /* Review/status is never authorised by API Key alone.  The HMAC protects this exact
-         request in transit, while Unified independently resolves the opaque user
-         session and checks progress:manage before touching any row. */
+      /* Review/status is never authorised by API Key alone. The HMAC protects this exact
+         request in transit; the formal BADGE handler must independently resolve the opaque
+         user session and verify progress:manage before touching any row. */
       if (!signReady) {
         return sendJson(res, 503, { ok: false, reason: 'no_sign_key', error: '伺服器未設定支部簽名 Key' });
       }
@@ -492,9 +495,9 @@ export default async function handler(req, res) {
       mayHaveApplied,
       operation: progressBusinessData(up.json.operation || null),
       error: ok ? undefined : (signatureRequired
-        ? 'Unified GAS 拒絕咗呢個 Progress action；請管理員核對 Registry APIKEY 同正式 deployment。'
-        : receiptMissing ? `Unified GAS 冇提供明確寫入結果（HTTP ${up.status}）；系統冇重送`
-          : (up.json.error || 'Unified GAS 拒絕咗呢個 Progress action')),
+        ? '既有 BADGE backend 未接受此簽名 Progress action；請 Admin 核對已批准的 compatibility release、Registry Key 及 deployment。'
+        : receiptMissing ? `既有 BADGE backend 冇提供明確寫入結果（HTTP ${up.status}）；系統冇重送`
+          : (up.json.error || '既有 BADGE backend 拒絕咗呢個 Progress action')),
       data: progressBusinessData(up.json)
     });
   } catch (e) {

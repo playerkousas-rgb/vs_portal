@@ -8,7 +8,7 @@
 //   2. 只接受白名單 action；內容讀寫要用 staff/member session，匿名只留登入／復原／接入申請
 //   3. 永不在 log 記錄密碼／apiKey／payload 機密
 //
-// 同時兼容前端直接打 GAS 或透過同源 proxy 轉發。
+// Portal troop actions 只經此同源 proxy；不能以 browser 設定直接選擇後端。
 
 import crypto from 'node:crypto';
 import { getTrustedUnit, isTrustedExecUrl } from './_registry.js';
@@ -269,7 +269,7 @@ export default async function handler(req, res) {
     body.operationId = wanted;
   }
 
-  // ===== 特殊：新旅團接入申請（轉發去中央管理員收件匣）=====
+  // ===== 特殊：既有 BADGE 後端 Portal 接入申請（只轉發至中央 ADMIN，唔寫 Registry）=====
   if (action === 'submitRegistration') {
     if (!isTrustedExecUrl(SCOUT_ADMIN_API)) {
       safeLog({ result: 'admin_api_misconfig', ms: Date.now() - t0 });
@@ -284,7 +284,7 @@ export default async function handler(req, res) {
     if (!/^[0-9A-Za-z][0-9A-Za-z_-]{0,31}$/.test(troopId) || !troopName || !isTrustedExecUrl(scriptUrl) || !apiKey) {
       safeLog({ result: 'registration_invalid', ms: Date.now() - t0 });
       return sendJson(res, 400, { success: false, ok: false, reason: 'registration_invalid',
-        error: '申請必須包含旅團編號、名稱、Unified GAS /exec 及 API Key',
+        error: '申請必須包含旅團編號、名稱、既有 BADGE /exec 及 API Key',
         operationId: body.operationId, outcome: 'not_applied', mayHaveApplied: false });
     }
     const regPayload = {
@@ -325,7 +325,7 @@ export default async function handler(req, res) {
           operationId: body.operationId, outcome: 'unknown', mayHaveApplied: true });
       }
       safeLog({ result: 'registration_confirmed', status: up.status, ms: Date.now() - t0 });
-      return sendJson(res, 200, { success: true, ok: true, message: said.message || '申請已提交', delivered: 'confirmed', receipt: true,
+      return sendJson(res, 200, { success: true, ok: true, message: said.message || '申請已提交', delivered: said.receipt === true ? 'confirmed' : 'submitted', receipt: said.receipt === true,
         operationId: body.operationId, outcome: 'applied', mayHaveApplied: true });
     } catch (e) {
       const timeout = e && (e.name === 'TimeoutError' || e.name === 'AbortError');
@@ -387,7 +387,7 @@ export default async function handler(req, res) {
           operationId: body.operationId, outcome: 'unknown', mayHaveApplied: true });
       }
       safeLog({ result: 'issue_confirmed', status: up.status, ms: Date.now() - t0 });
-      return sendJson(res, 200, { success: true, ok: true, message: said.message || '報告已提交', delivered: 'confirmed', receipt: true,
+      return sendJson(res, 200, { success: true, ok: true, message: said.message || '報告已提交', delivered: said.receipt === true ? 'confirmed' : 'submitted', receipt: said.receipt === true,
         operationId: body.operationId, outcome: 'applied', mayHaveApplied: true });
     } catch (e) {
       const timeout = e && (e.name === 'TimeoutError' || e.name === 'AbortError');

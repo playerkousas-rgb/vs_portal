@@ -21,7 +21,6 @@ import { profile, publicEvents, RSVP, quizzes, activeMembers, troopPublicLinks, 
 import { visibleTo, contentVis } from './lib/content-visibility.js';
 import { loadMe, saveMe } from './lib/member-me.js';
 import { loadHubAuth, saveHubAuth, clearHubAuth } from './lib/hub-session.js';
-import { beFromQuery } from './lib/gateway.js';
 import { loginMember, changeMemberOwnPassword, TEMP_PASSWORD } from './lib/auth.js';
 import { progressConfigured, loadMyProgress, loadItems, flattenItems, memberDetail, submitProgressRequest } from './lib/progress.js';
 import { absencesOf, allAbsences, ABSENCE_STATUS, ABSENCE_SLOTS, absenceCounts } from './lib/absence.js';
@@ -202,10 +201,8 @@ async function boot() {
   const u = new URLSearchParams(location.search);
   const code = (u.get('u') || '').trim() || defaultUnitCode();
   await loadRegistry();
-  /* 團員投影用獨立 store namespace，絕不覆蓋同瀏覽器行政 DB／base。
-     ?be= 經 Apps Script /exec 白名單後只作 routing，令未登記旅團的自助連結
-     都可登入；安全空殼不會為取得路由而讀完整靜態行政 seed。 */
-  await init({ mode: 'hub', scope: 'hub', unit: code, backendUrl: beFromQuery() });
+  /* 安全投影使用獨立 namespace；後端只由伺服器 Registry 選擇。 */
+  await init({ mode: 'hub', scope: 'hub', unit: code });
   /* 未確認寫入跨 reload 保持鎖住；否則 timeout 後重新整理就會產生新
      operation ID，使用者一撳便可能重複交 RSVP／答卷／請假。 */
   hubSubmitState = restoreRememberedHubUnknown(loadHubAuth(code));
@@ -251,9 +248,9 @@ async function syncBoot() {
 function code() { return load().unitCode; }
 
 /**
- * Unified Users 用 YMIS 做登入 subject，但 Portal 行政資料用不可變 member id。
- * 安全投影只會帶本人一行名冊，所以每次拉完投影後以 id／YMIS 對回該行，
- * 絕不能假設登入 account.memberId（舊 Users adapter 可能係 YMIS）等於 Portal id。
+ * Portal compatibility projection 預期可由 BADGE Users 的 YMIS 對回 Portal roster member id。
+ * 隔離 Unified adapter 有此 mapping；正式既有 BADGE contract／安全投影仍待 staging 驗收。
+ * 絕不能假設登入 account.memberId（BADGE token subject 可能係 YMIS）等於 Portal id。
  */
 function projectedMember(auth) {
   if (!auth) return null;

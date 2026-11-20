@@ -92,12 +92,8 @@ export function identityTabView() {
     ${stat('團員', String(cnt('member')), '入團員入口')}
   </div>
 
-  ${noteBoxHtml(`<b>身份即帳號（2026-09-24 定案）：</b>唔會再有「領袖共用帳戶」或者「執行委員會帳號」——
-    每個人都係名冊入面嘅<b>一條紀錄</b>，登入代號係佢自己嘅<b>電郵 / 自訂帳號 / YMIS</b>，
-    密碼就係佢自己嗰個。要換權限＝喺「用戶名冊」改<b>身份</b>（換屆唔使開新帳戶、唔使夾密碼）。
-    <br>團長：每個旅團<b>永遠只有一位</b>，最高權限，可以轉移。
-    <div class="xs mt-8 faint">開戶／重設密碼／停用／復原會直接寫入同一 Unified Sheet 的 <b>Users</b>；
-    唔會先留一份只在呢部機可用嘅帳戶。</div>`, 'brand')}
+  ${noteBoxHtml(`<b>帳戶整合目標：沿用旅團既有 BADGE Users。</b>Portal 不應建立第二帳戶表、複製或搬移帳戶；登入代號仍須以既有 BADGE 身份資料核對。
+    <div class="xs mt-8"><b>正式共用 action contract 尚未完成真實 staging；目前 NOT APPROVED。</b>此頁呼叫 Portal account actions，並不證明已寫入／讀回 BADGE Users。未經 Admin 通知 staging 通過前，請勿用此頁管理正式帳戶；Registry／<code>backendReady</code> 不是開通證明。</div>`, 'warn')}
   <div class="mt-16"></div>
 
   ${!c && canClaimChief() ? `<div class="note-box warn mb-16">${icon('alert', 15)}<div>
@@ -144,7 +140,7 @@ function personRow(m) {
       <div class="li-t">${esc(m.name)} ${me ? '<span class="tag">你</span>' : ''}${m.role ? ` <span class="xs faint">${esc(m.role)}</span>` : ''}</div>
       <div class="li-s">登入 <b class="mono">${esc(login || '（未設定 —— 去「編輯」填電郵／YMIS）')}</b>
         ${!opened ? ' · <span class="tag">未開戶</span>' : active
-          ? ' · <span class="tag" style="color:var(--ok)">Unified Users 已開戶</span>'
+          ? ' · <span class="tag" style="color:var(--warn)">Portal 後端 account projection 有帳戶</span>'
           : ' · <span class="tag" style="background:var(--danger-bg);color:var(--danger)">已停用</span>'}</div>
     </div>
     <div class="row gap-4">
@@ -186,12 +182,12 @@ function accountRow(a) {
 export function mountAccountsTab(root, refresh) {
   root.querySelectorAll('[data-go]').forEach(el => el.addEventListener('click', () => go(el.dataset.go)));
 
-  /* 名冊個人操作（身份與帳號分頁）：直接寫同一 Unified Users。 */
+  /* 名冊個人操作呼叫 Portal account contract；BADGE Users 共用狀態仍以正式 staging 為準。 */
   root.querySelectorAll('[data-mopen]').forEach(b => b.addEventListener('click', async () => {
     const m = members().find(x => x.id === b.dataset.mopen);
     if (!m) return;
     if (!(await confirmDlg({ title: `為 ${esc(m.name)} 開戶？`, okText: '確定開戶',
-      trustedMessageHtml: `會直接寫入同一 Unified Sheet 的 <b>Users</b>；首次密碼係 <b>${esc(TEMP_PASSWORD)}</b>，登入後必須更改。` }))) return;
+      trustedMessageHtml: `會送出 Portal 開戶 action 至目前 Registry 指向的 backend；只有已獲 Admin 批准的正式 BADGE compatibility release 才會寫入既有 <b>Users</b>。首次密碼係 <b>${esc(TEMP_PASSWORD)}</b>，登入後必須更改。正式 staging 未通過前請勿操作旅團正式帳戶。` }))) return;
     const result = await openMemberAccount(m.id);
     toast(result.ok ? `已開戶：首次密碼 ${TEMP_PASSWORD}` : result.msg, result.ok ? 'ok' : 'err');
     refresh();
@@ -201,7 +197,7 @@ export function mountAccountsTab(root, refresh) {
     const account = m && accountForMember(m);
     if (!m || !account) return;
     if (!(await confirmDlg({ title: `復原 ${esc(m.name)} 的帳戶？`, okText: '確定復原',
-      trustedMessageHtml: `會重新啟用 Unified Users 帳戶，並把首次密碼重設為 <b>${esc(TEMP_PASSWORD)}</b>。` }))) return;
+      trustedMessageHtml: `會送出 Portal 復原帳戶 action；只有已驗收的正式共用 backend 才會更新既有 BADGE Users，並把首次密碼重設為 <b>${esc(TEMP_PASSWORD)}</b>。正式 staging 未通過前請勿操作旅團正式帳戶。` }))) return;
     const result = await restoreAccountServer(account, TEMP_PASSWORD);
     toast(result.ok ? '帳戶已復原，首次登入要改密碼' : result.msg, result.ok ? 'ok' : 'err');
     refresh();
@@ -227,7 +223,7 @@ export function mountAccountsTab(root, refresh) {
     });
     if (!r) return;
     const res = await setMemberHubPassword(m.id, r);
-    toast(res.ok ? '密碼已直接重設到 Unified Users；對方首次登入要改密碼' : res.msg, res.ok ? 'ok' : 'err');
+    toast(res.ok ? 'Portal 後端回報密碼已重設；請按正式 BADGE 共用驗收程序確認' : res.msg, res.ok ? 'warn' : 'err');
     refresh();
   }));
   root.querySelectorAll('[data-medit]').forEach(b => b.addEventListener('click', () => go('#/members/edit/' + b.dataset.medit)));

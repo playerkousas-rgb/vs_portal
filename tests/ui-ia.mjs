@@ -115,6 +115,9 @@ await loginAs('leader');
   ok('側欄有「系統」', items.includes('admin'));
   ok('教學唔再佔側欄一格（已搬頂欄）', !items.includes('docs'), JSON.stringify(items));
   ok('頂欄有「教學」掣（執委都搵得到說明）', !!doc.querySelector('.topbar [data-go="#/docs"], .topbar [data-nav="docs"]'));
+  doc.querySelector('.topbar [data-go="#/docs"]')?.click();
+  await wait(250);
+  ok('頂欄「教學」掣實際導向教學頁', window.location.hash.startsWith('#/docs'), window.location.hash);
   ok('側欄冇重複項目', new Set(items).size === items.length);
   await goTo('#/tables');
   ok('資料管理頂欄同側欄同名（唔再殘留舊名「表格與同步」)',
@@ -246,7 +249,9 @@ for (const role of ['leader', 'chief']) {
   const items = sideItems();
   ok(role + '：側欄有 系統 ＋ 資料管理', items.includes('admin') && items.includes('tables'), JSON.stringify(items));
   await goTo('#/tables/sync');
-  ok(role + '：總表同步開得到（有輸入欄）', !!doc.querySelector('#view input'), vtext().slice(0, 80));
+  ok(role + '：總表同步開得到，保留更新報表及求救，不接受 browser 後端密鑰',
+    !!doc.querySelector('#view [data-act="push-sync"]') && !!doc.querySelector('#view [data-act="sos"]')
+      && !doc.querySelector('#view #sync-url, #view #sync-key'), vtext().slice(0, 80));
   if (role === 'leader') {
     await goTo('#/tables/data');
     const backupActs = ['export-json', 'import-json', 'reset-seed', 'wipe'];

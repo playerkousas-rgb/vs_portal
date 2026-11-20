@@ -144,72 +144,20 @@ ok('正式一般改密碼由 GAS session 固定本人、核對目前密碼並換
 globalThis.fetch = browserFetch;
 
 /* ============================================================ */
-section('3b. 未登記旅團：所有支部帳戶流程會由 proxy 404 跌落已設定 /exec');
+section('3b. 未登記旅團：帳戶流程只走同源 proxy，不回退 browser /exec');
 {
-  const directExec = 'http://localhost:9191/branch/exec';
   const oldSync = store.load().sync ? JSON.parse(JSON.stringify(store.load().sync)) : null;
-  store.load().sync = { ...(store.load().sync || {}), unit: '0082', url: directExec, apiKey: 'direct-route-key' };
-  store.commitMeta();
-  const transportCalls = [];
-  const response = (body, status = 200) => ({ ok: status >= 200 && status < 300, status,
-    text: async () => JSON.stringify(body), json: async () => body });
+  store.load().sync = { ...(store.load().sync || {}), url: 'http://localhost:9191/branch/exec', apiKey: 'direct-route-key' };
+  const calls = [];
   globalThis.fetch = async (url, init = {}) => {
-    const body = JSON.parse(init.body || '{}');
-    const call = { url: String(url), body, contentType: init.headers?.['Content-Type'] || '' };
-    transportCalls.push(call);
-    if (String(url).includes('api/proxy')) {
-      return response({ ok: false, success: false, error: '找不到此旅團或後端網址未設定' }, 404);
-    }
-    if (String(url) !== directExec) return response({ ok: false, error: 'unexpected route' }, 404);
-    const expires = Date.now() + 3600_000;
-    if (body.action === 'authLogin') return response({ ok: true, success: true,
-      sessionToken: 'direct-session-1', sessionExpiresAt: expires,
-      account: { id: 'direct-leader', username: 'direct@example.test', email: 'direct@example.test',
-        name: '自助領袖', role: 'leader', kind: 'account' } });
-    if (body.action === 'authChangePassword') return response({ ok: true, success: true,
-      sessionToken: 'direct-session-2', sessionExpiresAt: expires });
-    if (body.action === 'verifySetupKey') return response({ ok: true, success: true,
-      sessionToken: 'direct-setup-session', sessionExpiresAt: expires });
-    if (body.action === 'authForgotPassword') return response({ ok: true, success: true,
-      message: '如果電郵已登記，重設連結會寄出。' });
-    if (['authCreateAccount', 'authRestoreAccount', 'authResetPassword', 'authDeleteAccount', 'authCompletePasswordReset'].includes(body.action)) {
-      return response({ ok: true, success: true });
-    }
-    return response({ ok: false, success: false, error: '測試略過重新載入' });
+    calls.push({ url: String(url), body: JSON.parse(init.body || '{}') });
+    const body = { ok: false, error: '找不到此旅團或後端網址未設定', reason: 'not_registered' };
+    return { ok: false, status: 404, text: async () => JSON.stringify(body), json: async () => body };
   };
-
-  const directLogin = await auth.loginServer('staff', 'direct@example.test', 'direct-pass');
-  ok('支部登入先試同源 proxy；未登記後改用 /exec 並取得 opaque session',
-    directLogin.ok === true && auth.current()?.sessionToken === 'direct-session-1'
-      && transportCalls.some(c => c.url.includes('api/proxy') && c.body.action === 'authLogin')
-      && transportCalls.some(c => c.url === directExec && c.body.action === 'authLogin'), JSON.stringify(directLogin));
-  const directCreate = await auth.createAccountServer({ role: 'exco', username: 'new@example.test',
-    email: 'new@example.test', name: '新人', memberId: 'm-new', password: '1234' });
-  const directRestore = await auth.restoreAccountServer({ email: 'old@example.test' });
-  const directReset = await auth.resetAccountPasswordServer({ username: 'member@example.test' }, '5678');
-  const directDelete = await auth.deleteAccountServer({ username: 'old@example.test' });
-  ok('新增／復原／重設／刪除帳戶全部共用 gateway 自助路線',
-    [directCreate, directRestore, directReset, directDelete].every(r => r.ok === true)
-      && ['authCreateAccount', 'authRestoreAccount', 'authResetPassword', 'authDeleteAccount']
-        .every(action => transportCalls.some(c => c.url === directExec && c.body.action === action)));
-  const directChanged = await auth.changeOwnPassword('direct-pass', 'direct-new-pass');
-  ok('本人改密碼亦經 /exec，成功後換新 session', directChanged.ok === true
-    && auth.current()?.sessionToken === 'direct-session-2'
-    && transportCalls.some(c => c.url === directExec && c.body.action === 'authChangePassword'));
-  const directForgot = await auth.requestPasswordReset('direct@example.test', 'https://portal.example/reset-password.html');
-  const directComplete = await auth.completePasswordReset('direct@example.test', '12345678', 'direct-new-pass-2');
-  ok('忘記密碼／統一版重設碼完成流程同樣保留自助 /exec fallback', directForgot.ok === true && directComplete.ok === true
-    && transportCalls.some(c => c.url === directExec && c.body.action === 'authForgotPassword')
-    && transportCalls.some(c => c.url === directExec && c.body.action === 'authCompletePasswordReset'));
-  const directBodies = transportCalls.filter(c => c.url === directExec);
-  ok('直連只用 text/plain 避免 CORS preflight，並帶本機 routing API Key（不當身份）',
-    directBodies.length > 0 && directBodies.every(c => c.contentType.startsWith('text/plain'))
-      && directBodies.every(c => c.body.apiKey === 'direct-route-key' && c.body.apikey === 'direct-route-key'));
-  const setupLogin = await auth.loginSetupKey('EC72-DIRECT-TEST');
-  ok('開團 KEY 驗證亦可經自助 /exec 並取得 setup session', setupLogin.ok === true
-    && auth.current()?.sessionToken === 'direct-setup-session'
-    && transportCalls.some(c => c.url === directExec && c.body.action === 'verifySetupKey'));
-
+  const login = await auth.loginServer('staff', 'direct@example.test', 'direct-pass');
+  const forgot = await auth.requestPasswordReset('direct@example.test', 'https://portal.example/reset-password.html');
+  ok('登入及忘記密碼在未登記時失敗，不直連本機設定', !login.ok && !forgot.ok && calls.length >= 2
+    && calls.every(c => c.url.includes('api/proxy') && !('apiKey' in c.body) && !('apikey' in c.body)), JSON.stringify(calls));
   globalThis.fetch = browserFetch;
   if (oldSync) store.load().sync = oldSync; else delete store.load().sync;
   store.setSession(null);
@@ -305,9 +253,8 @@ section('8. 團員入口無快取／舊污染快取只建立安全空殼');
     shell.meta?.hubShell === true && shell.members.length === 0 && shell.transactions.length === 0,
     JSON.stringify({ meta: shell.meta, members: shell.members.length, transactions: shell.transactions.length }));
   ok('安全空殼不會 fetch members／finance 等靜態行政 seed', staticFetches === 0, String(staticFetches));
-  ok('?be= 經白名單後只保存 routing metadata，不會令空殼加入行政資料',
-    shell.sync?.url === 'http://localhost:9191/branch/exec' && shell.sync?.apiKey === ''
-      && shell.backend?.gasUrl === 'http://localhost:9191/branch/exec');
+  ok('backendUrl 參數不會存入安全空殼或選擇後端',
+    !shell.sync?.url && !shell.sync?.apiKey && !shell.backend?.gasUrl);
   globalThis.fetch = browserFetch;
 }
 

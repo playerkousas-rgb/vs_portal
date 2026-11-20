@@ -22,7 +22,8 @@ import {
   confirmBulkOperation, createSafetySnapshot, undoable,
   listSafetySnapshots, readSafetySnapshot, dropSafetySnapshot, downloadSafetySnapshot
 } from '../lib/guard.js';
-import { beginOperation, operationResult, uncertainWriteText } from '../lib/operations.js';
+import { uncertainWriteText } from '../lib/operations.js';
+import { postBackend } from '../lib/gateway.js';
 import { rolesAscending } from '../lib/branch-config.js';
 
 const TABLE_IDENTITIES = rolesAscending({ includeHidden: false }).slice().reverse();
@@ -492,23 +493,10 @@ function sourceView() {
 /* ============================================================
    3. 總表同步（Apps Script → 後端總 Sheet）
    ============================================================ */
-function shortUrl(u) {
-  if (!u) return '';
-  return String(u).replace('https://script.google.com/macros/s/', '…/s/').slice(0, 46) + (String(u).length > 60 ? '…' : '');
-}
 function syncView() {
   const s = load().sync || {};
-  const backend = load().backend || null;
-  /* 「有冇接後端」唔可以再淨係睇 db.backend —— 佢只喺**前端** Registry 有 gasUrl
-     嗰陣先會 set，而平台用 Vercel 環境變數登記嘅旅團（正路做法）永遠唔會有。
-     結果：個頁話「未設定後端」，連「儲存到後端」「由後端還原資料」
-     「睇後端有咩資料」「體積檢查」全部一齊收埋 —— 用家根本撳唔到
-     文件叫佢撳嘅嗰啲掣（2026-09-19 團長回報「有嘢把解決方法封死」）。
-     而家改用 remoteConfigured()（有同源代理＋旅團編號就算接得通）。 */
   const route = backendStatus();
-  /* Vercel Registry／登入成功後嘅實際接線都係後端，唔可以因為本機冇填
-     s.url 就畫成「未設定後端」。/exec＋API Key 只係純靜態部署嘅後備。 */
-  const wired = !!backend || route.configured || route.verified;
+  const wired = route.configured;
   const log = s.log || [];
   const pending = Number(s.pending || 0);
   const lastPush = s.lastPushAt ? String(s.lastPushAt).slice(0, 19).replace('T', ' ') : '';
@@ -531,7 +519,7 @@ function syncView() {
   </div></div>
 
   <div class="note-box mb-16">${icon('cloud', 15)}<div>
-    <b>資料真正嘅家係你自己嘅 Google Sheet。寫入後端只有一條路：頂部嗰粒「儲存到後端」。</b>
+    <b>目標係使用旅團既有 BADGE Sheet；正式共用 contract 尚未驗收。</b>
     ① 登入嗰陣由後端攞成份資料（＝登入嗰一刻嘅後端，做基準）→
     ② 之後<b>任何改動都只係寫入呢部機</b>（頂部會顯示「N 項未寫入」）→
     ③ 撳頂部「<b>儲存到後端</b>」先至真正送出。送出前一定先核對後端版本，
@@ -541,30 +529,20 @@ function syncView() {
     <span class="xs">「<b>重新載入</b>」＝由後端拉最新嗰份。另一個視窗改咗嘢會自動併入呢邊，唔使重新整理。<br>
     ${pendAcc ? `<b style="color:var(--danger)">⚠ 有 ${pendAcc} 個帳戶改動未寫入後端 —— 未撳頂部掣之前，佢哋喺其他裝置登唔到。</b><br>` : ''}
     其他分頁（帳目／團員／物資…）係攤平出嚟畀你自己睇同用公式嘅「報表」。
-    同一個後端仲會處理 <b>成員手機記帳</b>（entry.html）同 <b>通告報名</b>（notice.html）。</span>
+    舊頁面會轉往已登入團員入口。</span>
   </div></div>
 
   ${wired ? `<div class="card mb-16"><div class="card-head">
     <div><div class="card-title">${icon('shield', 15)} 儲存狀態</div>
       <div class="card-sub">資料有冇真係入咗後端</div></div>
     ${pending ? `<span class="badge ${pendAcc ? 'b-danger' : 'b-warn'}"><span class="dot"></span>${pending} 項改動未寫入後端${pendAcc ? `（包括 ${pendAcc} 個帳戶）` : ''}</span>`
-      : `<span class="badge b-ok"><span class="dot"></span>全部已儲存</span>`}
+      : `<span class="badge b-info"><span class="dot"></span>本機沒有待存改動</span>`}
   </div>
   <div style="padding:12px 16px" class="sm muted">
     <div class="kv-row"><span>登入時攞到嘅後端版本（基準）</span><span>${esc(baseVer ? `${baseVer}${baseAt ? `，攞於 ${baseAt}` : ''}` : '（未由後端載入過）')}</span></div>
     <div class="kv-row"><span>最後寫入後端</span><span>${esc(lastPush || '（未試過）')}</span></div>
     <div class="kv-row"><span>最後由後端讀取</span><span>${esc(lastPull || '（未試過）')}</span></div>
     ${s.lastError ? `<div class="kv-row"><span>上次狀態</span><span style="color:var(--danger)">${route.serverManaged ? '上次操作未完成，請稍後再試' : esc(String(s.lastError).slice(0, 120))}</span></div>` : ''}
-    ${!route.serverManaged && /API ?Key|未授權/i.test(String(s.lastError || '')) ? `
-    <div class="note-box err mt-8">${icon('alert', 15)}<div>
-      <b>寫唔入係因為 API Key 未入伺服器端。</b>後端行過 <code>initializeSheets</code> 之後會自動生成一條 API Key，
-      但平台伺服器端未有，所以後端拒絕寫入。<br>
-      <b>正確做法係交畀平台管理員設定，唔係喺呢度打條 key：</b>
-      喺 Apps Script 執行 <code>showApiKey()</code> 攞條 key → 喺 Vercel 加環境變數
-      <code>TROOP_${esc(load().unitCode || '編號')}_APIKEY</code>（同埋確認
-      <code>TROOP_${esc(load().unitCode || '編號')}_BACKEND</code> 係你個 <code>/exec</code>）→ 重新部署。
-      咁條 key 淨係留喺伺服器端，瀏覽器完全唔會見到。
-    </div></div>` : ''}
     <div class="note-box mt-12">${icon('alert', 15)}<div class="sm">
       <b>冇自動寫入。</b>改動一律先留喺呢部機，要撳<b>頂部「儲存到後端」</b>先至送出 ——
       全系統得呢一條寫入路，唔會有第二個地方偷偷地寫。
@@ -580,7 +558,7 @@ function syncView() {
     你而家嘅資料淨係存喺呢部機嘅瀏覽器；清 cache／換手機可能會冇咗。
     試下：確認選中嘅旅團已經喺 Vercel 登記
     <code>TROOP_${esc(load().unitCode || '編號')}_BACKEND</code>／<code>_APIKEY</code>，再 Redeploy。
-    儲存好設定之後，頂部「儲存到後端」就會用得。
+    只登記 URL／Key 不代表 Portal 相容或已開通。
   </div></div>`}
 
   ${(() => {
@@ -601,79 +579,14 @@ function syncView() {
     </div></div>`;
   })()}
 
-  ${!route.serverManaged && backend ? `<div class="card mb-16"><div class="card-head">
-    <div><div class="card-title">${icon('check', 15)} 後端已連接${backend.shared ? '（跟 Registry 共用）' : '（本旅團專用）'}</div>
-      <div class="card-sub">${esc(backend.name)}${backend.updated ? ` · 更新 ${esc(backend.updated)}` : ''}</div></div>
-    <span class="badge b-ok"><span class="dot"></span>已設定 Apps Script</span>
-  </div>
-  <div style="padding:12px 16px" class="sm muted">
-    <div class="kv-row"><span>總表同步</span><code>${esc(shortUrl(backend.gasUrl))}</code></div>
-  </div></div>` : (!route.serverManaged && wired ? `<div class="card mb-16"><div class="card-head">
-    <div><div class="card-title">${icon('cloud', 15)} 後端接線方式</div>
-      <div class="card-sub">呢個旅團經平台伺服器端接線（唔使喺瀏覽器打 Key）${route.verified ? ' · 登入／載入已實際核對成功' : ''}</div></div>
-    <span class="badge ${route.verified ? 'b-ok' : 'b-info'}"><span class="dot"></span>${route.verified ? '已核對 · /api/proxy' : '經 /api/proxy'}</span>
-  </div>
-  <div style="padding:12px 16px" class="sm muted">
-    平台用 Vercel 環境變數 <code>TROOP_${esc(load().unitCode || '編號')}_BACKEND</code>／
-    <code>_APIKEY</code> 幫你接線 —— 條 Key 留喺伺服器，瀏覽器完全唔會見到，呢個係正路。
-    <b>所以你唔需要再喺「同步設定」重複填 /exec 同 API Key。</b><br>
-    <span class="xs">下面兩格只係純靜態部署（冇 <code>/api/proxy</code>）嘅後備路線；留空係正確。</span>
-  </div></div>` : '')}
-
-  <details class="mt-16" ${route.serverManaged ? 'style="display:none"' : ''}>
-    <summary class="btn btn-xs">管理員／後備設定（一般不用）</summary>
-  <div class="grid g-2-1 mt-8">
-    <div class="card"><div class="card-head"><div><div class="card-title">自助後備設定 <span class="badge b-info xs">Vercel 接線時不用填</span></div>
-      <div class="card-sub">只有純靜態部署冇 <code>/api/proxy</code> 時，先需要 Apps Script Web App 網址</div></div></div>
-      <div style="padding:16px 18px">
-        <div class="field"><label class="label">Apps Script 網址（/exec）</label>
-          <input class="input" id="y-url" value="${esc(s.url || '')}" placeholder="https://script.google.com/macros/s/…/exec"></div>
-        <div class="grid g-2 mt-12" style="gap:12px">
-          <div class="field"><label class="label">旅團編號</label>
-            <input class="input" id="y-unit" value="${esc(s.unit || load().unitCode)}"></div>
-          <div class="field"><label class="label">API Key <span class="faint">（通常唔使填）</span></label>
-            <input class="input" id="y-key" value="${esc(s.apiKey || '')}" placeholder="由伺服器端提供"></div>
-        </div>
-        <div class="hint mt-6">
-          ${icon('shield', 14)} API Key 同 <code>/exec</code> 正路係由平台管理員入喺
-          <b>Vercel 環境變數</b>（<code>TROOP_${esc(load().unitCode || '編號')}_APIKEY</code> /
-          <code>TROOP_${esc(load().unitCode || '編號')}_BACKEND</code>），由伺服器端注入，
-          瀏覽器唔會見到。上面兩格<b>淨係</b>喺純靜態部署（冇 <code>/api/proxy</code>，例如 GitHub Pages）先需要填。
-        </div>
-        <div class="note-box info mt-12">${icon('shield', 15)}<div>
-          <b>儲存方式：得一個，冇得揀</b><br>
-          登入攞後端 → 改動暫存喺呢部機 → 撳頂部「<b>儲存到後端（N）</b>」先寫入。
-          寫入之前先核對後端版本；有人喺你之後儲存過就逐格比對，撞嘅格會問你先。<br>
-          <span class="faint">冇自動儲存、冇背景讀取、冇關視窗自動寫、冇「同步全部順便寫」——
-          所以唔會再出現「兩部機互相蓋走對方資料」。</span>
-        </div></div>
-        ${pending ? `<div class="hint" style="color:var(--warn)">有 <b>${pending}</b> 次改動仲未寫入後端。</div>` : ''}
-        <div class="row gap-8 mt-12 wrap">
-          <button class="btn btn-primary" data-act="save-sync">${icon('save', 16)} 儲存設定</button>
-          <button class="btn" data-act="push-sync">${icon('table', 16)} 更新報表分頁</button>
-        </div>
-        <div class="hint mt-8">未設定網址都用得：所有資料仍然喺瀏覽器，可隨時匯出 CSV／JSON 手動上載去總表。</div>
-      </div>
-    </div>
-
-    <div class="col gap-16">
-      <div class="card"><div class="card-head"><div class="card-title">後端 Apps Script 範本</div></div>
-        <div style="padding:14px 18px" class="sm muted">
-          下載 <code>Code.gs</code> → 喺你嘅試算表「擴充功能 → Apps Script」貼上 → 部署為網頁應用程式（執行身分：我；存取權：任何人）。
-          <div class="note-box warn mt-12"><div class="xs">
-            <b>已經更新過都係「儲存唔到去後端／後端讀取唔到」？</b>
-            好可能係舊版（v2.6.1 之前）留低咗一堆分件暫存垃圾行喺「資料庫」分頁 —— 每次大資料庫儲存都多留成份資料庫嘅複製品，
-            分頁越嚟越大，最後讀寫一齊撞 Apps Script 執行時間上限。
-            <br>救法：貼新版 <code>Code.gs</code> → 部署（版本揀「新版本」）→ 喺 Apps Script 編輯器揀 <code>cleanStaleStaging</code> 撳「執行」一次。
-          </div></div>
-          <div class="col gap-6 mt-12">
-            <button class="btn btn-sm btn-block" data-act="dl-gas">${icon('download', 15)} 下載 Unified Code.gs</button>
-            <button class="btn btn-sm btn-block" data-act="copy-gas">${icon('copy', 15)} 複製 Code.gs 原始碼</button>
-            <button class="btn btn-sm btn-block" data-act="dl-schema">${icon('download', 15)} 下載欄位對應表（CSV）</button>
-            <button class="btn btn-sm btn-block" data-act="copy-guide">${icon('copy', 15)} 複製部署步驟</button>
-          </div>
-        </div>
-      </div>
+  <div class="note-box warn mb-16">${icon('alert', 15)}<div>
+    Portal 只經同源代理及伺服器 Registry 使用既有 BADGE 後端。正式相容合約及真 Apps Script staging 尚未驗收；Registry 或單次成功回應不代表共用資料已驗證。
+    不要建立新 Sheet／GAS、部署測試 bundle 或複製帳戶。請聯絡 Admin 核對。
+  </div></div>
+  <div class="grid g-2-1 mt-8"><div class="card"><div style="padding:16px">
+    <button class="btn" data-act="push-sync">${icon('table', 16)} 更新報表分頁</button>
+    <button class="btn" data-act="dl-schema">${icon('download', 15)} 下載欄位對應表（CSV）</button>
+  </div></div><div class="col gap-16">
       <div class="card"><div class="card-head"><div class="card-title">同步紀錄</div></div>
         <div style="padding:14px 18px">
           ${log.length ? `<div class="sync-log">${log.slice(-12).reverse().map(l => `[${esc(l.at)}] ${esc(l.msg)}`).join('<br>')}</div>`
@@ -1012,12 +925,10 @@ export function buildPayload({ sample = false } = {}) {
     });
     tables[d.collection] = sample ? rows.slice(0, 3) : rows;
   });
-  const s = db.sync || {};
   const payload = {
     action: sample ? 'ping' : 'sync',
-    unit: s.unit || db.unitCode,
+    unit: db.unitCode,
     unitName: db.profile?.name || db.unit?.name || '',
-    apiKey: s.apiKey || '',
     at: new Date().toISOString(),
     schema: Object.fromEntries(Object.entries(defs).map(([k, d]) => [k, d.fields.map(f => ({ key: f.key, label: f.label, type: f.type }))])),
     counts: Object.fromEntries(Object.entries(tables).map(([k, v]) => [k, v.length])),
@@ -1030,108 +941,24 @@ export function buildPayload({ sample = false } = {}) {
   return payload;
 }
 
-/* 有冇同源代理可以用（同 remote.js 一樣嘅判斷：http/https 先有 /api/proxy） */
-function canUseProxy() {
-  try { return typeof location !== 'undefined' && /^https?:$/.test(location.protocol); }
-  catch { return false; }
-}
-
+/** 報表寫入使用同一 gateway；不接受本機 URL／Key，且不清 pending。 */
 export async function pushToMaster({ silent = false } = {}) {
-  const s = load().sync || {};
   const payload = buildPayload();
-  /* sync 係行政寫入；API Key 只作 server routing，身份必須跟已核實 session。 */
   const actor = current();
   if (actor?.sessionToken) payload.sessionToken = actor.sessionToken;
   else if (actor?.portalToken) payload.portalToken = actor.portalToken;
-  /* 冇填本地 /exec？先試同源代理 —— Vercel 登記嘅旅團正路係咁：
-     後端網址同 API Key 留喺伺服器端（TROOP_*），前端淨係送旅團編號。
-     （2026-09-17 0082 事件：純環境變數開團嘅旅團呢度永遠「未設定網址」，
-       連「測試連線」都撳唔到，明明經代理係寫得入嘅。） */
-  let endpoint = (s.url || '').trim();
-  let viaProxy = false;
-  if (!endpoint) {
-    if (canUseProxy()) { endpoint = 'api/proxy'; viaProxy = true; }
-    else {
-      const db = load();
-      db.sync = {
-        ...(db.sync || {}),
-        log: [...((db.sync || {}).log || []), { at: new Date().toISOString().slice(0, 19).replace('T', ' '), msg: '✗ 未設定 Apps Script 網址（去「總表同步」填 /exec）' }].slice(-40)
-      };
-      commitMeta();
-      if (!silent) toast('未設定 Apps Script 網址', 'err');
-      return { ok: false, msg: '未設定網址' };
-    }
-  }
-  /* 經代理就唔好送空 key —— 等伺服器端由 TROOP_* 注入（同 remote.js 一樣做法） */
-  if (viaProxy && !payload.apiKey) delete payload.apiKey;
-  const operation = beginOperation('sync', { unit: payload.unit, label: '更新報表分頁' });
-  payload.operationId = operation.id;
-  payload.operation_id = operation.id;
-  /* 同步紀錄係簿記 —— commitMeta() 只寫本機，唔會計入「未儲存改動」 */
-  const log = (msg) => {
-    const db = load();
-    db.sync = { ...(db.sync || {}), log: [...((db.sync || {}).log || []), { at: new Date().toISOString().slice(0, 19).replace('T', ' '), msg }].slice(-40), lastAt: new Date().toISOString() };
-    commitMeta();
-  };
-  const ctrl = new AbortController();
-  const timeout = setTimeout(() => ctrl.abort(), 45_000);
-  try {
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': viaProxy ? 'application/json' : 'text/plain;charset=utf-8' },
-      body: JSON.stringify(payload), signal: ctrl.signal
-    });
-    const rawText = await res.text();
-    const txt = rawText.slice(0, 2000);
-    let json = null;
-    try { json = JSON.parse(rawText); } catch { /* 非 JSON 只可當結果未知 */ }
-    if (viaProxy && !json && res.status === 404) {
-      /* 同源根本冇呢個 API（純靜態部署）：真正後端未收到。 */
-      const msg = `連唔到同源代理（HTTP ${res.status}），又未設定後端網址`;
-      const result = operationResult({ ok: false, reason: 'not_sent', error: msg, outcome: 'not_sent' }, operation, { sent: false });
-      log(`✗ ${msg}`);
-      if (!silent) toast(msg, 'err');
-      return { ok: false, msg, viaProxy, ...result };
-    }
-    /* JSON 業務失敗要照失敗；冇 JSON 或 transport 異常只可以叫 unknown，
-       絕對唔可以當作冇寫入。 */
-    const businessOk = !!json && json.ok !== false && json.success !== false;
-    const ok = res.ok && businessOk;
-    const detail = String(json?.error || json?.msg || '').replace(/\s+/g, ' ').slice(0, 120);
-    const classified = operationResult(json ? {
-      ...json, ok, reason: json.reason || (ok ? '' : 'backend'), error: detail
-    } : {
-      ok: false, reason: 'bad_response', mayHaveApplied: true,
-      error: `後端回應格式異常（HTTP ${res.status}）`
-    }, operation, { sent: true });
-    /* Durable operation outcome wins over HTTP/envelope flags. */
-    const applied = classified.outcome === 'applied';
-    /* 報表分頁同步唔會郁「資料庫」分頁，所以**唔會**清 pending —— 未儲存嘅改動仍然未儲存 */
-    if (!applied && detail) {
-      const d = load();
-      d.sync = { ...(d.sync || {}), lastError: detail };
-    }
-    const total = payload.counts ? Object.values(payload.counts).reduce((a, b) => a + b, 0) : 0;
-    const marker = classified.outcome === 'unknown' ? '?' : applied ? '✓' : '✗';
-    log(`${marker} 報表分頁 HTTP ${res.status}${viaProxy ? '（代理）' : ''} · ${total} 筆 · 操作 ${operation.id} · ${(detail || txt).replace(/\s+/g, ' ').slice(0, 80)}`);
-    if (!silent) toast(applied
-      ? '已更新總表嘅報表分頁（資料庫本身要撳「儲存到後端」）'
-      : classified.outcome === 'unknown' ? uncertainWriteText(operation.id) : ('同步確定未套用：' + (detail || ('HTTP ' + res.status))),
-      applied ? 'ok' : classified.outcome === 'unknown' ? 'warn' : 'err');
-    /* total ＝ 今次攤平咗幾多筆落報表分頁。 */
-    return { msg: detail || txt.slice(0, 300), viaProxy, total, ...classified, ok: applied };
-  } catch (e) {
-    /* fetch 一開始之後，proxy／直連兩條路遇到 timeout 或斷線都可能已經送到 GAS。
-       一律 unknown；保留同一 operation ID，絕不自動重送。 */
-    const msg = /abort|timeout/i.test(`${e?.name || ''} ${e?.message || ''}`) ? '連線逾時' : (e?.message || '網絡錯誤');
-    const classified = operationResult({ ok: false, reason: /abort|timeout/i.test(msg) ? 'timeout' : 'network',
-      mayHaveApplied: true, error: msg }, operation, { sent: true });
-    log(`? 報表寫入結果未知 · 操作 ${operation.id} · ${msg} · 系統冇重送`);
-    if (!silent) toast(uncertainWriteText(operation.id), 'warn');
-    return { ok: false, pending: true, msg, viaProxy, ...classified };
-  } finally {
-    clearTimeout(timeout);
-  }
+  const r = await postBackend(payload, { unit: payload.unit, timeoutMs: 45000 });
+  const msg = String(r.json?.error || r.json?.msg || r.error || '').slice(0, 300);
+  const total = Object.values(payload.counts || {}).reduce((a, b) => a + b, 0);
+  const db = load();
+  const marker = r.outcome === 'unknown' ? '?' : r.ok ? '✓' : '✗';
+  db.sync = { ...(db.sync || {}), lastError: r.ok ? '' : msg,
+    log: [...((db.sync || {}).log || []), { at: nowStamp(), msg: `${marker} 報表同步 · 操作 ${r.operationId || ''} · ${msg}` }].slice(-40), lastAt: nowStamp() };
+  commitMeta();
+  if (!silent) toast(r.ok ? '報表同步已回覆成功；共用 BADGE 資料仍須正式驗收'
+    : r.outcome === 'unknown' ? uncertainWriteText(r.operationId) : (msg || '同步未完成'),
+    r.ok ? 'ok' : r.outcome === 'unknown' ? 'warn' : 'err');
+  return { ...r, msg, viaProxy: r.via === 'proxy', total };
 }
 
 /* ============================================================
@@ -1473,28 +1300,6 @@ export function mount(root, params) {
     }));
     root.querySelectorAll('[data-act]').forEach(b => b.addEventListener('click', async () => {
       const act = b.dataset.act;
-      if (act === 'save-sync') {
-        /* ★ 2026-11-12：本來完全冇權限檢查 —— 執委（table.sync=false）
-           照樣改到自己部機嘅連線設定，之後自己睇唔到資料（幽靈故障）。
-           只寫本機、唔會上後端，但都要同其他頁一致 fail-closed。 */
-        if (!can('table.sync')) return toast('呢個設定只有團長／領袖改得', 'err');
-        const db = load();
-        const url = root.querySelector('#y-url').value.trim();
-        db.sync = {
-          ...(db.sync || {}),
-          url,
-          unit: root.querySelector('#y-unit').value.trim() || db.unitCode,
-          apiKey: root.querySelector('#y-key').value.trim()
-        };
-        /* 舊遺留：auto／autoModel（自動寫入）、poll（會議模式背景讀）都已經冇呢啲路 */
-        delete db.sync.auto;
-        delete db.sync.autoModel;
-        delete db.sync.poll;
-        /* 連線設定係呢部機自己嘅嘢（唔會上後端），所以只寫本機、唔計入未儲存改動 */
-        commitMeta();
-        toast('已儲存連線設定（資料寫入後端：撳頂部「儲存到後端」）', 'ok');
-        refresh();
-      }
       if (act === 'push-sync') {
         if (!(await confirmDlg({ title: '更新報表分頁', okText: '開始', trustedMessageHtml: '會將全部表格資料攤平送去你嘅 Google Sheet 嘅報表分頁（帳目／團員／物資…），畀你自己睇同用公式。<br><br><b>唔會</b>寫「資料庫」分頁 —— 資料庫本身由頂部「儲存到後端」處理。' }))) return;
         await pushToMaster(); refresh();
@@ -1540,16 +1345,6 @@ export function mount(root, params) {
         await reloadFromBackend({ force: true });
         refresh();
       }
-      if (act === 'dl-gas') {
-        const { unifiedGasTemplate } = await import('../lib/unifiedtemplate.generated.js');
-        download('Code.gs', unifiedGasTemplate(), 'text/plain;charset=utf-8');
-        toast('已下載 Unified Code.gs', 'ok');
-      }
-      if (act === 'copy-gas') {
-        const { unifiedGasTemplate } = await import('../lib/unifiedtemplate.generated.js');
-        const ok = await copyText(unifiedGasTemplate());
-        if (ok) toast('已複製 Unified Code.gs 全部原始碼到剪貼簿', 'ok');
-      }
       if (act === 'dl-schema') {
         const defs = tableDefs();
         toCSV({
@@ -1557,10 +1352,6 @@ export function mount(root, params) {
           rows: Object.entries(defs).flatMap(([k, d]) => d.fields.map(f => [d.label, f.key, f.label, TYPE_LABEL[f.type] || f.type]))
         });
         toast('已下載欄位對應表', 'ok');
-      }
-      if (act === 'copy-guide') {
-        const txt = `【完整 Unified 後端設定】\n1. 開新 Google Sheet → 擴充功能 → Apps Script\n2. 貼上 App 下載嘅 Unified Code.gs\n3. 執行 initializeSheets，再執行 showApiKey\n4. 部署網頁應用程式（執行身分：我；存取權：任何人），複製正式 /exec\n5. 管理員喺 Vercel 只登記 TROOP_<編號>_NAME／BACKEND／APIKEY 三項並 Redeploy\n6. 功能完整版支部前端（包括 Progress）與 BADGE 輕量前端自動使用同一完整 GAS／Sheet；唔好另建精簡後端或喺 browser 貼 Key。`;
-        if (await copyText(txt)) toast('已複製部署步驟', 'ok');
       }
     }));
   }

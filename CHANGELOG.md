@@ -5,6 +5,28 @@
 
 ---
 
+## 共用後端同步方向更正 — 2026-11-20
+
+- 架構定義：VS Portal 是完整版前端，BADGE 是輕量前端；兩者應共用同一份完整 GAS 後端，BADGE 只使用所需 action。
+- `apps-script/UnifiedCode.gs` 是把兩份完整後端疊加的隔離測試產物，不是目標部署架構；不得以它的 8,000 多行數字推斷正式共用後端需要這麼大。
+- BADGE PR #40（merge `87c76a98b95ff7b5e2a7be02198142c72aefc24e`）是 2026-11-20 的維護更新。其 backend baseline 已 vendored 入隔離測試 source，但這不等於逐項修正已移植到 Portal 完整 source。
+- 逐項同步狀態及後續流程見 `docs/BACKEND_SYNC.md`；未完成項目不標記為已同步。
+
+## Portal 身份階級對齊 BADGE — 2026-11-20
+
+- Portal 身份編輯沿用 BADGE 的嚴格階級規則：只能管理低於自己的目標，且新身份也必須低於操作者；一般身份流程不可改自己。Portal `leader`／`chief` 對應 BADGE `branch_leader`／`group_leader`，執委及團員不能管理身份。
+- 前端按目前操作者階級篩選身份選項；GAS 在共享身份寫入驗證器再次核對 `member.identity`、本人、目標現有身份及新身份；團長交棒另核對 `admin.chief`。UI 隱藏不構成安全邊界。
+- 保留 Portal 團長交棒流程：接任者成為 `chief`，現任團長在同一操作自動降為 `leader`；現任者的本機 session 立即降級。既有 `admin`→`chief` 相容別名不拆成新角色。
+- 回歸覆蓋 Portal UI 選項、本人／同級／升權拒絕、合法低階變更及團長交棒；正式後端仍由 `gastemplate.js` 生成 `apps-script/Code.gs`。
+
+## Unified BADGE／Portal 整合 — 2026-11-20（隔離測試版）
+
+- BADGE 基線更新至 `vsbadge@87c76a98b95ff7b5e2a7be02198142c72aefc24e`（v9.6，SHA-256 釘選）；Portal 相容來源記錄為 `vs_portal@41b923a1eafe56f7b2b572fc9e43d24b975f6db6`。
+- `apps-script/UnifiedCode.gs` 的 8,939 行是生成式組合：BADGE 基線 + 4,585 行 Portal 相容層 + Unified 路由；它不是一份 8,000 行的 Portal 單體原始碼。不得直接手改生成檔。
+- 合入 BADGE 的局部權限更新及登入後 `me` 權限回傳，並加入 Unified 整合回歸測試。
+- 封鎖匿名 `GET?action=load`；登入成員只會收到自己的 roster／進度投影，已授權的 staff 才可讀全團資料；同源 Progress API 對平台超管使用簽名 POST。
+- `releaseChannel` 仍為 `isolated-test-only`；未部署正式 GAS、未測試真實 Sheet，也未驗收正式 Vercel。
+
 ## 統一 GS 隔離測試版（未發佈）— 2026-11-12
 
 - **施工次序更正：BOOK 齊 → BADGE 齊 → 5 個支部系統（現在）→ 最後才建立並接通旅系統。** 現在未有中央系統；支部本地帳戶／session 是正常主入口，assertion／exchange auth fixture 不阻擋支部獨立驗收。

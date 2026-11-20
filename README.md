@@ -1,6 +1,6 @@
 # 深資童軍管理系統
 
-深資童軍支部管理平台：會議、行事曆、財務、用戶與身份、物資、通告、團章、進度及資料同步。Runtime 使用原生 HTML／CSS／JavaScript ES Modules；每個支部使用自己的 Google Sheet 與 Apps Script 後端。
+深資童軍支部管理平台：會議、行事曆、財務、用戶與身份、物資、通告、團章、進度及資料同步。Runtime 使用原生 HTML／CSS／JavaScript ES Modules；Portal 完整版的目標是與 BADGE 輕量版共用各旅團現有 BADGE Google Sheet、Apps Script 後端及帳戶。正式共用 action contract 尚待完成及 staging 驗收，詳見 [`docs/BACKEND_SYNC.md`](docs/BACKEND_SYNC.md)。
 
 > [!IMPORTANT]
 > **所有支部內容只限已登入的本地身份。** 系統沒有匿名通告、匿名團章、匿名申報、匿名借用或 `publicProfile`。
@@ -10,18 +10,17 @@
 ## 目前系統邊界
 
 ```text
-支部行政前端（index.html） ─┐
-已登入團員入口（members.html）├─ 同源 API ─▶ 本支部 Apps Script ─▶ 本支部 Sheet
-BADGE 輕量前端 ──────────────┘
-
-未來旅系統 ──獨立、只讀、最小投影──▶ 各支部後端
+Portal 完整前端 ── Portal server Registry／同源 Proxy ─▶ 旅團既有 BADGE /exec／Sheet／Users
+BADGE 輕量前端 ─────────────────────────────────────────▶ 同一既有 BADGE 後端
 ```
 
-每個支部使用**同一支完整 Unified GAS**。**支部系統前端是功能完整版**，包含行政及 Progress；**BADGE 是輕量前端**，只呈現其工作流程，不代表另有一支精簡後端。前端有沒有顯示某功能不是安全邊界；每個 action 仍由後端按 **session、role 及 scope** 與本支部 grant 驗證。
+**產品關係：BADGE 是功能較精簡的前端，支部系統是功能完整版前端；旅團可只用其中一個，也可兩個一起用。** 單獨使用任何一個時都不應依賴另一個前端網站開啟或登入；一起使用時，兩個前端應連同一支部的完整共用後端和資料，而不是互相同步兩套帳戶或資料。這與成員系統／區管理系統共用後端的模式相似，但 BADGE 本身有登入，不是公開免登入入口。
 
-- 支部本地帳戶與 opaque session 是正常登入來源，不是後備入口。
-- 瀏覽器不會把 API Key 當身份；敏感資料由後端按已驗 session 重新授權。
-- 支部之間不可直接連線、不可保存另一支部的 URL／Key，也不可互相讀寫。
+這是目標架構，不代表目前已驗收完成。Vercel Registry／Proxy 已存在，但裸 BADGE v9.6 action contract 與 Portal auth actions 不同；Admin 登記 URL／Key 本身不會補上相容 adapter。Unified GAS 是未經真實 Apps Script 驗收的候選版，不可視為已驗收的正式共享後端。支部負責人自行試用前請閱讀 [`docs/USER_SELF_TEST.md`](docs/USER_SELF_TEST.md)；正式狀態及缺口見 [`docs/BACKEND_SYNC.md`](docs/BACKEND_SYNC.md)。
+
+- 已有 BADGE 後端的旅團加入 Portal 時，不應另建 Sheet／GAS、第二帳戶表或資料來源；既有 BADGE Users／名冊是身份與資料權威。全新支部首次建置及只有 Portal 的既有部署如何升級，需另行制定及驗證，不能假定每個旅團已有 BADGE。
+- 瀏覽器不會把 API Key 當身份；敏感資料必須由正式共用後端按同一 BADGE 使用者及服務端授權重新驗證。
+- Registry 只保存 server-side `/exec`／Key，`/api/units` 不回傳 secret；`backendReady` 不代表 action 相容。
 - BOOK 匯入只會先成為待批資料；領袖確認後才可寫入正式紀錄。
 - 更完整的邊界見 [`SCOPE.md`](SCOPE.md)。
 
@@ -50,11 +49,11 @@ db.accessControl.modules[moduleId][roleId] = { show, read, edit }
 - 操作者只會看到自己及較低身份的權限欄；只可修改嚴格較低身份。
 - 隱藏入口不等於授權。直接輸入 URL、直接呼叫 API 或偽造 payload，仍須通過後端檢查。
 
-純資料正規化及遷移在 [`assets/js/lib/access-schema.js`](assets/js/lib/access-schema.js)，前端 runtime gate 在 [`assets/js/lib/access.js`](assets/js/lib/access.js)。Portal GAS 與 Unified GAS 會使用同樣的支部角色層級、模組 grant 及細項 ACL 重新驗證。
+純資料正規化及遷移在 [`assets/js/lib/access-schema.js`](assets/js/lib/access-schema.js)，前端 runtime gate 在 [`assets/js/lib/access.js`](assets/js/lib/access.js)。Portal 原 GAS 與 BADGE 的身份資料模型不同；不能因此宣稱已使用同一 BADGE 帳戶。正式共用後端必須以既有 BADGE Users 為權威，並由該 GAS 對 Portal actions 重新驗證角色及 scope。
 
 ### 身份資料保密
 
-行政資料投影只回傳：
+Portal 測試後端的行政資料投影設計只回傳（正式 BADGE adapter 尚未驗收）：
 
 1. 操作者自己的 member／account 列；以及
 2. 嚴格較低身份的列。
@@ -92,23 +91,18 @@ db.accessControl.modules[moduleId][roleId] = { show, read, edit }
 
 實際可見、可讀、可編輯範圍由每個支部自己的 `db.accessControl` 決定。
 
-## 後端與生成檔
+## 後端來源與隔離測試產物
 
 | 路徑 | 用途 |
 |---|---|
-| `assets/js/lib/gastemplate.js` | Portal GAS 單一來源 |
-| `apps-script/Code.gs` | 由 `gastemplate.js` 生成的 Portal artifact |
-| `apps-script/unified-src/` | Unified baseline、Portal compatibility checkpoint、extension 及 manifest |
-| `apps-script/UnifiedCode.gs` | 生成的完整 Unified artifact |
-| `assets/js/lib/unifiedtemplate.generated.js` | App 下載用、與 Unified artifact byte-for-byte 一致 |
+| `assets/js/lib/gastemplate.js` | 本 repo 原 Portal GAS source；含 Portal 自有帳戶模型，不能作為共用 BADGE Users 的正式後端 |
+| `apps-script/Code.gs` | 由 Portal GAS source 生成的相容性／歷史 artifact；不是裸 BADGE 共用後端 |
+| `apps-script/unified-src/` | pinned BADGE v9.6 + Portal adapter 的隔離測試 source |
+| `apps-script/UnifiedCode.gs` | 由 Unified builder 生成的 `isolated-test-only` 候選 artifact；未經正式驗收，支部負責人自行測試參考 [`docs/USER_SELF_TEST.md`](docs/USER_SELF_TEST.md) |
 
-不要直接修改生成檔。修改來源後執行：
+正式共用 BADGE 後端的 action contract、升級／回退與 staging 驗收仍未完成。修改任何 source 不會自動更新旅團既有 Apps Script deployment。
 
-```bash
-npm run build
-```
-
-Unified builder 會核對 vendored baseline 及 Portal compatibility checkpoint 的 SHA-256，防止來源靜默漂移。
+Unified builder 只驗證隔離測試組合，不構成正式共用後端部署證據。
 
 ## 本機開發
 
@@ -133,15 +127,15 @@ npm run test:gas       # Portal GAS
 npm run test:unified   # Unified GAS
 ```
 
-## 支部部署設定
+## Portal 登記既有 BADGE 後端
 
-完整步驟見 [`DEPLOY_GUIDE_FOR_TROOPS.md`](DEPLOY_GUIDE_FOR_TROOPS.md)。基本原則：
+完整狀態與 Admin 步驟見 [`docs/BACKEND_SYNC.md`](docs/BACKEND_SYNC.md) 及 [`docs/ADMIN_ONBOARDING.md`](docs/ADMIN_ONBOARDING.md)。基本原則：
 
-1. 每個支部建立自己的 Google Sheet／Apps Script deployment。
-2. 貼上經 builder 生成及測試的 artifact。
-3. 執行 `initializeSheets()`；它只補缺失結構、保留現有資料與 API Key，並可重複執行。
-4. 重新部署 `/exec`。
-5. 在 server 環境登記支部 metadata；秘密只放 server 環境，不放 browser 或 `data/units.json`。
+1. 團方提供目前 BADGE 正式 Apps Script `/exec` 與同一 deployment API Key。
+2. 不為 Portal 建立另一張 Google Sheet／GAS，不建立第二身份／帳戶表，不要求搬移或複製資料。
+3. Admin 先核對正式共用登入／開戶／權限 action contract，並完成真 Apps Script staging。
+4. 只有相容性驗收完成後，才把既有 URL／Key 登記到 Vercel Registry 並 Redeploy。
+5. `/api/units` 的 `backendReady` 僅代表 URL／Key 設定存在，不代表上游 action 已支援。
 
 常用環境變數：
 

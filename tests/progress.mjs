@@ -3,7 +3,7 @@
    ------------------------------------------------------------
    驗證 /api/progress 嘅安全規則同轉發行為：
      · 只接受 POST、action 白名單、後端一定要係 GAS /exec
-     · load 用 GET + apikey；save / saveOtherBadge 用 POST + apikey
+     · load 用 GET + 旅團 session token；平台超管以 server-signed POST 讀取；寫入仍經同一認證代理
      · 考核項目固定用 app 內建靜態檔；API 不接受 remote catalog proxy
      · 審批中心：reviewRequest / reviewLogRequest 照樣帶 apikey 轉發，業務錯誤唔會當成功
      · 只用同一旅團 TROOP_<id>_BACKEND／APIKEY；browser backend／apikey 被忽略
@@ -73,6 +73,12 @@ async function defaultMockFetch(target, init = {}) {
   const body = init.body ? JSON.parse(init.body) : null;
   calls.push({ target: String(target), method: init.method || 'GET', body });
   if (body?.action === 'authWhoAmI') return jsonResponse(authResult(body));
+  if ((init.method || 'GET') === 'GET') {
+    const url = new URL(String(target));
+    if (url.searchParams.get('action') === 'load' && !url.searchParams.get('token')) {
+      return jsonResponse({ success: false, ok: false, upstream_only: true, code: 'SIGNATURE_REQUIRED' });
+    }
+  }
   return jsonResponse(upstreamJson, upstreamStatus);
 }
 globalThis.fetch = defaultMockFetch;
@@ -176,8 +182,10 @@ ok('browser 亦不可把同一 GAS 改成 /dev',
   const beforeSuper = calls.length;
   const superLoad = await call({ action: 'load', backend: BACKEND, apikey: API_KEY, sessionToken: ticket.token });
   const superCalls = calls.slice(beforeSuper);
-  ok('★ 有效超管 HMAC session 可管理進度，且唔會交 GAS authWhoAmI',
+  const signedLoad = superCalls.find(c => c.method === 'POST' && c.body?.action === 'load');
+  ok('★ 有效超管 HMAC session 經 server-signed POST 讀取，且唔會交 GAS authWhoAmI',
     superLoad.statusCode === 200 && superLoad.body?.ok === true
+      && !!signedLoad && signedLoad.body?.unified_super === true
       && !superCalls.some(c => c.body?.action === 'authWhoAmI'), JSON.stringify(superLoad.body));
   if (oldSuperKey === undefined) delete process.env.SUPER_KEY; else process.env.SUPER_KEY = oldSuperKey;
 
@@ -189,7 +197,11 @@ ok('browser 亦不可把同一 GAS 改成 /dev',
   const r = await call({ action: 'load', unit: '0082', backend: BACKEND, apikey: API_KEY });
   ok('load 回 200 同 ok:true', r.statusCode === 200 && r.body.ok === true);
   const c = calls[calls.length - 1];
-  ok('load 用 GET 打 ?action=load&apikey=…', c.method === 'GET' && c.target.includes('action=load') && c.target.includes('apikey=' + API_KEY), c.target.slice(0, 80));
+  const loadUrl = new URL(c.target);
+  ok('load 用 GET 帶 server API Key 同已核實嘅支部 session token',
+    c.method === 'GET' && loadUrl.searchParams.get('action') === 'load'
+      && loadUrl.searchParams.get('apikey') === API_KEY
+      && loadUrl.searchParams.get('token') === STAFF_TOKEN, c.target.slice(0, 100));
   ok('回傳 members / progress 原樣（前端要嚟畫進度）',
     r.body.data?.members?.[0]?.name === '陳大文' && !!r.body.data?.progress?.['1234567890']?.['L1-ACT-01']);
 

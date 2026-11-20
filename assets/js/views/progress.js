@@ -83,23 +83,21 @@ async function fetchAll({ silent = false } = {}) {
   refresh();
 }
 
-/** 未登記資料來源：只顯示 server Registry 合約，不叫用戶把 Key 放入 browser。 */
+/** 未登記 Registry：只顯示既有 BADGE 接線欄位，不叫用戶把 Key 放入 browser。 */
 function needSetup() {
   const unit = progressCfg().unit || '0082';
   return `
   <div class="card" style="max-width:780px">
-    <div class="card-head"><div><div class="card-title">同一 Unified Sheet 資料來源尚未登記</div>
-      <div class="card-sub">vs_portal 功能完整版與 vsbadge 輕量版前端使用同一支完整 Unified GS</div></div></div>
+    <div class="card-head"><div><div class="card-title">既有 BADGE backend 尚未登記</div>
+      <div class="card-sub">Portal 的目標是沿用同一個 BADGE /exec、Sheet、Users 及資料</div></div></div>
     <div style="padding:16px 18px" class="sm muted">
-      ${noteBoxHtml('<b>唔好喺瀏覽器貼 API Key。</b>平台管理員只需在 Vercel 登記同 BADGE 完全相同的三個值；'
-        + '兩個前端會沿用同一完整後端，亦不接受第二個進度或 BADGE 精簡後端。', 'brand')}
+      ${noteBoxHtml('<b>唔好喺瀏覽器貼 API Key，也不要建立新 Sheet／GAS。</b>團方只提供目前 BADGE 正式 /exec 及同一 deployment 的 API Key，由 Admin 核對正式 action contract 後登記。', 'brand')}
       <pre class="code mt-12">TROOP_${esc(unit)}_NAME
 TROOP_${esc(unit)}_BACKEND
 TROOP_${esc(unit)}_APIKEY</pre>
-      <div class="hint mt-8"><code>BACKEND</code> 係同一 Unified Apps Script 正式 <code>/exec</code>；
-        <code>APIKEY</code> 必須等於該 Sheet 的 <code>API_KEY</code>。更新 Vercel 後要 Redeploy。</div>
+      <div class="hint mt-8">Registry 只負責將 Portal proxy 指向既有 BADGE backend。裸 BADGE v9.6 的登入／帳戶 actions 與 Portal contract 不同；登記 URL／Key 不等於已接通。正式 staging 未通過前，不要把 <code>backendReady</code> 當作開通證明。</div>
       <div class="row gap-8 mt-12 wrap">
-        <button class="btn" data-go="#/tables/sync">${icon('cloud', 16)} 查看 Apps Script</button>
+        <button class="btn" data-go="#/docs/multiunit">${icon('note', 16)} 查看既有後端接入說明</button>
       </div>
     </div>
   </div>`;
@@ -119,12 +117,11 @@ function emptyProgressBanner() {
   if (!sum.memberCount || sum.withProgress > 0) return '';
   const raw = remote.data?.progress || {};
   const ticks = Object.values(raw).reduce((a, p) => a + Object.keys(p || {}).length, 0);
-  return `<div class="note-box info">${icon('check', 15)}<div>
-    <b>已成功讀到同一 Unified Sheet 嘅 ${sum.memberCount} 位成員；目前有 ${ticks} 格進度紀錄</b>
-    <div class="sm mt-4">Progress action 已成功。「進度追蹤」分頁而家係空，所以每個人顯示 0；新建 Sheet 本來就會係呢個狀態。
-    之後經 Progress 或 BADGE 寫入同一分頁，數字就會直接更新。</div>
+  return `<div class="note-box warn">${icon('alert', 15)}<div>
+    <b>Portal Progress action 回傳 ${sum.memberCount} 位成員、${ticks} 格進度紀錄</b>
+    <div class="sm mt-4">呢個只係 Portal 收到目前 Registry 上游嘅回應，唔證明 BADGE 前端讀到同一筆資料。請以同一帳戶喺 BADGE／Portal 互相寫入及讀回的真實 staging 結果為準；目前正式 staging 未通過。</div>
     <div class="row gap-8 mt-8 wrap">
-      <button class="btn btn-sm" data-act="settings">${icon('settings', 15)} 查看同一 Sheet 資料來源</button>
+      <button class="btn btn-sm" data-act="settings">${icon('settings', 15)} 查看接線及驗收狀態</button>
     </div></div></div>`;
 }
 
@@ -132,8 +129,7 @@ function overviewView() {
   if (!progressConfigured()) return needSetup();
   if (errMsg) {
     return `<div class="note-box warn">${icon('alert', 15)}<div><b>讀唔到後端：</b>${esc(errMsg)}
-      <div class="xs mt-4">如果係「Invalid API Key」→ 請平台管理員核對 Vercel <code>APIKEY</code> 與同一 Unified GAS 的 Script Property；
-        如果係缺少進度分頁 → 喺後端執行一次 <code>initializeSheets</code>。瀏覽器毋須亦不可貼 Key。</div></div></div>
+      <div class="xs mt-4">請 Admin 核對 Registry 中的既有 BADGE <code>/exec</code>／Key、正式共用 action contract 及 staging 證據。裸 BADGE v9.6 不直接提供 Portal auth contract；不要為此建立新 Sheet／GAS、貼 Unified 測試 bundle 或執行測試 <code>initializeSheets</code>。瀏覽器毋須亦不可貼 Key。</div></div></div>
       <div class="row gap-8 mt-12"><button class="btn" data-act="settings">${icon('settings', 15)} 檢查設定</button>
       <button class="btn" data-act="reload">${icon('refresh', 15)} 再試</button></div>`;
   }
@@ -177,7 +173,7 @@ function overviewView() {
 
       <div class="card">
         <div class="card-head"><div><div class="card-title">待批（${pendingReqs.length + logReqs.length}）</div>
-          <div class="card-sub">團員自己申報、等批嘅項目同履歷 —— 喺「審批中心」直接批入同一 Unified Sheet</div></div>
+          <div class="card-sub">團員自己申報、等批嘅項目同履歷 —— 審批 action 會送到 Registry 指向的既有 BADGE backend；共用仍須 staging 驗收</div></div>
           <button class="btn btn-sm ${pendingReqs.length + logReqs.length ? 'btn-primary' : ''}" data-go="#/progress/review">${icon('check', 15)} 去審批中心</button></div>
         ${pendingReqs.length ? `<div class="scroll-x"><table class="table table-compact">
           <thead><tr><th>申請日期</th><th>團員</th><th>項目</th><th>申報日期</th></tr></thead>
@@ -263,7 +259,7 @@ function tickView() {
   if (!remote) return empty('check', '未讀取後端', '按右上「重新讀取」');
   const data = remote.data || {};
   const list = data.members || [];
-  if (!list.length) return empty('users', '後端冇成員名單', '喺後端執行 initializeSheets，或者喺「系統 → 總表同步」同步一次團員名冊。');
+  if (!list.length) return empty('users', 'Portal 未收到成員名單', '請 Admin 核對既有 BADGE deployment 的正式共用 contract 及 Progress 回應；不要另建 Sheet／GAS 或執行隔離測試初始化。');
   if (!selYmis || !list.some(m => String(m.ymis) === String(selYmis))) selYmis = list[0].ymis;
   const progress = data.progress || {};
   const done = progress[selYmis] || {};
@@ -272,9 +268,8 @@ function tickView() {
   const pendingCount = Object.keys(pending).length;
 
   return `
-  <div class="note-box mb-16">${icon('check', 15)}<div>
-    喺呢度勾選＝直接寫入<b>同一 Unified Sheet</b>（功能完整版支部前端同 BADGE 輕量前端共用），效果一樣。
-    未撳「儲存」之前唔會送出。
+  <div class="note-box warn mb-16">${icon('alert', 15)}<div>
+    勾選後會把 Progress action 送至 Registry 指向的既有 BADGE <code>/exec</code>；未撳「儲存」之前唔會送出。只有在同一既有資料上完成 BADGE／Portal 互相讀回的正式 staging 後，先可確認兩端共用成功。
   </div></div>
 
   <div class="row-between wrap gap-12 mb-16 no-print">
@@ -465,7 +460,7 @@ function reviewView() {
   <div class="card">
     <div class="card-head"><div><div class="card-title">待批履歷（${logReqs.length}）</div>
       <div class="card-sub">勾選後可連同進度一次批量批准，寫入「活動履歷」</div></div></div>
-    ${!supported ? `<div style="padding:16px" class="sm muted">後端未建「待批履歷」分頁 —— 去 Apps Script 執行一次 <code>initializeSheets</code> 就會有。</div>`
+    ${!supported ? `<div style="padding:16px" class="sm muted">上游沒有回傳待批履歷資料；請 Admin 核對既有 BADGE 共用 action contract。不要為 Portal 建立第二張 Sheet／GAS，也不要執行隔離測試 bundle 的初始化。</div>`
       : logReqs.length ? `<div class="scroll-x"><table class="table table-compact">
       <thead><tr><th class="center" style="width:54px">選取</th><th>種類</th><th>團員</th><th>日期</th><th>標題</th><th>角色／時數</th><th>申請時間</th><th class="right">其他操作</th></tr></thead>
       <tbody>${logReqs.map(r => `<tr>
@@ -482,7 +477,7 @@ function reviewView() {
   </div>`;
 }
 
-/* ---------- 資料來源：同一 Unified Sheet 的 action 結果 ---------- */
+/* ---------- 資料來源：既有 BADGE backend 的 Registry／Progress action ---------- */
 function settingsView() {
   const c = progressCfg();
   if (!c.serverSide) return needSetup();
@@ -492,60 +487,57 @@ function settingsView() {
   return `
   <div class="grid g-2-1">
     <div class="card">
-      <div class="card-head"><div><div class="card-title">同一 Unified Sheet 資料來源</div>
-        <div class="card-sub">vs_portal 功能完整版與 vsbadge 輕量版前端按獲准 action 使用同一支完整 GS</div></div>
-        <span class="badge ${remote ? 'b-ok' : errMsg ? 'b-danger' : 'b-warn'}"><span class="dot"></span>${remote ? '已成功讀取' : errMsg ? 'Progress 讀取失敗' : '尚未讀取'}</span></div>
+      <div class="card-head"><div><div class="card-title">旅團既有 BADGE backend</div>
+        <div class="card-sub">Portal 透過同源 proxy 呼叫 Registry 指向的正式 /exec</div></div>
+        <span class="badge ${remote ? 'b-warn' : errMsg ? 'b-danger' : 'b-warn'}"><span class="dot"></span>${remote ? 'Progress action 已回應；共用尚未驗收' : errMsg ? 'Progress action 失敗' : 'Registry 已設定，尚未讀取'}</span></div>
       <div style="padding:16px 18px" class="sm muted">
         ${noteBoxHtml(`${icon('shield', 15)}<div>瀏覽器不保存 <code>/exec</code> 或 API Key；平台只使用<br>
-          <code>TROOP_${esc(c.unit || '0082')}_NAME</code>、<code>_BACKEND</code>、<code>_APIKEY</code>。
-          一個 <code>/exec</code>、一個 API Key、一張 Sheet；API Key 不是用戶身份，功能有冇顯示亦唔係授權。</div>`, 'ok')}
-        <div class="note-box info mt-12"><div class="sm"><b>空分頁亦係成功結果。</b>
-          新 Sheet 的「進度追蹤」沒有紀錄時應顯示 0，唔會當成讀取失敗；Progress 亦不會另建或另查 BADGE 後端。</div></div>
-        ${errMsg ? `<div class="note-box danger mt-12">${icon('alert', 15)}<div><b>最近一次 Progress action 失敗：</b>${esc(errMsg)}</div></div>` : ''}
+          <code>TROOP_${esc(c.unit || '0082')}_NAME</code>、<code>_BACKEND</code>、<code>_APIKEY</code>。<br>
+          <b>Registry 設定或單次 action 成功不等於 Portal／BADGE 帳戶及資料已互通。</b></div>`, 'warn')}
+        <div class="note-box info mt-12"><div class="sm"><b>正式共用後端仍需驗收。</b>
+          裸 BADGE v9.6 的 <code>login</code>／<code>token</code> 與 Portal auth contract 不同；proxy allowlist 和 <code>backendReady</code> 都不會補上上游 handlers。未有正式 BADGE adapter 的真 Apps Script staging 前，不要把這個頁面當作開通證明。</div></div>
+        ${errMsg ? `<div class="note-box danger mt-12">${icon('alert', 15)}<div><b>最近一次 Portal Progress action 失敗：</b>${esc(errMsg)}</div></div>` : ''}
         <div class="row gap-8 mt-12">
-          <button class="btn btn-primary" data-act="reload">${icon('refresh', 15)} 重新讀取同一 Sheet</button>
+          <button class="btn btn-primary" data-act="reload">${icon('refresh', 15)} 重新讀取 Progress action</button>
           <button class="btn" data-go="#/progress/overview">返回進度總覽</button>
+          <button class="btn" data-go="#/docs/multiunit">接入及驗收說明</button>
         </div>
       </div>
     </div>
     <div class="col gap-16">
       <div class="card">
-        <div class="card-head"><div class="card-title">資料讀取結果</div></div>
+        <div class="card-head"><div class="card-title">Portal Progress 回應</div></div>
         <div style="padding:14px 16px">
           ${kvHtml([
-            ['資料來源', '<span style="color:var(--ok)">同一 Unified GAS／Sheet</span>'],
-            ['Registry', 'NAME／BACKEND／APIKEY 已由 server 登記'],
-            ['進度分頁', '進度追蹤／其他獎章／待批完成／活動履歷／待批履歷／成員名單'],
-            ['讀取結果', remote
-              ? '<span style="color:var(--ok)">Progress action 成功</span>'
+            ['Registry', 'NAME／BACKEND／APIKEY 已由 server 登記（只代表路由設定）'],
+            ['上游', '旅團既有 BADGE /exec；URL／Key 不回傳 browser'],
+            ['Progress action', remote
+              ? '已收到 Portal Progress projection；仍須與 BADGE 實際讀回比對'
               : errMsg
-                ? `<span style="color:var(--danger)">Progress action 失敗：${esc(errMsg)}</span>`
-                : '尚未執行 Progress action'],
-            ['考核項目', catalog ? `${Object.keys(catalog).length} 項` : '未讀取'],
-            ['讀到嘅成員', remote ? String((remote.data.members || []).length) : '—'],
-            ['進度紀錄', ticks == null ? '—' : `${ticks} 格`],
+                ? `失敗：${esc(errMsg)}`
+                : '尚未執行'],
+            ['考核項目', catalog ? `${Object.keys(catalog).length} 項（Portal 內建）` : '未讀取'],
+            ['上游回傳成員', remote ? String((remote.data.members || []).length) : '—'],
+            ['上游回傳進度紀錄', ticks == null ? '—' : `${ticks} 格`],
             ['上次讀取', remote ? esc(remote.at) : '—']
           ])}
         </div>
       </div>
       <div class="card">
-        <div class="card-head"><div><div class="card-title">支部帳戶同樣喺呢張 Sheet</div>
-          <div class="card-sub">Users 係唯一帳戶權威；唔需要去另一套系統開戶</div></div></div>
+        <div class="card-head"><div><div class="card-title">帳戶共用狀態</div>
+          <div class="card-sub">正式 contract 必須以同一 BADGE Users 為唯一帳戶權威</div></div></div>
         <div style="padding:14px 16px" class="sm muted">
-          團長／領袖可以由功能完整版前端直接單戶或批量開戶、重設密碼及管理登入狀態；
-          操作會直接寫入同一 Unified Sheet 的 <b>Users</b>，首次密碼預設為 <b>1234</b>並強制更改。
-          <div class="row gap-8 mt-10 wrap">
-            <button class="btn btn-sm btn-primary" data-go="#/members">${icon('users', 15)} 直接開戶／批量開戶</button>
-            <button class="btn btn-sm" data-go="#/members/accounts">${icon('shield', 15)} 身份與帳號</button>
-          </div>
+          此頁不會驗證帳戶是否已共用。Portal 批次開戶、重設密碼、停用／復原及角色管理，只有在正式 BADGE compatibility release 部署並通過 staging 後，才可視為同一 Users 的操作。
+          不要因為 Registry 已設定或 Progress action 有回應，就推斷帳戶管理已接通。
+          <div class="mt-10"><button class="btn btn-sm" data-go="#/docs/multiunit">查看 Admin staging checklist</button></div>
         </div>
       </div>
       <div class="card">
-        <div class="card-head"><div class="card-title">同一 Sheet 對人</div></div>
+        <div class="card-head"><div class="card-title">Portal 名冊 YMIS 覆蓋</div></div>
         <div style="padding:14px 16px" class="sm muted">
-          用<b>會籍編號（YMIS）</b>對同一個人。現時對得上：<b>${keyCoverage(members(), { youthOnly: true }).percent}%</b>
-          （${keyCoverage(members(), { youthOnly: true }).matched}／${keyCoverage(members(), { youthOnly: true }).total} 位團員／執委。）
-          <div class="mt-8"><button class="btn btn-sm btn-block" data-go="#/members">${icon('users', 15)} 去用戶名冊填 YMIS</button></div>
+          Portal 本地名冊的 YMIS 覆蓋：<b>${keyCoverage(members(), { youthOnly: true }).percent}%</b>
+          （${keyCoverage(members(), { youthOnly: true }).matched}／${keyCoverage(members(), { youthOnly: true }).total} 位團員／執委）。
+          此數字不是 BADGE Users 讀回或兩邊一致的證據。
         </div>
       </div>
     </div>
@@ -569,8 +561,8 @@ export function render(params) {
   ${pageHead({
     title: '進度紀錄',
     sub: configured
-      ? `${progressCfg().name} · 直接讀同一 Unified Sheet 嘅進度分頁${remote ? ` · 上次讀取 ${remote.at}` : ''}`
-      : '未登記資料來源 —— 請平台管理員核對 NAME／BACKEND／APIKEY',
+      ? `${progressCfg().name} · Portal Progress actions 由 Registry 轉發至既有 BADGE backend${remote ? ` · Portal 最近回應 ${remote.at}` : ''} · 共用未驗收`
+      : '未登記既有 BADGE backend —— 請平台管理員核對正式 contract／staging',
     actions: `
       <button class="btn btn-sm" data-act="reload" ${configured ? '' : 'disabled'}>${icon('refresh', 15)} ${loading ? '讀取中…' : '重新讀取'}</button>
       <button class="btn btn-sm" data-act="settings">${icon('settings', 15)} 資料來源</button>`
@@ -694,7 +686,7 @@ export function mount(root, params) {
       warnings: offCount ? [`今次會取消 ${offCount} 項已完成進度；請特別核對。`] : [],
       backupText: '後端會保留操作編號；送出前本機 pending 清單仍然保留。',
       rollbackText: '如批錯，可用相反勾選建立一個清楚可核對嘅更正操作；系統唔會暗中覆寫。',
-      readbackText: '完成後會重新讀取同一 Unified Sheet，核對最新進度。'
+      readbackText: '完成後會重新呼叫 Registry 指向的既有 BADGE /exec；Portal action 回應不是跨前端共用驗收，需另在正式 staging 中從 BADGE 實際讀回核對。'
     });
     if (!ok) return;
     const r = await saveTicks(changes, current()?.name || '深資童軍管理系統');
@@ -810,7 +802,7 @@ export function mount(root, params) {
       title: decision === 'approved' ? '確定批准？' : '確定拒絕？',
       danger: decision !== 'approved',
       trustedBodyHtml: `<p class="sm">${decision === 'approved'
-          ? '批准會即刻寫入同一 Unified Sheet，功能完整版支部前端同 BADGE 輕量前端都見到。'
+          ? '批准會送到 Registry 指向的既有 BADGE backend；是否與 BADGE 前端共用同一資料，須按正式 staging checklist 互相讀回確認。'
           : '拒絕只會改狀態，唔會刪紀錄，團員可以重新申報。'}</p>
         <div class="note-box mt-8"><div class="sm"><b>${who}</b> · ${what}<br>${when}</div></div>`,
       actions: [{ label: '取消', class: 'btn', value: false },

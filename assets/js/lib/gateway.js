@@ -1,36 +1,19 @@
 import { beginOperation, operationResult } from './operations.js';
 
 /* ============================================================
-   gateway.js — 前端 → 旅團後端（Apps Script /exec）嘅統一入口
+   gateway.js — Portal → 既有 BADGE Registry proxy 的唯一入口
    ------------------------------------------------------------
-   兩條路，**兩條都要行得通**：
+   所有 Portal action 只送同源 /api/proxy；Vercel server Registry 才能選出
+   旅團目前使用的 BADGE /exec 並注入 API Key。Browser URL／Key、舊 localStorage
+   backend 設定及 ?be= query 一律不能改寫 upstream。沒有 Registry／proxy 時 fail closed，
+   不提供領袖自助貼 URL／Key 的第二條路。
 
-   ① 同源 /api/proxy（正路，平台管理員設定）
-        旅團喺伺服器端登記咗（TROOP_<編號>_BACKEND / TROOP_<編號>_APIKEY），
-        API Key 留喺伺服器，瀏覽器乜都唔使知。最穩陣。
-
-   ② 直接打旅團自己嘅 /exec（自助路線，領袖自己搞得掂）
-        平台未登記嗰陣，領袖喺「資料管理 → 總表同步」
-        貼自己嘅 /exec（要 key 嘅 action 再貼 API Key）；
-        公開頁則由「成員連結」生成嘅連結帶 ?be=<exec>。
-
-   【2026-09-19 團長回報：無痕＋普通 Chrome 都同步唔到、公開連結都冇修好，
-     懷疑「有啲嘢把解決問題嘅方法封死」—— 懷疑係啱嘅。】
-   舊 remote.js 係咁寫：
-        if (r.ok && r.json) return normalize(r.json);
-        if (!r.noApi) { if (r.json) return normalize(r.json); ... }
-   proxy 對「未登記旅團」回嘅係 **HTTP 404 ＋ JSON**（`{success:false,
-   error:'找不到此旅團或後端網址未設定'}`），而 `noApi` 只在**回應唔係 JSON**
-   嗰陣先會 set —— 所以 `r.json` 永遠 truthy，函數喺 ① 就 return 咗，
-   ② 條路（用家自己貼嘅 /exec）**一行都未行過**。
-   即係：平台環境變數一日未設定好，領袖自己貼 /exec 都係死，
-   而「叫平台管理員加環境變數」又唔係領袖自己做得到 → 兩邊都死鎖。
-   呢個模組把兩條路統一返，並且如實報告「行緊邊條路／點解唔得」。
+   Admin 只可在正式共用 action contract 完成並由真 Apps Script staging 驗收後
+   登記既有 BADGE URL／Key。Registry、proxy allowlist 或單次 action 回應都不是
+   共用已通過的證據。
    ============================================================ */
 
-/** Apps Script 正式部署網址白名單（同 api/_registry.js 嘅 EXEC_URL_RE 一致）。
-    用家自己貼嘅 /exec 一定要過呢關，先至會把資料庫／相片送上去 ——
-    防止貼錯網址、或者由匯入嘅舊設定指去其他地方。 */
+/** Legacy URL validation helper for imports/tests only. Runtime routing never accepts a browser-supplied /exec. */
 export const EXEC_URL_RE = /^https:\/\/script\.google\.com\/macros\/s\/[A-Za-z0-9_-]{10,}\/exec\/?$/i;
 
 export function isExecUrl(u) {
@@ -55,9 +38,7 @@ export function normExecUrl(u) {
   return s.replace(/\/+$/, '');
 }
 
-/* proxy 話「呢個旅團未喺伺服器端登記」。
-   注意：呢個**唔係**後端壞咗，而係平台未幫你接線 ——
-   所以呢種情況一定要跌落入 ②（自助路線），唔可以當失敗收工。 */
+/* Proxy 明確回報尚未登記；Portal 不會因此直連 browser 提交的 /exec，必須 fail closed。 */
 export const UNREGISTERED_RE = /找不到此旅團|後端網址未設定|unknown unit|not registered|no backend/i;
 
 /** 有冇同源 /api/proxy 可以用（http/https 先有；file:// 冇） */
@@ -67,18 +48,11 @@ export function proxyUsable() {
 }
 
 /**
- * 由網址 ?be= 攞「自助後端」（公開頁用：團員掃 QR 入嚟嗰陣，
- * 連結本身就帶住旅團自己嘅 /exec，唔使靠平台伺服器端登記）。
- * 一律要過白名單；唔合格就當冇（寧願顯示「未連接」都唔好送資料去奇怪地方）。
+ * @deprecated `?be=` was a browser-selected direct backend route. Runtime now uses only
+ * the trusted server Registry; ignore stale query parameters so a copied link cannot
+ * select a second data source.
  */
-export function beFromQuery(search) {
-  try {
-    const s = typeof search === 'string' ? search : (typeof location !== 'undefined' ? location.search : '');
-    const v = new URLSearchParams(s).get('be') || '';
-    const u = normExecUrl(v);
-    return isExecUrl(u) ? u : '';
-  } catch { return ''; }
-}
+export function beFromQuery(_search) { return ''; }
 
 /* Vercel 代理單一回應上限 4.5MB。爆咗嗰陣 Vercel 唔會回 JSON，
    而係回一段純文字（例如 FUNCTION_RESPONSE_PAYLOAD_TOO_LARGE）。
@@ -96,9 +70,7 @@ export const CRITICAL_WRITE_ACTIONS = new Set([
 /** 回應過大嗰陣嘅人話解釋（唔會再講「未設定後端網址」） */
 function tooLargeError(status, text) {
   if (PAYLOAD_TOO_LARGE_RE.test(text)) {
-    return '後端回應大過 Vercel 代理上限（4.5MB）—— 資料庫太大，一次過讀唔晒。'
-      + '前端會自動改用分段讀取；如果仍然失敗，就要把後端更新到 v2.6.0 或以上（支援 loadDbPart）——'
-      + '撳「總表同步 → 後端 Apps Script 範本」嘅「下載 Code.gs」，重貼再部署一次。';
+    return 'Portal proxy 回應超出 Vercel 代理上限（4.5MB）。請停止重試並聯絡 Admin 核對正式 BADGE compatibility contract；不要建立新 Sheet／GAS、貼測試 Code.gs 或自行重新部署。';
   }
   return `後端回應格式異常（HTTP ${status}）`;
 }
@@ -146,29 +118,21 @@ async function postJson(endpoint, body, timeoutMs, plain) {
 }
 
 /**
- * 送一個 action 去旅團後端。
- *
- * @param {object} payload   已經包埋 `action`（同其他欄位）
- * @param {object} opts
- *   - unit      旅團編號（必填）
- *   - execUrl   自助路線嘅 /exec（留空＝淨係試 proxy）
- *   - apiKey    自助路線要帶嘅 key（proxy 路線唔使 —— 伺服器端會注入）
- *   - preferDirect  已由旅團內容明確指定 /exec 時，直接用該 URL（唔先撞代理）
- *   - timeoutMs
- * @returns {Promise<{ok:boolean, json:object|null, via:'proxy'|'direct'|'none',
- *                    error:string, reason:string, unregistered:boolean}>}
- *   `via` ＝ 最後真係行咗邊條路（界面／診斷用嚟講清楚）
- *   `unregistered` ＝ proxy 話「平台未登記呢個旅團」（自助路線嘅訊號）
+ * Send an action through the same-origin Portal proxy only.
+ * `execUrl`, `apiKey` and `preferDirect` remain accepted for source compatibility,
+ * but are intentionally ignored so neither browser state nor `?be=` can select an
+ * upstream or expose a service key.
  */
-export async function postBackend(payload, { unit, execUrl = '', apiKey = '', timeoutMs = 60000, preferDirect = false } = {}) {
+export async function postBackend(payload, { unit, timeoutMs = 60000 } = {}) {
   const action = String(payload?.action || '');
   const operation = CRITICAL_WRITE_ACTIONS.has(action)
     ? beginOperation(action, { operationId: payload?.operationId || payload?.operation_id, unit, label: action })
     : null;
-  const body0 = { ...payload, unit };
+  const body = { ...payload, unit };
+  delete body.backend; delete body.gasUrl; delete body.apiKey; delete body.apikey;
   if (operation) {
-    body0.operationId = operation.id;
-    body0.operation_id = operation.id; // 舊／其他 client 合約兼容
+    body.operationId = operation.id;
+    body.operation_id = operation.id;
   }
   const done = (result, { sent = true } = {}) => {
     if (!operation) return result;
@@ -180,71 +144,33 @@ export async function postBackend(payload, { unit, execUrl = '', apiKey = '', ti
       error: j.error || result?.error || '',
       mayHaveApplied: j.mayHaveApplied === true || (sent && !result?.json && ['timeout', 'network', 'bad_response'].includes(String(result?.reason || '')))
     }, operation, { sent });
-    /* For mutations, the durable write outcome—not HTTP/envelope success—is the
-       public success flag. This prevents ok:true + outcome:unknown/not_applied
-       from being consumed as a confirmed write, and accepts an explicit applied
-       result even if an outer proxy envelope was pessimistic. */
     return { ...result, ...classified, ok: classified.outcome === 'applied',
       operationId: classified.operationId || operation.id };
   };
-  let unregistered = false;
 
-  /* ---- ① 同源 proxy（正路）----
-     **唔送瀏覽器 Key**：代理永遠用伺服器 Registry 入面嘅 Key，
-     本機貼嘅 Key 只畀直連 /exec 用，唔可以蓋過伺服器設定。 */
-  if (proxyUsable() && !preferDirect) {
-    const body = { ...body0 };
-    // 同源代理用伺服器 Key；本機舊 Key 只留畀直連 /exec，唔好傳去代理。
-    delete body.apiKey; delete body.apikey;
-    const r = await postJson('api/proxy', body, timeoutMs, false);
-    const errText = String(r.json?.error || '');
-    /* Only the proxy's own 404 may trigger the direct fallback. An upstream could
-       return similar wording after a write; matching text alone and resending that
-       mutation would risk a duplicate. New proxies also provide a machine reason. */
-    const proxySaysUnregistered = !!r.json && r.status === 404
-      && (r.json.reason === 'not_registered' || UNREGISTERED_RE.test(errText));
-    if (r.json && !proxySaysUnregistered) {
-      return done({ ok: r.ok, json: r.json, via: 'proxy', error: r.error, reason: r.reason, unregistered: false, tooLarge: false });
-    }
-    /* proxy 明確話「未登記呢個旅團」→ 唔係失敗，係「平台未接線」→ 跌落入 ② */
-    if (proxySaysUnregistered) unregistered = true;
-    /* proxy 回咗其他錯誤（未授權／後端壞／逾時／回應過大）→ 如實報，唔好扮冇事 */
-    if (!unregistered) {
-      if (r.json) return done({ ok: false, json: r.json, via: 'proxy', error: errText || r.error, reason: r.reason || 'backend', unregistered: false, tooLarge: false });
-      /* ★ 回應過大（Vercel 4.5MB）一定唔可以跌落 ②：
-         後端答咗話，只係答唔晒 —— 跌去自助路線只會對用家講
-         「未設定後端網址」，把真正死因（資料庫太大）完全蓋住。
-         （2026-09-20 事故。） */
-      if (r.tooLarge) {
-        return done({ ok: false, json: null, via: 'proxy', error: r.error, reason: 'too_large', unregistered: false, tooLarge: true });
-      }
-      if (!r.noApi) return done({ ok: false, json: null, via: 'proxy', error: r.error, reason: r.reason || 'network', unregistered: false, tooLarge: false });
-      /* r.noApi ＝ 呢個部署根本冇 /api（純靜態）→ 跌落入 ② */
-    }
+  if (!proxyUsable()) {
+    return done({ ok: false, json: null, via: 'none', unregistered: false,
+      reason: 'proxy_required', error: 'Portal 必須經同源 Registry proxy 使用既有 BADGE backend；不接受 browser /exec 或 API Key。請使用正式 Portal 網址並聯絡 Admin。' }, { sent: false });
   }
 
-  /* ---- ② 直接打旅團自己嘅 /exec（自助路線）---- */
-  const url = normExecUrl(execUrl);
-  if (!url) {
-    return done({
-      ok: false, json: null, via: 'none', unregistered,
-      reason: unregistered ? 'not_registered' : 'not_configured',
-      error: unregistered
-        ? '平台伺服器端未登記呢個旅團嘅後端，而連結／設定亦冇帶後端網址'
-        : '未設定後端網址'
-    }, { sent: false });
+  const r = await postJson('api/proxy', body, timeoutMs, false);
+  const errText = String(r.json?.error || '');
+  const proxySaysUnregistered = !!r.json && r.status === 404
+    && (r.json.reason === 'not_registered' || UNREGISTERED_RE.test(errText));
+
+  if (r.json) {
+    return done({ ok: r.ok, json: r.json, status: r.status, via: 'proxy',
+      error: r.ok ? '' : (errText || r.error || 'Portal proxy 拒絕請求'),
+      reason: proxySaysUnregistered ? 'not_registered' : (r.json.reason || r.reason || ''),
+      unregistered: proxySaysUnregistered, tooLarge: false });
   }
-  if (!isExecUrl(url)) {
-    return done({
-      ok: false, json: null, via: 'direct', unregistered, reason: 'bad_url',
-      error: '後端網址唔係 Apps Script 正式部署網址（/exec）'
-    }, { sent: false });
+  if (r.noApi) {
+    return done({ ok: false, json: null, via: 'none', unregistered: false,
+      reason: 'proxy_required', error: '此網站沒有 Portal 同源 API proxy；不會改用 browser 直連或貼入第二個 backend。請使用正式 Portal 網址並聯絡 Admin。' }, { sent: false });
   }
-  const direct = { ...body0 };
-  if (apiKey) { direct.apiKey = apiKey; direct.apikey = apiKey; }
-  const d = await postJson(url, direct, timeoutMs, true);
-  if (d.json) return done({ ok: d.ok, json: d.json, via: 'direct', error: '', reason: '', unregistered });
-  return done({ ok: false, json: null, via: 'direct', error: d.error || '連唔到旅團後端', reason: d.reason || 'network', unregistered });
+  return done({ ok: false, json: null, via: 'proxy', unregistered: false,
+    error: r.error || 'Portal proxy 回應異常', reason: r.tooLarge ? 'too_large' : (r.reason || 'network'),
+    tooLarge: !!r.tooLarge });
 }
 
 /** 短網址（顯示用） */

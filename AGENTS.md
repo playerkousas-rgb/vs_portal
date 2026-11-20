@@ -44,13 +44,15 @@
 | 衝突 | 三方逐格比對；同格唔同值要列出、未寫入、等用戶確認 |
 | 收據 | 寫完要 readback 核對；唔確定唔准自動重送（F6-b） |
 | 公開資料 | 只讀總覽；真正編輯返所屬模組；按可見權限過濾 |
-| 前後端定位 | 目標沿用既有 BADGE GS／Sheet／Users；Portal compatibility contract 及真 Apps Script staging 尚未完成；隔離 Unified bundle 不得部署到正式旅團 |
+| 前後端定位 | 沿用同一既有 GS／Sheet／Users；BADGE 與 Portal 各次更新承接最新完整共用 GS，真 Apps Script 驗收仍須記錄，團方自行試用先備份 |
 | BOOK／BADGE | BOOK 可讀正式資料及提交待批匯入；只有領袖確認後先可寫入正式紀錄，唔准直接匯入繞過審批 |
 | 已拆除 | MOCK、登入閘診斷／修復／搶救掣 —— 唔准加返 |
 
 ## 4. 改 `Code.gs` 嘅鐵律（★ 模版重點）
 
-1. **唯一來源** = `assets/js/lib/gastemplate.js`。
+**共用 GS 更新前**先跑 `npm run sync:check` 核對 BADGE main 與本 repo 實際完整檔案，並按 [`docs/SHARED_BACKEND_VERSIONING.md`](docs/SHARED_BACKEND_VERSIONING.md) 以雙方最高版本為基礎再遞增；同版本但 hash 不同須先整合，原樣同步不加版。核對失敗不得猜測最新版本。`apps-script/UnifiedCode.gs` 是共用完整產物，由固定的最新完整來源及 `scripts/build-unified-gas.mjs` 產生；以下 `Code.gs` 規則只適用歷史 Portal 相容模板。
+
+1. **歷史 Portal `Code.gs` 唯一來源** = `assets/js/lib/gastemplate.js`。
    改完跑 `npm run build:gas` 生成 `apps-script/Code.gs`；**唔好直接改生成檔**。
 2. **`initializeSheets()` 必須可重跑而唔破壞資料**（學 vsbadge）：
    - 只補缺失分頁／欄位／設定預設值
@@ -61,7 +63,7 @@
 3. 版號：`assets/js/lib/version.js` 嘅 `APP_VERSION` 同 `gastemplate.js` 嘅
    `BACKEND_VERSION` 必須一致（`npm run lint` 會擋）。
 4. 歷史註解寫「自 vX.Y 起…」敘述式，**唔好**寫 `// vX.Y`（F15 guard 會擋）。
-5. 測試 artifact 不等於正式 BADGE release；正式更新只可由 BADGE source of truth 經核准 staging 後進行。
+5. 共用 GS 由兩邊最新完整版本承接；Portal 或 BADGE 下次修改前先核對並採用較新的完整版本，再按最高版本遞增。不要求每次立即更新對方 repo。候選／VM 不等於真 Apps Script 驗收；團方自行試用先備份。
 
 ## 5. 閘門（ Definition of Done ）
 

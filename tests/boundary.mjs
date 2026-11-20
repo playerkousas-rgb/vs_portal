@@ -189,9 +189,10 @@ console.log('\n▌⑤ 邊界文件存在而且寫明「唔算連上」');
   ok('AGENTS 守住 BOOK 待批匯入邊界',
     /BOOK 可讀正式資料及提交待批匯入/.test(agents)
       && /只有領袖確認後先可寫入正式紀錄/.test(agents));
-  ok('AGENTS 指明沿用既有 BADGE 後端及測試 bundle 不得部署',
-    /目標沿用既有 BADGE GS／Sheet／Users/.test(agents)
-      && /隔離 Unified bundle 不得部署到正式旅團/.test(agents));
+  ok('AGENTS 指明沿用既有共用後端與真實驗收',
+    /沿用同一既有 GS／Sheet／Users/.test(agents)
+      && /真 Apps Script 驗收仍須記錄/.test(agents)
+      && /npm run sync:check/.test(agents));
 
   const glossary = read('GLOSSARY.md');
   ok('GLOSSARY 定義 BADGE 輕量只係前端定位',
@@ -205,7 +206,7 @@ console.log('\n▌⑤ 邊界文件存在而且寫明「唔算連上」');
   const readme = read('README.md');
   ok('README 講明 BADGE 精簡、Portal 完整及可獨立使用',
     /BADGE 是功能較精簡的前端/.test(readme) && /支部系統是功能完整版前端/.test(readme)
-      && /可只用其中一個，也可兩個一起用/.test(readme) && /不代表目前已驗收完成/.test(readme));
+      && /可只用其中一個，也可兩個一起用/.test(readme) && /尚未經真實 Apps Script 雙前端驗收/.test(readme));
   ok('README 講明隱藏入口不等於授權',
     /隱藏入口不等於授權/.test(readme) && /仍須通過後端檢查/.test(readme));
 
@@ -232,15 +233,15 @@ console.log('\n▌⑤ 邊界文件存在而且寫明「唔算連上」');
       && /搬移／複製帳戶/.test(deployDocs));
 
   const builder = read('scripts/build-unified-gas.mjs');
-  const extension = read('apps-script/unified-src/unified-extension.gs');
-  ok('Unified 組裝來源標示完整 capability superset 及兩種前端定位',
-    /complete branch capability superset/.test(builder)
-      && /vs_portal is[\s\S]{0,80}full-featured frontend/.test(builder)
-      && /vsbadge is[\s\S]{0,80}lightweight frontend/.test(builder)
-      && /complete branch capability superset/.test(extension));
-  ok('Unified 組裝來源保留 allowlist＋server session／role／scope 邊界',
-    /action allowlists/.test(builder) && /session\/role\/scope/.test(builder)
-      && /allowed action/.test(extension) && /session, role, and scope/.test(extension));
+  const artifact = read('apps-script/UnifiedCode.gs');
+  ok('Unified 以 BADGE 完整共用 GS 作基準而不是重新組裝舊版',
+    /manifest\.baseline\.localPath/.test(builder) && /baseline\.sha256/.test(builder)
+      && /complete branch capability superset/.test(artifact)
+      && /vs_portal is[\s\S]{0,80}full-featured frontend/.test(artifact)
+      && /vsbadge is[\s\S]{0,80}lightweight frontend/.test(artifact));
+  ok('Unified 完整產物保留 allowlist＋server session／role／scope 邊界',
+    /allowed action/.test(artifact) && /session, role, and scope/.test(artifact)
+      && /function unifiedResolveActor_/.test(artifact));
 }
 
 console.log('\n▌⑥ 初始化保全鐵律有文件 + 有測試守');

@@ -131,8 +131,8 @@ ok('申請表有齊欄位（編號／名稱／後端網址／API Key／聯絡人
   ok('登入前指南說明接入既有 BADGE', !!g && /Portal 接入既有 BADGE/.test(gt));
   ok('指南要求既有 /exec、Key，明確禁止新 Sheet／GAS 與複製帳戶',
     /既有 BADGE/.test(gt) && /API Key/.test(gt) && /不要新建/.test(gt) && /不要複製帳戶/.test(gt));
-  ok('指南交代正式 contract 差異、Registry 不等於相容',
-    /authLogin/.test(gt) && /bulkAddUsers/.test(gt) && /backendReady/.test(gt));
+  ok('指南區分 BADGE 舊版與共用新版，Registry 不等於相容',
+    /v9\.7/.test(gt) && /v9\.6/.test(gt) && /backendReady/.test(gt));
   ok('不提供部署測試 Code.gs 的下載／複製按鈕', !g.querySelector('#guide-dl-btn') && !g.querySelector('#guide-copy-btn'));
   ok('指南設申請按鈕', !!g.querySelector('#guide-apply-btn'));
   g.querySelector('#guide-apply-btn')?.click();

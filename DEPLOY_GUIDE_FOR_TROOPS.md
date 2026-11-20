@@ -35,7 +35,7 @@ API Key 是敏感資料，只經申請流程交給平台管理員；不可貼到
 
 ### 2. 先解決正式 action contract，不要先把 Registry readiness 當成開通
 
-截至本文件更新時，裸 BADGE v9.6：
+歷史比較：沒有 Portal adapter 的裸 BADGE v9.6：
 
 - 登入用 `login`，回傳 BADGE `token`；
 - 帳戶管理用 `addUser`／`bulkAddUsers`、`resetPassword`、`setUserStatus`、`updateUserRole` 等原生 action；
@@ -45,7 +45,7 @@ Portal 目前登入／帳戶路徑呼叫 `authLogin`、`authWhoAmI`、`authOpenA
 
 正式相容層必須由**擁有 BADGE `Users` 與原生 action 的 BADGE Apps Script source**維護，並更新到旅團**同一個既有 Apps Script 專案、同一張 Sheet、同一 API Key 及既有 `/exec` deployment**。升級只能原地更新，不可另建正式專案／Sheet；正式開通前須完成真實環境驗證，並保留原 deployment version 以便回退。支部負責人決定自行試用候選版時，先按 [`docs/USER_SELF_TEST.md`](docs/USER_SELF_TEST.md) 備份和核對風險。相容層須同時保留 BADGE 原生 action，並讓 Portal action 在服務端映射到同一個 BADGE `Users`／session／資料；不得引入第二帳戶表或第二身份權威。
 
-目前這個 Portal repo 沒有可供正式部署的 BADGE compatibility release；正式 BADGE source、原地升級及真實 Apps Script staging 尚待完成。因此**不要為未驗收後端登記 Portal Production，也不要把測試 bundle 當正式 adapter**。
+BADGE v9.7 已包含完整共用後端及 Portal 相容層；Portal 的 v9.8 建基於此，BADGE 下一次修改前應承接更新後的完整版本；目前沒有真 Apps Script 驗收紀錄。不要把 Registry 登記或本機模擬測試誤當成真實驗收；支部負責人自行試用可參考 [`docs/USER_SELF_TEST.md`](docs/USER_SELF_TEST.md)。
 
 ### 3. 相容性 staging 全部通過後才登記 Registry
 

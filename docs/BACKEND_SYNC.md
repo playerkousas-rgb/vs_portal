@@ -4,7 +4,7 @@
 >
 > **既有 BADGE 加入 Portal 的情境：** 沿用原有 `/exec`、API Key、Sheet 和帳戶，不得為加入 Portal 另建 Sheet、GAS、身份或資料來源，也不得搬移／複製帳戶。這不等於要求每個旅團必須先使用 BADGE：全新支部及只有 Portal 的既有部署，其首次建置／升級流程仍需另行設計驗證。
 >
-> **重要狀態：** 本 repo 的 Portal 前端、Vercel Registry、代理，以及 `authOpenAccounts` 路徑已有部分接線；但目前這條路徑只在 `isolated-test-only` Unified 組合中有 BADGE Users adapter。裸 BADGE v9.6 GAS 不認 Portal 正在使用的 auth action。未完成正式共用後端與真實既有 Sheet 驗收前，不能把收到申請、Vercel `backendReady` 或 Unified VM 測試說成已開通。
+> **目前版本：** BADGE main v9.7 已包含完整 Unified 及 Portal Users adapter；本 repo 的 v9.8 建基於該完整檔案；BADGE 下次修改時才需要先承接更新後的完整版本。以下對裸 v9.6 的 contract 比較屬歷史背景，不代表 v9.7 缺少 adapter。兩邊更新次序見 [`SHARED_BACKEND_VERSIONING.md`](SHARED_BACKEND_VERSIONING.md)。Portal v9.8 尚未經真 Apps Script 雙前端驗收；收到申請、Vercel `backendReady` 或 VM 測試不等於已開通。
 
 ## 0. 前端與後端的關係
 
@@ -24,13 +24,13 @@ Portal 的登入、身份核對和資料讀寫是向**共用後端**提出請求
 
 可借鑑的是**一套後端、不同前端範圍，集中維護及同步合約**，不是照搬免登入權限：成員系統公開免登入，只能讀公開資料／提交申請；區管理系統需登入。BADGE 自己已有登入和帳戶管理，與 Portal 共用時兩邊都須遵守支部後端的身份和授權規則。參考 repo 文件有版本快照與補丁；應比較兩邊實際最新版本，而非假設任一份文件總是較新或照搬其維護分工。
 
-本 repo 已有的 `UnifiedCode.gs` 是以現有 BADGE v9.6 為基礎，加入 Portal 所需功能的**原地升級候選實作**；尚未經真實 Apps Script 驗收，不是已驗收的正式 release 或已上線結果。支部負責人如明白風險並決定自行測試，應先備份並參考 [`USER_SELF_TEST.md`](USER_SELF_TEST.md)。不能把「尚未驗收」誤解為兩個產品必須互相依賴或本來就應該有兩套後端。以下 action 差異是落實共用後端時要解決的實作事項，不是重新定義產品關係。
+本 repo 的 `UnifiedCode.gs` 是以 BADGE v9.7 **完整共用後端**為基礎的 v9.8 候選實作，保留 Portal 相容層及 BADGE 新增的全團投影；尚未經真實 Apps Script 驗收，不是已驗收的正式 release 或已上線結果。支部負責人如明白風險並決定自行測試，應先備份並參考 [`USER_SELF_TEST.md`](USER_SELF_TEST.md)。以下裸 v9.6 action 差異是歷史比較，不是 v9.7 的現況。
 
 ### 原地升級候選版的保護及未解事項
 
 - **新旅團與既有旅團是兩種正常起點：** 既有 BADGE 旅團直接沿用同一後端已有的帳戶、名冊及進度；全新旅團可直接使用 Portal，不需要先使用 BADGE 前端。新旅團尚未有一般用戶或業務紀錄是正常的，初始化在同一 Sheet 的 `Users` 建立首個預設管理員，兩個前端使用同一帳戶，不需要第二個管理員或另一套開戶流程。
 - 候選版新建 `Users` 時保留 BADGE 的首個管理員及首次更改預設密碼要求；已有 `Users` 表不重設或自動補建該帳戶。仍須在真 Apps Script staging 驗證新旅團透過兩個前端登入、首次改密碼及重跑初始化；不得把隔離測試當成已部署。
-- 產生器固定 BADGE v9.6 原始碼 hash，在組合版中保留原有實作並加入 Portal 功能；原始 vendored baseline 不會被覆寫。候選版的升級初始化停用 baseline 原本會刪改舊保留帳號、審計及相關歷史行的清理步驟；舊保留 session 仍由驗證程式拒絕。已有 `Users` 表時不補建預設帳戶，亦不在初始化時改寫既有密碼旗標；使用預設密碼的登入仍會要求改密碼。
+- 產生器固定 BADGE v9.7 **完整 GS** 的來源及 hash，在此基礎明確套用 v9.8 修正；原始 baseline 不會被覆寫。為保留既有旅團歷史，候選版停用 v9.7 初始化中刪改舊保留帳號、審計及相關歷史行的清理步驟；舊保留 session 仍由驗證程式拒絕。這是與 BADGE v9.7 原有清理政策的明確差異；舊保留角色或電郵列不能登入、使用舊 session 或由 assertion fixture 復活，並須由後續版本保留這些保護。已有 `Users` 表時不補建預設帳戶，亦不在初始化時改寫既有密碼旗標。
 - 升級前先核對 BADGE `進度追蹤` 的位置式表頭及 `Users.ymis`；不認得的格式會停止。只在可辨識結構增補欄／表，行政分頁跳過或後續失敗須如實回報 partial，不可標記共用版本已完成；只在兩階段完成後顯示成功，亦不在 log 輸出 API Key。部分失敗不是交易回滾：可能已有增補，重試前須核對。
 - 報表同步不再重寫 `成員名單`、刪除帶旅團後綴的分頁或裁剪同步歷史。候選版只會清除由初始化新建且以 sheet ID 登記的報表分頁；若同名分頁已有資料或被替換，刷新會停止並回報，不能自動認領。儲存行政資料與刷新報表是不同結果：資料儲存成功但報表失敗時須檢查 `reports`。
 - 初始化不改動既有 `ALLOW_LOCAL_LOGIN`（未設定即開啟）；若舊設定是關閉，Portal 正常登入仍受阻，須由 Sheet 管理員核對後明確開啟。簽名 `getLinkState` 及 `setLocalLogin` 交回 BADGE 既有簽名及防重播驗證；沒有有效簽名不可讀取或控制。這控制同一後端，關閉時會影響兩個前端。
@@ -90,7 +90,7 @@ TROOP_<ID>_APIKEY=<同一個既有 BADGE backend 的 API_KEY>
 
 BADGE v9.6 `doPost` 以登入後 `token` 保護帳戶管理；管理 action 依 `getRoleLevel()`／`canManageUser()` 檢查，普通使用者的 `can_tick` 只控制部分進度寫入，不等於帳戶管理權。API Key 只作服務端 routing／簽名根，不能取代 BADGE user token 或角色授權。
 
-`unified-extension.gs` 在 `v9.6-u1-test` router 內提供 Portal aliases，並把批次開戶映射到 `handleBulkAddUsers()`／BADGE `Users`；它仍標記 `isolated-test-only`，builder 產物未經正式驗收。VM 測試可檢查 adapter code，不可證明既有 BADGE `/exec` 已安裝或 Apps Script runtime 行為。
+共用 GS 的 router 提供 Portal aliases，並把批次開戶映射到 `handleBulkAddUsers()`／BADGE `Users`。這層已包含在固定的 BADGE v9.7 完整來源內；舊的 `unified-extension.gs` 保留歷史參考，不再是 v9.8 產生器的輸入。VM 測試不可證明既有 BADGE `/exec` 已安裝或 Apps Script runtime 行為。
 
 因此，目前只有可追蹤的**前端 → Registry → Proxy → action forwarding** 路徑；正式共用後端 action contract、版本化 release、原地更新與真實 Apps Script staging 仍未完成。單有 URL／Key、proxy allowlist、申請回執或 `backendReady` 都不足以證明功能已接通。
 
@@ -119,6 +119,6 @@ PR #41 是隔離 Unified 測試 bundle，不是另一個 BADGE 正式後端版�
 
 1. 釘選 BADGE upstream commit，檢視 `apps-script/Code.gs`、前端、身份／權限 action 及測試差異。
 2. 逐項映射到共用 `Users` 與 Portal 權限模型；已等價的功能只補回歸測試，不複製帳戶表或密碼資料。
-3. 更新正式共用 backend source、action/proxy contract、Portal UI 與回歸測試。`apps-script/UnifiedCode.gs`／`unified-src/` 現時只供隔離測試，不是正式後端 source of truth。
+3. 更新共用 backend source、action/proxy contract、Portal UI 與回歸測試。兩邊每次修改前以較新的完整 GS 為基礎；目前 v9.8 候選版尚未經真實 Apps Script 驗收，詳見 [`SHARED_BACKEND_VERSIONING.md`](SHARED_BACKEND_VERSIONING.md)。
 4. 執行 `npm run check`、`git diff --check`，並另做真 Apps Script staging。
 5. 只在正式共用 source、建置產物、action contract、同一帳戶資料及 staging 都對應同一版後，才把項目標作已同步／已開通。

@@ -1,6 +1,6 @@
 # 統一 GS 隔離測試版（完整支部後端；完整版與輕量版前端）
 
-> **狀態：只供本 repo／本分支私人測試。以下拓撲及「現在」均只描述隔離 fixture，並非旅團 production 已實現；正式 BADGE adapter 及真 Apps Script staging 尚未完成，詳見 `BACKEND_SYNC.md`。** 這不是 `vsbadge` 發佈版，沒有部署、沒有推送到 `vsbadge`，亦不會自動影響任何現有旅團。
+> **狀態：** 以下是架構及歷史測試說明，不代表已在旅團 production 驗收。BADGE v9.7 已包含完整 Unified；Portal v9.8 建基於 v9.7，BADGE 下次修改前才需承接；v9.8 未完成真 Apps Script 驗收。最新版本及同步流程見 [`SHARED_BACKEND_VERSIONING.md`](SHARED_BACKEND_VERSIONING.md)；合併 repo 不會自動更新任何旅團。
 >
 > **施工次序（2026-11-12 用戶更正）：BOOK → BADGE → 5 個支部系統（現在）→ 旅系統（最後）。**
 > 現在沒有中央旅系統；支部本地帳戶／session 是正常主入口，`ALLOW_LOCAL_LOGIN` 必須保持 `true`。
@@ -9,6 +9,8 @@
 > 測試產物：[`apps-script/UnifiedCode.gs`](../apps-script/UnifiedCode.gs)
 > 重建：`npm run build:gas:unified`
 > 自動測試：`npm run test:unified`
+
+以下關於 v9.6 組裝來源、測試 fixture 和初始化版本的細節屬歷史紀錄；現行 builder 及版本以 [`SHARED_BACKEND_VERSIONING.md`](SHARED_BACKEND_VERSIONING.md) 為準。
 
 ## 1. 拓撲：支部現行路徑與隔離 auth 實驗
 

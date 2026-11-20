@@ -1,7 +1,9 @@
 # 同步排查：vsbadge 與 vs_portal（v2.8.3）
 
-> 比對對象：`playerkousas-rgb/vsbadge` 的 `main`（檢視時 HEAD `98f176b`）。
-> 本文件是**程式碼比對與本機模擬測試**，不是正式 Google Sheet／Vercel 環境的實測結果。只取得公開 Registry 診斷（變數是否存在），沒有取得 Key 值、正式執行紀錄或試算表寫讀結果，因此不能宣稱現場故障只有單一原因，亦不能宣稱已替正式站完成部署。
+> ⚠️ **歷史記錄，非目前部署指引。** 本文原記錄 v2.8.3 的診斷與操作狀態；其後的架構和版本已改變，舊部署步驟不可直接當作現行指示。
+> 目前的架構決定是：VS Portal 提供完整版前端，BADGE 提供輕量前端，兩者共用一份完整 GAS；BADGE front-end 只呼叫所需 action。`apps-script/Code.gs`（source：`assets/js/lib/gastemplate.js`）是本 repo 完整後端；`UnifiedCode.gs` 是隔離測試 bundle，不代表正式共用 GS 要把兩份完整後端合併。
+> BADGE PR #40（2026-11-20，merge `87c76a98b95ff7b5e2a7be02198142c72aefc24e`）已列入逐項同步追蹤；backend hash `63148a32095694a92a45d9fa14fc190b7fd8e35336080d2c48ad9adf61c34a10`。目前只確認部分行為在 Portal 已等價，完整移植狀態見 [`docs/BACKEND_SYNC.md`](BACKEND_SYNC.md)。
+> 本 repo 沒有部署正式 GAS、測試真實 Sheet 或驗收 Vercel；下方原有內容只作歷史記錄，不代表目前正式站狀態。
 
 ## 為何 vsbadge 看似正常，這個系統卻常常「有寫入、讀不返」？
 

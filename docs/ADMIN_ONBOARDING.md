@@ -1,108 +1,83 @@
-# 管理員手冊：支部申請接入
+# 管理員手冊：Portal 接入既有 BADGE 後端
 
-> 現行契約：**一張 Sheet、一支 Unified GAS、一個 API Key、三項 Vercel 支部設定。**
+> **這不是新團開團、搬帳戶或部署新 Sheet／GAS 的流程。** Portal 完整版與 BADGE 輕量版必須使用旅團目前同一個 BADGE `/exec`、API Key、Sheet、`Users` 帳戶及業務資料。不得建立第二身份來源、帳戶表或資料來源，也不得要求匯出／匯入／複製帳戶。
 >
-> 施工次序：BOOK → BADGE → 5 個支部系統（現在）→ 最後才建立旅系統。現在沒有中央旅系統，本地支部帳戶／session 是正常登入。
+> **目前狀態：正式共用 action contract 尚未完成真 Apps Script staging。** 裸 BADGE v9.6 的原生登入／帳戶 actions 與 Portal contract 不相同。單純登記既有 URL／Key、收到 ADMIN 申請或看到 `backendReady` 都不等於已開通。詳見 [`BACKEND_SYNC.md`](BACKEND_SYNC.md)。
 
-每支部只有一支具備身份、行政、Progress、獎章、履歷及申報能力的完整 Unified Apps Script。支部系統是功能完整版前端；BADGE 是只呈現部分流程的輕量前端，而不是另一支精簡 GS。兩者共用同一資料與授權後端；API Key 只留在 server，不能當作執委身份。
+## 1. 收到 Portal 接入申請
 
-## 1. 申請人先完成
+申請表收集旅團編號／名稱、目前 BADGE 正式 `/exec`、同一 deployment 的 API Key 及聯絡資料，經同源 `POST /api/proxy` 轉發到固定 ADMIN 收件匣。
 
-1. 建立一張新的 Google Sheet。
-2. 在綁定的 Apps Script 貼上 [`apps-script/UnifiedCode.gs`](../apps-script/UnifiedCode.gs)。
-3. 執行 `initializeSheets`。
-4. 執行 `showApiKey`，安全保存 API Key。
-5. 部署 Web App（執行身分：我；存取權：任何人），複製正式 `/exec`。
-6. 在 App 的「新旅團申請接入」送出旅團編號、名稱、`/exec`、API Key 與聯絡資料。
+這是申請通知，不是 Vercel Registry 寫入 API。它不會更改環境變數或自動啟用 Portal。只在 ADMIN 收件匣明確回傳 `receipt: true` 時，才可向申請人表示已取得收件回執；一般 HTTP 成功／申請送出結果不應描述成 ADMIN 已確認收到。結果未知時不要自動重送同一操作，先按 operation ID 查證。
 
-申請會先送同源 `POST /api/proxy`（`action=submitRegistration`），再由 server 固定的管理員收件匣接收。Payload 以 `appType: "82venture"` 分辨；收件匣如有白名單要加入該值。
+申請中含敏感 API Key；只用核准的管理管道處理，不能貼進 Git、issue、截圖、一般聊天或公開日誌。
 
-只有連線／逾時或收件匣明確回 `success:false` 才算失敗。管理員收到後仍要自行通知申請人開通結果。
+## 2. 開通前：核實正式後端契約
 
-## 2. 管理員只設定三項
+### 裸 BADGE v9.6 實際契約
 
-以旅團 `0100` 為例，在正確的 Vercel environment 設定：
+- 登入：`login`，使用 BADGE `Users`，回傳 BADGE `token`。
+- 帳戶／身份管理：`addUser`、`bulkAddUsers`、`resetPassword`、`updateUserProfile`、`setUserStatus`、`deleteUser`、`updateUserRole`／`updatePermissions` 等；管理操作需有效登入 token 及 BADGE 角色授權。
+- 密碼自助復原：`requestPasswordReset`／`completePasswordReset`。
+- Progress／履歷：`load`、`save`、`saveOtherBadge`、`requestComplete`、`getPendingRequests`、`reviewRequest`、`getLogRecords`、`saveLogRecord`、`deleteLogRecord`、`requestLogRecord`、`getLogRequests`、`reviewLogRequest`、`cancelLogRequest` 等原生路徑。
+
+Portal 目前登入／帳戶呼叫 `authLogin`、`authWhoAmI`、`authOpenAccounts`、`authCreateAccount`、`authResetPassword`、`authDeleteAccount`、`authRestoreAccount`、`authForgotPassword`、`authCompletePasswordReset`、`authChangePassword`；Portal 一般行政資料另有 `loadDb`／`saveDb`／`loadTables`／`saveTables` 等 contract。裸 BADGE v9.6 不會因 Portal proxy 有 allowlist 就自動實作這些 handlers。
+
+### 正式 adapter 的責任位置與邊界
+
+正式相容層應由持有 BADGE `Users`、session token、Progress handlers 及權限規則的 **BADGE Apps Script source** 維護，並部署到旅團目前那個 Apps Script 專案與既有 `/exec`。Portal repo 可維護 client contract、Vercel Registry／proxy 及回歸測試；不能在 Portal 加第二個身份庫或把 API Key 當成登入。
+
+升級必須原地保留同一個 Sheet、GAS project、API Key、deployment URL、BADGE 原生 action、使用者及資料；如 Portal 需要新的業務欄位／分頁，必須由核准的正式 adapter 在同一既有 Sheet additive 處理，不可複製 BADGE 帳戶／Progress 到另一來源。只有經核准的 staging 和回退測試完成後，才能更新正式 BADGE deployment。
+
+`apps-script/unified-src/`／`apps-script/UnifiedCode.gs` 是隔離測試組合，不是可直接貼入旅團正式 Sheet 的 adapter release。此 Portal repo 目前尚無已驗收的正式 BADGE compatibility release；未完成前不要登記 Portal Production 或對外稱已開通。
+
+## 3. Vercel Registry（只在正式 staging 全部通過後）
+
+在正確的 Vercel project／environment 設定同一 BADGE deployment 的三項資料：
 
 ```dotenv
 TROOP_0100_NAME=第一百旅深資童軍團
-TROOP_0100_BACKEND=https://script.google.com/macros/s/部署識別碼/exec
-TROOP_0100_APIKEY=該 Unified GAS 的 showApiKey 值
+TROOP_0100_BACKEND=https://script.google.com/macros/s/<既有 BADGE deployment>/exec
+TROOP_0100_APIKEY=<同一既有 BADGE deployment 的 API Key>
 ```
 
-然後 **Redeploy**。
+設定到實際使用的 Production／Preview／Development environment 並 Redeploy。不要把 URL／Key 寫入 `data/units.json`、browser 或另設 `PROGRESS*`／`PORTAL*` secret。`/api/units` 不會回傳 URL／Key。
 
-| 變數 | 核對 |
-|---|---|
-| `NAME` | 公開顯示名稱正確 |
-| `BACKEND` | 只接受 Google Apps Script 正式 `/exec`；不接受 `/dev` |
-| `APIKEY` | 與同一 Unified GAS 的 `API_KEY` 完全相同 |
+`backendReady` 只證明 Registry 解析到可信任 URL／Key；不證明 action 已安裝、session 可互通、帳戶共用或業務資料可讀寫。
 
-這三項就是 BADGE 使用的同一支部 Registry；功能完整版 vs_portal 與輕量版 vsbadge 都連到同一支完整後端，Progress 只是完整版前端內的業務模組。
+## 4. 正式開通 checklist
 
-## 3. 禁止建立第二套接線
-
-不要設定：
+未完成 staging 前，以下項目維持「未通過」，不可標為開通：
 
 ```text
-TROOP_<ID>_PORTALSECRET
-TROOP_<ID>_PORTALSESSIONSECRET
-PORTAL_SESSION_SECRET
-TROOP_<ID>_PROGRESSBACKEND
-TROOP_<ID>_PROGRESSAPIKEY
-TROOP_<ID>_PROGRESSCATALOG
+□ 申請資料指向旅團目前正在使用的 BADGE /exec 與同一 deployment API Key
+□ 正式 adapter 已進 BADGE source of truth，且部署於既有 Apps Script project／deployment
+□ 沒有新建生產 Sheet/GAS、第二帳戶表、第二密碼或帳戶匯出／匯入／搬移
+□ BADGE 原生 login／token 及原生 action 仍正常
+□ 同一既有 BADGE Users 帳戶可在 BADGE 與 Portal 登入並回讀同一 YMIS／身份／狀態
+□ Portal 批次開戶落入同一 BADGE Users；BADGE 能立即用新帳戶登入
+□ 密碼重設、停用／復原、角色／can_tick／allowed_badges 兩邊一致，舊 session 按規格失效
+□ BADGE 與 Portal Progress／履歷操作寫入並讀回同一張 Sheet
+□ member／執委／領袖／團長權限及 action allowlist 均經真後端測試；未授權 action fail closed
+□ 偽造 session／role／YMIS／API Key／backend URL 及跨旅團請求均被拒絕
+□ 真 Apps Script staging、並發／Lock、資料保留及回退測試有可核對證據
+□ 以上通過後，才在 Vercel 設定 NAME／BACKEND／APIKEY、選對 environment 並 Redeploy
+□ `/api/units` 不洩漏 URL／Key；另以真登入及讀寫測試確認整合（不以 backendReady 代替）
+□ 通知旅團已驗收開通（不能把申請收件回執當作開通通知）
 ```
 
-不要：
+## 5. 不得使用的舊流程
 
-- 把 backend 或 API Key 放進 `data/units.json`／`unit.json`；
-- 叫使用者在進度頁貼 `/exec` 或 Key；
-- 為進度或 BADGE 輕量前端另建 Apps Script／Sheet；
-- 因 BADGE 未顯示某功能就把畫面隱藏當成授權；
-- 用 API Key、query `role`、YMIS 或姓名當使用者身份；
-- 以 browser 傳入的 backend／apikey 決定 server 轉發目標。
+- 不得叫團方建立新 Google Sheet、新 Apps Script project、新 Web App 或第二個 `/exec`；
+- 不得要求貼 `UnifiedCode.gs`、執行測試 bundle 的 `initializeSheets` 或建立空白 Sheet；
+- 不得要求團方搬移／複製／匯出／匯入 BADGE 使用者、密碼 hash、名冊或 Progress；
+- 不得以 Portal 原有 `accounts[].pw` 或 `apps-script/Code.gs` 作為 BADGE Users 的替代品；
+- 不得只靠 Vercel proxy allowlist、`backendReady`、Unified VM 或申請回執宣稱共用後端已完成；
+- 不得在未驗證資料保留前對既有 Sheet 執行清空、重置或未核准 schema migration。
 
-公開 `data/units.json` 只可放名稱、地區、贊助機構、主題等 metadata。敏感接線只在 Vercel environment。
+## 相關文件
 
-## 4. Registry 登記後的 server 行為
-
-- `/api/units` 只回公開資料及 `backendReady`／`progressServerSide` 狀態，不回完整 `/exec` 或 API Key。
-- `/api/proxy` 與 `/api/progress` 只從 Registry 取同一完整 `BACKEND`／`APIKEY`。
-- 功能完整版與輕量版前端各自受 action allowlist 約束；Unified GS 再按 session、role、scope 授權。
-- browser 提交的 `backend`、`apikey`、角色、YMIS 不能覆蓋 Registry 或 session 身份。
-- 進度考核項目固定讀同源 `data/progress/items.json`，不接受 remote catalog proxy。
-- 本地支部登入先簽 opaque session，再由 `authWhoAmI` 對回 staff 角色；member action 由 server 固定本人 YMIS。
-- `ALLOW_LOCAL_LOGIN` 保持 `true`；支部本地帳戶是正常登入來源。
-- repo 內 assertion／exchange 只屬隔離 auth fixture，不在開團時啟用，也不是未來旅系統 reader 的規格。
-- 未來旅系統由旅系統 server 單向讀取支部後端最小投影；支部 Progress 不保存或控制該關係。
-
-## 5. 每次收到申請的 checklist
-
-```text
-□ 旅團編號及顯示名稱已核對
-□ /exec 是正式 Google Apps Script URL，不是 /dev
-□ API Key 與 Unified GAS showApiKey 完全相同
-□ Vercel 只新增 NAME／BACKEND／APIKEY，沒有 PORTAL*／PROGRESS*
-□ 已選對 Production／Preview／Development environment
-□ 已 Redeploy
-□ /api/units 有旅團且不洩漏 URL／Key
-□ Unified GS 同時具備身份、行政、Progress、獎章、履歷及申報能力
-□ 功能完整版 vs_portal 與輕量版 vsbadge 都連到同一 Sheet，沒有第二支精簡 GS
-□ 進度頁沒有 browser backend／Key 輸入欄
-□ 兩個前端均受 action allowlist 限制；staff 可管理進度，member 只能本人，未登入 fail closed
-□ browser 偽造 backend／apikey／role／YMIS 被忽略或拒絕
-□ initializeSheets 重跑兩次仍保留 API Key、帳戶 hash、行政及進度資料
-□ ALLOW_LOCAL_LOGIN=true；支部本地 staff／member 登入已實測
-□ assertion／exchange fixture 沒有被當成開團或旅系統前置條件
-□ Email 通知旅團已開通
-```
-
-## 6. 身份對應
-
-功能完整版 vs_portal 與輕量版 vsbadge 以支部同一 canonical YMIS 對人：
-
-- 支部 `Users`、PBKDF2 密碼及 server-issued session 是現階段日常身份權威；
-- `ALLOW_LOCAL_LOGIN=true`，本地入口不是後備／救援模式；
-- API Key 永遠不是用戶身份；
-- browser query 或 shadow account 不能提高角色。
-
-未來旅系統建立後，只由旅系統端加入單向支部 reader；不在支部建立中央帳戶鏡像，亦不關閉本地登入。reader 的 allowlist、最小投影及 server-side 驗證須另行 staging。邊界見 [`UNIFIED_NEW_SHEET_SETUP.md`](UNIFIED_NEW_SHEET_SETUP.md)，完整開團步驟見 [`ADD_NEW_UNIT.md`](ADD_NEW_UNIT.md)。
+- [`BACKEND_SYNC.md`](BACKEND_SYNC.md)：實際 action、登入／session、帳戶、Progress、權限及 Registry 差異
+- [`ADD_NEW_UNIT.md`](ADD_NEW_UNIT.md)：舊檔名保留的 Portal 接入既有 BADGE 說明
+- [`UNIFIED_NEW_SHEET_SETUP.md`](UNIFIED_NEW_SHEET_SETUP.md)：已退役的舊部署指引（不可照做）
+- [`UNIFIED_STAGING_RESULTS.md`](UNIFIED_STAGING_RESULTS.md)：正式既有 BADGE backend staging 記錄

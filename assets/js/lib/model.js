@@ -5,7 +5,6 @@
 
 import { load, collection, find } from './store.js';
 import { unitEntry } from './units.js';
-import { isExecUrl, normExecUrl } from './gateway.js';
 import { todayISO, parseBirthday, daysUntilBirthday, ageFrom, turningAge } from './dates.js';
 import { agmIsDefault, unitFYOf, scoutFYLabel, scoutFYRange, inRange } from './fiscal.js';
 import { roleLevel, rolesAscending } from './branch-config.js';
@@ -54,38 +53,19 @@ export function publicPageUrl(file, params = {}) {
   try { url = new URL(fallback, origin || undefined); }
   catch { return fallback; }
   const next = { ...params };
-  if (next.be === undefined) {
-    const backend = selfServeExec();
-    if (backend) next.be = backend;
-  }
+  delete next.be; // browser links never choose a backend
   Object.entries(next).forEach(([key, value]) => {
     if (value !== undefined && value !== null && value !== '') url.searchParams.set(key, value);
   });
   return url.toString();
 }
 
-/** 領袖自己登記的 /exec；只作登入後端 routing，永遠唔附 API Key。 */
-export function selfServeExec() {
-  try {
-    const db = load();
-    const url = String(db?.sync?.url || db?.backend?.gasUrl || '').trim();
-    if (!isExecUrl(url)) return '';
-    const entry = db?.unitCode ? unitEntry(db.unitCode) : null;
-    return entry?.backendReady === true ? '' : normExecUrl(url);
-  } catch { return ''; }
-}
-
-/** 團員入口會行的平台接線；呢個只描述 routing，唔代表匿名授權。 */
+/** Registry readiness is routing metadata, not verified Portal compatibility. */
 export function publicLinkRoute() {
   const db = load();
   const entry = db?.unitCode ? unitEntry(db.unitCode) : null;
-  if (entry?.backendReady === true) return { route: 'proxy', label: '平台代理', ok: true,
-    detail: '團員入口經 /api/proxy 到支部後端；內容仍要先核實個人登入 session。' };
-  const backend = selfServeExec();
-  if (backend) return { route: 'direct', label: '旅團自己嘅 /exec', ok: true,
-    detail: '連結只附支部 /exec 作 routing；後端仍會核實 opaque session，API Key 唔會放入網址。' };
-  return { route: 'none', label: '未接後端', ok: false,
-    detail: '未有平台代理或支部 /exec，團員登入後亦無法取得安全投影。請先完成總表同步設定。' };
+  return { route: 'proxy', label: '同源代理', ok: entry?.backendReady === true,
+    detail: '團員入口只經同源代理；Registry 設定不代表正式 BADGE contract 已驗收。' };
 }
 
 /** 對外只派一條登入入口；通告／團章用 hash 路線進入同一 authenticated hub。 */

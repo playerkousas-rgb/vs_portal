@@ -57,6 +57,8 @@ const waitPort = async (port, ms = 10000) => {
 
 const GAS_PORT = await freePort();
 const WEB_PORT = await freePort();
+const BAD_WEB_PORT = await freePort();
+const GOOD_WEB_PORT = await freePort();
 const BAD_READ_PORT = await freePort();   // 讀永遠 503、寫照通
 const GOOD_PORT = await freePort();       // 純轉發（讀寫都通）
 const BASE = `http://127.0.0.1:${WEB_PORT}`;
@@ -74,7 +76,10 @@ const spawnBg = (args, env = {}) => {
 process.on('exit', () => procs.forEach(p => { try { p.kill('SIGKILL'); } catch { /* ignore */ } }));
 
 const runDevice = (plan) => new Promise((resolve) => {
-  const p = spawn(process.execPath, [path.join(ROOT, 'tests', '_device.mjs'), BASE, JSON.stringify(plan)],
+  // Distinct trusted server Registries select the test upstream; browser settings cannot.
+  const requested = plan.steps?.find(s => s.op === 'setSync')?.url;
+  const base = requested === BAD_READ_EXEC ? `http://127.0.0.1:${BAD_WEB_PORT}` : requested === GOOD_EXEC ? `http://127.0.0.1:${GOOD_WEB_PORT}` : BASE;
+  const p = spawn(process.execPath, [path.join(ROOT, 'tests', '_device.mjs'), base, JSON.stringify(plan)],
     { cwd: ROOT, env: { ...process.env }, stdio: ['ignore', 'pipe', 'pipe'] });
   let buf = '', err = '';
   p.stdout.on('data', d => { buf += d; });
@@ -104,12 +109,14 @@ section('起假後端（讀壞寫好 ＋ 讀寫都好）');
 spawnBg([path.join(ROOT, 'tests', '_fakegas.mjs'), String(GAS_PORT)], { FAKEGAS_APIKEY: KEY });
 spawnBg([path.join(ROOT, 'tests', '_flaky.mjs'), String(BAD_READ_PORT), String(GAS_PORT)], { FAIL_INFO: '9999' });
 spawnBg([path.join(ROOT, 'tests', '_flaky.mjs'), String(GOOD_PORT), String(GAS_PORT)], { FAIL_INFO: '0' });
-/* 冇 TROOP_0082_* —— proxy 對 0082 回 404，gateway 自動改行「直接打用家貼嘅 /exec」 */
-spawnBg([path.join(ROOT, 'dev-server.mjs')], { PORT: String(WEB_PORT), V82_PROXY_TEST: '1' });
+// Each server Registry points at one controlled test upstream. No browser URL routing.
+spawnBg([path.join(ROOT, 'dev-server.mjs')], { PORT: String(WEB_PORT), V82_PROXY_TEST: '1', TROOP_0082_BACKEND: FAKE_EXEC, TROOP_0082_APIKEY: KEY });
+spawnBg([path.join(ROOT, 'dev-server.mjs')], { PORT: String(BAD_WEB_PORT), V82_PROXY_TEST: '1', TROOP_0082_BACKEND: BAD_READ_EXEC, TROOP_0082_APIKEY: KEY });
+spawnBg([path.join(ROOT, 'dev-server.mjs')], { PORT: String(GOOD_WEB_PORT), V82_PROXY_TEST: '1', TROOP_0082_BACKEND: GOOD_EXEC, TROOP_0082_APIKEY: KEY });
 ok('假後端已啟動', await waitPort(GAS_PORT));
 ok('故障注入後端已啟動（dbInfo 永遠 503）', await waitPort(BAD_READ_PORT));
 ok('正常後端已啟動', await waitPort(GOOD_PORT));
-ok('dev-server 已啟動', await waitPort(WEB_PORT));
+ok('三個代理已啟動', (await waitPort(WEB_PORT)) && (await waitPort(BAD_WEB_PORT)) && (await waitPort(GOOD_WEB_PORT)));
 
 /* ---- 前提：故障注入真係「讀壞、寫好」，唔係兩樣一齊壞 ---- */
 section('前提：故障注入係「讀壞寫好」（否則呢個測試證明唔到任何嘢）');
@@ -156,12 +163,12 @@ section('② ★ 讀唔到後端但寫得入 → 舊版會盲蓋，而家必須�
   ] });
   ok('裝置 B 開到機', B.ok === true, B.error || '');
   const cfg = step(B, 'setSync');
-  ok('前提：B 嘅後端設定係有效嘅（唔係「未設定」所以先至冇寫）', cfg.ok === true && cfg.hasKey === true, JSON.stringify(cfg));
+  ok('前提：B 嘅後端設定係有效嘅（唔係「未設定」所以先至冇寫）', cfg.ok === true && cfg.viaProxy === true && cfg.hasKey === false, JSON.stringify(cfg));
   ok('前提：B 登入時攞到基準（loadDb 通）', step(B, 'load').ok === true && step(B, 'load').fresh === true, JSON.stringify(step(B, 'load')));
   const p = step(B, 'push');
   /* 釘死嘅係「有冇寫到」呢個不變量，唔係某個 reason 字串：
      503 會被 callBackend 歸類做 bad_response，重點係 ok=false ＋ bytes=0。 */
-  const BLOCKED = ['bad_response', 'not_registered', 'bad_url', 'network', 'timeout'];
+  const BLOCKED = ['backend', 'bad_response', 'not_registered', 'bad_url', 'network', 'timeout'];
   ok('★ 核對唔到後端版本 → 儲存被擋住（一個 byte 都冇送去後端）',
     p.ok === false && Number(p.bytes || 0) === 0 && BLOCKED.includes(p.reason), JSON.stringify(p));
   ok('★ 改動冇蝕到 —— 仲喺本機排隊', Number(p.pending || 0) >= 1, JSON.stringify(p));

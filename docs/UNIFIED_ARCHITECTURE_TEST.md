@@ -1,6 +1,6 @@
 # 統一 GS 隔離測試版（完整支部後端；完整版與輕量版前端）
 
-> **狀態：只供本 repo／本分支私人測試。** 這不是 `vsbadge` 發佈版，沒有部署、沒有推送到 `vsbadge`，亦不會自動影響任何現有旅團。
+> **狀態：只供本 repo／本分支私人測試。以下拓撲及「現在」均只描述隔離 fixture，並非旅團 production 已實現；正式 BADGE adapter 及真 Apps Script staging 尚未完成，詳見 `BACKEND_SYNC.md`。** 這不是 `vsbadge` 發佈版，沒有部署、沒有推送到 `vsbadge`，亦不會自動影響任何現有旅團。
 >
 > **施工次序（2026-11-12 用戶更正）：BOOK → BADGE → 5 個支部系統（現在）→ 旅系統（最後）。**
 > 現在沒有中央旅系統；支部本地帳戶／session 是正常主入口，`ALLOW_LOCAL_LOGIN` 必須保持 `true`。
@@ -156,7 +156,7 @@ fixture 只使用既有 `API_KEY`。測試 issuer、Vercel 及該支部 Unified 
 | `hubRsvp`／`hubQuiz`／`hubAbsence` | 只寫 session 本人的出席、答卷、請假；寫完回新安全投影 |
 | `loadDb`／`loadTables`／`saveDb`／`saveTables`／分件／`sync`／force | 舊完整行政介面兼容層；讀寫前做 session＋scope＋受保護欄位驗證 |
 
-`getLinkState`／`setLocalLogin` 雖仍存在於 hash-locked pinned source，Unified 公開 router 會以 `BRANCH_LOCAL_LOGIN_REQUIRED` 拒絕並把 `ALLOW_LOCAL_LOGIN` 復原為 `true`；它們不是 Progress 或旅系統 action。舊 Portal 的帳戶 action 亦不會路由到 namespaced compatibility module。支部帳戶由 BADGE `Users` 原生功能管理；舊 alias 會回 `BRANCH_IDENTITY_MANAGED`，避免重建第二身份來源。隔離 SSO fixture 若嘗試在支部建立密碼或改中央身份，則回 `CENTRAL_IDENTITY_MANAGED`。
+候選 router 將 `getLinkState` 和 `setLocalLogin` 交回 BADGE 原生路由：必須通過原有簽名及防重播驗證，無簽名不可讀取或更改入口。這是保留既有 BADGE 接駁功能，不代表 Portal 或 Progress 需要依賴另一後端；切換共用入口會影響兩個前端。隔離 router 將 Portal 帳戶 alias 適配到 BADGE `Users` handler，而不是路由到 namespaced Portal 身份表；特殊的簽署平台 super 帳戶管理請求則回 `BRANCH_IDENTITY_MANAGED`。隔離 SSO fixture 若嘗試在支部建立密碼或改中央身份，則回 `CENTRAL_IDENTITY_MANAGED`。這些都是測試程式的行為，不代表已在正式後端部署。
 
 ## 6. 無損初始化保證
 
@@ -164,7 +164,7 @@ fixture 只使用既有 `API_KEY`。測試 issuer、Vercel 及該支部 Unified 
 
 1. 原裝 vsbadge v9.6 增補初始化；
 2. 行政兼容分頁增補初始化；
-3. 把 `ALLOW_LOCAL_LOGIN` 復原為 `true`；
+3. 保留原有 `ALLOW_LOCAL_LOGIN` 設定；未設定時 BADGE 視為開啟，若已關閉則需 Sheet 管理員明確開啟才能正常支部登入；
 4. 寫入 `UNIFIED_GS_INITIALIZED_VERSION=v9.6-u1-test`。
 
 禁止事項：

@@ -17,10 +17,9 @@
 import { todayISO, nowStamp } from './dates.js';
 import { canonicalUnitCode } from './units.js';
 import {
-  registry, unitEntry, backendOf, dataPathOf, fetchUnitData, defaultUnitCode, localUnits
+  registry, unitEntry, dataPathOf, fetchUnitData, defaultUnitCode, localUnits
 } from './units.js';
 import { scoutFYLabel } from './fiscal.js';
-import { isExecUrl, normExecUrl } from './gateway.js';
 import {
   SKIP_TOP, diffDb as _diffDb, applyChanges as _applyChanges, clone as _clone,
   threeWay as _threeWay, overridesFor as _overridesFor
@@ -344,49 +343,29 @@ async function buildSeed(code) {
     if (tables.sources) db.tableSources = tables.sources;
     if (tables.sync) db.sync = tables.sync;
   }
-  seedBackend(db, code);
   return db;
 }
 
-/**
- * 團員入口未驗證 session 前只可建立安全空殼。
- *
- * 絕對唔可以重用 buildSeed()：佢會讀取靜態 members／finance／inventory 等完整
- * 行政種子。團員成功登入後，remote.loadHubView() 才會用後端正面白名單投影取代
- * 呢個空殼。`backendUrl` 只接受既有 /exec 白名單，供未登記旅團的 ?be= 自助路線。
- */
-function buildHubShell(code, backendUrl = '') {
-  const entry = unitEntry(code) || {};
-  const db = blankDb(code, entry);
+/** Member boot uses a safe shell, never static administrative seed or browser routes. */
+function buildHubShell(code) {
+  const db = blankDb(code, unitEntry(code) || {});
   db.profile = { ...db.unit };
   db.meta = { ...(db.meta || {}), hubShell: true,
     seedSource: '（團員安全空殼：登入後載入本人投影）' };
-  seedBackend(db, code);
-  const direct = normExecUrl(backendUrl);
-  if (direct && isExecUrl(direct)) {
-    db.backend = { gasUrl: direct, apiKey: '', name: '旅團後端（團員連結）', shared: false };
-    db.sync = { url: direct, unit: code, apiKey: '', log: [] };
-  }
   return db;
 }
 
-/* ---------------- 後端（Apps Script 總表）：所有流出資料都用同一條 /exec ----------------
-   優先次序：unit.json settings.sync / tables.json → 旅團 registry backend → Registry 共用 backend */
-function seedBackend(db, code) {
-  const be = backendOf(code);
-  const s = db.settings || {};
-  const unitSync = s.sync || {};
-  const url = unitSync.url || be?.gasUrl || '';
-  if (!url) return;
-  db.backend = {
-    gasUrl: url,
-    apiKey: unitSync.apiKey !== undefined ? unitSync.apiKey : (be?.apiKey || ''),
-    name: be?.name || '總表（Apps Script）',
-    shared: !unitSync.url,
-    updated: be?.updated || ''
-  };
-  db.sync = { ...(db.sync || {}), url: db.sync?.url || url, unit: db.sync?.unit || unitSync.unit || code, apiKey: db.sync?.apiKey ?? (unitSync.apiKey ?? ''), log: db.sync?.log || [] };
-  db.settings = { ...s };
+// Remove retired browser routing credentials without touching pending edits or business data.
+function clearLegacyRouting(db) {
+  let changed = false;
+  if (db?.backend) { delete db.backend; changed = true; }
+  for (const obj of [db?.sync, db?.settings?.sync]) {
+    if (!obj || typeof obj !== 'object') continue;
+    for (const key of ['url', 'apiKey', 'apikey', 'gasUrl', 'backend']) {
+      if (Object.hasOwn(obj, key)) { delete obj[key]; changed = true; }
+    }
+  }
+  return changed;
 }
 
 /* ---------------- 初始化 ---------------- */
@@ -445,20 +424,11 @@ export async function init(opts = {}) {
   }
   if (!state.db) {
     state.db = state.scope === 'hub'
-      ? buildHubShell(code, opts.backendUrl || '')
+      ? buildHubShell(code)
       : await buildSeed(code);
     state.seedFailed = !!state.db.meta?.seedFailed;
     state.seedSource = state.db.meta?.seedSource || '';
     persistLocalOnly();
-  } else if (state.scope === 'hub') {
-    /* 有效 projection refresh 時仍要採用今次連結的 ?be=；只覆蓋 routing metadata，
-       絕不把 query 內容混入 member／event 等資料。 */
-    const direct = normExecUrl(opts.backendUrl || '');
-    if (direct && isExecUrl(direct)) {
-      state.db.backend = { gasUrl: direct, apiKey: '', name: '旅團後端（團員連結）', shared: false };
-      state.db.sync = { ...(state.db.sync || {}), url: direct, unit: code, apiKey: '' };
-      persistLocalOnly();
-    }
   }
   /* unitCode 係 server-authoritative envelope 欄。網址 alias（82）只可用來搵到
      Registry 的 canonical code（0082），絕不可一路流入 DB／Sheet 形成第二套資料。 */
@@ -499,13 +469,7 @@ export async function init(opts = {}) {
   /* 權限矩陣係支部資料 schema 的一部分。開機即補齊／正規化，確保舊備份、
      裁剪投影或手改 JSON 都只能得到 edit=>read 及向上單調的有效矩陣。 */
   if (state.scope === 'admin' && !state.db.meta?.serverProjection && migrateAccessControl(state.db)) persistLocalOnly();
-  // 後端設定升級：舊資料庫（未有 sync 設定）自動補上 Registry / unit.json 嘅 Apps Script 網址
-  {
-    const before = JSON.stringify([state.db.sync?.url || '', state.db.backend?.gasUrl || '']);
-    if (state.db.sync?.url !== undefined || !state.db.backend) seedBackend(state.db, code);
-    const after = JSON.stringify([state.db.sync?.url || '', state.db.backend?.gasUrl || '']);
-    if (before !== after) persistLocalOnly();
-  }
+  if (clearLegacyRouting(state.db)) persistLocalOnly();
   lsSet(K.unit, code);
   /* 舊版（2026-09-19 之前）留低嘅指紋基準已經冇用 —— 而家用成份基準快照（getBase） */
   if (state.db.sync?.baseObjHash) { delete state.db.sync.baseObjHash; persistLocalOnly(); }
@@ -716,6 +680,7 @@ export function importAll(jsonText) {
   removeAnonymousPublicData(state.db);
   if (keepSync) state.db.sync = { ...keepSync, pending: Number(keepSync.pending || 0) };
   if (keepBackend) state.db.backend = keepBackend;
+  clearLegacyRouting(state.db);
   state.db.unitCode = state.unitCode;
   state.db.kind = 'real';
   /* 還原備份 ＝ 一次改動（相對登入時嘅基準）—— 撳「儲存到後端」先會寫入，撞嘅格照樣會問 */
@@ -1073,7 +1038,7 @@ export function wipe() {
   if (keepSync) state.db.sync = keepSync;
   if (keepBackend) state.db.backend = keepBackend;
   /* 冇原本設定就用返 Registry 登記嘅後端 */
-  if (!state.db.sync?.url) seedBackend(state.db, state.unitCode);
+  clearLegacyRouting(state.db);
   persist();
   return state.db;
 }

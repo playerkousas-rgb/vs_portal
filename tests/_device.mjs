@@ -455,7 +455,6 @@ try {
       const list = model.memberLinks();
       out.steps.push({
         op: 'links', route: route.route, label: route.label, routeOk: route.ok,
-        selfServeExec: model.selfServeExec(),
         urls: list.slice(0, 6).map(l => ({ id: l.id, url: l.url }))
       });
     }

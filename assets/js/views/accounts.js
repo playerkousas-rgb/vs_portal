@@ -105,11 +105,11 @@ function unitView() {
         </div>
         <div style="padding:14px 16px;border-top:1px solid var(--line-2)">
           ${isSuper()
-            ? `${noteBoxHtml('<b>想開新旅團？</b>（只限超級管理員）最快嘅方法 B：喺 Vercel 加 5 個 '
+            ? `${noteBoxHtml('<b>想為既有 BADGE 接入 Portal？</b>（只限超級管理員）正式相容合約及 staging 通過後，Admin 才在 Vercel 登記 '
                 + '<code>TROOP_&lt;編號&gt;_*</code> 環境變數 → Redeploy，唔使改 Git。'
-                + '（方法 A：喺 <code>data/units.json</code> ＋ <code>data/units/&lt;編號&gt;/</code> 加檔案，可以預載資料。）', 'info')}
+                + '只沿用既有 BADGE 後端；不要建立新 Sheet／GAS 或複製帳戶。', 'info')}
               <div class="row gap-8 wrap mt-12">
-                <button class="btn btn-sm btn-primary" data-go="#/docs/newunit">${icon('note', 15)} 開新旅團逐步教學（含變數範本）</button>
+                <button class="btn btn-sm btn-primary" data-go="#/docs/newunit">${icon('note', 15)} 既有 BADGE 接入說明</button>
                 <button class="btn btn-sm" data-act="env-template">${icon('copy', 15)} 即刻產生環境變數</button>
               </div>`
             : ''}
@@ -185,12 +185,12 @@ export function mount(root) {
     if (act === 'env-template') {
       if (!isSuper()) { toast('只有超級管理員可以開新旅團（要改 Vercel 設定）', 'err'); return; }
       const r = await modal({
-        title: '產生環境變數（開新旅團）', sub: '方法 B：唔使改 Git，貼落 Vercel 就得',
+        title: '登記既有 BADGE 後端', sub: '只在正式合約與 staging 通過後由 Admin 設定',
         trustedBodyHtml: `<div class="grid g-2" style="gap:12px">
             <div class="field"><label class="label">旅團編號</label><input class="input" id="q-code" placeholder="0081"></div>
             <div class="field"><label class="label">旅團名稱</label><input class="input" id="q-name" placeholder="第八十一旅深資童軍團"></div>
             <div class="field" style="grid-column:1/-1"><label class="label">/exec 網址</label><input class="input" id="q-exec" placeholder="https://script.google.com/macros/s/AKfy…/exec"></div>
-            <div class="field" style="grid-column:1/-1"><label class="label">API Key</label><input class="input" id="q-key" placeholder="showApiKey() 複製嘅字串"></div>
+            <div class="field" style="grid-column:1/-1"><label class="label">API Key</label><input class="input" id="q-key" placeholder="既有 BADGE deployment 的 API Key"></div>
           </div>
           <pre class="code mt-12" id="q-out">${esc(envUnitTemplate('0081'))}</pre>
           <div class="hint">貼落 Vercel → Settings → Environment Variables；之後要 <b>Redeploy</b> 先生效。</div>`,

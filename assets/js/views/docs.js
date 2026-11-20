@@ -316,19 +316,16 @@ function tablesDoc() {
   </div>
   ${noteBoxHtml('冇公開連結都可以：喺 Sheet 選取範圍 → Ctrl+C → 按「改為貼上 CSV」照樣讀得到。', 'info')}
 
-  ${H('③ Unified 總表：完整後端、完整版＋輕量版前端')}
-  ${noteBoxHtml('<b>施工次序：BOOK → BADGE → 5 個支部系統（現在）→ 最後才建立旅系統。</b>現階段未有中央旅系統；支部本地帳戶／session 係正常主入口，<code>ALLOW_LOCAL_LOGIN</code> 必須保持開啟。', 'info')}
-  ${P('每個旅團只使用<b>一張專屬 Google Sheet ＋ 一支完整 Unified Apps Script</b>；GS 具備行政、身份、進度、獎章、履歷及申報能力。支部系統係功能完整版前端，BADGE 係只呈現部分流程嘅輕量前端。')}
+  ${H('③ Portal 接入旅團既有 BADGE 後端（目前未開通）')}
+  ${P('產品目標係 Portal 完整版與 BADGE 前端沿用<b>同一個旅團既有 BADGE <code>/exec</code>、API Key、Sheet、Users 帳戶及業務資料</b>。不得為 Portal 新建 Sheet／Apps Script、第二帳戶表或另一資料來源；亦不得複製／搬移帳戶。')}
+  ${noteBoxHtml('<b>正式共用 action contract 與真 Apps Script staging 尚未完成。</b>裸 BADGE v9.6 的 <code>login</code>／<code>token</code> 及帳戶 actions，與 Portal 的 <code>authLogin</code>／<code>authWhoAmI</code>／<code>authOpenAccounts</code> 不直接相容。只登記 URL／Key 或看到 <code>backendReady</code>，都不代表 Portal 已接通。', 'warn')}
   <div class="steps">
-    <div class="step"><div>開旅團專屬 Google Sheet → <b>擴充功能 → Apps Script</b></div></div>
-    <div class="step"><div>APP 內「總表同步 → <b>下載 Unified Code.gs</b>」→ 全部取代貼上</div></div>
-    <div class="step"><div>執行 <code>initializeSheets</code> 增補全部分頁，再執行 <code>showApiKey</code> 安全保存同一 API Key</div></div>
-    <div class="step"><div><b>部署 → 新增部署作業 → 網頁應用程式</b>；執行身分：我；存取權：任何人；只用正式 <code>/exec</code></div></div>
-    <div class="step"><div>管理員喺 Vercel 只登記 <code>TROOP_&lt;ID&gt;_NAME／BACKEND／APIKEY</code> 三項並 Redeploy</div></div>
-    <div class="step"><div>登入後撳頂部「<b>儲存到後端</b>」；server 以 session 核對身份，browser 唔保存 API Key</div></div>
-    <div class="step"><div>每次更新 Unified Code.gs 後在測試副本重跑一次 <code>initializeSheets</code>；只可增補，既有資料及 Key 必須不變</div></div>
+    <div class="step"><div>團方只提供目前 BADGE 正式 <code>/exec</code>、同一 deployment 的 API Key、旅團資料及聯絡方式；不要開新 Sheet／GAS 或執行測試初始化。</div></div>
+    <div class="step"><div>Admin 先完成並核對正式 BADGE／Portal 共用 action contract，確認同一 BADGE <code>Users</code> 是唯一身份、密碼與權限權威。</div></div>
+    <div class="step"><div>在核准的真實 Apps Script staging 驗證同一帳戶雙向登入、帳戶／角色／狀態更新、Progress 讀寫、資料保留及回退；VM／mock 不計 staging。</div></div>
+    <div class="step"><div>只有正式 staging 全部通過後，Admin 才把既有 BADGE 的 <code>TROOP_&lt;ID&gt;_NAME／BACKEND／APIKEY</code> 登記至 Vercel 並 Redeploy。</div></div>
   </div>
-  ${noteBoxHtml('<b>完整 Unified 後端、兩種前端定位。</b>vs_portal 功能完整版與 vsbadge 輕量版共用同一 Sheet；不要設定 <code>PORTAL*</code>／<code>PROGRESS*</code> 第二套 secret、backend 或 key，亦不要另建 BADGE 精簡 GS。前端功能面唔取代 server role／scope 授權。', 'brand')}
+  ${P('Unified Code.gs 與 <code>apps-script/unified-src/</code> 只供隔離測試，不能貼入正式 BADGE Sheet、不能用來建第二個後端。正式驗收狀態見 <code>docs/UNIFIED_STAGING_RESULTS.md</code>；目前所有正式項目仍為 <code>NOT RUN</code>。')}
 
   ${H('④ 儲存與備份')}
   ${P('所有資料存喺<b>你自己嘅瀏覽器</b>（localStorage，大約 5MB）。相片最佔位，所以：')}
@@ -379,130 +376,130 @@ function birthdayDoc() {
 function progressDoc() {
   const unit = currentUnit() || '0082';
   return `
-  ${H('設計：完整 Unified 後端、功能完整版＋輕量版前端')}
-  ${P('旅團只有<b>一個完整後端</b> —— 一張 Google Sheet ＋ 一支具備身份、行政、Progress、獎章、履歷及申報能力的 Unified Apps Script。'
-    + '<b>vs_portal 係功能完整版前端；vsbadge 係輕量前端</b>，只呈現部分流程。Progress 係完整版前端內的模組。')}
-  ${noteBoxHtml('瀏覽器不保存後端網址或 API Key；進度頁亦不接受第二支 GAS 或 BADGE 精簡 GS。'
-    + 'API Key 只作 server routing／用途分隔 HMAC 根，<b>不等於執委身份</b>；功能有冇顯示亦唔係授權。每個 action 由 allowlist、opaque session 角色及 scope 共同限制。', 'brand')}
+  ${H('Progress 前端與 BADGE 共用後端')}
+  ${P('產品目標係<b>一個旅團、一個既有 BADGE 後端、一套帳戶</b>；vs_portal 提供完整管理前端，vsbadge 提供較輕前端。Portal 的 Progress 經同源 <code>/api/progress</code> 代理，不能另選 GAS、Sheet 或帳戶來源。')}
+  ${noteBoxHtml('<b>正式共用後端尚未完成驗收。</b>Registry 登記和 <code>backendReady</code> 只代表 URL／Key 設定存在，唔代表 GAS 支援 Portal 全部 actions。裸 BADGE v9.6 的 action names 同 Portal auth contract 不同；Unified bundle 目前只供隔離測試。詳見 <code>docs/BACKEND_SYNC.md</code>。', 'warn')}
+  ${noteBoxHtml('瀏覽器不保存後端網址或 API Key；Progress 頁不接受第二個 backend。API Key 只作 server routing／用途分隔 HMAC 根，<b>不等於用戶身份</b>；每個 action 仍須由 server session、role、scope 及 allowlist 授權。', 'brand')}
 
-  ${H('三項設定（與 BADGE 完全相同）')}
+  ${H('Admin 登記的 Registry 欄位')}
   <pre class="code">TROOP_${esc(unit)}_NAME
 TROOP_${esc(unit)}_BACKEND
 TROOP_${esc(unit)}_APIKEY</pre>
   <ul style="padding-left:18px;line-height:1.9" class="sm">
-    <li><code>NAME</code>：同一旅團顯示名稱</li>
-    <li><code>BACKEND</code>：同一 Unified GAS 正式 <code>/exec</code></li>
-    <li><code>APIKEY</code>：同一 Sheet 的 <code>API_KEY</code>；只留 server</li>
+    <li><code>NAME</code>：旅團顯示名稱</li>
+    <li><code>BACKEND</code>：團方提供的既有 BADGE 正式 <code>/exec</code>；只有共用 contract 通過驗收才可啟用 Portal</li>
+    <li><code>APIKEY</code>：同一既有 deployment 的 API Key；只留 server</li>
   </ul>
-  ${noteBoxHtml('不要設定 <code>PROGRESSBACKEND</code>／<code>PROGRESSAPIKEY</code>，亦不要叫用戶在「進度」頁貼 Key。更新 Vercel 後要 Redeploy。', 'info')}
+  ${noteBoxHtml('Admin 登記後要 Redeploy。不要建立新 Sheet/GAS、第二帳戶表或搬移帳戶；亦不要設定 <code>PROGRESSBACKEND</code>／<code>PROGRESSAPIKEY</code>。', 'info')}
 
   ${H('讀寫與批核')}
   <ul style="padding-left:18px;line-height:1.9" class="sm">
-    <li><b>讀</b>：staff session 可讀全團；團員只走 <code>loadMine</code>，YMIS 由 session 固定</li>
-    <li><b>寫</b>：<code>save</code>／<code>saveOtherBadge</code> 要有效 staff role＋scope</li>
-    <li><b>批</b>：<code>reviewRequest</code>／<code>reviewLogRequest</code> 批准後寫回同一 Sheet</li>
+    <li><b>目標讀取</b>：staff session 可讀獲授權資料；團員只讀 session 限定的本人資料</li>
+    <li><b>目標寫入</b>：<code>save</code>／<code>saveOtherBadge</code> 等 BADGE action 由既有共用 GAS 授權</li>
+    <li><b>目標批核</b>：<code>reviewRequest</code>／<code>reviewLogRequest</code> 必須寫回同一旅團後端</li>
   </ul>
 
   ${H('考核項目定義')}
   ${P('第 11 版綱要已內建在 <code>data/progress/items.json</code>，離線可用；它是靜態目錄，不是第二個資料後端。')}
 
   ${H('身份對應')}
-  ${P('所有前端以同一 YMIS 對人；由支部本地帳戶核實後簽發 session，'
-    + '再由 Unified GAS 限定本人／staff 可見及可寫範圍。未來旅系統只由 server 單向讀取支部後端最小投影；不改變支部登入或 Progress。')}`;
+  ${P('兩個前端必須以同一 BADGE 使用者與 YMIS 對人；帳戶及密碼只由既有 BADGE Users 管理。真實跨前端登入、開戶及資料讀回驗收完成前，不應宣稱 Portal 已開通。')}`;
 }
 
-/* 管理員專用（方法 A：Git Registry）—— 普通用戶冇 Git／Vercel 權限，唔需要見到 */
+/* 管理員接線：只登記團方既有 BADGE backend，不建立第二資料來源。 */
 function adminGitSteps() {
   return `
-  ${H('管理員接入（Vercel 接線；Git 唔放支部業務資料）')}
+  ${H('Admin 接線：登記既有 BADGE backend')}
   <div class="steps">
-    <div class="step"><div>正式接線只用 <b>Vercel 環境變數</b>：<code>TROOP_&lt;ID&gt;_NAME／BACKEND／APIKEY</code>，然後 Redeploy</div></div>
-    <div class="step"><div>如想 API 未載入前都顯示公開名稱，可選擇喺 <code>data/units.json</code> 加 <code>code／name／section</code> 等 metadata</div></div>
-    <div class="step"><div><b>唔好</b>將 <code>backend／apiKey</code> 放 Git，亦唔使建立 <code>data/units/&lt;ID&gt;/</code> 資料夾；新支部由空白資料開始</div></div>
-    <div class="step"><div>Commit &amp; push 公開 metadata 後，秘密接線仍只由 Vercel Registry 提供</div></div>
+    <div class="step"><div>先核實團方提供的既有 <b>BADGE <code>/exec</code> 與同一 deployment 的 API Key</b>；不新建 Sheet/GAS，不複製或搬移帳戶</div></div>
+    <div class="step"><div>確認正式共用後端 action contract 已部署並通過真實 staging；裸 BADGE v9.6 的 <code>login</code>／<code>bulkAddUsers</code> 與 Portal auth actions 並不直接相容</div></div>
+    <div class="step"><div>通過相容性驗收後，才在 Vercel 登記 <code>TROOP_&lt;ID&gt;_NAME／BACKEND／APIKEY</code>，選對環境並 Redeploy</div></div>
+    <div class="step"><div><code>backendReady</code> 只表示 Registry URL／Key 存在；還要用同一 BADGE Users 帳戶驗證兩個前端登入、開戶與資料讀回</div></div>
   </div>
-  ${P('<span class="xs faint">詳細欄位名同每次收到申請嘅 checklist：見 repo 入面 <code>docs/ADD_NEW_UNIT.md</code> 同 <code>docs/ADMIN_ONBOARDING.md</code>。</span>')}`;
+  ${P('<span class="xs faint">逐項契約與待驗收邊界：見 <code>docs/BACKEND_SYNC.md</code>。申請只送固定 ADMIN 收件匣，不會自動修改 Vercel Registry。</span>')}`;
 }
 
-/* 新旅團接入步驟（步驟 1–5 喺登入前嘅「部署指南」已經有；呢度俾超管睇返完整流程） */
+/* Portal 接入既有 BADGE 後端；不建立空白旅團資料庫。 */
 function multiUnitOnboardSteps() {
   return `
-  ${H('新旅團點接入（推薦：用申請表）')}
-  ${P('<b>每個旅團用自己嘅 Google Sheet 做後端</b>，唔係共用一張總表。流程：')}
+  ${H('Portal 點樣接入既有 BADGE？')}
+  ${P('Portal 與 BADGE 目標係共用同一旅團既有後端、BADGE Users 帳戶與資料，不是每個前端各建 Sheet／GAS。')}
   <div class="steps">
-    <div class="step"><div><b>起後端</b> —— 「資料管理 → 總表同步」下載 <code>Code.gs</code> → 建一張新 Google Sheet → 擴充功能 → Apps Script → 貼上</div></div>
-    <div class="step"><div>執行 <code>initializeSheets</code>（會建好全部分頁），複製 <b>API Key</b></div></div>
-    <div class="step"><div>部署做<b>網頁應用程式</b>（執行身分：我；存取權：任何人），複製 <code>/exec</code> 網址</div></div>
-    <div class="step"><div>旅團喺登入前嘅旅團閘撳「<b>新旅團申請接入</b>」（或者直接將 <code>/exec</code> ＋ Key 交畀你）</div></div>
-    <div class="step"><div>你收到之後 → 「教學 → <b>開新旅團（唔使改 Git）</b>」加 3 個 <code>NAME／BACKEND／APIKEY</code> 環境變數 → Redeploy</div></div>
-    <div class="step"><div>通知旅團更新 <code>Code.gs</code>（同自己嗰張 Sheet 對齊）＋ 登入試一次</div></div>
-  </div>`;
+    <div class="step"><div>團方提供目前 BADGE 正式 <code>/exec</code> 與該 deployment 的 API Key</div></div>
+    <div class="step"><div>經登入前旅團閘提交「申請 Portal 接入」；申請只到固定 ADMIN 收件匣，不會自動寫 Registry</div></div>
+    <div class="step"><div>Admin 核對正式共用 action contract，確認同一 BADGE Users／Sheet 可服務 Portal 與 BADGE</div></div>
+    <div class="step"><div>驗收通過後 Admin 才登記 Vercel <code>NAME／BACKEND／APIKEY</code>，並 Redeploy</div></div>
+    <div class="step"><div>用同一既有帳戶測試兩個前端登入、批次開戶、角色／狀態變更及資料讀回</div></div>
+  </div>
+  ${noteBoxHtml('目前 Portal 使用的 <code>authLogin</code>／<code>authWhoAmI</code>／<code>authOpenAccounts</code> 不等同裸 BADGE v9.6 的 action contract；Unified adapter 僅為隔離測試用途。未有正式 staging 通過前，接線仍屬未完成。', 'warn')}`;
 }
 
-/* 非超管：唔需要接入教學（登入前已經有齊），只留一句指路 */
+/* 非超管指向既有後端申請流程。 */
 function multiUnitOnboardNote() {
   return `
-  ${H('新旅團點接入？')}
-  ${noteBoxHtml('旅團自己申請接入嘅步驟（起後端 → initializeSheets → 部署 → 送出申請）'
-    + '喺<b>登入前嘅旅團閘「部署指南」</b>已經有齊，毋須登入都睇得到。<br>'
-    + '呢個平台嘅旅團登記（<code>TROOP_&lt;編號&gt;_*</code> 設定）由<b>超級管理員</b>負責 —— '
-    + '將你嘅 <code>/exec</code> 網址同 API Key 交畀佢就得。', 'info')}`;
+  ${H('Portal 接入既有 BADGE 後端')}
+  ${noteBoxHtml('請把既有 BADGE <code>/exec</code> 與 API Key 交畀超級管理員核對；不用新建 Sheet／GAS，也不會另建或搬移帳戶。'
+    + '正式共用 action contract 驗收後，Admin 才登記 <code>TROOP_&lt;編號&gt;_*</code>。申請收件或 <code>backendReady</code> 都不是功能已啟用的證明。', 'info')}`;
 }
 
 function multiUnitDoc() {
   return `
-  ${H('多旅團架構（每個旅團一個後端）')}
-  <pre><code>data/
-  units.json                 ← 旅團 Registry（邊幾個旅團、資料路徑）
-  units/0082/                ← 每個旅團一個資料夾
-    unit.json                ← 旅團資料 + 設定（團費、AGM 日期、主色）
-    constitution.json        ← 團章（中英）
-    members.json             ← 團員（含生日）
-    finance.json             ← 帳目 / 團費 / 申報 / 預算
-    inventory.json           ← 物資 / 借用
-    meetings.json            ← 會議（可選）</code></pre>
+  ${H('多旅團 Registry 與既有 BADGE 後端')}
+  <pre><code>Portal Vercel Registry
+  TROOP_&lt;ID&gt;_NAME
+  TROOP_&lt;ID&gt;_BACKEND  ──→ 既有 BADGE Apps Script /exec
+  TROOP_&lt;ID&gt;_APIKEY   ──→ 同一 BADGE deployment 的 Key
+                                 │
+                                 └── BADGE Users／名冊／業務資料</code></pre>
   ${isSuper() ? multiUnitOnboardSteps() : multiUnitOnboardNote()}
   ${isSuper() ? adminGitSteps() : ''}
-  ${H('資料隔離')}
-  ${P('每個旅團嘅本機工作副本存喺獨立 namespace，後端亦按旅團同 session 核實。團章 QR 指向團員登入入口內的 <code>#/constitution</code> 路線，唔設匿名公開頁。')}
+  ${H('資料與身份')}
+  ${P('每個旅團的 Badge Users、YMIS 名冊、BADGE 業務資料仍以旅團原有後端為權威；Portal 僅以 server-side Registry 代理獲授權 action。不得為 Portal 建第二帳戶表、搬移／複製帳戶或另建資料來源。正式整合尚須完成真實後端 action 與權限驗收。')}
   ${H('權限')}
-  ${P('每個旅團有自己嘅帳戶清單（領袖 / 執委）。超管帳戶係全平台共用嘅隱藏帳戶。')}`;
+  ${P('Portal action 需由既有共用 GAS 以有效 BADGE 身份及伺服器授權檢查；UI 顯示、Registry 設定或 API Key 本身都不是使用者權限。')}`;
 }
 
 /* ============================================================
-   開新旅團（方法 B：Vercel 環境變數）—— 唔使改 Git
-   ------------------------------------------------------------
-   呢章係「驚唔記得點做」用嘅：步驟、可以複製嘅變數範本、
-   檢查清單全部喺度。同樣內容亦可以喺「系統 → 旅團設定」撳入嚟。
+   Admin 開通 Portal 至既有 BADGE 後端
    ============================================================ */
 function superOnlyDoc() {
   return `
-  ${H('呢一章只限超級管理員')}
-  ${noteBoxHtml('「開新旅團」要改 Vercel 環境變數（`TROOP_<編號>_*`），<b>只有超級管理員做得到</b>。'
-    + '如果你要開新旅團，將旅團嘅 <code>/exec</code> 網址同 API Key 交畀系統管理員就得。', 'warn')}
-  ${P('日常團務請睇：<b>快速開始</b>、<b>進度紀錄（同一個後端）</b>、<b>財務</b>、<b>日常點輸入</b>等章節。')}`;
+  ${H('Admin 接入既有 BADGE 後端')}
+  ${P('<b>詳細登記步驟只限超級管理員。</b>')}
+  ${noteBoxHtml('這不是新建旅團資料庫流程。團方提供目前 BADGE 使用的 <code>/exec</code> 與 API Key；Portal 要沿用既有 BADGE Users、名冊及資料，不另建 Sheet/GAS、帳戶或資料來源。', 'warn')}
+  ${P('先核實正式共用 action contract 及權限，再登記 Vercel Registry。裸 BADGE v9.6 與 Portal auth actions 尚不直接相容；詳見 <code>docs/BACKEND_SYNC.md</code>。')}
+  ${P('一般使用教學：<b>快速開始</b>、<b>Progress 與 BADGE 共用後端</b>、<b>財務</b>、<b>日常點輸入</b>。')}`;
 }
 
 function newUnitDoc() {
   return `
-  ${H('開新旅團：方法 B（唔使改 Git，最快）')}
-  ${P('情境：<b>旅團畀你一個 Apps Script <code>/exec</code> 網址 ＋ API Key</b>，你想佢即刻可以登入用。')}
-  ${noteBoxHtml('兩個方法並存，唔使二選一：<br>'
-    + '<b>方法 B（呢一章）</b>＝喺 Vercel 加環境變數，唔使改 Git；旅團由空白資料開始，'
-    + '團章／名冊／舊帳之後慢慢入（或者隨時搬去方法 A）。<br>'
-    + '<b>方法 A</b>＝喺 <code>data/units.json</code> ＋ <code>data/units/&lt;編號&gt;/</code> 加檔案（可以預載資料）。', 'brand')}
+  ${H('Admin：為既有 BADGE 後端登記 Portal')}
+  ${P('情境：團方已在使用 BADGE，要求 Portal 完整版共用<b>同一既有後端、同一批帳戶及資料</b>。不得為 Portal 建新 Sheet／GAS、複製帳戶或要求搬資料。')}
+  ${noteBoxHtml('目前 Portal 會呼叫 <code>authLogin</code>／<code>authWhoAmI</code>／<code>authOpenAccounts</code>；裸 BADGE v9.6 原生契約為 <code>login</code>／<code>addUser</code>／<code>bulkAddUsers</code> 等。只登記既有 URL／Key 未能補上 action adapter；Unified bundle 只是隔離測試。', 'warn')}
 
-  ${H('第 1 步：產生環境變數（喺下面填一填、撳複製）')}
+  ${H('第 1 步：核實團方提交資料')}
+  <ul class="sm" style="padding-left:18px;line-height:1.9">
+    <li>核對旅團 ID／名稱、正在使用的 BADGE 正式 <code>/exec</code>、同一 deployment API Key 及目前 BADGE 版本</li>
+    <li>確認要求中沒有新建 Sheet／GAS、建立第二帳戶表、匯入／搬移帳戶或另設資料來源</li>
+    <li>申請會由同源 <code>/api/proxy</code> 送到固定 ADMIN 收件匣；它不會自動寫 Registry</li>
+  </ul>
+
+  ${H('第 2 步：先完成正式相容性驗收')}
+  <div class="steps">
+    <div class="step"><div>在正式共用 GAS action contract 中保留 BADGE 原生登入與帳戶管理，並提供 Portal 所需身份／開戶 action</div></div>
+    <div class="step"><div>身份、密碼、YMIS、角色／狀態以既有 BADGE <code>Users</code>／Sheet 為唯一權威；不要用 Portal <code>accounts[].pw</code> 另建身份</div></div>
+    <div class="step"><div>用真實既有測試 Sheet／Apps Script deployment 驗證 BADGE 與 Portal 登入、批次開戶、角色變更、停用及彼此讀回</div></div>
+    <div class="step"><div>核實 proxy 只用伺服器 Registry URL／Key，action allowlist 與 session/role/scope 都在服務端限制；Unified VM 測試不能取代 staging</div></div>
+  </div>
+  ${P('<span class="xs faint">正式 source、升級／回退步驟及 upstream 對照：見 <code>docs/BACKEND_SYNC.md</code>。未完成 staging 前不要標記已開通。</span>')}
+
+  ${H('第 3 步：登記 Vercel Registry（驗收通過後）')}
   <div class="card"><div style="padding:16px 18px">
     <div class="grid g-2" style="gap:12px">
-      <div class="field"><label class="label">旅團編號</label>
-        <input class="input" id="nu-code" placeholder="例：0081" value="0081"></div>
-      <div class="field"><label class="label">旅團名稱</label>
-        <input class="input" id="nu-name" placeholder="例：第八十一旅深資童軍團"></div>
-      <div class="field" style="grid-column:1/-1"><label class="label">/exec 網址（旅團畀你嗰個）</label>
-        <input class="input" id="nu-exec" placeholder="https://script.google.com/macros/s/AKfy…/exec"></div>
-      <div class="field" style="grid-column:1/-1"><label class="label">API Key</label>
-        <input class="input" id="nu-key" placeholder="執行 showApiKey() 複製嘅字串"></div>
+      <div class="field"><label class="label">旅團編號</label><input class="input" id="nu-code" placeholder="例：0081" value="0081"></div>
+      <div class="field"><label class="label">旅團名稱</label><input class="input" id="nu-name" placeholder="例：第八十一旅深資童軍團"></div>
+      <div class="field" style="grid-column:1/-1"><label class="label">既有 BADGE /exec</label><input class="input" id="nu-exec" placeholder="https://script.google.com/macros/s/…/exec"></div>
+      <div class="field" style="grid-column:1/-1"><label class="label">同一 BADGE deployment API Key</label><input class="input" id="nu-key" placeholder="團方提供的既有 Key"></div>
     </div>
     <div class="row gap-8 wrap mt-12">
       <button class="btn btn-primary" data-act="gen-env">${icon('refresh', 15)} 產生</button>
@@ -510,47 +507,20 @@ function newUnitDoc() {
       <button class="btn" data-act="copy-steps">${icon('copy', 15)} 複製逐步指示</button>
     </div>
     <pre class="code mt-12" id="nu-out">${esc(envUnitTemplate('0081'))}</pre>
-    <div class="hint">複製之後：Vercel → 專案 → <b>Settings → Environment Variables</b> 逐個貼上（可以一次貼多行，
-      佢會自動拆）。</div>
+    <div class="hint">只在正式共用 contract 通過驗收後，將三個變數加入正確的 Vercel project/environment；不要把 Key 放入 Git 或送到 browser。</div>
   </div></div>
+  <div class="steps">${envUnitSteps('0081').map(x => `<div class="step"><div>${esc(x)}</div></div>`).join('')}</div>
 
-  ${H('第 2 步：Redeploy')}
-  <div class="steps">
-    ${envUnitSteps('0081').map(x => `<div class="step"><div>${esc(x)}</div></div>`).join('')}
-  </div>
-  ${noteBoxHtml('環境變數<b>要 Redeploy 先生效</b>（唔係即刻）。部署完旅團清單就會見到新編號，'
-    + '佢嘅資料由<b>空白</b>開始（唔會讀 <code>data/units/&lt;編號&gt;/</code>，因為冇呢個資料夾）。', 'warn')}
-
-  ${H('第 3 步：旅團登入之後')}
+  ${H('第 4 步：開通後驗收')}
   <ul style="padding-left:18px;line-height:1.95" class="sm">
-    <li><b>通告</b>：開通告 → 發布 → 儲存到後端；WhatsApp／QR 指向團員登入入口的指定通告路線，登入後先讀同回覆</li>
-    <li><b>進度</b>：自動沿用同一個 <code>TROOP_&lt;編號&gt;_BACKEND</code> ＋ <code>_APIKEY</code>；
-      不另設進度後端，瀏覽器亦不會要求貼 Key</li>
-    <li><b>團章</b>：去「團章」寫好 → 發布 → 儲存；成員登入後由 <code>#/constitution</code> 閱讀</li>
-    <li><b>名冊</b>：去「用戶」加執委／領袖帳戶同團員（之後同步一次就會寫入佢自己嘅 Sheet）</li>
+    <li>□ Vercel 環境變數來自同一既有 BADGE deployment，Redeploy 完成</li>
+    <li>□ /api/units 隱藏 URL／Key；backendReady 不當作相容性證明</li>
+    <li>□ 同一 BADGE 使用者可在 BADGE 與 Portal 登入，YMIS／角色一致</li>
+    <li>□ 任一前端開戶／停用／角色更新後，另一前端讀回同一 Users 資料</li>
+    <li>□ Portal 與 BADGE 讀寫同一旅團業務資料；沒有第二 Sheet、GAS、帳戶表或資料來源</li>
   </ul>
-
-  ${H('方法 A：Git Registry（想預載資料先用）')}
-  <div class="steps">
-    <div class="step"><div>喺 <code>data/units.json</code> 嘅 <code>units</code> 加一個編號：
-      <code>"0100": { "code": "0100", "name": "…", "section": "…" }</code>。<b>唔可以</b>把 API Key 或支部業務資料放入 Git。</div></div>
-    <div class="step"><div>建立 <code>data/units/0100/</code>，複製 0082 嘅檔案再改（<code>unit.json</code>／
-      <code>constitution.json</code>／<code>members.json</code>／<code>finance.json</code>／<code>inventory.json</code>…）</div></div>
-    <div class="step"><div>Commit & push → 部署 → 旅團清單見到新編號</div></div>
-  </div>
-  ${P('<span class="xs faint">詳細欄位：repo 入面 <code>docs/ADD_NEW_UNIT.md</code>；'
-    + '每次收到申請嘅 checklist：<code>docs/ADMIN_ONBOARDING.md</code>。</span>')}
-
-  ${H('檢查清單（照住剔）')}
-  <ul style="padding-left:18px;line-height:1.95" class="sm">
-    <li>□ 收到旅團嘅 <code>/exec</code> 網址 ＋ API Key</li>
-    <li>□ Vercel 只加咗 3 個 <code>TROOP_&lt;編號&gt;_NAME／BACKEND／APIKEY</code>，而且與 BADGE 完全相同</li>
-    <li>□ Redeploy 完成，旅團清單見到新編號</li>
-    <li>□ 旅團更新咗 Code.gs ＋ 部署新版本（第一次先要 initializeSheets）</li>
-    <li>□ 實測：登入 → 開一張測試通告 → 用 QR／連結報名 → Sheet「報名」分頁見到紀錄</li>
-    <li>□ 實測：進度頁見到成員（或者顯示「伺服器端已設定」）</li>
-    <li>□ 實測瀏覽器不能用自訂 <code>backend</code>／<code>apikey</code> 改送另一後端</li>
-  </ul>`;
+  ${P('<span class="xs faint">若需要公開旅團名稱，可以選擇只在 <code>data/units.json</code> 加公開 metadata；不得放 backend／apiKey 或私人業務資料。</span>')}
+  `;
 }
 
 function backupDoc() {

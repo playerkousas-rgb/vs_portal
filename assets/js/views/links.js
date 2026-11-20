@@ -59,7 +59,8 @@ export function mount(root) {
     toast(ok ? '已複製團員登入入口' : '複製失敗', ok ? 'ok' : 'err');
   }));
   root.querySelector('[data-act="download-qr"]')?.addEventListener('click', () => {
-    if (url) downloadQrSvg(url, `團員登入_QR_${stamp()}.svg`, 8, 3);
+    const done = !!url && downloadQrSvg(url, `團員登入_QR_${stamp()}.svg`, 8, 3);
+    toast(done ? '已下載登入 QR Code' : '未能產生登入 QR Code，請稍後重試', done ? 'ok' : 'err');
   });
   root.querySelectorAll('[data-act="print-hub"]').forEach(button => button.addEventListener('click', () => {
     if (!url) return;

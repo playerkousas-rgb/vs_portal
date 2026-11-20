@@ -1,31 +1,18 @@
 /* ============================================================
-   remote.js — 後端儲存（資料真正寫入旅團自己嘅 Google Sheet）
+   remote.js — Portal legacy DB synchronization client
    ------------------------------------------------------------
-   ★ 2026-09-24 團長回報：「各按鈕亂設…究竟那個是那個超級混亂」、
-     「用戶根本沒寫入後端，1 邊能用 email 登入 1 邊不能」。
-   根因唔係按鈕多，係**寫入靠人記得撳掣**：唔撳就永遠留喺瀏覽器，
-   另一部機／另一個分頁當然讀唔到 —— 而超管登入唔經旅團後端，
-   所以淨係佢永遠入到，令問題睇落更加似「同步壞咗」。
+   This client still speaks Portal `loadDb`／`saveDb`／table actions. The intended
+   shared destination is the troop's existing BADGE /exec and Sheet, but naked BADGE
+   v9.6 does not provide the complete Portal data/auth contract. Treat the route as
+   unverified until a formal compatibility release passes real Apps Script staging.
 
-   而家：**寫入只有一條、而且只由用戶明確觸發**（saveToBackend）：
-     ① 登入／開機      loadFromBackend()  由後端攞成份資料 → 本機工作副本 ＋ 基準快照
-     ② 之後改乜        只寫本機、增加 pending；唔會背景寫後端
-     ③ 用戶撳頂部掣  saveToBackend() 先問後端版本：
-          · 冇人喺我登入後儲存過          → 直接寫
-          · 有人儲存過                    → 三方比對（lib/merge3.js）：
-               佢改嘅同我改嘅一樣          → 冇問題
-               改唔同嘅格                  → 一齊寫
-               同一格唔同值（早走 vs 遲到）→ 嗰格**唔寫**，彈出嚟畀用家再確認；
-                                             確認咗先至蓋過去
-        寫入成功 → 本機 ＝ 後端 ＝ 新基準
-     頂部「儲存到後端（N）」掣＝ 即寫，係**全系統唯一寫入後端嘅路**（團長 2026-09-24 定案）。
+   All runtime traffic must go through the same-origin /api/proxy. Vercel's trusted
+   Registry is the only source of upstream URL and API Key; there is no browser URL/Key
+   fallback, no `?be=` override, and no self-service second backend.
 
-   同一個瀏覽器另一個分頁嘅改動由 store.bindCrossTabSync() 併入（見 store.js）。
-
-   路線（優先次序；兩條都要行得通，見 lib/gateway.js）：
-     ① 同源 /api/proxy  —— 冇 CORS、API Key 由伺服器端補上（最穩陣）
-     ② 直接 POST 去 /exec —— 平台未登記旅團（或者純靜態部署）時嘅自助路線
-
+   Existing local workflow: edits remain in the browser until the user chooses the
+   explicit save action. A successful Portal action response does not by itself prove
+   that BADGE reads the same data or that the shared contract has passed staging.
    ============================================================ */
 
 import {
@@ -34,7 +21,7 @@ import {
   hasLocalContent, localChanges, getSession, storeScope
 } from './store.js';
 import { unitEntry } from './units.js';
-import { postBackend, isExecUrl, CRITICAL_WRITE_ACTIONS } from './gateway.js';
+import { postBackend, CRITICAL_WRITE_ACTIONS } from './gateway.js';
 import { threeWay, overridesFor, describeConflict, diffDb, applyChanges, SKIP_TOP } from './merge3.js';
 import { uncertainWriteText } from './operations.js';
 
@@ -86,7 +73,8 @@ export function backendStatus() {
   return {
     configured: !!cfg.ok,
     verified: !!(lastBackend.verified && lastBackend.unit === cfg.unit),
-    route: lastBackend.route || (cfg.serverManaged ? 'proxy' : (cfg.url ? 'direct' : (cfg.viaProxy ? 'proxy' : ''))),
+    route: lastBackend.route || (cfg.viaProxy ? 'proxy' : ''),
+    serverManaged: cfg.serverManaged,
     unit: cfg.unit || lastBackend.unit || '',
     version: lastBackend.version || '',
     /* 後端自報嘅試算表名 —— 「寫咗去邊」全靠呢個名 */
@@ -171,32 +159,13 @@ export function hasPending() {
 export function remoteCfg() {
   const db = tryLoad();
   if (!db) return { url: '', apiKey: '', unit: '', auto: true, ok: false, viaProxy: false };
-  const s = db.sync || {};
-  const url = s.url || db.backend?.gasUrl || '';
-  const unit = s.unit || db.unitCode || currentUnit() || '';
-  /* 部署喺 Vercel（有 /api/proxy）嗰陣，後端網址同 API Key 都係伺服器端
-     由 TROOP_<編號>_BACKEND / TROOP_<編號>_APIKEY 解析 —— 前端唔應該、
-     亦都唔需要知道。所以只要有旅團編號就當接得通，唔好再要求用家填 /exec。 */
+  // A possible proxy route is not evidence of upstream compatibility or readiness.
+  const unit = db.unitCode || currentUnit() || '';
   const viaProxy = canUseProxy();
-  /* /api/units 只回公開欄位，但會帶 backendReady。呢個標記代表：
-     選旅團本身已經同 Vercel Registry 接好，唔係要求用家再填一次 /exec。
-     上次已經成功行過 proxy 都算 verified（即使部署名單 API 當刻讀唔到）。 */
   const entry = unit ? (unitEntry(unit) || {}) : {};
-  const serverManaged = !!(
-    entry.backendReady ||
-    (lastBackend.verified && lastBackend.unit === unit && lastBackend.route === 'proxy')
-  );
-  const directReady = isExecUrl(url);
-  return {
-    url,
-    apiKey: s.apiKey !== undefined ? s.apiKey : (db.backend?.apiKey || ''),
-    unit,
-    /* 有字串唔等於係有效後端：舊 cache 留低咗 /dev／錯網址時，唔可以畫綠燈。 */
-    ok: directReady || (viaProxy && !!unit),
-    viaProxy,
-    directReady,
-    serverManaged
-  };
+  return { url: '', apiKey: '', unit, ok: viaProxy && !!unit, viaProxy,
+    directReady: false, serverManaged: entry.backendReady === true };
+
 }
 
 /** 後端有冇設定好（可以寫入） */
@@ -206,7 +175,7 @@ function notConfiguredMessage(cfg = remoteCfg()) {
   if (cfg.unit && cfg.viaProxy) {
     return '已選定旅團，但同源 Vercel 代理未能建立；唔需要再填第二個後端。請稍後再試，或者用「求救（回報問題）」通知平台。';
   }
-  return '未設定後端網址（去「總表同步」填 /exec）';
+  return '需要同源 Portal proxy 及旅團編號；請聯絡 Admin 核對既有 BADGE 接入。';
 }
 
 /* ---------------- 呼叫後端 ---------------- */
@@ -216,23 +185,11 @@ function canUseProxy() {
   } catch { return false; }
 }
 
-/**
- * 送一個 action 去旅團後端。
- *
- * 兩條路（完整解釋見 lib/gateway.js 頂部）：
- *   ① 同源 /api/proxy —— 平台伺服器端登記咗旅團（TROOP_<編號>_BACKEND/_APIKEY），
- *      API Key 留喺伺服器，瀏覽器唔會見到。
- *   ② 直接打領袖自己貼嘅 /exec —— 平台未登記嗰陣唯一嘅自助路線。
- *
- * 2026-09-19 修正（團長回報「填咗 /exec 都係同步唔到」）：
- * 以前 proxy 對未登記旅團回 HTTP 404 ＋ JSON，而舊 code 只在「回應唔係 JSON」
- * 嗰陣先肯跌落 ② —— 所以 ② 永遠行唔到，領袖自己貼嘅 /exec 形同虛設。
- * 而家統一由 gateway.postBackend() 路由：proxy 話「未登記」就跌落 ②。
- */
+/** 所有 Portal actions 只經同源 Registry proxy。 */
 async function callBackend(payload, { timeoutMs = 60000 } = {}) {
   const cfg = remoteCfg();
   if (!cfg.unit) return { ok: false, reason: 'not_configured', error: '未知旅團編號' };
-  if (!cfg.url && !cfg.viaProxy) {
+  if (!cfg.viaProxy) {
     return { ok: false, reason: 'not_configured', error: notConfiguredMessage(cfg) };
   }
 
@@ -244,7 +201,7 @@ async function callBackend(payload, { timeoutMs = 60000 } = {}) {
       ? { sessionToken: session.sessionToken }
       : (session?.portalToken ? { portalToken: session.portalToken } : {}));
   const r = await postBackend({ ...payload, ...auth }, {
-    unit: cfg.unit, execUrl: cfg.url, apiKey: cfg.apiKey, timeoutMs
+    unit: cfg.unit, timeoutMs
   });
 
   /* 兩條路都冇得行：講清楚係「平台未登記」定「自己都未填」。
@@ -254,14 +211,14 @@ async function callBackend(payload, { timeoutMs = 60000 } = {}) {
     return {
       ok: false, reason: r.reason, error: r.error,
       operationId: r.operationId || '', outcome: r.outcome || 'not_sent', mayHaveApplied: !!r.mayHaveApplied,
-      hint: r.reason === 'not_registered' ? SELF_SERVE_HINT : NO_ROUTE_HINT
+      hint: NO_ROUTE_HINT
     };
   }
   if (!r.json) {
     noteBackend(r, { error: r.error || '連唔到旅團後端' });
     return { ok: false, reason: r.reason || 'network', error: r.error || '連唔到旅團後端',
       operationId: r.operationId || '', outcome: r.outcome || 'unknown', mayHaveApplied: !!r.mayHaveApplied,
-      hint: r.reason === 'bad_url' ? URL_HINT : '', via: r.via };
+      hint: r.reason === 'not_registered' ? REGISTRY_HINT : '', via: r.via };
   }
   const out = normalize(r.json);
   out.via = r.via;                       // 界面／診斷用：今次行咗邊條路
@@ -277,32 +234,16 @@ async function callBackend(payload, { timeoutMs = 60000 } = {}) {
      所以開機第一次問後端就已經知 —— 唔使另外發一個請求。 */
   if (out.simpleWrite === true) simpleWrite = true;
   else if (out.simpleWrite === false) simpleWrite = false;
-  if (!out.ok) out.hint = hintOf(out.error, r.via);
+  if (!out.ok) {
+    out.reason = r.reason || out.reason;
+    out.hint = r.unregistered ? REGISTRY_HINT : hintOf(out.error);
+  }
   noteBackend(out, { version: out.backendVersion, error: out.error });
   return out;
 }
 
-/* 「平台未登記」嗰陣嘅自助方法 —— 呢句一定要出到嚟，
-   否則用家只見到「找不到此旅團」，完全唔知自己其實即刻救得返。 */
-const SELF_SERVE_HINT =
-  '平台伺服器端未登記你旅團嘅後端（TROOP_<旅團編號>_BACKEND / _APIKEY 未設定，或者變數名打錯）。'
-  + '兩個選擇：① 叫平台管理員喺 Vercel 加返嗰兩個環境變數再 Redeploy；'
-  + '② 自己即刻救返 —— 去「資料管理 → 總表同步 → 同步設定」，'
-  + '貼你嘅 Apps Script /exec 網址＋API Key（喺 Apps Script 執行 showApiKey() 攞），撳「儲存設定」，'
-  + '然後再試一次。';
-
-/* 兩條路都行唔到：呢個部署根本冇 /api/proxy（純靜態），而用家又未貼 /exec。
-   呢種情況以前只回「未設定後端網址」五個字、冇 hint —— 用家完全唔知下一步。 */
-const NO_ROUTE_HINT =
-  '呢個部署讀唔到同源代理（/api/proxy），而你自己都未貼 /exec，所以兩條路都行唔到。'
-  + '兩個選擇：① 用正式部署（有 /api 嗰個），並確認平台管理員喺 Vercel 設咗 '
-  + 'TROOP_<旅團編號>_BACKEND / _APIKEY；② 即刻自救 —— 去「資料管理 → '
-  + '總表同步 → 同步設定」，貼你嘅 Apps Script /exec 網址＋API Key'
-  + '（喺 Apps Script 執行 showApiKey() 攞），撳「儲存設定」。';
-
-const URL_HINT =
-  '後端網址一定要係 Apps Script「部署為網頁應用程式」之後嘅正式網址：'
-  + 'https://script.google.com/macros/s/…/exec（唔接受 /dev，唔接受其他網域）。';
+const REGISTRY_HINT = '請聯絡 Admin 核對旅團既有 BADGE 後端與伺服器 Registry。正式 action contract 與 staging 尚未驗收，登記 URL／Key 本身不代表已開通。';
+const NO_ROUTE_HINT = '請使用有同源 /api/proxy 的 Portal 網址並聯絡 Admin；不要在瀏覽器填入另一個後端或 API Key。';
 
 function normalize(j) {
   const ok = j.ok === true || j.success === true;
@@ -318,30 +259,11 @@ function reasonOf(err) {
   return 'backend';
 }
 
-/* 呢兩個係最常見、又最難自己估到嘅死因，所以直接寫清楚點解決。
-   `via` ＝ 今次行緊邊條路（'proxy' = 平台代理／'direct' = 自己貼嘅 /exec）——
-   同一個「API Key 唔啱」，兩條路嘅救法完全唔同，提示一定要分開。
-   （export 出嚟畀 tests/remote.mjs 做**行為**斷言，唔使再 grep 原始碼。） */
-export function hintOf(err, via = '') {
+/** 不鼓勵以測試 bundle 更新或替換現有 BADGE 部署。 */
+export function hintOf(err) {
   const r = reasonOf(err);
-  if (r === 'bad_key') {
-    /* 行緊自助路線（直接打 /exec）＝ 條 key 由瀏覽器帶，提示就唔應該
-       淨係叫「搵平台管理員」—— 用家自己貼返條 key 就即刻得。 */
-    if (via === 'direct') {
-      return '你而家行緊「自己貼 /exec」路線，條 API Key 要跟住一齊貼。'
-        + '喺 Apps Script 執行 showApiKey() 攞到嗰條（v82_…），貼入「總表同步 → 同步設定 → API Key」再儲存。'
-        + '（正路仍然係交畀平台管理員入 Vercel 環境變數 TROOP_<旅團編號>_APIKEY，咁條 key 就唔會落瀏覽器。）';
-    }
-    /* 平台代理路線：條 key 應該留喺伺服器端 —— 呢度**唔會**叫用家自己打 key
-       （2026-09-17 嘅決定，仍然有效）。自助路線嘅提示係另一條 branch。 */
-    return '後端有設 API Key，但伺服器端未有。'
-      + '請平台管理員喺 Vercel 加環境變數 TROOP_<旅團編號>_APIKEY（值＝喺 Apps Script 執行 showApiKey() 攞到嗰條），'
-      + '同埋確認 TROOP_<旅團編號>_BACKEND 係你個 /exec 網址，然後重新部署。'
-      + '咁條 key 就淨係留喺伺服器端，瀏覽器完全唔會見到。';
-  }
-  if (r === 'old_deploy') {
-    return '你個 /exec 仲行緊舊版程式碼。喺 Apps Script 撳「部署 → 管理部署作業 → 編輯（鉛筆）→ 版本揀「新版本」→ 部署」，個 /exec 網址唔會變。';
-  }
+  if (r === 'bad_key') return '請 Admin 核對 Vercel 環境變數 TROOP_<旅團編號>_APIKEY 與既有 BADGE deployment 的 Key；不要在瀏覽器輸入。';
+  if (r === 'old_deploy') return '此 action 未獲支援；請聯絡 Admin 核對正式 BADGE compatibility contract，勿自行部署測試 Code.gs。';
   return '';
 }
 
@@ -366,11 +288,7 @@ export const VERCEL_RESPONSE_BYTES = 4.5 * 1024 * 1024;
 /* 經同源代理時，資料庫大過呢個數就直接分段讀（留水位畀 4.5MB 硬上限） */
 export const SEGMENT_ABOVE_BYTES = 3_000_000;
 /* 後端要更新先有分段讀取 —— 呢段提示唔可以再講「未設定後端網址」（後端明明登記好） */
-const UPDATE_GS_HINT =
-  '後端仲行緊 v2.5.0 之前嘅版本，未支援分段讀取（loadDbPart）。'
-  + '去「資料管理 → 總表同步 → 後端 Apps Script 範本」撳「下載 Code.gs」'
-  + ' → 貼入 Apps Script（全部取代）→ 儲存 →「部署 → 管理部署作業 → 編輯（鉛筆）'
-  + ' → 版本：新版本 → 部署」。/exec 網址唔會變，前端設定唔使改。';
+const UPDATE_GS_HINT = '後端未支援分段讀取；請聯絡 Admin 核對正式 BADGE compatibility contract，勿自行部署測試 Code.gs。';
 /* 分段讀嘅安全閘：段數上限（防後端回錯 parts 令前端無限讀落去） */
 const SEGMENT_MAX_PARTS = 400;
 /* 讀緊嗰陣撞正有人儲存 → 由頭再讀，最多幾多次 */
@@ -391,8 +309,7 @@ export async function pullDbSegmented({ onProgress } = {}) {
         return {
           ok: false, reason: r.reason || 'backend', error: r.error || '分段讀取失敗',
           hint: r.reason === 'old_deploy' || /未知 action|unknown action/i.test(String(r.error || ''))
-            ? '後端仲行緊 v2.5.0 之前嘅版本，未支援分段讀取。去「總表同步 → 後端 Apps Script 範本」'
-              + '撳「下載 Code.gs」→ 貼入 Apps Script → 部署（版本揀「新版本」，/exec 網址唔會變）。'
+            ? UPDATE_GS_HINT
             : (r.hint || ''),
           segmented: true
         };
@@ -707,7 +624,7 @@ export async function loadFromBackend({ policy = 'ask' } = {}) {
   }
   if (!version) {
     /* 舊版 Code.gs（冇版本號）：版本對唔到，樂觀鎖亦冇用 —— 照載入，但要話人知 */
-    setState('error', '後端係舊版 Code.gs（冇版本號）—— 請更新 Apps Script');
+    setState('error', '後端回應沒有版本號，請聯絡 Admin 核對相容性');
   }
   const local = tryLoad();
   const pending = Number(local?.sync?.pending || 0);
@@ -917,10 +834,7 @@ export async function requireBackendForLogin() {
     return {
       ok: false, reason: 'not_configured',
       error: '未有後端設定 —— 帳戶冇辦法同後端核對，所以唔可以入主控頁',
-      hint: cfg.viaProxy
-        ? `平台伺服器端未登記呢個旅團（TROOP_${cfg.unit || '<編號>'}_BACKEND / _APIKEY）。`
-          + '交畀平台管理員喺 Vercel 加返再 Redeploy；或者你自己去「總表同步 → 同步設定」貼 /exec ＋ API Key。'
-        : '去「總表同步 → 同步設定」貼你嘅 Apps Script /exec 網址（＋ API Key）。'
+      hint: cfg.viaProxy ? REGISTRY_HINT : NO_ROUTE_HINT
     };
   }
   setState('loading', '登入前同後端核對帳戶…');
@@ -1107,7 +1021,7 @@ async function saveToBackendInner({ policy = 'ask', resolver = null, silent = tr
     }
     if (!r.ok) {
       if (r.outcome === 'unknown' || r.mayHaveApplied === true) {
-        const message = uncertainWriteText(r.operationId);
+        const message = r.warning || (r.writePending && r.error) || uncertainWriteText(r.operationId);
         setState('unknown', message);
         logLocal(`? 寫入結果未知（${r.operationId || '冇操作編號'}）；系統冇自動重送`);
         return {
@@ -1122,6 +1036,19 @@ async function saveToBackendInner({ policy = 'ask', resolver = null, silent = tr
       return { ok: false, reason: r.reason || 'backend', outcome: r.outcome || 'not_applied',
         operationId: r.operationId || '', error: r.error || '儲存失敗', hint: r.hint || '',
         mode: r.mode || '', simpleRows: Number(r.simpleRows || 0) };
+    }
+
+    /* The administrative store may have committed while the shared BADGE roster
+       update failed. Do not clear local pending changes or report full success;
+       the user must read back and reconcile rather than blindly resend. */
+    if (r.rosterSyncPending === true || r.revisionPending === true) {
+      const message = r.warning || '行政資料已寫入，但共用名冊或版本未完成核對；請重新讀取，勿盲目重送';
+      setState('unknown', message);
+      logLocal(`? 行政資料可能已寫入，但共用名冊或版本未完成核對（${r.operationId || '冇操作編號'}）`);
+      return { ok: false, reason: 'partial', outcome: 'unknown', mayHaveApplied: true,
+        rosterSyncPending: r.rosterSyncPending === true, revisionPending: r.revisionPending === true,
+        operationId: r.operationId || '', error: message,
+        hint: '請先查操作狀態及重新讀取核對，未查清之前不要重送。' };
     }
 
     /* 網絡等待期間用戶仍可能繼續修改。只把已送出的快照標為已儲存；

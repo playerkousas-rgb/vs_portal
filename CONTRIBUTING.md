@@ -32,13 +32,14 @@ node scripts/repo_health_v1.0.mjs .
 
 任何 FAIL = 唔准 merge。WARN 要如實寫入 PR。
 
-## 4. 改後端（`Code.gs`）
+## 4. 共用後端及 BADGE 同步
 
-- **只改** `assets/js/lib/gastemplate.js`，然後 `npm run build:gas`。
-- `initializeSheets()` 一定要維持「**只補唔改**」＋ idempotent；
-  改完跑 `node tests/init-preserve.mjs`。
-- `APP_VERSION`（`assets/js/lib/version.js`）同 `BACKEND_VERSION` 要一致。
-- 新 action 要入 `/api/proxy.js` 白名單（`npm run lint` 會擋）。
+- 目標架構：Portal 使用旅團現有 BADGE GAS、Sheet、Users 及資料。正式 Portal contract 尚待實作及真實 staging，不得宣稱已共用或新建第二後端。
+- 本 repo 隔離測試用 Portal 後端來源是 `assets/js/lib/gastemplate.js`；`apps-script/Code.gs` 由 `npm run build:gas` 生成，禁止直接手改生成檔。
+- BADGE 每次維護要以 upstream commit 為基準逐項比對，將適用的行為／修正移植到共用後端，再同步 API action、前端契約及回歸測試；不得只複製整份 BADGE GS，也不得只更新測試用副本而聲稱共用後端已同步。
+- `apps-script/UnifiedCode.gs` 和 `apps-script/unified-src/` 目前是 `isolated-test-only` 的歷史整合測試產物，不是正式共用後端來源或部署目標。不可把它當成 Portal 必須增長至 8,000 多行的設計要求。
+- 每次後端變更跑 `npm run build:gas`、`npm run lint`、相關測試及 `git diff --check`；action 必須同時更新相應代理 allowlist 和伺服器端授權測試。
+- 目前 upstream BADGE 維護基準：`playerkousas-rgb/vsbadge@87c76a98b95ff7b5e2a7be02198142c72aefc24e`（2026-11-20 PR #40）。逐項移植狀態見 `docs/BACKEND_SYNC.md`。
 
 ## 5. 寫測試
 

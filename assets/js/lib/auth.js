@@ -230,7 +230,7 @@ export const PERM_GROUPS = [
   { title: '通告', items: [['notice.view', '查看通告'], ['notice.create', '開新通告'], ['notice.edit', '編輯通告'], ['notice.publish', '發布 / 分享'], ['notice.signup', '睇報名紀錄']] },
   { title: '欄位與同步', items: [['table.view', '查看欄位設計'], ['table.design', '改欄位 / 加欄位（各分頁「欄位」掣）'], ['table.sync', '設定總表同步（資料管理）']] },
   { title: '行事曆／試卷', items: [['calendar.view', '查看活動行事曆'], ['calendar.edit', '新增／編輯活動同點名'], ['quiz.view', '查看試卷'], ['quiz.edit', '新設／匯入試卷']] },
-  { title: '進度系統', items: [['progress.view', '睇團員進度（直接讀取）'], ['progress.tick', '勾選 / 取消進度'], ['progress.config', '設定後端網址同 API Key']] },
+  { title: '進度系統', items: [['progress.view', '睇團員進度（直接讀取）'], ['progress.tick', '勾選 / 取消進度'], ['progress.config', '查看資料來源設定']] },
   { title: '團章', items: [['constitution.view', '閱讀團章'], ['constitution.edit', '編輯條文'], ['constitution.publish', '發布新版本 / 輸出']] },
   { title: '系統', items: [['admin.view', '開啟管理頁'], ['admin.accounts', '管理個人帳戶 / 設定密碼'], ['admin.pw.self', '改自己密碼'], ['admin.pw.leader', '改領袖密碼'], ['admin.pw.exco', `改${tierTwoName}密碼`], ['admin.pw.super', '改超管密碼（一律禁止）'], ['admin.data', '備份 / 還原資料'], ['admin.units', '旅團設定']] }
 ];
@@ -391,7 +391,7 @@ export async function loginMember(ymis, password) {
 
 /* 團長查詢交畀 model.js（單一來源）：chief() / hasChief() */
 
-/** 同一 Unified Users 投影入面，搵返名冊成員嘅登入帳戶。 */
+/** 從 Portal backend 回傳的 Users/account projection 對應名冊；本機投影不等於跨前端驗收。 */
 export function accountForMember(memberOrId) {
   const m = typeof memberOrId === 'object' ? memberOrId : find('members', memberOrId);
   if (!m) return null;
@@ -411,8 +411,8 @@ export function accountForMember(memberOrId) {
 export function memberHasAccount(memberOrId) { return !!accountForMember(memberOrId); }
 
 /**
- * 後台單戶／批量開戶：browser 一次送晒，Unified handler 在同一 Users Sheet
- * 批量處理。呢個唔係逐人 fetch loop，亦唔會建立第二套 Portal identity。
+ * 後台單戶／批量開戶：browser 一次送 Portal `authOpenAccounts` action。
+ * 正式 BADGE adapter 必須將它寫入既有 Users；此 client path 本身不代表 adapter 已部署／驗收。
  */
 export async function openMemberAccounts(memberIds, { password = TEMP_PASSWORD } = {}) {
   const ids = [...new Set((Array.isArray(memberIds) ? memberIds : []).map(String).filter(Boolean))];
@@ -447,7 +447,7 @@ export async function openMemberAccounts(memberIds, { password = TEMP_PASSWORD }
       return { ok: false, msg: String(err?.message || err || '開戶失敗') };
     }
   }
-  /* 開團／舊本機 fixture 保留兼容；正式支部一律走上面的 Unified Users。 */
+  /* 開團／舊本機 fixture 保留兼容；正式登入預期由既有 BADGE backend contract 處理。 */
   let created = 0;
   for (const m of unopened) {
     const result = await setMemberHubPassword(m.id, password, { mustChange: true });
@@ -528,7 +528,7 @@ async function callBranchBackend(payload, { timeoutMs = 60000 } = {}) {
       && row.action === payload.action && String(row.unit || '') === unit);
     if (prior) {
       const checked = await gateway.postBackend({ action: 'operationStatus', unit, operationId: prior.id }, {
-        unit, execUrl: cfg.url, apiKey: cfg.apiKey, timeoutMs: Math.min(timeoutMs, 25000)
+        unit, timeoutMs: Math.min(timeoutMs, 25000)
       });
       const statusData = checked.json || {};
       const priorOutcome = String(statusData.operation?.outcome || statusData.outcome || checked.outcome || 'unknown').toLowerCase();
@@ -547,7 +547,7 @@ async function callBranchBackend(payload, { timeoutMs = 60000 } = {}) {
     }
   }
   const result = await gateway.postBackend(payload, {
-    unit, execUrl: cfg.url, apiKey: cfg.apiKey, timeoutMs
+    unit, timeoutMs
   });
   return { ok: !!result.ok && !!result.json, status: Number(result.status || (result.ok ? 200 : 0)),
     data: result.json || {}, error: result.error || result.json?.error || '', via: result.via || 'none',
@@ -614,7 +614,7 @@ export async function loginSetupKey(key) {
     return { ok: false, msg: '連唔到後端。請確認旅團已登記，同埋 Apps Script 已更新（有 issueSetupKey）' };
   }
   if (!(json?.ok || json?.success)) return { ok: false, msg: json?.error || 'KEY 無效或已過期' };
-  if (!json?.sessionToken) return { ok: false, msg: '後端未能簽發開團 session；請更新 Apps Script 後重試' };
+  if (!json?.sessionToken) return { ok: false, msg: '後端未能簽發開團 session；請聯絡 Admin 核對正式相容合約' };
   setSession({
     role: 'leader', accountId: 'setup', username: '', name: '開團設定',
     at: Date.now(), setupKey: true, mustChangePw: false,
@@ -869,7 +869,7 @@ export async function loginServer(role, username, password) {
   }
   const sessionExpiresAt = Number(data.sessionExpiresAt || 0);
   if (!data.sessionToken || !Number.isFinite(sessionExpiresAt) || sessionExpiresAt <= Date.now()) {
-    return { ok: false, msg: '登入後端未能建立安全 session，請更新 Code.gs 後再試' };
+    return { ok: false, msg: '既有 BADGE backend 未回傳 Portal 所需的安全 session；請聯絡 Admin 核對正式共用 contract／staging，不要自行建立或更新另一套 GAS。' };
   }
   const a = data.account || {};
   const accountRole = canonicalRole(a.role) || (role === 'member' ? 'member' : 'leader');
@@ -1159,19 +1159,19 @@ export function canChangePasswordOf(accountId) {
    ★ 身份（＝權限）管理（2026-09-24）
    ------------------------------------------------------------
    團長定案：「唔設執行委員會帳號，透過改身份嚟做權限變更」。
-   所以身份一定要改得到，但唔可以亂改：
-     · 團長／領袖／超管可以改身份（改人嘅身份 = 改人嘅權限）
-     · 執委唔可以改身份（只可以改資料）
-     · 「團長」唔可以用下拉改 —— 只可以由現任團長／超管**轉移**（每團一位）
-     · 唔可以改自己嘅身份（免得自己鎖死自己）
+   身份管理沿用 BADGE 的階級規則：操作者只可更改嚴格低於自己的非本人身份；
+   Portal leader 對應 BADGE branch_leader，chief 對應 group_leader。
+   執委不可改身份。團長交棒係 Portal 的明確例外：接任者成為團長，原團長
+   同一操作自動降為領袖；空缺時本人認領團長則走獨立流程。
    ============================================================ */
 
-/** 可以改呢位用戶嘅身份嗎？（團長身份要另外用 admin.chief 權限轉移） */
+/** 可以管理呢位用戶嘅身份嗎？只限有身份管理權、且目標身份嚴格低於本人。 */
 export function canSetIdentityOf(target) {
   const s = getSession();
-  if (!s) return false;
+  if (!s || !target?.id || !can('member.identity')) return false;
+  if (s.memberId && String(s.memberId) === String(target.id)) return false;
   const actorLevel = roleLevel(s.role);
-  const targetLevel = roleLevel(target?.identity || 'member');
+  const targetLevel = roleLevel(target.identity || 'member');
   return actorLevel >= roleLevel('leader') && targetLevel < actorLevel;
 }
 
@@ -1184,9 +1184,12 @@ export async function setMemberIdentity(memberId, identity) {
   const s = getSession();
   const before = m.identity || 'member';
   if (before === want) return { ok: true, member: m, unchanged: true };
-
-  if (want !== 'chief' && s?.role !== 'super' && roleLevel(want) >= roleLevel(s?.role)) {
-    return { ok: false, msg: '只可以設定比自己低級的身份' };
+  if (s?.memberId && String(s.memberId) === String(m.id)) {
+    return { ok: false, msg: '唔可以直接更改自己身份；認領或團長交棒請使用專用流程' };
+  }
+  if (!canSetIdentityOf(m)) return { ok: false, msg: '只可以管理比自己低級、而且唔係自己嘅身份' };
+  if (want !== 'chief' && roleLevel(want) >= roleLevel(s?.role)) {
+    return { ok: false, msg: '新身份亦必須低於操作者身份' };
   }
 
   if (want === 'chief') {
@@ -1194,6 +1197,10 @@ export async function setMemberIdentity(memberId, identity) {
     const cur = chiefRecord();
     if (cur && cur.id !== m.id) {
       cur.identity = 'leader';
+      delete cur.chiefSince;
+      if (s?.memberId && String(s.memberId) === String(cur.id)) {
+        setSession({ ...s, role: 'leader', identity: 'leader' });
+      }
       audit('轉移團長身份', `${cur.name} → ${m.name}`);
     } else {
       audit('設定團長身份', m.name || m.id);
@@ -1202,18 +1209,14 @@ export async function setMemberIdentity(memberId, identity) {
     m.chiefSince = new Date().toISOString().slice(0, 10);
   } else {
     if (m.identity === 'chief' && s?.role !== 'super') {
-      return { ok: false, msg: '團長身份唔可以直接改低 —— 要先去交棒嗰位嘅用戶頁撳「設為團長（轉移）」，你嘅身份就會自動變返領袖' };
+      return { ok: false, msg: '團長身份唔可以直接改低 —— 要由接任者接棒；原團長會自動變返領袖' };
     }
-    if (s?.memberId && s.memberId === m.id && s.role !== 'super') {
-      return { ok: false, msg: '唔可以改自己嘅身份（免得自己鎖死自己）—— 請另一位領袖／團長幫你改' };
-    }
-    if (!canSetIdentityOf(m)) return { ok: false, msg: '你冇權限更改呢位用戶嘅身份' };
     m.identity = want;
     delete m.chiefSince;
     audit('更改身份', `${m.name || m.id}：${IDENTITY_LABEL[before] || before} → ${IDENTITY_LABEL[want] || want}`);
   }
   commitCritical('auth');
-  /* 改嘅係自己（例如團長交棒畀人之後自己變領袖）→ 即刻更新 session，唔使重新登入 */
+  /* 認領／一般身份變更影響到目前登入者時即時更新 session；交棒時現任團長亦已在上面即時降為 leader。 */
   if (s?.memberId && s.memberId === m.id) {
     setSession({ ...s, role: m.identity, identity: m.identity });
   }
@@ -1233,7 +1236,7 @@ export async function transferChief(toMemberId) {
 export function canClaimChief() {
   if (hasChief()) return false;
   const s = getSession();
-  if (!s) return false;
+  if (!s || !can('member.identity')) return false;
   return roleLevel(s.role) >= roleLevel('leader') || !!s.setupKey;
 }
 

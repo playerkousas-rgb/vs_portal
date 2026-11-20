@@ -892,6 +892,9 @@ function staffStrongerPerm_(a, b) { return staffPermStrength_(a) >= staffPermStr
 function staffPermDefault_(permission, role) {
   var canonical = branchCanonicalRole_(role);
   if (canonical === 'super') return permission === 'admin.pw.super' ? 0 : 1;
+  /* admin.chief is intentionally chief-only (plus platform super), unlike the
+     shared leader/chief defaults used by most branch permissions. */
+  if (permission === 'admin.chief') return canonical === 'chief' ? 1 : 0;
   var defaults = BRANCH_PERMISSION_DEFAULTS_[permission] || [0, 0, 0];
   if (canonical === 'member') return defaults[0] === undefined ? 0 : defaults[0];
   if (canonical === 'exco') return defaults[1] === undefined ? 0 : defaults[1];
@@ -1451,6 +1454,10 @@ function validateProtectedAdminWrite_(unit, incoming, writeAuth) {
     if (!delegatedIdentity && chiefSetChanged && !claimingChief && !transferringChief) {
       return protectedWriteDenied_('團長身份只可由未有團長時本人認領，或由現任團長交棒');
     }
+    if (!delegatedIdentity && transferringChief
+        && !staffCanPermission_(current.db, 'admin.chief', actor, actor.record || {})) {
+      return protectedWriteDenied_('沒有轉移團長身份的細項權限');
+    }
 
     var memberAuthFields = ['hubPw', 'hubPassword', 'hubMustChangePw', 'pv', 'accountDeletedAt'];
     var ids = Object.keys(oldMap);
@@ -1486,20 +1493,32 @@ function validateProtectedAdminWrite_(unit, incoming, writeAuth) {
         if (!claimNewPassword) return protectedWriteDenied_('新增成員不可夾帶密碼或帳戶撤銷欄位');
       }
     }
+    var handoffTargetId = transferringChief && nextChiefs.length === 1 ? nextChiefs[0] : '';
     for (var ic = 0; ic < identityChanges.length; ic++) {
       var change = identityChanges[ic];
       if (BRANCH_VISIBLE_ROLES_.indexOf(branchCanonicalRole_(change.after)) < 0) {
         return protectedWriteDenied_('身份值不正確');
       }
-      if (actorRank < 4) return protectedWriteDenied_('執委不可更改成員身份');
-      if (actorRank === 4) {
-        var allowedClaim = claimingChief && change.id === actorMemberId && change.after === 'chief';
-        if (!allowedClaim && (change.id === actorMemberId || change.before === 'chief' || change.after === 'chief')) {
-          return protectedWriteDenied_('領袖不可更改自己或團長身份');
-        }
+      var beforeRole = change.before || 'member';
+      var afterRole = change.after;
+      var isActor = !!actorMemberId && change.id === actorMemberId;
+      if (!staffCanPermission_(current.db, 'member.identity', actor, nextMap[change.id] || {})) {
+        return protectedWriteDenied_('沒有更改身份的細項權限');
       }
-      if (actorRank >= 5 && change.id === actorMemberId && change.after !== 'chief' && !transferringChief) {
-        return protectedWriteDenied_('團長不可直接降低自己身份；請先交棒');
+      /* 身份編輯依 BADGE 層級：只可管理嚴格低於自己的目標，而且新身份亦
+         必須低於自己。client 的下拉選單唔係安全閘，呢度係整庫／逐表寫入嘅
+         最後 server-side 檢查。唯一例外係明確認領團長，以及團長交棒時：
+         接任者升為團長，原團長同一筆寫入自動降為領袖。 */
+      var claimingOwnChief = claimingChief && isActor && afterRole === 'chief';
+      var handingOffOwnChief = transferringChief && isActor
+        && beforeRole === 'chief' && afterRole === 'leader';
+      var handingOffToChief = transferringChief && change.id === handoffTargetId
+        && change.id !== actorMemberId && afterRole === 'chief';
+      if (claimingOwnChief || handingOffOwnChief || handingOffToChief) continue;
+      if (isActor) return protectedWriteDenied_('不可透過一般身份編輯更改自己；請使用認領／交棒專用流程');
+      if (actorRank < hubRoleRank_('leader')) return protectedWriteDenied_('執委不可更改成員身份');
+      if (hubRoleRank_(beforeRole) >= actorRank || hubRoleRank_(afterRole) >= actorRank) {
+        return protectedWriteDenied_('只可管理比自己低級的用戶，並設定為低於自己的身份');
       }
     }
   }

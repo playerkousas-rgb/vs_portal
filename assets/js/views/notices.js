@@ -832,7 +832,7 @@ export function mount(root, params) {
     if (act === 'sync-notice') {
       const keep = b.innerHTML;
       b.disabled = true; b.innerHTML = `${icon('refresh', 15)} 儲存中…`;
-      const hint = '如失敗，請去「資料管理 → 總表同步」檢查 /exec 網址同 API Key';
+      const hint = '如失敗，請聯絡 Admin 核對既有 BADGE 後端及正式相容合約';
       try {
         const { saveWithDialog } = await import('./syncdialog.js');
         const r = await saveWithDialog({ silent: true, toastOk: false });

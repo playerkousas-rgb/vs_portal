@@ -21,7 +21,9 @@ function bytes(value) {
   return Buffer.from(String(value ?? ''), 'utf8');
 }
 
+let nextSheetId = 1;
 function makeSheet(name, initial = []) {
+  const sheetId = nextSheetId++;
   const rows = initial.map(r => Array.from(r));
   const formats = new Map();
   const setCell = (r, c, value) => {
@@ -64,7 +66,7 @@ function makeSheet(name, initial = []) {
     clearContents() { rows.length = 0; return sheet; },
     setFrozenRows: () => sheet, setColumnWidth: () => sheet, autoResizeColumn: () => sheet,
     hideSheet: () => sheet, showSheet: () => sheet, setTabColor: () => sheet,
-    getFilter: () => null, getSheetId: () => 1
+    getFilter: () => null, getSheetId: () => sheetId
   };
   return sheet;
 }
@@ -77,7 +79,7 @@ function makeNode() {
   const cache = new Map();
   const cacheWrites = [];
   const mail = [];
-  const lockStats = { waits: 0, releases: 0 };
+  const lockStats = { waits: 0, releases: 0, held: false };
   const spreadsheet = {
     getName: () => 'Unified test branch sheet', getId: () => 'unified-test-sheet',
     getSheetByName: name => sheets.get(name) || null,
@@ -107,9 +109,13 @@ function makeNode() {
       remove: key => cache.delete(String(key))
     }) },
     LockService: { getScriptLock: () => ({
-      tryLock: () => { lockStats.waits++; return true; },
-      waitLock: () => { lockStats.waits++; return true; },
-      releaseLock: () => { lockStats.releases++; }
+      tryLock: () => { lockStats.waits++; if (lockStats.held) return false; lockStats.held = true; return true; },
+      waitLock: () => { lockStats.waits++; if (lockStats.held) throw new Error('nested script lock'); lockStats.held = true; },
+      releaseLock: () => {
+        if (!lockStats.held) throw new Error('unlock without lock');
+        lockStats.releases++; lockStats.held = false;
+        if (lockStats.onRelease) lockStats.onRelease();
+      }
     }) },
     Utilities: {
       getUuid: () => `00000000-0000-4000-8000-${String(++uuidCounter).padStart(12, '0')}`,
@@ -202,7 +208,7 @@ ok('generated architecture keeps client surface separate from server authorizati
     && SOURCE.includes('session, role, and scope authorization'));
 ok('vsbadge v9.6 baseline is still present', SOURCE.includes("const VS_GS_VERSION = 'v9.6';"));
 ok('legacy Portal is namespaced instead of shadowing baseline globals', SOURCE.includes('var PortalAdminCompat_ = (function () {'));
-ok('generated pinned menu labels branch local login as required', SOURCE.includes(".addItem('ℹ️ 支部本地登入必須保持開啟','menuLocalLoginOff')"));
+ok('pinned legacy menu source remains available for compatibility', SOURCE.includes(".addItem('🔒 閂口（只收 sig）','menuLocalLoginOff')"));
 const activeMenuSource = SOURCE.slice(SOURCE.lastIndexOf('function onOpen()'), SOURCE.lastIndexOf('function doGet(e)'));
 ok('active Sheet menu exposes only branch-safe controls',
   activeMenuSource.includes("createMenu('🔗 支部系統')")
@@ -214,6 +220,306 @@ ok('unfinished legacy authChangePassword is not an exposed compatibility route',
 
 const node = makeNode();
 const USER_HEADERS = ['ymis','name','email','role','password_hash','branch','can_tick','auth_by','auth_date','created_at','last_login','status','allowed_badges','force_change_password'];
+
+/* Fresh troop: the Sheet creates the same first administrator used by both
+   clients. This is not a second Portal account or a pre-existing BADGE setup. */
+const freshNode = makeNode();
+const freshInit = freshNode.context.initializeSheets();
+const freshUsers = freshNode.sheets.get('Users')._rows;
+ok('new troop initializes exactly one shared administrator in Users',
+  freshInit.success === true && freshUsers.length === 2
+    && freshUsers[1][0] === '1111111111' && freshUsers[1][3] === 'admin');
+const freshBadgeLogin = freshNode.post({ action: 'login', login_id: '1111111111', password: 'changeme' });
+const freshPortalLogin = freshNode.post({ action: 'authLogin', unit: '0082', username: 'admin@example.com', password: 'changeme' });
+ok('BADGE and Portal login use the same freshly initialized administrator and require a password change',
+  freshBadgeLogin.success === true && freshPortalLogin.success === true
+    && freshBadgeLogin.user?.ymis === freshPortalLogin.account?.ymis
+    && freshBadgeLogin.force_change_password === true && freshPortalLogin.mustChangePw === true,
+  JSON.stringify({ badge: freshBadgeLogin, portal: freshPortalLogin }));
+const freshPasswordChange = freshNode.post({ action: 'authChangePassword', unit: '0082',
+  sessionToken: freshPortalLogin.sessionToken, oldPassword: 'changeme', newPassword: 'freshpass99' });
+const freshBadgeAfterChange = freshNode.post({ action: 'login', login_id: '1111111111', password: 'freshpass99' });
+const freshPortalAfterChange = freshNode.post({ action: 'authLogin', unit: '0082', username: 'admin@example.com', password: 'freshpass99' });
+ok('first administrator password changed through Portal works through both frontends',
+  freshPasswordChange.success === true && freshBadgeAfterChange.success === true && freshPortalAfterChange.success === true,
+  JSON.stringify({ changed: freshPasswordChange, badge: freshBadgeAfterChange, portal: freshPortalAfterChange }));
+const freshUsersBeforeRepeat = JSON.stringify(freshUsers);
+const freshRepeat = freshNode.context.initializeSheets();
+ok('reinitializing a new troop preserves the first administrator without duplicating or resetting it',
+  freshRepeat.success === true && JSON.stringify(freshUsers) === freshUsersBeforeRepeat);
+const freshRoster = freshNode.sheets.get('成員名單');
+freshRoster.appendRow(['9000000077', '原名字', '2026-01-01', 'VS', '']);
+const beforePartial = freshNode.post({ action: 'loadTables', unit: '0082', sessionToken: freshPortalAfterChange.sessionToken });
+const savedRange = freshRoster.getRange;
+freshRoster.getRange = (row, col, nr, nc) => {
+  const range = savedRange(row, col, nr, nc);
+  if (row === 2 && col === 2) range.setValue = () => { throw new Error('simulated roster write failure'); };
+  return range;
+};
+const failedRosterMirror = freshNode.post({ action: 'saveTables', unit: '0082', sessionToken: freshPortalAfterChange.sessionToken,
+  baseVersion: beforePartial.version, refreshReports: false, operationId: 'partial-roster-123456789012345',
+  tables: { members: beforePartial.db.members.map(m => ({ ...m, name: '欲更改名字' })) } });
+freshRoster.getRange = savedRange;
+ok('a confirmed administrative save reports a failed shared roster update instead of claiming full success',
+  failedRosterMirror.success === true && failedRosterMirror.rosterSyncPending === true
+    && /名冊/.test(failedRosterMirror.warning || '') && freshRoster._rows[1][1] === '原名字',
+  JSON.stringify(failedRosterMirror));
+const partialReceipt = freshNode.post({ action: 'operationStatus', operationId: 'partial-roster-123456789012345' });
+ok('partial roster update is recorded as unknown, never as a fully applied operation',
+  failedRosterMirror.outcome === 'unknown' && failedRosterMirror.mayHaveApplied === true
+    && partialReceipt.outcome === 'unknown', JSON.stringify({ result: failedRosterMirror, receipt: partialReceipt }));
+
+const revisionNode = makeNode();
+revisionNode.context.initializeSheets();
+const revisionAdmin = revisionNode.post({ action: 'authLogin', unit: '0082', username: 'admin@example.com', password: 'changeme' });
+const revisionBefore = revisionNode.post({ action: 'loadTables', unit: '0082', sessionToken: revisionAdmin.sessionToken });
+const realSnapshot = revisionNode.context.unifiedAdminSnapshot_;
+let snapshotCalls = 0;
+revisionNode.context.unifiedAdminSnapshot_ = (...args) => {
+  snapshotCalls++;
+  return snapshotCalls === 2 ? { success: false, error: 'simulated revision read failure' } : realSnapshot(...args);
+};
+const revisionFailure = revisionNode.post({ action: 'saveTables', unit: '0082', sessionToken: revisionAdmin.sessionToken,
+  baseVersion: revisionBefore.version, refreshReports: false, operationId: 'revision-failure-1234567890', tables: { notices: [] } });
+revisionNode.context.unifiedAdminSnapshot_ = realSnapshot;
+const revisionReceipt = revisionNode.post({ action: 'operationStatus', operationId: 'revision-failure-1234567890' });
+ok('a committed save with a failed revision read stays unknown in the operation journal',
+  revisionFailure.success === true && revisionFailure.revisionPending === true
+    && revisionFailure.outcome === 'unknown' && revisionReceipt.outcome === 'unknown',
+  JSON.stringify({ result: revisionFailure, receipt: revisionReceipt }));
+
+const mirrorNode = makeNode();
+mirrorNode.context.initializeSheets();
+const mirrorAdmin = mirrorNode.post({ action: 'authLogin', unit: '0082', username: 'admin@example.com', password: 'changeme' });
+const mirrorBefore = mirrorNode.post({ action: 'loadDb', unit: '0082', sessionToken: mirrorAdmin.sessionToken });
+const simpleSheet = mirrorNode.sheets.get('資料表');
+const simpleRange = simpleSheet.getRange;
+simpleSheet.getRange = (row, col, nr, nc) => {
+  const range = simpleRange(row, col, nr, nc);
+  if (row > 1 && col === 1) range.setValues = () => { throw new Error('simulated simple mirror failure'); };
+  return range;
+};
+const mirrorFailure = mirrorNode.post({ action: 'saveDb', unit: '0082', sessionToken: mirrorAdmin.sessionToken,
+  operationId: 'blob-mirror-failure-123456789', baseVersion: mirrorBefore.version, refreshReports: false,
+  db: { ...mirrorBefore.db, notices: [{ id: 'saved-in-blob' }] } });
+simpleSheet.getRange = simpleRange;
+const mirrorReceipt = mirrorNode.post({ action: 'operationStatus', operationId: 'blob-mirror-failure-123456789' });
+ok('blob committed but table mirror failed is unknown rather than falsely not applied',
+  mirrorFailure.success === false && mirrorFailure.writePending === true && mirrorFailure.outcome === 'unknown'
+    && mirrorReceipt.outcome === 'unknown' && JSON.stringify(mirrorNode.sheets.get('資料庫')._rows).includes('saved-in-blob'),
+  JSON.stringify({ result: mirrorFailure, receipt: mirrorReceipt }));
+
+/* Delegated staff must not inherit an unrestricted server write simply because
+   Portal-only tables have never been saved. The shared Users/roster already exist. */
+const firstDelegated = makeNode();
+firstDelegated.context.initializeSheets();
+firstDelegated.sheets.get('成員名單').appendRow(['9000000066', '執委', '2026-01-01', 'VS', 'exco@example.test']);
+firstDelegated.sheets.get('Users').appendRow(['9000000066', '執委', 'exco@example.test', 'exec_committee',
+  sha256('excosecret9'), 'VS', false, 'existing', '2026-01-01', '2026-01-01', '', 'active', '', false]);
+const firstExco = firstDelegated.post({ action: 'authLogin', unit: '0082', username: 'exco@example.test', password: 'excosecret9' });
+const firstView = firstDelegated.post({ action: 'loadTables', unit: '0082', sessionToken: firstExco.sessionToken });
+const firstForbidden = firstDelegated.post({ action: 'saveTables', unit: '0082', sessionToken: firstExco.sessionToken,
+  baseVersion: firstView.version, refreshReports: false, tables: { permOverrides: { 'member.create': { exco: 1 } } } });
+ok('first delegated write cannot bypass permission checks on an empty Portal store',
+  firstExco.success === true && firstView.success === true && firstForbidden.success === false,
+  JSON.stringify({ login: firstExco, view: firstView, write: firstForbidden }));
+
+const directNode = makeNode();
+directNode.context.initializeSheets();
+directNode.sheets.get('成員名單').appendRow(['9000000088', '已有 BADGE 團員', '2025-01-01', 'VS', '']);
+const directAdmin = directNode.post({ action: 'authLogin', unit: '0082', username: 'admin@example.com', password: 'changeme' });
+const directBefore = directNode.post({ action: 'loadTables', unit: '0082', sessionToken: directAdmin.sessionToken });
+for (const invalidVersion of ['', 'legacy-version', 'U-not-a-digest']) {
+  const denied = directNode.post({ action: 'saveTables', unit: '0082', sessionToken: directAdmin.sessionToken,
+    baseVersion: invalidVersion, refreshReports: false,
+    tables: { members: directBefore.db.members.map(m => ({ ...m, name: '不得寫入' })) } });
+  ok('normal write rejects missing or invalid shared revision: ' + JSON.stringify(invalidVersion),
+    denied.success === false && denied.conflict === true && denied.code === 'SHARED_REVISION_REQUIRED'
+      && directNode.sheets.get('成員名單')._rows[1][1] === '已有 BADGE 團員', JSON.stringify(denied));
+}
+for (const [action, extra] of [
+  ['saveDb', { db: directBefore.db }],
+  ['saveDbPart', { saveId: '0082-stg-no-revision', partIdx: 0, parts: 1, data: directBefore.db }],
+  ['saveDbCommit', { saveId: '0082-stg-no-revision', parts: 1 }]
+]) {
+  const denied = directNode.post({ action, unit: '0082', sessionToken: directAdmin.sessionToken,
+    baseVersion: '', refreshReports: false, ...extra });
+  ok(action + ' cannot bypass the required shared revision', denied.success === false && denied.conflict === true,
+    JSON.stringify(denied));
+}
+const directSave = directNode.post({ action: 'saveTables', unit: '0082', sessionToken: directAdmin.sessionToken,
+  baseVersion: directBefore.version, refreshReports: false,
+  tables: { members: directBefore.db.members.map(m => ({ ...m, name: 'Portal 已更新' })) } });
+const directAfter = directNode.post({ action: 'loadTables', unit: '0082', sessionToken: directAdmin.sessionToken });
+const directBadge = directNode.post({ action: 'getMembers', token: directAdmin.sessionToken });
+ok('Portal can save against the shared revision and BADGE immediately reads the same updated roster',
+  directSave.success === true && directSave.confirmed === true
+    && directSave.version === directAfter.version
+    && directAfter.db.members.some(m => m.ymis === '9000000088' && m.name === 'Portal 已更新')
+    && directBadge.members?.some(m => m.ymis === '9000000088' && m.name === 'Portal 已更新'),
+  JSON.stringify({ saved: directSave, badge: directBadge }));
+/* Simulate another BADGE writer immediately after the administrative lock is
+   released. The save's revision must not claim that unseen newer state. */
+directNode.lockStats.onRelease = () => {
+  if (directNode.sheets.get('成員名單')._rows[1][1] !== 'Portal 本次儲存') return;
+  directNode.lockStats.onRelease = null;
+  directNode.sheets.get('成員名單').getRange(2, 2).setValue('另一寫入');
+};
+const racingSave = directNode.post({ action: 'saveTables', unit: '0082', sessionToken: directAdmin.sessionToken,
+  baseVersion: directAfter.version, refreshReports: false,
+  tables: { members: directAfter.db.members.map(m => ({ ...m, name: 'Portal 本次儲存' })) } });
+directNode.lockStats.onRelease = null;
+const racingRead = directNode.post({ action: 'loadTables', unit: '0082', sessionToken: directAdmin.sessionToken });
+ok('write revision represents the state inside its lock, not an unseen subsequent BADGE edit',
+  racingSave.success === true && racingSave.version.startsWith('U-')
+    && racingRead.db.members.some(m => m.name === '另一寫入') && racingSave.version !== racingRead.version,
+  JSON.stringify({ saved: racingSave, read: racingRead }));
+const unsafeSync = directNode.post({ action: 'sync', unit: '0082', sessionToken: directAdmin.sessionToken,
+  db: directAfter.db, baseVersion: directAfter.version });
+ok('legacy combined report sync cannot write a stale administrative database',
+  unsafeSync.success === false && /saveDb|saveTables/.test(unsafeSync.error || '')
+    && directNode.sheets.get('成員名單')._rows[1][1] === '另一寫入', JSON.stringify(unsafeSync));
+const stagedDb = { ...racingRead.db, accounts: [{ id: 'evil', username: 'not-real', password: 'do-not-store' }] };
+const goodPart = directNode.post({ action: 'saveDbPart', unit: '0082', sessionToken: directAdmin.sessionToken,
+  baseVersion: racingRead.version, saveId: '0082-stg-valid-shared', partIdx: 0, parts: 1, data: stagedDb });
+const goodCommit = directNode.post({ action: 'saveDbCommit', unit: '0082', sessionToken: directAdmin.sessionToken,
+  baseVersion: racingRead.version, saveId: '0082-stg-valid-shared', parts: 1, refreshReports: false });
+const afterStaged = directNode.post({ action: 'loadDb', unit: '0082', sessionToken: directAdmin.sessionToken });
+ok('staged shared-revision commit succeeds and never persists a second client-supplied account or password',
+  goodPart.success === true && goodCommit.success === true && goodCommit.version === afterStaged.version
+    && !JSON.stringify(directNode.sheets.get('資料表')._rows).includes('do-not-store')
+    && !JSON.stringify(directNode.sheets.get('資料庫')._rows).includes('do-not-store')
+    && !afterStaged.db.accounts.some(a => a.username === 'not-real'), JSON.stringify({ goodPart, goodCommit }));
+const directDelete = directNode.post({ action: 'deleteUser', token: directAdmin.sessionToken, target_ymis: '9000000088' });
+const directAfterDelete = directNode.post({ action: 'loadTables', unit: '0082', sessionToken: directAdmin.sessionToken });
+const directSaveAfterDelete = directNode.post({ action: 'saveTables', unit: '0082', sessionToken: directAdmin.sessionToken,
+  baseVersion: directAfterDelete.version, refreshReports: false, tables: { members: directAfterDelete.db.members } });
+ok('BADGE deletion of a roster-only member is not revived by an older administrative copy',
+  directDelete.success === true && directAfterDelete.success === true
+    && !directAfterDelete.db.members.some(m => m.ymis === '9000000088')
+    && directSaveAfterDelete.success === true
+    && !directNode.sheets.get('成員名單')._rows.some(r => String(r[0]) === '9000000088'),
+  JSON.stringify({ deleted: directDelete, saved: directSaveAfterDelete }));
+const directReadd = directNode.post({ action: 'addMember', token: directAdmin.sessionToken,
+  ymis: '9000000088', name: '再次新增', branch: 'VS' });
+const directAfterReadd = directNode.post({ action: 'loadTables', unit: '0082', sessionToken: directAdmin.sessionToken });
+ok('an explicit BADGE re-add is visible again through Portal', directReadd.success === true
+  && directAfterReadd.db.members.some(m => m.ymis === '9000000088' && m.name === '再次新增'));
+
+/* Schema observed in the user-provided test Sheet, with synthetic data only:
+   BADGE has additional squad columns which an in-place upgrade must preserve. */
+const squadNode = makeNode();
+const squadHeaders = ['ymis','name','email','role','password_hash','branch','can_tick','auth_by','auth_date',
+  'created_at','last_login','status','allowed_badges','squad','squad_role','force_change_password'];
+squadNode.sheets.set('Users', makeSheet('Users', [squadHeaders,
+  ['1111111111','測試管理員','admin@example.com','admin',sha256('changeme'),'b4',true,'system','','','','active','*','行政','主管',false],
+  ['9000000055','測試成員','member55@example.test','member',sha256('memberpass9'),'VS',false,'system','','','','active','','獵鷹','隊員',false]
+]));
+squadNode.sheets.set('成員名單', makeSheet('成員名單', [
+  ['YMIS','姓名','加入日期','支部','聯絡','小隊'], ['9000000055','測試成員','2025-01-01','VS','member55@example.test','獵鷹']
+]));
+squadNode.sheets.set('進度追蹤', makeSheet('進度追蹤', [['YMIS','項目 ID','完成日期','更新時間','確認者','備註']]));
+const squadUsersBefore = JSON.stringify(squadNode.sheets.get('Users')._rows);
+const squadRosterBefore = JSON.stringify(squadNode.sheets.get('成員名單')._rows);
+const squadInit = squadNode.context.initializeSheets();
+ok('observed extra squad columns and all existing synthetic cells survive initialization', squadInit.success === true
+  && JSON.stringify(squadNode.sheets.get('Users')._rows) === squadUsersBefore
+  && JSON.stringify(squadNode.sheets.get('成員名單')._rows) === squadRosterBefore, JSON.stringify(squadInit));
+const squadAdmin = squadNode.post({ action: 'authLogin', unit: '0082', username: 'admin@example.com', password: 'changeme' });
+const squadRead = squadNode.post({ action: 'loadTables', unit: '0082', sessionToken: squadAdmin.sessionToken });
+const squadSave = squadNode.post({ action: 'saveTables', unit: '0082', sessionToken: squadAdmin.sessionToken,
+  baseVersion: squadRead.version, refreshReports: false,
+  tables: { members: squadRead.db.members.map(m => ({ ...m, name: '修改姓名' })) } });
+const squadMemberRow = squadNode.sheets.get('Users')._rows.find(row => String(row[0]) === '9000000055');
+ok('Portal roster update leaves extra BADGE squad and squad-role cells untouched', squadSave.success === true
+  && squadNode.sheets.get('成員名單')._rows[1][5] === '獵鷹' && squadMemberRow[13] === '獵鷹'
+  && squadMemberRow[14] === '隊員' && squadMemberRow[15] === false, JSON.stringify(squadSave));
+
+/* Upgrade an existing BADGE Sheet, including history which the upstream v9.6
+   initializer normally cleans up. Runtime rejection of reserved legacy tokens
+   remains in force even though the historical cells are not deleted. */
+const upgradeNode = makeNode();
+upgradeNode.sheets.set('Users', makeSheet('Users', [USER_HEADERS,
+  ['1234567890', '原有團員', 'member@example.test', 'member', sha256('changeme'), 'b4', false, 'sheep', '2025', '2025', '', 'active', '', false],
+  ['sheep', '舊保留列', 'sheep@vsbadge.local', 'super_admin', 'old-hash', 'b4', true, 'sheep', '', '', '', 'active', '*', false]
+]));
+upgradeNode.sheets.set('進度追蹤', makeSheet('進度追蹤', [
+  ['YMIS', '項目 ID', '完成日期', '更新時間', '確認者'],
+  ['1234567890', 'OLD-1', '2025', '2025', 'sheep'],
+  ['sheep', 'OLD-2', '2025', '2025', 'leader']
+]));
+upgradeNode.sheets.set('成員名單', makeSheet('成員名單', [
+  ['YMIS','姓名','加入日期','支部','聯絡'], ['sheep','歷史資料','2025','VS','']
+]));
+upgradeNode.sheets.set('Tokens', makeSheet('Tokens', [
+  ['token','ymis','created_at','expires_at'], ['legacy-reserved-token','sheep','2025','2099-01-01']
+]));
+upgradeNode.sheets.set('操作紀錄', makeSheet('操作紀錄', [
+  ['時間','操作者','操作','對象','詳情'], ['2025','sheep','old-action','1234567890','keep']
+]));
+const beforeUpgrade = new Map([...upgradeNode.sheets].map(([name, sheet]) =>
+  [name, sheet._rows.map(row => Array.from(row))]));
+const upgradeResult = upgradeNode.context.initializeSheets();
+ok('existing BADGE upgrade succeeds without a separate Sheet', upgradeResult.success === true, JSON.stringify(upgradeResult));
+ok('upgrade preserves every pre-existing cell including historical audit and reserved rows',
+  [...beforeUpgrade].every(([name, rows]) => rows.every((row, i) =>
+    row.every((value, j) => upgradeNode.sheets.get(name)._rows[i]?.[j] === value))));
+ok('upgrade appends missing progress header without overwriting the existing fifth column',
+  upgradeNode.sheets.get('進度追蹤')._rows[0][4] === '確認者'
+    && upgradeNode.sheets.get('進度追蹤')._rows[0][5] === '備註');
+ok('upgrade does not seed another account into an existing Users sheet',
+  upgradeNode.sheets.get('Users')._rows.length === beforeUpgrade.get('Users').length);
+ok('preserved legacy reserved token remains invalid', upgradeNode.context.validateToken('legacy-reserved-token') === null);
+ok('upgrade preserves the existing key', upgradeNode.props.get('API_KEY') === 'existing-api-key-do-not-change');
+const unchangedUsers = JSON.stringify(upgradeNode.sheets.get('Users')._rows);
+const repeatUpgrade = upgradeNode.context.initializeSheets();
+ok('repeated upgrade preserves existing account rows', repeatUpgrade.success === true
+  && JSON.stringify(upgradeNode.sheets.get('Users')._rows) === unchangedUsers);
+const defaultLogin = upgradeNode.post({ action: 'login', login_id: '1234567890', password: 'changeme' });
+ok('default password still requires a change at login without rewriting flags during upgrade',
+  defaultLogin.success === true && defaultLogin.force_change_password === true, JSON.stringify(defaultLogin));
+
+const malformedNode = makeNode();
+malformedNode.sheets.set('進度追蹤', makeSheet('進度追蹤', [['錯誤表頭', 'existing'], ['do-not-touch', 'value']]));
+malformedNode.props.set('UNIFIED_GS_INITIALIZED_VERSION', 'v9.6-u1-test');
+const malformedBefore = JSON.stringify(malformedNode.sheets.get('進度追蹤')._rows);
+const malformedResult = malformedNode.context.initializeSheets();
+ok('unexpected BADGE progress headers fail preflight before adding or changing any sheets',
+  malformedResult.success === false && /表頭/.test(malformedResult.error || '')
+    && malformedNode.sheets.size === 1 && JSON.stringify(malformedNode.sheets.get('進度追蹤')._rows) === malformedBefore
+    && !malformedNode.props.has('UNIFIED_GS_INITIALIZED_VERSION'));
+const customHeaderNode = makeNode();
+customHeaderNode.sheets.set('進度追蹤', makeSheet('進度追蹤', [
+  ['YMIS','項目 ID','完成日期','更新時間','自訂確認者'], ['1234567890','OLD','2025','2025','keep']
+]));
+const customHeaderBefore = JSON.stringify(customHeaderNode.sheets.get('進度追蹤')._rows);
+const customHeaderResult = customHeaderNode.context.initializeSheets();
+ok('custom progress column is never overwritten or silently treated as BADGE schema',
+  customHeaderResult.success === false && customHeaderNode.sheets.size === 1
+    && JSON.stringify(customHeaderNode.sheets.get('進度追蹤')._rows) === customHeaderBefore);
+const malformedUsersNode = makeNode();
+malformedUsersNode.sheets.set('Users', makeSheet('Users', [['unexpected'], ['keep']]));
+const malformedUsersResult = malformedUsersNode.context.initializeSheets();
+ok('unrecognized Users headers fail preflight before changes', malformedUsersResult.success === false
+  && /Users/.test(malformedUsersResult.error || '') && malformedUsersNode.sheets.size === 1);
+const skippedNode = makeNode();
+const upgradeAlerts = [], upgradeLogs = [];
+skippedNode.context.SpreadsheetApp.getUi = () => ({ ButtonSet: { OK: 'OK' },
+  alert: (...args) => upgradeAlerts.push(args) });
+skippedNode.context.Logger.log = value => upgradeLogs.push(String(value));
+skippedNode.sheets.set('帳目', makeSheet('帳目', [['custom header'], ['keep']]));
+skippedNode.props.set('UNIFIED_GS_INITIALIZED_VERSION', 'v9.6-u1-test');
+const skippedResult = skippedNode.context.initializeSheets();
+ok('unrecognized administrative sheet is reported as partial, not marked complete',
+  skippedResult.success === false && skippedResult.partial === true && /帳目/.test(skippedResult.error || '')
+    && !skippedNode.props.has('UNIFIED_GS_INITIALIZED_VERSION')
+    && skippedNode.sheets.get('帳目')._rows[1][0] === 'keep', JSON.stringify(skippedResult));
+ok('partial initialization displays one failure, not premature success messages',
+  upgradeAlerts.length === 1 && /未完成/.test(upgradeAlerts[0][0]) && /帳目/.test(upgradeAlerts[0][1]),
+  JSON.stringify(upgradeAlerts));
+ok('candidate initialization does not log the existing API key',
+  !upgradeLogs.join(' ').includes('existing-api-key-do-not-change'));
+
 node.sheets.set('Users', makeSheet('Users', [
   USER_HEADERS,
   ['1111111111', '既有管理員', 'admin@example.com', 'admin', sha256('changeme'), 'b4', true, 'existing', '2026-01-01', '2026-01-01', '', 'active', '*', true]
@@ -232,7 +538,12 @@ const initialized = node.context.initializeSheets();
 ok('combined initializer succeeds', initialized.success === true, JSON.stringify(initialized));
 ok('initializer preserves existing API key', node.props.get('API_KEY') === 'existing-api-key-do-not-change');
 ok('initializer does not create or require a separate PORTAL_SESSION_SECRET', !node.props.has('PORTAL_SESSION_SECRET'));
-ok('initializer restores branch local login as the required normal entrance', node.props.get('ALLOW_LOCAL_LOGIN') === 'true');
+ok('initializer preserves an unset BADGE local-login flag', !node.props.has('ALLOW_LOCAL_LOGIN'));
+const closedFlagNode = makeNode();
+closedFlagNode.props.set('ALLOW_LOCAL_LOGIN', 'false');
+const closedFlagInit = closedFlagNode.context.initializeSheets();
+ok('initializer preserves an explicitly closed BADGE local-login flag',
+  closedFlagInit.success === true && closedFlagNode.props.get('ALLOW_LOCAL_LOGIN') === 'false');
 ok('initializer preserves existing progress row', node.sheets.get('進度追蹤')._rows.some(r => r[1] === 'L1-KEEP' && r[5] === 'must survive'));
 ok('initializer records isolated unified version', node.props.get('UNIFIED_GS_INITIALIZED_VERSION') === 'v9.6-u1-test');
 ok('initializer adds administrative tabs without replacing progress baseline', node.sheets.has('資料表') && node.sheets.has('Users') && node.sheets.has('活動履歷'));
@@ -318,17 +629,29 @@ node.context.destroyToken(bookReviewerLogin.token);
 const bookReviewerRow = node.sheets.get('Users')._rows.findIndex(row => row[0] === bookReviewerYmis);
 if (bookReviewerRow >= 0) node.sheets.get('Users').deleteRow(bookReviewerRow + 1);
 
-node.props.set('ALLOW_LOCAL_LOGIN', 'false');
-const blockedToggleRequest = signedRequest('setLocalLogin', { allow: 'false' });
-const blockedToggle = node.post(blockedToggleRequest.body, blockedToggleRequest.parameter);
-ok('Unified public router rejects legacy entrance control and restores local login',
-  blockedToggle.success === false && blockedToggle.code === 'BRANCH_LOCAL_LOGIN_REQUIRED'
-    && node.props.get('ALLOW_LOCAL_LOGIN') === 'true', JSON.stringify(blockedToggle));
-const blockedStateRequest = signedRequest('getLinkState', {});
-const blockedState = node.post(blockedStateRequest.body, blockedStateRequest.parameter);
-ok('Unified public router does not expose legacy entrance state',
-  blockedState.success === false && blockedState.code === 'BRANCH_LOCAL_LOGIN_REQUIRED'
-    && !Object.prototype.hasOwnProperty.call(blockedState, 'allow_local_login'), JSON.stringify(blockedState));
+node.props.set('ALLOW_LOCAL_LOGIN', 'true');
+const unsignedState = node.post({ action: 'getLinkState' });
+const unsignedToggle = node.post({ action: 'setLocalLogin', allow: false });
+ok('BADGE entrance state and controls are unavailable to unsigned callers', unsignedState.success !== true
+  && unsignedToggle.success !== true && node.props.get('ALLOW_LOCAL_LOGIN') === 'true');
+const toggleRequest = signedRequest('setLocalLogin', { allow: false });
+const toggle = node.post(toggleRequest.body, toggleRequest.parameter);
+const replayToggle = node.post(toggleRequest.body, toggleRequest.parameter);
+ok('valid BADGE signed entrance control works and rejects a replay',
+  toggle.success === true && replayToggle.success !== true && node.props.get('ALLOW_LOCAL_LOGIN') === 'false', JSON.stringify(toggle));
+const stateRequest = signedRequest('getLinkState', {});
+const state = node.post(stateRequest.body, stateRequest.parameter);
+ok('valid BADGE signature can inspect the existing entrance state',
+  state.success === true && state.allow_local_login === false, JSON.stringify(state));
+const rescueToken = node.context.superAdminSessionToken();
+const rescueLoad = JSON.parse(node.context.doGet({ parameter: { action: 'load', token: rescueToken } }).getContent());
+const fakeRescue = JSON.parse(node.context.doGet({ parameter: { action: 'load', token: rescueToken + 'bad' } }).getContent());
+ok('valid BADGE stateless rescue session can load while closed; a forged token cannot',
+  rescueLoad.success === true && fakeRescue.success === false, JSON.stringify({ rescueLoad, fakeRescue }));
+const reopenRequest = signedRequest('setLocalLogin', { allow: true });
+const reopened = node.post(reopenRequest.body, reopenRequest.parameter);
+ok('valid signed BADGE control reopens the same shared login gate', reopened.success === true
+  && node.props.get('ALLOW_LOCAL_LOGIN') === 'true');
 
 /* A header-only progress tab is a successful zero-record action result. */
 const emptyProgressNode = makeNode();
@@ -363,6 +686,64 @@ ok('unified password-reset code is single-use', completedForgotReplay.success ==
 /* The full branch frontend account aliases write pinned BADGE Users directly; no
    Portal accounts/password collection is created. */
 const accountAdmin = node.post({ action: 'authLogin', unit: '0082', username: 'admin@example.com', password: 'changed99' });
+/* An empty administrative store must not hide roster and Users already present
+   in the same BADGE Sheet; reads are a projection, not an account copy. */
+const rosterBeforeReadDiagnostic = JSON.stringify(node.sheets.get('成員名單')._rows);
+const usersBeforeReadDiagnostic = JSON.stringify(node.sheets.get('Users')._rows);
+const emptyAdministrativeRead = node.post({ action: 'loadTables', unit: '0082', sessionToken: accountAdmin.sessionToken });
+const emptyBlobRead = node.post({ action: 'loadDb', unit: '0082', sessionToken: accountAdmin.sessionToken });
+ok('empty administrative storage still reads the existing BADGE roster from the same backend',
+  emptyAdministrativeRead.success === true && emptyAdministrativeRead.found === true
+    && emptyAdministrativeRead.db?.members?.some(m => m.ymis === '9000000001')
+    && emptyAdministrativeRead.db?.accounts?.some(a => a.ymis === '1111111111'), JSON.stringify(emptyAdministrativeRead));
+ok('whole-DB read and table read expose the same existing backend data and revision',
+  emptyBlobRead.success === true && emptyBlobRead.found === true
+    && emptyBlobRead.version === emptyAdministrativeRead.version
+    && JSON.stringify(emptyBlobRead.db) === JSON.stringify(emptyAdministrativeRead.db), JSON.stringify(emptyBlobRead));
+ok('diagnostic administrative reads do not alter the existing roster or Users',
+  JSON.stringify(node.sheets.get('成員名單')._rows) === rosterBeforeReadDiagnostic
+    && JSON.stringify(node.sheets.get('Users')._rows) === usersBeforeReadDiagnostic);
+const initialInfo = node.post({ action: 'dbInfo', unit: '0082', sessionToken: accountAdmin.sessionToken });
+const initialPart = node.post({ action: 'loadDbPart', unit: '0082', partIdx: 0, sessionToken: accountAdmin.sessionToken });
+const firstTablePart = node.post({ action: 'loadTablesPart', unit: '0082', idx: 0, sessionToken: accountAdmin.sessionToken });
+ok('dbInfo, segmented read and direct reads share the same revision', initialInfo.found === true
+  && initialInfo.version === emptyBlobRead.version && initialPart.version === initialInfo.version
+  && firstTablePart.version === initialInfo.version && firstTablePart.found === true
+  && JSON.parse(initialPart.part).members.some(m => m.ymis === '9000000001'));
+node.sheets.get('成員名單').getRange(2, 2).setValue('BADGE 新名字');
+const newerRead = node.post({ action: 'loadTables', unit: '0082', sessionToken: accountAdmin.sessionToken });
+const staleFirstSave = node.post({ action: 'saveTables', unit: '0082', sessionToken: accountAdmin.sessionToken,
+  baseVersion: emptyBlobRead.version, tables: { members: emptyBlobRead.db.members }, refreshReports: false });
+ok('BADGE roster changes appear directly and alter the shared revision',
+  newerRead.db?.members?.some(m => m.ymis === '9000000001' && m.name === 'BADGE 新名字')
+    && newerRead.version !== emptyBlobRead.version, JSON.stringify(newerRead));
+ok('stale Portal write after a BADGE roster change is rejected before any database or roster write',
+  staleFirstSave.success === false && staleFirstSave.conflict === true
+    && node.sheets.get('成員名單')._rows[1][1] === 'BADGE 新名字'
+    && node.sheets.get('資料表')._rows.length === 1, JSON.stringify(staleFirstSave));
+node.sheets.get('成員名單').getRange(2, 2).setValue('中央團員');
+const rosterBeforeReports = JSON.stringify(node.sheets.get('成員名單')._rows);
+node.sheets.set('私人紀錄·0082', makeSheet('私人紀錄·0082', [['keep'], ['historic']]));
+const reportSync = node.post({ action: 'sync', unit: '0082', sessionToken: accountAdmin.sessionToken,
+  tables: { members: [{ ymis: '9000000001', name: '被錯誤改寫', join: '', role: 'wrong', phone: '' }] } });
+ok('report-only sync cannot rewrite the authoritative BADGE member roster',
+  (reportSync.success === true || reportSync.ok === true)
+    && JSON.stringify(node.sheets.get('成員名單')._rows) === rosterBeforeReports,
+  JSON.stringify(reportSync));
+ok('report-only sync does not delete pre-existing suffixed worksheets',
+  node.sheets.get('私人紀錄·0082')?._rows[1]?.[0] === 'historic');
+const ownedReport = node.sheets.get('團員');
+const unrelatedReport = makeSheet('團員', [['historical user data'], ['never clear']]);
+node.sheets.set('團員', unrelatedReport);
+const reportBeforeCollision = JSON.stringify(node.sheets.get('帳目')._rows);
+const collisionSync = node.post({ action: 'sync', unit: '0082', sessionToken: accountAdmin.sessionToken,
+  tables: { members: [] } });
+ok('report sync rejects a replaced, unowned same-name sheet before clearing any report',
+  collisionSync.success !== true && collisionSync.ok !== true
+    && unrelatedReport._rows[1]?.[0] === 'never clear'
+    && JSON.stringify(node.sheets.get('帳目')._rows) === reportBeforeCollision,
+  JSON.stringify(collisionSync));
+node.sheets.set('團員', ownedReport);
 node.sheets.get('成員名單').appendRow(['9000000010', '支部直接開戶', '2026-02-12', 'VS', '']);
 const openedAccounts = node.post({
   action: 'authOpenAccounts', unit: '0082', sessionToken: accountAdmin.sessionToken,
@@ -376,8 +757,32 @@ ok('branch leader/admin can directly open an account in pinned Unified Users',
 const openedLogin = node.post({ action: 'authLogin', unit: '0082', username: '9000000010', password: '1234' });
 ok('directly opened account immediately logs in through the normal branch authority',
   openedLogin.success === true && openedLogin.account?.ymis === '9000000010');
+const nativeOpenedLogin = node.post({ action: 'login', login_id: '9000000010', password: '1234' });
+ok('account created by Portal can also log in using the native BADGE action',
+  nativeOpenedLogin.success === true && nativeOpenedLogin.user?.ymis === '9000000010');
+const badgeCreated = node.post({ action: 'addUser', token: accountAdmin.sessionToken,
+  ymis: '9000000011', name: 'BADGE 新帳戶', email: 'badge-new@example.test',
+  role: 'member', password: '3456', branch: 'VS' });
+const portalBadgeLogin = node.post({ action: 'authLogin', unit: '0082',
+  username: 'badge-new@example.test', password: '3456' });
+ok('account created using native BADGE action also logs in through Portal',
+  badgeCreated.success === true && portalBadgeLogin.success === true
+    && portalBadgeLogin.account?.ymis === '9000000011', JSON.stringify({ badgeCreated, portalBadgeLogin }));
+const badgeWho = node.post({ action: 'authWhoAmI', unit: '0082', sessionToken: nativeOpenedLogin.token });
+ok('Portal identity action resolves a native BADGE session from the same Users',
+  badgeWho.success === true && badgeWho.account?.ymis === '9000000010', JSON.stringify(badgeWho));
+const portalChange = node.post({ action: 'authChangePassword', unit: '0082', sessionToken: openedLogin.sessionToken,
+  oldPassword: '1234', newPassword: '4321' });
+const nativeAfterPortalChange = node.post({ action: 'login', login_id: '9000000010', password: '4321' });
+ok('password changed through Portal is immediately accepted by native BADGE login',
+  portalChange.success === true && nativeAfterPortalChange.success === true, JSON.stringify(portalChange));
+const badgeChange = node.post({ action: 'changePassword', token: portalBadgeLogin.sessionToken,
+  old_password: '3456', new_password: '6543' });
+const portalAfterBadgeChange = node.post({ action: 'authLogin', unit: '0082', username: '9000000011', password: '6543' });
+ok('password changed through native BADGE action is accepted by Portal login',
+  badgeChange.success === true && portalAfterBadgeChange.success === true, JSON.stringify(badgeChange));
 openedUserRow[3] = 'generic-platform-admin';
-const foreignRoleLogin = node.post({ action: 'authLogin', unit: '0082', username: '9000000010', password: '1234' });
+const foreignRoleLogin = node.post({ action: 'authLogin', unit: '0082', username: '9000000010', password: '4321' });
 ok('unknown backend role fails closed instead of silently becoming member',
   foreignRoleLogin.success === false && foreignRoleLogin.code === 'ROLE_NOT_ALLOWED', JSON.stringify(foreignRoleLogin));
 openedUserRow[3] = 'member';
@@ -490,8 +895,9 @@ const readOnlyWrite = node.post({ action: 'saveTables', unit: '0082', sessionTok
   tables: { notices: [] }, refreshReports: false });
 ok('action scope is enforced independently of role label', readOnlyLeader.success === true && readOnlyWrite.code === 'ACTION_SCOPE_DENIED');
 
+const leaderBeforeSave = node.post({ action: 'loadTables', unit: '0082', sessionToken: leaderExchange.sessionToken });
 const saved = node.post({
-  action: 'saveTables', unit: '0082', sessionToken: leaderExchange.sessionToken, refreshReports: false,
+  action: 'saveTables', unit: '0082', sessionToken: leaderExchange.sessionToken, baseVersion: leaderBeforeSave.version, refreshReports: false,
   tables: {
     members: [
       { id: 'm1', ymis: '9000000001', name: '中央團員（更新）', identity: 'member', email: 'member@example.test' },
@@ -507,6 +913,33 @@ ok('all clients read one administrative data copy', loaded.success === true && A
 ok('canonical roster overlays Portal member identity fields', loaded.db.members.some(m => m.ymis === '9000000001' && m.name === '中央團員（更新）'));
 ok('legacy account payload is replaced by safe pinned Users projection', loaded.db.accounts.every(a => !a.pw && !a.password && a.source === 'unified-users'));
 ok('no client-supplied shadow account survives', !loaded.db.accounts.some(a => a.username === 'shadow'));
+const originalNameAfterSave = node.sheets.get('成員名單')._rows[1][1];
+node.sheets.get('成員名單').getRange(2, 2).setValue('BADGE 已更新名字');
+const rereadAfterBadgeEdit = node.post({ action: 'loadTables', unit: '0082', sessionToken: accountAdmin.sessionToken });
+const staleSavedDb = node.post({ action: 'saveDb', unit: '0082', sessionToken: accountAdmin.sessionToken,
+  db: loaded.db, baseVersion: loaded.version, refreshReports: false });
+ok('after administrative data exists, reads use the latest authoritative BADGE roster',
+  rereadAfterBadgeEdit.success === true && rereadAfterBadgeEdit.version !== loaded.version
+    && rereadAfterBadgeEdit.db.members.some(m => m.ymis === '9000000001' && m.name === 'BADGE 已更新名字'));
+ok('stale whole-db write cannot overwrite a later BADGE roster change',
+  staleSavedDb.success === false && staleSavedDb.conflict === true
+    && node.sheets.get('成員名單')._rows[1][1] === 'BADGE 已更新名字', JSON.stringify(staleSavedDb));
+node.sheets.get('成員名單').getRange(2, 2).setValue(originalNameAfterSave);
+const rosterBeforeSaveRefresh = JSON.stringify(node.sheets.get('成員名單')._rows);
+node.sheets.set('團員', unrelatedReport);
+const beforeCollisionSave = node.post({ action: 'dbInfo', unit: '0082', sessionToken: accountAdmin.sessionToken });
+const collisionSave = node.post({ action: 'saveTables', unit: '0082', sessionToken: accountAdmin.sessionToken,
+  baseVersion: beforeCollisionSave.version, tables: { notices: [] }, refreshReports: true });
+ok('save-triggered refresh reports a collision without clearing the unowned sheet',
+  collisionSave.success === true && collisionSave.reports?.ok === false
+    && unrelatedReport._rows[1]?.[0] === 'never clear', JSON.stringify(collisionSave));
+node.sheets.set('團員', ownedReport);
+const refreshSave = node.post({ action: 'saveTables', unit: '0082', sessionToken: accountAdmin.sessionToken,
+  baseVersion: collisionSave.version, tables: { notices: [] }, refreshReports: true });
+ok('save-triggered report refresh preserves BADGE roster and historical suffixed tabs',
+  refreshSave.success === true && refreshSave.reports?.ok === true
+    && JSON.stringify(node.sheets.get('成員名單')._rows) === rosterBeforeSaveRefresh
+    && node.sheets.get('私人紀錄·0082')?._rows[1]?.[0] === 'historic', JSON.stringify(refreshSave));
 
 /* A compatibility rejection must be side-effect free. Historically the unified
    router updated 成員名單／Users before the stale-version check ran. */
@@ -647,6 +1080,14 @@ ok('unpredictable operation ID is a read-only capability receipt (no session, me
     && publicReceipt.operation?.id === memberRsvp.operationId
     && !Object.prototype.hasOwnProperty.call(publicReceipt.operation || {}, 'resultJson'),
   JSON.stringify(publicReceipt));
+const replayWithoutSession = node.post({ action: 'hubRsvp', unit: '0082', operationId: memberRsvp.operationId,
+  eventId: 'event-member', status: 'late' });
+ok('operation ID alone cannot replay a private member projection', replayWithoutSession.success === false
+  && replayWithoutSession.deduplicated === true && replayWithoutSession.outcome === 'applied'
+  && !replayWithoutSession.db && !JSON.stringify(replayWithoutSession).includes('19:30'), JSON.stringify(replayWithoutSession));
+const operationRow = node.sheets.get('_Operations')._rows.find(row => row[0] === memberRsvp.operationId);
+ok('operation journal does not persist full member projections', !!operationRow
+  && !String(operationRow[7]).includes('event-member') && !String(operationRow[7]).includes('19:30'));
 const hiddenRsvp = node.post({ action: 'hubRsvp', unit: '0082', sessionToken: memberExchange.sessionToken,
   eventId: 'event-leader', status: 'present' });
 ok('member cannot write a leader-only event by guessing its id', hiddenRsvp.success === false);
@@ -685,9 +1126,8 @@ const localNormal = node.post({ action: 'authLogin', unit: '0082', username: '11
 ok('local branch account is the normal login source', localNormal.success === true
   && typeof localNormal.sessionToken === 'string' && localNormal.sessionToken.length > 10
   && localNormal.localLogin === true, JSON.stringify(localNormal));
-const menuClose = node.context.menuLocalLoginOff();
-ok('Sheet menu cannot close the branch local login entrance', menuClose.success === false
-  && menuClose.code === 'BRANCH_LOCAL_LOGIN_REQUIRED' && node.context.localLoginAllowed() === true);
+ok('BADGE Sheet menu callback remains available for the owner',
+  typeof node.context.menuLocalLoginOff === 'function');
 
 /* Isolated auth-fixture regression only: directly exercise pinned compatibility code.
    This is not a deployment state or a future travel-system contract. */
@@ -704,5 +1144,74 @@ const again = node.context.initializeSheets();
 ok('unified initializer is safely repeatable', again.success === true);
 ok('repeat initialization does not rewrite progress', JSON.stringify(node.sheets.get('進度追蹤')._rows.map(r => JSON.stringify(r))) === JSON.stringify(beforeRows));
 ok('repeat initialization still preserves API key', node.props.get('API_KEY') === 'existing-api-key-do-not-change');
+
+/* Keep the latest BADGE account/permission update intact inside the full Unified build. */
+const repairNode = makeNode();
+repairNode.sheets.set('Users', makeSheet('Users', [
+  USER_HEADERS,
+  ['1111111111', '既有管理員', 'admin@example.com', 'admin', sha256('changeme'), 'b4', true, 'existing', '2026-01-01', '2026-01-01', '', 'active', '*', true],
+  ['L9000000001', '支部領袖', 'leader@example.test', 'branch_leader', sha256('leaderpass9'), 'b4', true, 'existing', '2026-01-01', '2026-01-01', '', 'active', '*', false],
+  ['9000000001', '團員甲', 'member@example.test', 'member', sha256('memberpass9'), 'b4', true, 'existing', '2026-01-01', '2026-01-01', '', 'active', '*', false]
+]));
+repairNode.sheets.set('進度追蹤', makeSheet('進度追蹤', [
+  ['YMIS','項目 ID','完成日期','更新時間','確認者','備註'],
+  ['L9000000001','L1-LEADER','2026-01-01','2026-01-01','admin','leader-only'],
+  ['9000000001','L1-MEMBER','2026-01-02','2026-01-02','leader','member-only']
+]));
+repairNode.sheets.set('成員名單', makeSheet('成員名單', [
+  ['YMIS','姓名','加入日期','支部','聯絡'],
+  ['L9000000001', '支部領袖', '2025-01-01', 'VS', 'leader@example.test'],
+  ['9000000001', '團員甲', '2025-01-01', 'VS', 'member@example.test']
+]));
+repairNode.context.initializeSheets();
+const repairAdmin = repairNode.post({ action: 'login', login_id: '1111111111', password: 'changeme' });
+const repairLeader = repairNode.post({ action: 'login', login_id: 'LEADER@example.test', password: 'leaderpass9' });
+const scopeOnly = repairNode.post({ action: 'updatePermissions', token: repairAdmin.token,
+  target_ymis: 'L9000000001', allowed_badges: 'L1,L2' });
+ok('scope-only permission updates preserve role and can_tick',
+  repairAdmin.success === true && scopeOnly.success === true
+    && scopeOnly.role === 'branch_leader' && scopeOnly.can_tick === true
+    && repairNode.context.findUserRecord('L9000000001').user.allowed_badges === 'L1,L2',
+  JSON.stringify(scopeOnly));
+const repairLoadOut = repairNode.context.doGet({ parameter: {
+  action: 'load', token: repairLeader.token, apikey: 'existing-api-key-do-not-change'
+} });
+const repairLoad = JSON.parse(repairLoadOut.getContent());
+ok('authenticated GET load returns current session permissions without identity identifiers',
+  repairLoad.success === true && repairLoad.me?.role === 'branch_leader'
+    && repairLoad.me?.can_tick === true && repairLoad.me?.allowed_badges === 'L1,L2'
+    && repairLoad.me?.ymis === undefined && repairLoad.me?.email === undefined,
+  JSON.stringify(repairLoad.me));
+const repairMemberLogin = repairNode.post({ action: 'login', login_id: 'member@example.test', password: 'memberpass9' });
+const deniedMemberWrite = repairNode.post({ action: 'save', token: repairMemberLogin.token,
+  changes: [{ ymis: '9000000001', itemId: 'L1', date: '2026-11-20' }] });
+ok('member progress writes remain denied even when can_tick is true',
+  repairMemberLogin.success === true && deniedMemberWrite.success === false
+    && /沒有直接寫入進度權限/.test(deniedMemberWrite.error || '')
+    && !repairNode.sheets.get('進度追蹤')._rows.some(row => row[0] === '9000000001' && row[1] === 'L1'),
+  JSON.stringify(deniedMemberWrite));
+const anonymousLoadOut = repairNode.context.doGet({ parameter: { action: 'load' } });
+const anonymousLoad = JSON.parse(anonymousLoadOut.getContent());
+ok('anonymous GET load exposes no member or progress data',
+  anonymousLoad.success === false && anonymousLoad.code === 'SIGNATURE_REQUIRED'
+    && anonymousLoad.upstream_only === true
+    && anonymousLoad.members === undefined && anonymousLoad.progress === undefined,
+  JSON.stringify(anonymousLoad));
+const memberLoadOut = repairNode.context.doGet({ parameter: { action: 'load', token: repairMemberLogin.token } });
+const memberLoad = JSON.parse(memberLoadOut.getContent());
+ok('member GET load is restricted to that member’s own roster and progress projection',
+  memberLoad.success === true && memberLoad.members.length === 1
+    && memberLoad.members[0].ymis === '9000000001'
+    && Object.keys(memberLoad.progress).length === 1
+    && !!memberLoad.progress['9000000001']?.['L1-MEMBER']
+    && !Object.prototype.hasOwnProperty.call(memberLoad.progress, 'L9000000001')
+    && memberLoad.me?.ymis === undefined && memberLoad.me?.email === undefined,
+  JSON.stringify(memberLoad));
+const signedLoadRequest = signedRequest('load', { unit: '0082', apiKey: 'existing-api-key-do-not-change',
+  unified_super: true, on_behalf: 'sheep' });
+const signedLoad = repairNode.post(signedLoadRequest.body, signedLoadRequest.parameter);
+ok('server-signed load remains available to the authenticated same-origin proxy',
+  signedLoad.success === true && Array.isArray(signedLoad.members)
+    && signedLoad.members.some(member => member.ymis === '9000000001'), JSON.stringify(signedLoad));
 
 console.log(`\n${passed} passed, 0 failed\n`);

@@ -694,7 +694,7 @@ section('只有一個儲存方式（原始碼守門：冇自動寫、冇 poll、
     /function buildHubShell\(/.test(storeSrc)
     && /state\.scope === 'hub'[\s\S]{0,100}\? buildHubShell\(/.test(storeSrc)
     && /hubShell: true/.test(storeSrc)
-    && /backendUrl: beFromQuery\(\)/.test(hubSrc));
+    && !/backendUrl: beFromQuery\(\)/.test(hubSrc));
   ok('團員 mutation 唔先樂觀改本機；unknown 鎖住重送，只准 readback 核對',
     /hubSubmitState/.test(hubSrc) && /id="hubRetrySubmit"/.test(hubSrc)
     && /id="hubCheckSubmit"/.test(hubSrc) && /結果未知，已鎖住重送/.test(hubSrc)
@@ -1030,7 +1030,7 @@ section('API Key 由伺服器端注入（前端唔應該知）');
   const src = fs.readFileSync(path.join(ROOT, 'assets/js/lib/remote.js'), 'utf8');
   const gsrc = fs.readFileSync(path.join(ROOT, 'assets/js/lib/gateway.js'), 'utf8');
   ok('gateway.js 代理路線永遠不傳本機 Key，直連才傳 Key',
-    /delete body\.apiKey; delete body\.apikey/.test(gsrc) && /if \(apiKey\) \{ direct\.apiKey/.test(gsrc));
+    /delete body\.apiKey; delete body\.apikey/.test(gsrc) && !/direct\.apiKey/.test(gsrc));
   ok('remote.js 把路由交畀 gateway（唔會自己砌 proxy payload）',
     /postBackend\(/.test(src) && !/body\.apiKey/.test(src));
   ok('remote.js 有 proxy 路線就唔再強制要前端填 /exec',
@@ -1049,7 +1049,7 @@ section('API Key 由伺服器端注入（前端唔應該知）');
   /* 2026-09-19 新增：行緊「自己貼 /exec」自助路線嗰陣，條 key 本來就要由瀏覽器帶，
      提示必須針對呢條路（唔好叫佢搵管理員 —— 佢就係因為搵唔到先至行呢條路）。 */
   ok('bad_key 提示（自助路線）教用家貼返條 key',
-    /showApiKey/.test(directHint) && /同步設定/.test(directHint), directHint.slice(0, 60));
+    !/showApiKey|同步設定/.test(directHint) && /Admin/.test(directHint), directHint.slice(0, 60));
 
   gas.close();
   if (saved.b === undefined) delete process.env.TROOP_0082_BACKEND; else process.env.TROOP_0082_BACKEND = saved.b;
@@ -1108,6 +1108,7 @@ section('總表同步經同源代理（唔填 /exec 都得）');
     !store.load().sync?.url && !store.load().backend?.gasUrl);
 
   const tables = await import('../assets/js/views/tables.js');
+  store.load().sync = { ...(store.load().sync || {}), url: 'https://evil.example/exec', apiKey: 'browser-secret', pending: 7 };
   const r1 = await tables.pushToMaster({ silent: true });
   ok('★ 冇填 /exec 都經得代理送出', r1.ok === true, JSON.stringify(r1).slice(0, 200));
   ok('送去代理嘅係 sync action＋旅團編號',
@@ -1116,7 +1117,7 @@ section('總表同步經同源代理（唔填 /exec 都得）');
   ok('★ 經代理唔會送空 apiKey（等伺服器端注入）',
     !('apiKey' in (seen[0] || {})), Object.keys(seen[0] || {}).join(','));
   ok('★ 報表同步**唔會**夾帶整個資料庫（資料庫只有一條寫入路：saveToBackend）', !seen[0]?.db && seen[0]?.skipDb === true, Object.keys(seen[0] || {}).join(','));
-  ok('報表同步唔會清 pending（未儲存嘅仍然係未儲存）', true);
+  ok('舊本機 URL／Key 不影響報表 proxy 請求且不清 pending', r1.viaProxy && !('apiKey' in seen[0]) && store.load().sync.pending === 7);
 
   /* GAS 拒絕（例如 key 唔啱）嗰陣，HTTP 200 都要當失敗，而且要講得出原因 */
   proxyReply = { ok: false, success: false, error: '未授權：API Key 唔正確（寫入資料庫需要 API Key）' };
@@ -1145,7 +1146,7 @@ section('總表同步經同源代理（唔填 /exec 都得）');
     return { ok: false, status: 404, json: async () => { throw new Error('404'); }, text: async () => '404' };
   };
   const r3 = await tables.pushToMaster({ silent: true });
-  ok('冇代理又冇網址 → 明確話連唔到代理', r3.ok === false && /同源代理/.test(String(r3.msg || '')),
+  ok('冇代理又冇網址 → 明確話連唔到代理', r3.ok === false && /同源.*proxy/i.test(String(r3.msg || '')),
     String(r3.msg || '').slice(0, 120));
 
   /* 2026-11-12：remote.testConnection() 已刪（冇 UI 用）。
@@ -1606,7 +1607,7 @@ section('v2.6.0：大資料庫分段讀取（兩邊視窗對得到料）');
     routed.reason === 'too_large' && routed.tooLarge === true && routed.via === 'proxy',
     JSON.stringify({ reason: routed.reason, via: routed.via, error: String(routed.error).slice(0, 60) }));
   ok('回應過大嘅錯誤訊息講得出 4.5MB 同分段讀',
-    /4\.5MB/.test(String(routed.error || '')) && /分段/.test(String(routed.error || '')),
+    /4\.5MB/.test(String(routed.error || '')) && /Admin/.test(String(routed.error || '')),
     String(routed.error || '').slice(0, 100));
 
   /* dev-server 要喺本機模擬同一個上限（以後本機先發現到） */
@@ -1742,7 +1743,7 @@ section('★ 登入硬閘：後端答唔到就唔准入主控頁');
     return r;
   })();
   ok('純靜態部署（冇 /api）→ reason=not_configured，提示教人點接線',
-    notCfg.ok === false && /後端設定|TROOP_|\/exec/.test(String(notCfg.error || '') + String(notCfg.hint || '')),
+    notCfg.ok === false && notCfg.reason === 'proxy_required' && /Admin/.test(String(notCfg.hint || '')),
     JSON.stringify(notCfg).slice(0, 200));
 
   globalThis.fetch = memFetch2;

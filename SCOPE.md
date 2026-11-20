@@ -1,7 +1,7 @@
 # SCOPE — 深資童軍管理系統（vs_portal）做乜／唔做乜
 
 > **一句定位**：深資童軍團嘅**支部管理系統** —— 會議、財務、用戶、物資、團章、通告、進度，
-> 一個旅團一支 Apps Script `/exec` ＋ 一張 Google Sheet，可以獨立運作。
+> 目標為沿用各旅團既有 BADGE `/exec`、Sheet、Users 及資料；正式共用 contract 尚未完成 staging。
 >
 > **本 repo 嘅特殊地位（2026-11-12 用戶定案）**：呢個係**第一個支部系統**，
 > 亦係其他支部系統嘅**參考版本／模版**。所以呢度嘅邊界、初始化保全做法、
@@ -34,27 +34,14 @@
 整個生態系按以下資料責任組成：
 
 ```text
-未來旅系統 ──單向讀取──▶ 各支部完整 Unified backend（5 個；彼此完全隔離）
-
-支部系統完整前端（vs_portal）
-  ├─ 行政、財務、物資、會議、通告、名冊等完整功能
-  └─ Progress／獎章／履歷／申報
-             │
-             ├──同源 server proxy──▶ 本支部完整 Unified GS ──▶ 本支部 Sheet
-             │
-BADGE 輕量前端（vsbadge）────┘ 只呈現／呼叫輕量工作流程
-
-BOOK ──讀取正式資料────────▶ BADGE／同一 Unified GS
-BOOK ──提交匯入候選────────▶ BADGE 待批區 ──領袖確認──▶ 正式紀錄
+Portal 完整前端 ──同源 Registry／Proxy──▶ 既有 BADGE /exec／Sheet／Users
+BADGE 輕量前端 ─────────────────────────▶ 同一既有 BADGE 後端
+BOOK ──提交候選──▶ BADGE 待批區 ──領袖確認──▶ 正式紀錄
 ```
 
-每支部的 Unified GS 是**完整功能後端**，包含身份、進度、獎章、履歷、申報及支部行政功能。
-支部系統前端是功能完整版；BADGE 是同一後端的輕量前端，只呈現及呼叫其產品範圍內的
-部分 action。功能沒有在 BADGE 畫面出現，不代表後端缺少該功能；同樣，畫面隱藏亦不是
-安全邊界，所有 action 仍須由 Unified GS 依 session、角色及 scope 在 server 端授權。
+此為目標架構，不是現有正式部署已互通的聲明。裸 BADGE v9.6 與 Portal auth／行政 action 不直接相容；正式 adapter 必須在 BADGE source of truth 原地維護，沿用同一 Sheet、部署及 Users，經真 Apps Script staging 驗收。Unified bundle 只供隔離測試，不得叫旅團部署；詳見 `docs/BACKEND_SYNC.md`。
 
-Progress 是完整支部前端內的業務模組，不是一個要由支部建立、查詢或控制的跨系統關係。
-完整支部前端與 BADGE 輕量前端使用同一支部 Unified backend；同一 Sheet 不同分頁不構成額外連結。
+Progress 是完整支部前端的業務模組，不建立第二 backend。Registry 配置不代表正式 action contract 已驗收。
 
 BOOK 與 BADGE 亦**不是純讀取關係**：BOOK 除了讀取對應 BADGE 的正式資料，也可以提交
 匯入候選。匯入只會先成為待批資料；**只有領袖確認後才寫入正式紀錄**。BOOK 不可繞過
@@ -134,7 +121,7 @@ BOOK 與 BADGE 亦**不是純讀取關係**：BOOK 除了讀取對應 BADGE 的�
 - **舊頁兼容**：`notice.html`／`constitution.html`／`entry.html`／`borrow.html` 只轉向已登入團員入口；
   冇匿名內容投影、匿名申報或匿名借用。
 - **多旅團**：`data/units.json` 公開 metadata ＋ Vercel env 放 secret；旅團之間資料隔離。
-- **後端**：`Code.gs` 由 `assets/js/lib/gastemplate.js` 生成（單一來源）；
+- **後端**：Portal 測試 `Code.gs` 由 `assets/js/lib/gastemplate.js` 生成（並非正式 BADGE adapter）；
   `initializeSheets()` **可重跑、只補結構、絕不改寫用戶資料**（見 §4）。
 - **作為模版**：治理檔、邊界定義、初始化保全做法要寫清楚，畀其他支部系統照抄。
 
@@ -156,7 +143,7 @@ BOOK 與 BADGE 亦**不是純讀取關係**：BOOK 除了讀取對應 BADGE 的�
 
 ## 4. 初始化資料保全（★ 學 BADGE，抄模版嘅重點）
 
-每次更新 `Code.gs` 之後都可以安心行一次 `initializeSheets()`：
+以下僅為本 repo 隔離測試 artifact 的設計要求；不是對正式 BADGE 部署的操作指示。任何正式初始化必須由已驗收 BADGE release 明確規定，不可對現有資料先行試跑：
 
 - **只補**缺失分頁、缺失欄位、缺失設定預設值。
 - **絕不**改寫／刪除／重排／重新編號任何現有用戶資料。

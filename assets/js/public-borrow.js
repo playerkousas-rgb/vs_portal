@@ -4,6 +4,5 @@
 const q = new URLSearchParams(location.search);
 const target = new URL('./members.html', location.href);
 if (q.get('u')) target.searchParams.set('u', q.get('u'));
-if (q.get('be')) target.searchParams.set('be', q.get('be'));
 target.hash = '/home';
 location.replace(target.toString());

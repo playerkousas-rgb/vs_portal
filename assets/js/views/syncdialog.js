@@ -164,7 +164,7 @@ export async function showSaveReceipt(r) {
       </div></div>
       <div class="kv mb-12">
         ${v.sheet ? `<div class="kv-row sm"><span>寫入緊嘅試算表</span><span><b>${esc(v.sheet)}</b></span></div>` : ''}
-        <div class="kv-row sm"><span>旅團＋接線</span><span class="xs"><b class="mono">${esc(v.unit || '（未知）')}</b>${v.route ? ` · ${v.route === 'proxy' ? '平台代理' : v.route === 'direct' ? '自己貼嘅 /exec' : esc(v.route)}` : ''}</span></div>
+        <div class="kv-row sm"><span>旅團＋接線</span><span class="xs"><b class="mono">${esc(v.unit || '（未知）')}</b>${v.route ? ` · ${v.route === 'proxy' ? '同源代理（共用尚待驗收）' : esc(v.route)}` : ''}</span></div>
         <div class="kv-row sm"><span>APP 版本</span><span class="mono xs">${APP_VERSION}</span></div>
         <div class="kv-row sm"><span>後端程式版本</span><span class="mono xs">${esc(v.backendVersion || '（後端太舊，未回報）')}${v.mode ? ` · ${v.mode === 'simple' ? '逐表寫' : v.mode === 'blob' ? '整份寫入' : esc(v.mode)}` : ''}</span></div>
         ${(v.mode || v.simpleRows || v.blobRows) ? `<div class="kv-row sm"><span>正本分頁行數</span><span class="xs">「資料表」<b>${Number(v.simpleRows || 0)}</b> 行 · 「資料庫」<b>${Number(v.blobRows || 0)}</b> 行${(v.broken || []).length ? ` · <span style="color:var(--danger)">讀唔到：${esc(v.broken.join('、'))}</span>` : ''}</span></div>` : ''}

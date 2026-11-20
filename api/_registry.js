@@ -253,7 +253,7 @@ export function getRegistry() {
       disabledModules,
       /* 呢個旅團係唔係靠伺服器端 env 開（Git 未加 JSON） */
       fromEnv: fromEnvOnly,
-      /* 統一拓撲只有一個 BACKEND＋APIKEY；進度不接受第二個資料後端。 */
+      /* 既有 BADGE URL＋Key 都已登記即有 route config；不代表 Portal action contract 已支援。 */
       progressServerSide: !!(gasUrl && apiKey)
     };
   }
@@ -324,10 +324,11 @@ export function getTrustedUnit(id) {
 }
 
 // ============================================================
-// 進度紀錄：固定沿用旅團主後端（一個 Unified GAS／Sheet）
+// Portal Progress route：目標指向旅團既有 BADGE /exec
 // ------------------------------------------------------------
-// 唯一資料接線是 TROOP_<編號>_BACKEND＋TROOP_<編號>_APIKEY；不讀取
-// 任何 PROGRESS* 變數，也不接受 browser 另指 GAS 或 catalog URL。
+// 唯一候選接線是 TROOP_<編號>_BACKEND＋TROOP_<編號>_APIKEY；不讀取
+// PROGRESS* 變數，也不接受 browser 另指 GAS 或 catalog URL。此處只解析設定，
+// 不檢查上游是否實作 Portal action／auth contract，亦不代表 staging 已通過。
 // ============================================================
 export function getProgressRegistryEntry(id) {
   const out = { backend: '', apiKey: '' };
@@ -355,7 +356,7 @@ export function listPublicUnits() {
       sponsor: u.sponsor,
       address: u.address,
       theme: u.theme,
-      /* 前端用嚟交代狀態：伺服器端已經有進度後端＋Key（前端唔使填）／通告可以直接送到總表 */
+      /* 只回覆 Registry 路由欄位是否存在；不代表 BADGE 已支援 Portal Progress contract。 */
       progressServerSide: !!u.progressServerSide,
       noticeReady: !!(u.notice?.submitUrl || u.backend?.gasUrl),
       /* 呢個旅團係靠 Vercel 環境變數登記（前端會標示「Vercel 登記」） */

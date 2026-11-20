@@ -357,6 +357,26 @@ section('支部帳戶 PBKDF2 密碼基礎');
   ok('已驗領袖仍可按產品權限更改另一位非團長成員身份', allowedIdentity.ok === true,
     JSON.stringify(allowedIdentity));
 
+  const leaderSnapshot = g.post({ action: 'loadDb', unit: '0082', sessionToken: aliasLogin.sessionToken });
+  const selfEditRows = JSON.parse(JSON.stringify(leaderSnapshot.db.members));
+  selfEditRows.find(m => m.id === 'mLoginId').identity = 'exco';
+  const selfIdentityChange = g.post({ action: 'saveTables', unit: '0082', tables: { members: selfEditRows },
+    baseVersion: leaderSnapshot.version, refreshReports: false, sessionToken: aliasLogin.sessionToken });
+  const fullRoleSnapshot = g.serverPost({ action: 'loadDb', unit: '0082' });
+  const peerEditRows = JSON.parse(JSON.stringify(fullRoleSnapshot.db.members));
+  peerEditRows.find(m => m.id === 'mLeaderNoPw').identity = 'exco';
+  const peerIdentityChange = g.post({ action: 'saveTables', unit: '0082', tables: { members: peerEditRows },
+    baseVersion: fullRoleSnapshot.version, refreshReports: false, sessionToken: aliasLogin.sessionToken });
+  const sameRankRows = JSON.parse(JSON.stringify(fullRoleSnapshot.db.members));
+  sameRankRows.find(m => m.id === 'm1').identity = 'leader';
+  const sameRankPromotion = g.post({ action: 'saveTables', unit: '0082', tables: { members: sameRankRows },
+    baseVersion: fullRoleSnapshot.version, refreshReports: false, sessionToken: aliasLogin.sessionToken });
+  ok('branch_leader 的整庫／逐表寫入不可改自己、同級目標或升到同級身份',
+    selfIdentityChange.ok === false && selfIdentityChange.code === 'PROTECTED_AUTH_FIELD'
+      && peerIdentityChange.ok === false && peerIdentityChange.code === 'PROTECTED_AUTH_FIELD'
+      && sameRankPromotion.ok === false && sameRankPromotion.code === 'PROTECTED_AUTH_FIELD',
+    JSON.stringify({ selfIdentityChange, peerIdentityChange, sameRankPromotion }));
+
   /* 專用帳戶 action 唔經 saveDb dispatcher；仍必須同時受 members.edit 模組閘
      同 admin.accounts 細項權限約束，唔可以只睇 role rank。 */
   const fullBeforeAcl = g.serverPost({ action: 'loadDb', unit: '0082' });
@@ -399,6 +419,64 @@ section('支部帳戶 PBKDF2 密碼基礎');
   ok('members.edit=deny 即使 admin.accounts=allow 仍會拒絕專用帳戶 action',
     denyModuleSaved.ok === true && moduleDeniedReset.ok === false
       && moduleDeniedReset.code === 'ACTION_SCOPE_DENIED', JSON.stringify({ denyModuleSaved, moduleDeniedReset }));
+}
+
+section('Portal role edits follow BADGE hierarchy; chief handoff auto-demotes incumbent');
+{
+  const g = makeGas();
+  g.sandbox.initializeSheets();
+  const chiefPassword = g.sandbox.makePasswordRecord('chief-pass');
+  const seeded = {
+    schema: 2, unitCode: '0082',
+    accounts: [{ id: 'chief-account', username: 'chief-fixture@example.com', email: 'chief-fixture@example.com',
+      role: 'chief', memberId: 'chief-actor', active: true, pw: chiefPassword.pw, mustChangePw: false }],
+    members: [
+      { id: 'chief-actor', ymis: '3000000001', email: 'chief@example.com', name: '現任團長', identity: 'chief', status: 'active' },
+      { id: 'chief-successor', ymis: '3000000002', email: 'successor@example.com', name: '接任領袖', identity: 'leader', status: 'active' }
+    ],
+    permOverrides: {
+      'admin.chief': { chief: 0 },
+      'member.identity': { leader: 0, chief: 0 }
+    }
+  };
+  const seededResult = g.post({ action: 'saveDb', unit: '0082', db: seeded });
+  const chiefLogin = g.post({ action: 'authLogin', unit: '0082', username: 'chief-fixture@example.com', password: 'chief-pass' });
+  const aclBefore = g.post({ action: 'loadDb', unit: '0082', sessionToken: chiefLogin.sessionToken });
+  const identityDeniedRows = JSON.parse(JSON.stringify(aclBefore.db.members));
+  identityDeniedRows.find(m => m.id === 'chief-successor').identity = 'member';
+  const identityDenied = g.post({ action: 'saveTables', unit: '0082', tables: { members: identityDeniedRows },
+    baseVersion: aclBefore.version, refreshReports: false, sessionToken: chiefLogin.sessionToken });
+  ok('GAS 會保留 member.identity 細項 ACL，拒絕一般身份變更',
+    identityDenied.ok === false && identityDenied.code === 'PROTECTED_AUTH_FIELD', JSON.stringify(identityDenied));
+  const deniedRows = JSON.parse(JSON.stringify(aclBefore.db.members));
+  deniedRows.find(m => m.id === 'chief-actor').identity = 'leader';
+  deniedRows.find(m => m.id === 'chief-successor').identity = 'chief';
+  const aclDenied = g.post({ action: 'saveTables', unit: '0082', tables: { members: deniedRows },
+    baseVersion: aclBefore.version, refreshReports: false, sessionToken: chiefLogin.sessionToken });
+  const deniedState = g.serverPost({ action: 'loadDb', unit: '0082' });
+  ok('GAS 會保留 admin.chief 細項 ACL，拒絕被撤銷轉移權限的團長交棒',
+    seededResult.ok === true && chiefLogin.ok === true && aclBefore.ok === true
+      && aclDenied.ok === false && aclDenied.code === 'PROTECTED_AUTH_FIELD'
+      && deniedState.db.members.find(m => m.id === 'chief-actor')?.identity === 'chief'
+      && deniedState.db.members.find(m => m.id === 'chief-successor')?.identity === 'leader',
+    JSON.stringify({ seededResult, chiefLogin, aclDenied }));
+
+  delete deniedState.db.permOverrides;
+  const aclRestored = g.serverPost({ action: 'saveDb', unit: '0082', db: deniedState.db,
+    baseVersion: deniedState.version, refreshReports: false });
+  const before = g.post({ action: 'loadDb', unit: '0082', sessionToken: chiefLogin.sessionToken });
+  const handoffRows = JSON.parse(JSON.stringify(before.db.members));
+  handoffRows.find(m => m.id === 'chief-actor').identity = 'leader';
+  handoffRows.find(m => m.id === 'chief-successor').identity = 'chief';
+  const handoff = g.post({ action: 'saveTables', unit: '0082', tables: { members: handoffRows },
+    baseVersion: before.version, refreshReports: false, sessionToken: chiefLogin.sessionToken });
+  const after = g.serverPost({ action: 'loadDb', unit: '0082' });
+  const chiefs = (after.db?.members || []).filter(m => m.identity === 'chief');
+  ok('現任團長可將身份交棒，接任者成為 chief、原團長自動降為 leader，且仍只有一位 chief',
+    aclRestored.ok === true && before.ok === true && handoff.ok === true
+      && chiefs.length === 1 && chiefs[0].id === 'chief-successor'
+      && after.db.members.find(m => m.id === 'chief-actor')?.identity === 'leader',
+    JSON.stringify({ aclRestored, handoff, chiefs }));
 }
 
 section('身份升級後提交舊投影仍保留當時不可見列');

@@ -16,7 +16,7 @@ BADGE 輕量前端 ────────────────────�
 
 **產品關係：BADGE 是功能較精簡的前端，支部系統是功能完整版前端；旅團可只用其中一個，也可兩個一起用。** 單獨使用任何一個時都不應依賴另一個前端網站開啟或登入；一起使用時，兩個前端應連同一支部的完整共用後端和資料，而不是互相同步兩套帳戶或資料。這與成員系統／區管理系統共用後端的模式相似，但 BADGE 本身有登入，不是公開免登入入口。
 
-這是目標架構，不代表目前已驗收完成。Vercel Registry／Proxy 已存在，但裸 BADGE v9.6 action contract 與 Portal auth actions 不同；Admin 登記 URL／Key 本身不會補上相容 adapter。Unified GAS 是未經真實 Apps Script 驗收的候選版，不可視為已驗收的正式共享後端。支部負責人自行試用前請閱讀 [`docs/USER_SELF_TEST.md`](docs/USER_SELF_TEST.md)；正式狀態及缺口見 [`docs/BACKEND_SYNC.md`](docs/BACKEND_SYNC.md)。
+BADGE v9.7 已採用完整 Unified 後端；本 repo 的 v9.8 以該完整檔案為基礎，並修正 Portal 發現的問題。每次修改先以兩邊最新的完整後端為基礎，不要求立即更新另一個 repo；版本核對及更新規則見 [`docs/SHARED_BACKEND_VERSIONING.md`](docs/SHARED_BACKEND_VERSIONING.md)。Registry 登記不會自動更新旅團的 GAS；Portal 的 v9.8 尚未經真實 Apps Script 雙前端驗收。支部負責人自行試用前請閱讀 [`docs/USER_SELF_TEST.md`](docs/USER_SELF_TEST.md)。
 
 - 已有 BADGE 後端的旅團加入 Portal 時，不應另建 Sheet／GAS、第二帳戶表或資料來源；既有 BADGE Users／名冊是身份與資料權威。全新支部首次建置及只有 Portal 的既有部署如何升級，需另行制定及驗證，不能假定每個旅團已有 BADGE。
 - 瀏覽器不會把 API Key 當身份；敏感資料必須由正式共用後端按同一 BADGE 使用者及服務端授權重新驗證。
@@ -97,12 +97,12 @@ Portal 測試後端的行政資料投影設計只回傳（正式 BADGE adapter �
 |---|---|
 | `assets/js/lib/gastemplate.js` | 本 repo 原 Portal GAS source；含 Portal 自有帳戶模型，不能作為共用 BADGE Users 的正式後端 |
 | `apps-script/Code.gs` | 由 Portal GAS source 生成的相容性／歷史 artifact；不是裸 BADGE 共用後端 |
-| `apps-script/unified-src/` | pinned BADGE v9.6 + Portal adapter 的隔離測試 source |
-| `apps-script/UnifiedCode.gs` | 由 Unified builder 生成的 `isolated-test-only` 候選 artifact；未經正式驗收，支部負責人自行測試參考 [`docs/USER_SELF_TEST.md`](docs/USER_SELF_TEST.md) |
+| `apps-script/unified-src/` | 固定完整 BADGE v9.7 的來源及其 hash；其他舊來源為歷史紀錄 |
+| `apps-script/UnifiedCode.gs` | 由 BADGE v9.7 完整來源生成的 v9.8 共用候選 artifact；BADGE 下一次更新時需先承接；尚未完成真實環境驗收，參考 [`docs/USER_SELF_TEST.md`](docs/USER_SELF_TEST.md) |
 
-正式共用 BADGE 後端的 action contract、升級／回退與 staging 驗收仍未完成。修改任何 source 不會自動更新旅團既有 Apps Script deployment。
+v9.7 已具備共用 action；BADGE 下次修改前應先承接更新後的完整版本，真實環境升級／回退驗收仍待完成。修改任何 source 不會自動更新旅團既有 Apps Script deployment。
 
-Unified builder 只驗證隔離測試組合，不構成正式共用後端部署證據。
+Unified builder 產生完整 GS 和相同的瀏覽器下載內容；生成或本地測試不構成部署證據。
 
 ## 本機開發
 

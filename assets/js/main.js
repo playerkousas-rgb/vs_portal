@@ -759,7 +759,7 @@ async function openDeployGuideModal() {
           <div class="semibold mb-4">第 3 步：Admin 核對相容性後登記</div>
           <ol class="xs mono" style="padding-left:18px;line-height:1.8">
             <li>Admin 確認既有後端已部署正式的 Portal／BADGE 共用 action contract</li>
-            <li>裸 BADGE v9.6 使用 <code>login</code>／<code>bulkAddUsers</code>；Portal 目前呼叫 <code>authLogin</code>／<code>authWhoAmI</code>／<code>authOpenAccounts</code>，不能只靠設定 URL／Key 互通</li>
+            <li>BADGE v9.7 已包含共用後端及 Portal 相容 action；舊版裸 v9.6 沒有這些 action。先核對實際部署版本，不要只靠設定 URL／Key 判斷互通</li>
             <li>相容性驗收完成後，Admin 才在 Vercel 設定 <code>TROOP_&lt;ID&gt;_NAME／BACKEND／APIKEY</code>，選對 environment 並 Redeploy</li>
             <li><code>/api/units</code> 的 <code>backendReady</code> 只表示設定齊全，仍要做兩個前端登入、開戶及同一帳戶讀回測試</li>
           </ol>
@@ -790,7 +790,7 @@ async function openApplication() {
     trustedBodyHtml: `
       <div class="note-box warn mb-12">${icon('alert', 15)}<div>
         <b>請提交旅團目前使用的 BADGE 後端資料。</b>不需要建立新 Sheet／GAS；Portal 不會另建帳戶或複製帳戶。
-        <div class="xs mt-4">Admin 會先核對後端是否支援正式 Portal／BADGE 共用 action contract。裸 BADGE v9.6 尚未直接提供 Portal 使用的 auth actions，因此申請回執不能當作開通完成。</div>
+        <div class="xs mt-4">Admin 會先核對實際部署是否支援 Portal／BADGE 共用 action contract；BADGE v9.7 已包含相容功能，但申請回執不能當作實際部署及驗收完成。</div>
       </div></div>
       <div class="grid g-2" style="gap:12px">
         <div class="field"><label class="label">旅團編號 <span class="req">*</span></label>

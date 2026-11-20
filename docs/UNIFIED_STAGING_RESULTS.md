@@ -2,7 +2,7 @@
 
 > **本文件記錄的是正式 BADGE backend 的 staging；不是 Unified 新 Sheet 部署紀錄。** 不得要求旅團建立第二張生產 Sheet／GAS、搬移或複製帳戶。測試可由維護者使用核准的 staging 環境；正式接線必須沿用旅團目前 BADGE `/exec`、API Key、Sheet、`Users` 及資料。
 >
-> `apps-script/UnifiedCode.gs`／`unified-src/` 標記為 `isolated-test-only`，不是正式相容版本。此組合、VM 測試、proxy allowlist 與 Registry `backendReady` 均不等於真實既有 BADGE Apps Script staging。
+> 本記錄中的 v9.6 來源、hash 和測試數字是先前候選版的歷史證據，不是目前 v9.8 的測試結果。現時 BADGE v9.7 完整來源與 Portal v9.8 的對齊狀態見 [`SHARED_BACKEND_VERSIONING.md`](SHARED_BACKEND_VERSIONING.md)。任一版本的 VM 測試、proxy allowlist 與 Registry `backendReady` 均不等於真實既有 BADGE Apps Script 驗收。
 
 ## 測試環境記錄
 
@@ -58,7 +58,7 @@
 
 ## 隔離測試（不計為 staging）
 
-- `apps-script/unified-src/manifest.json` 的 `releaseChannel` 是 `isolated-test-only`；2026-11-20 候選 `apps-script/UnifiedCode.gs` SHA-256 `874d7d90c245d9eff3de186c0ef4c09df8a9ea383729aa17b328e952f1377af4` 的 `npm run test:unified` 為 **156 PASS／0 FAIL**（包括按提供的 Sheet 表頭新增的兩項模擬測試）。涵蓋共用首個管理員、同 Sheet 現有 BADGE 資料直接讀取、所有普通及分件寫入強制共享版本、首筆 delegated 權限、簽名入口控制及 rescue session、刪除／重新加入、寫入後並發版本、部分失敗與 operation ID 私隱。這是模擬而非真 GAS；source 變動後須重建重測。
+- 當時 `apps-script/unified-src/manifest.json` 的 `releaseChannel` 是 `isolated-test-only`；2026-11-20 舊候選 `apps-script/UnifiedCode.gs` SHA-256 `874d7d90c245d9eff3de186c0ef4c09df8a9ea383729aa17b328e952f1377af4` 的 `npm run test:unified` 為 **156 PASS／0 FAIL**（包括按提供的 Sheet 表頭新增的兩項模擬測試）。涵蓋共用首個管理員、同 Sheet 現有 BADGE 資料直接讀取、所有普通及分件寫入強制共享版本、首筆 delegated 權限、簽名入口控制及 rescue session、刪除／重新加入、寫入後並發版本、部分失敗與 operation ID 私隱。這是模擬而非真 GAS；source 變動後須重建重測。
 - `tests/gas.mjs` 測的是 Portal repo 的 GAS template，不代表 BADGE 既有部署。
 - 2026-11-20 在臨時 BADGE checkout（`vsbadge@1085b033ad83488f50fa2323e7d216646bdb9ceb`，原 `Code.gs` hash 與 pinned v9.6 相同）對候選執行未修改的 BADGE `security`、`password_reset`、`auth-hardening`、`login-kdf`、`request-review`、`legacy_progress`、`troop_link` 七組 Node 測試：**71 PASS／4 FAIL**。舊的 6 項逐項結果如下：
   1. **密碼重設初始化：** 原測試的 Sheet mock 缺 `getSheetId()`。只在隔離測試副本補上真 GAS API 的 mock 後，密碼重設組 13／13 通過；真 GAS staging 仍未測。

@@ -206,7 +206,7 @@ ok('generated architecture keeps client surface separate from server authorizati
     && SOURCE.includes('not a second reduced GS')
     && SOURCE.includes('allowed action')
     && SOURCE.includes('session, role, and scope authorization'));
-ok('vsbadge v9.6 baseline is still present', SOURCE.includes("const VS_GS_VERSION = 'v9.6';"));
+ok('shared backend uses the next version after BADGE v9.7', SOURCE.includes("const VS_GS_VERSION = 'v9.8';"));
 ok('legacy Portal is namespaced instead of shadowing baseline globals', SOURCE.includes('var PortalAdminCompat_ = (function () {'));
 ok('pinned legacy menu source remains available for compatibility', SOURCE.includes(".addItem('🔒 閂口（只收 sig）','menuLocalLoginOff')"));
 const activeMenuSource = SOURCE.slice(SOURCE.lastIndexOf('function onOpen()'), SOURCE.lastIndexOf('function doGet(e)'));
@@ -217,6 +217,29 @@ ok('active Sheet menu exposes only branch-safe controls',
     && !activeMenuSource.includes('menuRegisterDownstream')
     && !activeMenuSource.includes('badgeOnOpen_'));
 ok('unfinished legacy authChangePassword is not an exposed compatibility route', !/PortalAdminCompat_\.authChangePassword/.test(SOURCE));
+
+const statusNode = makeNode();
+statusNode.props.delete('API_KEY');
+ok('ecStatus fails closed without a configured API key and does not create one',
+  statusNode.post({ action: 'ecStatus' }).success === false && !statusNode.props.has('API_KEY'));
+statusNode.props.set('API_KEY', 'status-test-key');
+const versionStatus = statusNode.post({ action: 'ecStatus', apikey: 'status-test-key' });
+ok('ecStatus requires the real key and reports the shared version and acceptance channel',
+  statusNode.post({ action: 'ecStatus', apikey: 'wrong' }).success === false
+    && versionStatus.success === true && versionStatus.gsVersion === 'v9.8'
+    && versionStatus.channel === 'portal-acceptance' && versionStatus.gsInitializationCurrent === false);
+const initLogNode = makeNode();
+const initLogs = [];
+initLogNode.context.Logger.log = value => initLogs.push(String(value));
+const initForLogs = initLogNode.context.initializeSheets();
+ok('successful initialization does not log its API key', initForLogs.success === true
+  && !initLogs.join(' ').includes('existing-api-key-do-not-change'));
+const failNoKeyNode = makeNode();
+failNoKeyNode.props.delete('API_KEY');
+failNoKeyNode.sheets.set('進度追蹤', makeSheet('進度追蹤', [['錯誤表頭', 'existing']]));
+const failNoKey = failNoKeyNode.context.initializeSheets();
+ok('failed preflight does not create or return a missing API key', failNoKey.success === false
+  && !failNoKeyNode.props.has('API_KEY') && !Object.hasOwn(failNoKey, 'apiKey'));
 
 const node = makeNode();
 const USER_HEADERS = ['ymis','name','email','role','password_hash','branch','can_tick','auth_by','auth_date','created_at','last_login','status','allowed_badges','force_change_password'];
@@ -470,6 +493,36 @@ ok('upgrade appends missing progress header without overwriting the existing fif
 ok('upgrade does not seed another account into an existing Users sheet',
   upgradeNode.sheets.get('Users')._rows.length === beforeUpgrade.get('Users').length);
 ok('preserved legacy reserved token remains invalid', upgradeNode.context.validateToken('legacy-reserved-token') === null);
+upgradeNode.sheets.get('操作紀錄').appendRow(['2025', 'normal-user', 'normal-action', '1234567890', 'ordinary']);
+const auditView = JSON.parse(upgradeNode.context.handleGetAuditLog().getContent());
+ok('retained reserved audit rows stay hidden without deleting ordinary or historical rows',
+  auditView.records.some(row => row[2] === 'normal-action')
+    && !auditView.records.some(row => row[2] === 'old-action')
+    && upgradeNode.sheets.get('操作紀錄')._rows.some(row => row[2] === 'old-action'));
+const reservedNode = makeNode();
+reservedNode.context.initializeSheets();
+reservedNode.sheets.get('Users').appendRow([
+  '7777777777', '舊角色列', 'legacy-role@example.test', 'super_admin', sha256('oldsecret'), 'b4', true, 'old', '', '', '', 'active', '*', false
+]);
+reservedNode.sheets.get('Users').appendRow([
+  '8888888888', '舊電郵列', 'sheep@vsbadge.local', 'admin', sha256('oldsecret'), 'b4', true, 'old', '', '', '', 'active', '*', false
+]);
+reservedNode.sheets.get('Tokens').appendRow(['old-role-token', '7777777777', '', '2099-01-01']);
+reservedNode.sheets.get('Tokens').appendRow(['old-email-token', '8888888888', '', '2099-01-01']);
+ok('retained reserved role and reserved email rows cannot authenticate by YMIS through either frontend',
+  ['7777777777', '8888888888'].every(id =>
+    reservedNode.post({ action: 'login', login_id: id, password: 'oldsecret' }).success === false
+    && reservedNode.post({ action: 'authLogin', unit: '0082', username: id, password: 'oldsecret' }).success === false));
+ok('retained reserved role and email rows cannot authorise existing local sessions or writes',
+  ['old-role-token', 'old-email-token'].every(token =>
+    reservedNode.context.validateToken(token) === null
+    && reservedNode.post({ action: 'requestComplete', token, items: [{ itemId: 'no-write' }] }).success === false));
+const reservedRowsBeforeMirror = reservedNode.sheets.get('Users')._rows.length;
+ok('isolated assertion fixture cannot resurrect or duplicate a retained reserved account',
+  reservedNode.context.unifiedEnsureCentralUser_({ ymis: '7777777777', name: 'old', contact: 'legacy-role@example.test' }, 'leader') === null
+    && reservedNode.context.unifiedEnsureCentralUser_({ ymis: '8888888888', name: 'old', contact: 'sheep@vsbadge.local' }, 'leader') === null
+    && reservedNode.context.unifiedEnsureCentralUser_({ ymis: '9999999999', name: 'old', contact: 'legacy-role@example.test' }, 'leader') === null
+    && reservedNode.sheets.get('Users')._rows.length === reservedRowsBeforeMirror);
 ok('upgrade preserves the existing key', upgradeNode.props.get('API_KEY') === 'existing-api-key-do-not-change');
 const unchangedUsers = JSON.stringify(upgradeNode.sheets.get('Users')._rows);
 const repeatUpgrade = upgradeNode.context.initializeSheets();
@@ -481,7 +534,7 @@ ok('default password still requires a change at login without rewriting flags du
 
 const malformedNode = makeNode();
 malformedNode.sheets.set('進度追蹤', makeSheet('進度追蹤', [['錯誤表頭', 'existing'], ['do-not-touch', 'value']]));
-malformedNode.props.set('UNIFIED_GS_INITIALIZED_VERSION', 'v9.6-u1-test');
+malformedNode.props.set('UNIFIED_GS_INITIALIZED_VERSION', 'v9.8');
 const malformedBefore = JSON.stringify(malformedNode.sheets.get('進度追蹤')._rows);
 const malformedResult = malformedNode.context.initializeSheets();
 ok('unexpected BADGE progress headers fail preflight before adding or changing any sheets',
@@ -508,7 +561,7 @@ skippedNode.context.SpreadsheetApp.getUi = () => ({ ButtonSet: { OK: 'OK' },
   alert: (...args) => upgradeAlerts.push(args) });
 skippedNode.context.Logger.log = value => upgradeLogs.push(String(value));
 skippedNode.sheets.set('帳目', makeSheet('帳目', [['custom header'], ['keep']]));
-skippedNode.props.set('UNIFIED_GS_INITIALIZED_VERSION', 'v9.6-u1-test');
+skippedNode.props.set('UNIFIED_GS_INITIALIZED_VERSION', 'v9.8');
 const skippedResult = skippedNode.context.initializeSheets();
 ok('unrecognized administrative sheet is reported as partial, not marked complete',
   skippedResult.success === false && skippedResult.partial === true && /帳目/.test(skippedResult.error || '')
@@ -545,7 +598,7 @@ const closedFlagInit = closedFlagNode.context.initializeSheets();
 ok('initializer preserves an explicitly closed BADGE local-login flag',
   closedFlagInit.success === true && closedFlagNode.props.get('ALLOW_LOCAL_LOGIN') === 'false');
 ok('initializer preserves existing progress row', node.sheets.get('進度追蹤')._rows.some(r => r[1] === 'L1-KEEP' && r[5] === 'must survive'));
-ok('initializer records isolated unified version', node.props.get('UNIFIED_GS_INITIALIZED_VERSION') === 'v9.6-u1-test');
+ok('initializer records isolated unified version', node.props.get('UNIFIED_GS_INITIALIZED_VERSION') === 'v9.8');
 ok('initializer adds administrative tabs without replacing progress baseline', node.sheets.has('資料表') && node.sheets.has('Users') && node.sheets.has('活動履歷'));
 
 /* One action dispatcher reads the different Progress tabs from this same active Sheet. */
@@ -586,6 +639,31 @@ node.sheets.get('Users').appendRow([
   sha256('bookleader9'), 'b4', true, 'existing', '2026-01-01', '2026-01-01', '', 'active', '*', false
 ]);
 const bookReviewerLogin = node.post({ action: 'login', login_id: bookReviewerYmis, password: 'bookleader9' });
+const troopRead = node.post({ action: 'progressAll', token: bookReviewerLogin.token });
+ok('BADGE progressAll returns the full same-Sheet projection to an authenticated leader',
+  troopRead.success === true && troopRead.viewScope === 'troop' && troopRead.gsVersion === 'v9.8'
+    && troopRead.progress?.['9000000001']?.['L1-KEEP']?.note === 'must survive'
+    && troopRead.pendingRequests.some(item => item.request_id === 'REQ-1'));
+ok('BADGE progressAll denies anonymous and forged sessions',
+  node.post({ action: 'progressAll' }).success === false
+    && node.post({ action: 'progressAll', token: 'forged' }).success === false);
+node.sheets.get('Users').appendRow([
+  '3333333333', '測試成員', 'member333@example.test', 'member', sha256('member333'), 'b4', false,
+  'existing', '2026-01-01', '2026-01-01', '', 'active', '', false
+]);
+const troopMember = node.post({ action: 'login', login_id: '3333333333', password: 'member333' });
+const deniedTroopRead = node.post({ action: 'progressAll', token: troopMember.token });
+ok('BADGE progressAll denies member by default', troopMember.success === true
+  && deniedTroopRead.success === false && deniedTroopRead.code === 'TROOP_VIEW_DENIED');
+const allowRow = node.sheets.get('SystemConfig')._rows.findIndex(row => row[0] === 'allow_member_view_others');
+node.sheets.get('SystemConfig').getRange(allowRow + 1, 2).setValue('true');
+const allowedTroopRead = node.post({ action: 'progressAll', token: troopMember.token });
+ok('BADGE progressAll honors the explicit member-view-others configuration',
+  allowedTroopRead.success === true && allowedTroopRead.viewScope === 'troop'
+    && allowedTroopRead.progress?.['9000000001']?.['L1-KEEP']?.note === 'must survive');
+node.sheets.get('SystemConfig').getRange(allowRow + 1, 2).setValue('false');
+node.context.destroyToken(troopMember.token);
+node.sheets.get('Users').deleteRow(node.sheets.get('Users')._rows.findIndex(row => row[0] === '3333333333') + 1);
 const bookReview = node.post({ action: 'reviewRequest', token: bookReviewerLogin.token,
   request_id: bookImport.request_id, decision: 'approved', review_note: '領袖確認 BOOK 匯入',
   confirmed_date: '2026-02-09' });
@@ -814,7 +892,7 @@ const serverReadRequest = signedRequest('loadTables', {
 });
 const serverRead = node.post(serverReadRequest.body, serverReadRequest.parameter);
 ok('platform super server signature reaches Portal administrative compatibility routes',
-  serverRead.success === true && serverRead.unifiedGsVersion === 'v9.6-u1-test', JSON.stringify(serverRead));
+  serverRead.success === true && serverRead.unifiedGsVersion === 'v9.8', JSON.stringify(serverRead));
 const replayedServerRead = node.post(serverReadRequest.body, serverReadRequest.parameter);
 ok('platform super server signature rejects nonce replay', replayedServerRead.success === false);
 const largeServerReadRequest = signedRequest('loadTables', {

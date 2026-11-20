@@ -3,10 +3,11 @@
   "output": "apps-script/UnifiedCode.gs",
   "baseline": {
     "repository": "playerkousas-rgb/vsbadge",
-    "commit": "87c76a98b95ff7b5e2a7be02198142c72aefc24e",
-    "version": "v9.6",
+    "commit": "a11935bf273b3199dd970de15a6ec0fa5174bf75",
+    "version": "v9.7",
     "path": "apps-script/Code.gs",
-    "sha256": "63148a32095694a92a45d9fa14fc190b7fd8e35336080d2c48ad9adf61c34a10"
+    "localPath": "vsbadge-v9.7.txt",
+    "sha256": "ada6f5012d1ff19a6701031c1e9a61ae7083876fcf35fc547792d59b886f9f4d"
   },
   "portalCompatibility": {
     "repository": "playerkousas-rgb/vs_portal",
@@ -16,8 +17,9 @@
     "path": "apps-script/Code.gs",
     "sha256": "f0047c279e8c3ec2bbfd6cfb34e140e661e3dcd0caa342fc07e06838cef05293",
     "sourceCommit": "41b923a1eafe56f7b2b572fc9e43d24b975f6db6",
-    "note": "Known generated working-tree checkpoint with branch-schema-serialized roles/modules, opaque-session actor resolution, branch-local show/read/edit module ACLs, actor-scoped read projection, monotonic lower-role delegation, projection-safe full and partial writes, protected identity/account fields, removed anonymous content actions and helper implementations, atomic signed-request replay protection, and one-use password reset. It remains IIFE-isolated; unified-extension owns every public route."
+    "note": "Historical provenance only; the complete pinned v9.7 source already contains the Portal compatibility module and unified router."
   },
-  "extension": "apps-script/unified-src/unified-extension.gs",
-  "releaseChannel": "isolated-test-only"
+  "extension": "embedded in the complete pinned v9.7 backend",
+  "releaseChannel": "portal-acceptance",
+  "outputVersion": "v9.8"
 }

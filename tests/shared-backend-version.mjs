@@ -1,0 +1,13 @@
+import assert from 'node:assert/strict';
+import { identity, compare } from '../scripts/check-shared-backend.mjs';
+const a = identity("const VS_GS_VERSION = 'v9.7';\n");
+const b = identity("const VS_GS_VERSION = 'v9.8';\n");
+const c = identity("const VS_GS_VERSION = 'v9.8';\n// different\n");
+const d = identity("const VS_GS_VERSION = 'v9.10';\n");
+assert.equal(compare(a, a), 'identical');
+assert.equal(compare(a, b), 'portal-newer');
+assert.equal(compare(b, a), 'badge-newer');
+assert.equal(compare(b, c), 'same-version-different-content');
+assert.equal(compare(d, b), 'badge-newer');
+assert.throws(() => identity('no version'));
+console.log('✓ Shared backend version and exact-content comparison');
